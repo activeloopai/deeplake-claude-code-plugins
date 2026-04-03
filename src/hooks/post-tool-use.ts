@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 
+import { appendFileSync, mkdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { readStdin } from "../utils/stdin.js";
-import { loadConfig } from "../config.js";
-import { extractMemoryOp } from "../path-match.js";
-import { DeepLakeApi } from "../deeplake-api.js";
+
+const MEMORY_DIR = process.env.DEEPLAKE_MEMORY_DIR ?? join(homedir(), ".deeplake", "memory");
+const LOG = join(homedir(), ".deeplake", "hook-debug.log");
+function log(msg: string) {
+  appendFileSync(LOG, `${new Date().toISOString()} [post] ${msg}\n`);
+}
 
 interface PostToolUseInput {
   session_id: string;
@@ -16,31 +22,22 @@ interface PostToolUseInput {
 
 async function main(): Promise<void> {
   const input = await readStdin<PostToolUseInput>();
-  const config = loadConfig();
-  if (!config) return;
+  log(`tool=${input.tool_name} session=${input.session_id}`);
 
-  const match = extractMemoryOp(input.tool_name, input.tool_input, config.memoryPath);
-  if (!match) return;
+  if (!existsSync(MEMORY_DIR)) mkdirSync(MEMORY_DIR, { recursive: true });
 
-  const api = new DeepLakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+  const entry = {
+    id: crypto.randomUUID(),
+    session_id: input.session_id,
+    tool_name: input.tool_name,
+    tool_input: JSON.stringify(input.tool_input).slice(0, 5000),
+    tool_response: JSON.stringify(input.tool_response).slice(0, 5000),
+    timestamp: new Date().toISOString(),
+  };
 
-  let content = "";
-  switch (match.op) {
-    case "write":
-      content = (input.tool_input.content as string) ?? "";
-      break;
-    case "edit":
-      content = (input.tool_input.new_string as string) ?? "";
-      break;
-    case "bash":
-      content = (input.tool_input.command as string) ?? "";
-      break;
-    default:
-      // read/list/search — log the access, no content to sync
-      break;
-  }
-
-  await api.logOp(input.session_id, match.path, match.op, content);
+  const file = join(MEMORY_DIR, `session_${input.session_id}.jsonl`);
+  appendFileSync(file, JSON.stringify(entry) + "\n");
+  log("capture ok → " + file);
 }
 
-main().catch(() => process.exit(0));
+main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });

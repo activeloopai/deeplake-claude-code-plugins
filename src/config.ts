@@ -40,7 +40,7 @@ export function loadConfig(): Config | null {
     orgId,
     workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
     apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: process.env.DEEPLAKE_MEMORY_TABLE ?? "memory",
+    tableName: process.env.DEEPLAKE_MEMORY_TABLE ?? "memory_hooks",
     memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory"),
   };
 }
