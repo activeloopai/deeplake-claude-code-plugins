@@ -1,0 +1,17 @@
+{
+  "description": "DeepLake memory sync — captures file ops targeting ~/.deeplake/memory and syncs to DeepLake cloud",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/post-tool-use.js\"",
+            "timeout": 15,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
