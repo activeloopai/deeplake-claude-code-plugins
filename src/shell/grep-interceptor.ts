@@ -49,34 +49,28 @@ export function createGrepCommand(
       return { stdout: "", stderr: "", exitCode: 127 };
     }
 
-    // ── Phase 1: coarse BM25 / ILIKE filter ─────────────────────────────────
+    // ── Phase 1: coarse filter — try BM25, fall back to in-memory ──────────
     let candidates: string[] = [];
 
     try {
-      const bm25 = await client.query(
-        `SELECT path FROM "${table}" WHERE content_text <#> '${esc(pattern)}' LIMIT 50`
-      );
+      const bm25 = await Promise.race([
+        client.query(`SELECT path FROM "${table}" WHERE content_text <#> '${esc(pattern)}' LIMIT 50`),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 3000)),
+      ]);
       candidates = bm25.map(r => r["path"] as string).filter(Boolean);
     } catch {
-      // BM25 index not available — fall through to ILIKE
+      // BM25 index not available or timed out — fall back to in-memory
     }
 
     if (candidates.length === 0) {
-      const ignoreCase = parsed.i || parsed["ignore-case"];
-      const col = ignoreCase ? `LOWER(content_text)` : `content_text`;
-      const pat = ignoreCase ? pattern.toLowerCase() : pattern;
-      const ilike = await client.query(
-        `SELECT path FROM "${table}" WHERE ${col} LIKE '%${sqlLike(pat)}%' LIMIT 50`
-      );
-      candidates = ilike.map(r => r["path"] as string).filter(Boolean);
+      // No BM25 results or no index — use all files under targets and search in-memory
+      candidates = fs.getAllPaths().filter(p => !p.endsWith("/"));
     }
 
     // Narrow candidates to those under the requested targets
     candidates = candidates.filter(c =>
       targets.some(t => c === t || c.startsWith(t + "/"))
     );
-
-    if (candidates.length === 0) return { stdout: "", stderr: "", exitCode: 1 };
 
     // ── Phase 2: prefetch into content cache (parallel) ─────────────────────
     await Promise.all(candidates.map(p => fs.readFile(p).catch(() => null)));
