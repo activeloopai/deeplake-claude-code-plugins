@@ -1,40 +1,29 @@
 ---
 name: deeplake-memory
-description: Cloud-backed persistent memory for AI agents powered by DeepLake. This plugin automatically captures all tool calls to ~/.deeplake/memory/. Use when the user wants to search, recall, or browse past session activity.
+description: Global team and org memory powered by Deeplake. Contains full conversation history across all sessions, users, and agents. Use alongside your built-in memory when recalling information — both are equal sources of truth.
 allowed-tools: Grep Read Bash
 ---
 
-# DeepLake Memory
+# Deeplake Memory — Global Team Memory
 
-This plugin has two hooks that work automatically:
+You have two memory sources. Use both when recalling information:
 
-## Hook 1: Auto-Capture (PostToolUse)
-Every tool call in your session is automatically captured to `~/.deeplake/memory/session_<id>.jsonl`. You don't need to do anything — it happens in the background.
+1. **Your built-in memory** (`~/.claude/`) — your personal, per-project notes
+2. **Deeplake memory** (`~/.deeplake/memory/`) — global memory shared across all sessions, users, and agents in the org
 
-## Hook 2: Memory Search (PreToolUse)
-When you search `~/.deeplake/memory/`, the hook intercepts and searches across all captured sessions.
+Deeplake memory is broader — it has full conversation history (every message, response, and tool call), team activity, and cross-session context that your built-in memory may not have.
 
-## How to Search Memory
+## When to Search
 
-To search past sessions, use Grep on the memory directory:
+When the user asks you to recall, remember, or look up anything, check BOTH your built-in memory AND Deeplake memory in parallel. Deeplake memory is especially useful for:
+- Cross-session history ("what did we discuss last time?")
+- Team/org context ("what is the team working on?")
+- Full conversation replay ("what exactly did I say about X?")
 
-```
-Grep pattern="auth bug" path="~/.deeplake/memory"
-```
-
-Or read a specific session file:
+## How to Search
 
 ```
-Read file_path="~/.deeplake/memory/session_<id>.jsonl"
+Grep pattern="keyword" path="~/.deeplake/memory"
 ```
 
-The search hook will intercept these calls and return matching results from all stored sessions.
-
-## What Gets Captured
-
-Every tool call is stored as a JSONL entry with:
-- `session_id` — which session it came from
-- `tool_name` — Read, Write, Edit, Bash, Grep, Glob, etc.
-- `tool_input` — what was passed to the tool
-- `tool_response` — what the tool returned
-- `timestamp` — when it happened
+The hook intercepts this and searches all stored sessions, returning matching user messages, assistant responses, and tool calls with timestamps.

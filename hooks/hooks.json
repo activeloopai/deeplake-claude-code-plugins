@@ -1,6 +1,28 @@
 {
-  "description": "DeepLake memory — captures all tool calls and provides memory search via ~/.deeplake/memory",
+  "description": "Deeplake memory — captures all session activity and provides memory search via ~/.deeplake/memory",
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/session-start.js\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/capture.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "hooks": [
@@ -17,9 +39,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/post-tool-use.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/capture.js\"",
             "timeout": 15,
             "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/capture.js\"",
+            "timeout": 30
           }
         ]
       }
