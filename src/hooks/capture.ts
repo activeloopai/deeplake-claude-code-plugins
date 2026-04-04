@@ -17,7 +17,10 @@ interface HookInput {
   hook_event_name?: string;
 }
 
+const CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
+
 async function main(): Promise<void> {
+  if (!CAPTURE) return;
   const input = await readStdin<HookInput>();
   const config = loadConfig();
   if (!config) { log("no config"); return; }

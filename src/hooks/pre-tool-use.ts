@@ -126,7 +126,23 @@ async function main(): Promise<void> {
   const input = await readStdin<PreToolUseInput>();
   log(`hook fired: tool=${input.tool_name} input=${JSON.stringify(input.tool_input).slice(0, 200)}`);
 
+  const cmd = (input.tool_input.command as string) ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
+
+  if (!shellCmd && touchesMemory(cmd)) {
+    // Unsafe command targeting memory — show CLI install prompt
+    log(`unsafe → showing CLI install prompt`);
+    const installPrompt = `echo "This command requires the Deeplake CLI (FUSE mount). Install: curl -fsSL https://deeplake.ai/install.sh | bash && deeplake mount ~/.deeplake/memory — Or rewrite using safe builtins: cat, ls, grep, jq, head, tail, sort, wc, find"`;
+    console.log(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "allow",
+        updatedInput: { command: installPrompt, description: "[DeepLake] CLI required for this command" },
+      },
+    }));
+    return;
+  }
+
   if (!shellCmd) return;
 
   log(`intercepted → rewriting to shell: ${shellCmd}`);

@@ -15,7 +15,10 @@ interface StopInput {
   stop_hook_active?: boolean;
 }
 
+const CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
+
 async function main(): Promise<void> {
+  if (!CAPTURE) return;
   const input = await readStdin<StopInput>();
   log(`session=${input.session_id} response=${(input.last_assistant_message ?? "").slice(0, 100)}`);
 
