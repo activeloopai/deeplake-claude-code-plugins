@@ -39,6 +39,8 @@ interface MemoryTarget {
   tool: string;
   /** Resolved path or command string */
   value: string;
+  /** Bash command contains external binaries just-bash can't handle */
+  unsafe?: boolean;
 }
 
 function detectMemoryTarget(
@@ -80,11 +82,8 @@ function detectMemoryTarget(
       const cmd = input["command"] as string | undefined;
       if (!cmd) break;
       if (!touches(cmd)) break;
-      if (!isSafeForJustBash(cmd)) {
-        log(`unsafe bash skipped: ${cmd.slice(0, 100)}`);
-        return null; // let real bash handle it
-      }
-      return { tool: "Bash", value: cmd };
+      // Return target regardless of safety — unsafe case handled in main()
+      return { tool: "Bash", value: cmd, unsafe: !isSafeForJustBash(cmd) };
     }
   }
   return null;
@@ -173,7 +172,31 @@ async function main(): Promise<void> {
 
     let result: string;
 
-    if (target.tool === "Bash") {
+    if (target.tool === "Bash" && target.unsafe) {
+      // Command contains external binaries (python, node, etc.) that require
+      // a real FUSE mount. Prompt the agent to install the Deeplake CLI.
+      result = [
+        `⚠️  This command requires advanced filesystem support not available in the lightweight plugin.`,
+        ``,
+        `The command contains external binaries (python, node, etc.) that need a real FUSE mount`,
+        `to access the Deeplake virtual filesystem at: ${memoryPath}`,
+        ``,
+        `To enable full FUSE + WASM support, install the Deeplake CLI:`,
+        ``,
+        `  curl -fsSL https://deeplake.ai/install.sh | bash`,
+        ``,
+        `Then mount the filesystem:`,
+        ``,
+        `  deeplake mount ${memoryPath}`,
+        ``,
+        `Alternatively, rewrite the command using only basic tools (cat, ls, grep, find, wc,`,
+        `head, tail, sort, uniq) which are supported natively by this lightweight plugin.`,
+      ].join("\n");
+      log(`unsafe bash blocked, prompted CLI install`);
+      console.log(JSON.stringify({ result }));
+      process.exit(2);
+      return;
+    } else if (target.tool === "Bash") {
       const bash = new Bash({
         fs,
         cwd: "/",
