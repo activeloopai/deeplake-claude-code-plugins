@@ -23,6 +23,7 @@ const SAFE_BUILTINS = new Set([
   "cat", "ls", "echo", "grep", "find", "wc", "head", "tail", "sort",
   "uniq", "cut", "mkdir", "rm", "cp", "mv", "touch", "pwd", "printf",
   "tr", "basename", "dirname", "date", "test", "true", "false", "cd",
+  "for", "while", "do", "done", "if", "then", "else", "fi", "case", "esac",
 ]);
 
 function isSafe(cmd: string): boolean {
@@ -42,7 +43,7 @@ interface PreToolUseInput {
 }
 
 function touchesMemory(p: string): boolean {
-  return p.startsWith(MEMORY_PATH) || p.startsWith(TILDE_PATH) || p.includes(HOME_VAR_PATH);
+  return p.includes(MEMORY_PATH) || p.includes(TILDE_PATH) || p.includes(HOME_VAR_PATH);
 }
 
 function rewritePaths(cmd: string): string {

@@ -1,36 +1,34 @@
 #!/usr/bin/env node
 
-import { appendFileSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { readStdin } from "../utils/stdin.js";
-
-const MEMORY_DIR = process.env.DEEPLAKE_MEMORY_DIR ?? join(homedir(), ".deeplake", "memory");
+import { loadConfig } from "../config.js";
+import { DeeplakeApi } from "../deeplake-api.js";
+import { DeeplakeFs } from "../shell/deeplake-fs.js";
 import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("capture", msg);
 
 interface HookInput {
   session_id: string;
-  // UserPromptSubmit
   prompt?: string;
-  // PostToolUse
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   tool_response?: Record<string, unknown>;
-  // Stop
   last_assistant_message?: string;
-  // Common
   hook_event_name?: string;
 }
 
 async function main(): Promise<void> {
   const input = await readStdin<HookInput>();
-  if (!existsSync(MEMORY_DIR)) mkdirSync(MEMORY_DIR, { recursive: true });
+  const config = loadConfig();
+  if (!config) { log("no config"); return; }
+
+  const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
+  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
+  const fs = await DeeplakeFs.create(api, table, "/");
 
   let entry: Record<string, unknown>;
 
   if (input.prompt !== undefined) {
-    // UserPromptSubmit
     log(`user session=${input.session_id}`);
     entry = {
       id: crypto.randomUUID(),
@@ -40,7 +38,6 @@ async function main(): Promise<void> {
       timestamp: new Date().toISOString(),
     };
   } else if (input.tool_name !== undefined) {
-    // PostToolUse
     log(`tool=${input.tool_name} session=${input.session_id}`);
     entry = {
       id: crypto.randomUUID(),
@@ -52,7 +49,6 @@ async function main(): Promise<void> {
       timestamp: new Date().toISOString(),
     };
   } else if (input.last_assistant_message !== undefined) {
-    // Stop
     log(`assistant session=${input.session_id}`);
     entry = {
       id: crypto.randomUUID(),
@@ -62,13 +58,14 @@ async function main(): Promise<void> {
       timestamp: new Date().toISOString(),
     };
   } else {
-    log(`unknown event, skipping`);
+    log("unknown event, skipping");
     return;
   }
 
-  const file = join(MEMORY_DIR, `session_${input.session_id}.jsonl`);
-  appendFileSync(file, JSON.stringify(entry) + "\n");
-  log("capture ok");
+  const filename = `session_${input.session_id}.jsonl`;
+  await fs.appendFile(`/${filename}`, JSON.stringify(entry) + "\n");
+  await fs.flush();
+  log("capture ok → cloud");
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });

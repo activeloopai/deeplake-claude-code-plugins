@@ -37,8 +37,9 @@ export function createGrepCommand(
 
     // Resolve all target paths against cwd
     const targets = targetArgs.length > 0
-      ? targetArgs.map(t => ctx.fs.resolvePath(ctx.cwd, t))
+      ? targetArgs.map(t => ctx.fs.resolvePath(ctx.cwd, String(t))).filter(Boolean)
       : [ctx.cwd];
+    if (targets.length === 0) return { stdout: "", stderr: "", exitCode: 1 };
 
     const mount = fs.mountPoint;
 
