@@ -25,9 +25,7 @@ function parentOf(p: string): string {
   return i <= 0 ? "/" : p.slice(0, i);
 }
 
-function esc(s: string): string {
-  return s.replace(/'/g, "''");
-}
+import { sqlStr as esc } from "../utils/sql.js";
 
 export function isText(buf: Buffer): boolean {
   const end = Math.min(buf.length, TEXT_DETECT_BYTES);

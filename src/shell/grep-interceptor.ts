@@ -3,7 +3,7 @@ import { defineCommand } from "just-bash";
 import yargsParser from "yargs-parser";
 import type { DeeplakeFs } from "./deeplake-fs.js";
 
-const esc = (s: string) => s.replace(/'/g, "''");
+import { sqlStr as esc, sqlLike } from "../utils/sql.js";
 
 /**
  * Custom grep command for just-bash that replaces the built-in when the target
@@ -66,7 +66,7 @@ export function createGrepCommand(
       const col = ignoreCase ? `LOWER(content_text)` : `content_text`;
       const pat = ignoreCase ? pattern.toLowerCase() : pattern;
       const ilike = await client.query(
-        `SELECT path FROM "${table}" WHERE ${col} LIKE '%${esc(pat)}%' LIMIT 50`
+        `SELECT path FROM "${table}" WHERE ${col} LIKE '%${sqlLike(pat)}%' LIMIT 50`
       );
       candidates = ilike.map(r => r["path"] as string).filter(Boolean);
     }
