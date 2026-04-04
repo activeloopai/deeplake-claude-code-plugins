@@ -70,7 +70,7 @@ export function createGrepCommand(
 
     // Narrow candidates to those under the requested targets
     candidates = candidates.filter(c =>
-      targets.some(t => c === t || c.startsWith(t + "/"))
+      targets.some(t => t === "/" || c === t || c.startsWith(t + "/"))
     );
 
     // ── Phase 2: prefetch into content cache (parallel) ─────────────────────

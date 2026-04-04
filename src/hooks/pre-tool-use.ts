@@ -48,7 +48,10 @@ const SAFE_BUILTINS = new Set([
 ]);
 
 function isSafe(cmd: string): boolean {
-  const stages = cmd.split(/\||;|&&|\|\|/);
+  // Strip quoted strings before splitting on pipes — prevents splitting
+  // inside jq expressions like 'select(.type) | .content'
+  const stripped = cmd.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
+  const stages = stripped.split(/\||;|&&|\|\|/);
   for (const stage of stages) {
     const firstToken = stage.trim().split(/\s+/)[0] ?? "";
     if (firstToken && !SAFE_BUILTINS.has(firstToken)) return false;
