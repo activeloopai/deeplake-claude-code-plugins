@@ -1,31 +1,30 @@
 import { build } from "esbuild";
 import { chmodSync } from "node:fs";
 
-const entryPoints = [
-  "dist/hooks/session-start.js",
-  "dist/hooks/capture.js",
-  "dist/hooks/pre-tool-use.js",
-<<<<<<< HEAD
-  "dist/hooks/post-tool-use.js",
-  "dist/shell/deeplake-shell.js",
-=======
->>>>>>> main
+const hooks = [
+  { entry: "dist/src/hooks/session-start.js", out: "session-start" },
+  { entry: "dist/src/hooks/capture.js", out: "capture" },
+  { entry: "dist/src/hooks/pre-tool-use.js", out: "pre-tool-use" },
+  { entry: "dist/src/hooks/post-tool-use.js", out: "post-tool-use" },
 ];
 
+const shell = [
+  { entry: "dist/src/shell/deeplake-shell.js", out: "shell/deeplake-shell" },
+];
+
+const all = [...hooks, ...shell];
+
 await build({
-  entryPoints,
+  entryPoints: Object.fromEntries(all.map(h => [h.out, h.entry])),
   bundle: true,
   platform: "node",
   format: "esm",
   outdir: "bundle",
-  // deeplake SDK ships its own WASM binary — keep it external so
-  // esbuild doesn't try to inline the 63MB .wasm file
-  external: ["node:*", "deeplake"],
+  external: ["node:*", "deeplake", "node-liblzma", "@mongodb-js/zstd"],
 });
 
-for (const entry of entryPoints) {
-  const filename = entry.split("/").pop();
-  chmodSync(`bundle/${filename}`, 0o755);
+for (const h of all) {
+  chmodSync(`bundle/${h.out}.js`, 0o755);
 }
 
-console.log(`Bundled ${entryPoints.length} entries into bundle/`);
+console.log(`Bundled ${all.length} entries into bundle/`);

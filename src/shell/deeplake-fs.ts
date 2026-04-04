@@ -2,8 +2,12 @@ import { basename, posix } from "node:path";
 import type { DeeplakeApi } from "../deeplake-api.js";
 import type {
   IFileSystem, FsStat, MkdirOptions, RmOptions, CpOptions,
-  FileContent, ReadFileOptions, WriteFileOptions, BufferEncoding, DirentEntry,
+  FileContent, BufferEncoding,
 } from "just-bash";
+
+interface ReadFileOptions { encoding?: BufferEncoding }
+interface WriteFileOptions { encoding?: BufferEncoding }
+interface DirentEntry { name: string; isFile: boolean; isDirectory: boolean; isSymbolicLink: boolean }
 
 // ── constants ─────────────────────────────────────────────────────────────────
 const BATCH_SIZE = 10;

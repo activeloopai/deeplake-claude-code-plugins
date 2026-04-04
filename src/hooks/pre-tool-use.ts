@@ -1,15 +1,24 @@
 #!/usr/bin/env node
 
-import { appendFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
 import { readStdin } from "../utils/stdin.js";
 
-const MEMORY_DIR = process.env.DEEPLAKE_MEMORY_DIR ?? join(homedir(), ".deeplake", "memory");
 const LOG = join(homedir(), ".deeplake", "hook-debug.log");
 function log(msg: string) {
   appendFileSync(LOG, `${new Date().toISOString()} [pre] ${msg}\n`);
 }
+
+const MEMORY_PATH = join(homedir(), ".deeplake", "memory");
+const TILDE_PATH = "~/.deeplake/memory";
+
+const __bundleDir = dirname(fileURLToPath(import.meta.url));
+const SHELL_BUNDLE = existsSync(join(__bundleDir, "shell", "deeplake-shell.js"))
+  ? join(__bundleDir, "shell", "deeplake-shell.js")
+  : join(__bundleDir, "..", "shell", "deeplake-shell.js");
 
 interface PreToolUseInput {
   session_id: string;
@@ -18,30 +27,40 @@ interface PreToolUseInput {
   tool_use_id: string;
 }
 
-function isMemorySearch(toolName: string, toolInput: Record<string, unknown>): string | null {
-  const mp = MEMORY_DIR;
-  const tilde = "~/.deeplake/memory";
+function getShellCommand(toolName: string, toolInput: Record<string, unknown>): string | null {
   switch (toolName) {
     case "Grep": {
       const p = toolInput.path as string | undefined;
-      if (p && (p.startsWith(mp) || p.startsWith(tilde))) {
-        return (toolInput.pattern as string) ?? "";
+      if (p && (p.startsWith(MEMORY_PATH) || p.startsWith(TILDE_PATH))) {
+        const pattern = toolInput.pattern as string ?? "";
+        const flags: string[] = ["-r"];
+        if (toolInput["-i"]) flags.push("-i");
+        if (toolInput["-n"]) flags.push("-n");
+        return `grep ${flags.join(" ")} '${pattern}' /`;
       }
       break;
     }
     case "Read": {
       const fp = toolInput.file_path as string | undefined;
-      if (fp && (fp.startsWith(mp) || fp.startsWith(tilde))) {
-        return fp;
+      if (fp && (fp.startsWith(MEMORY_PATH) || fp.startsWith(TILDE_PATH))) {
+        const virtualPath = fp.replace(MEMORY_PATH, "").replace(homedir() + "/.deeplake/memory", "") || "/";
+        return `cat ${virtualPath}`;
       }
       break;
     }
     case "Bash": {
       const cmd = toolInput.command as string | undefined;
-      if (cmd && (cmd.includes(mp) || cmd.includes(tilde)) &&
-          (cmd.includes("grep") || cmd.includes("cat") || cmd.includes("ls") || cmd.includes("find"))) {
-        const grepMatch = cmd.match(/grep\s+(?:-[a-zA-Z]*\s+)*['"]?([^'">\s]+)/);
-        return grepMatch?.[1] ?? "";
+      if (cmd && (cmd.includes(MEMORY_PATH) || cmd.includes(TILDE_PATH))) {
+        return cmd
+          .replace(new RegExp(MEMORY_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?", "g"), "/")
+          .replace(/~\/.deeplake\/memory\/?/g, "/");
+      }
+      break;
+    }
+    case "Glob": {
+      const p = toolInput.path as string | undefined;
+      if (p && (p.startsWith(MEMORY_PATH) || p.startsWith(TILDE_PATH))) {
+        return `ls /`;
       }
       break;
     }
@@ -49,57 +68,31 @@ function isMemorySearch(toolName: string, toolInput: Record<string, unknown>): s
   return null;
 }
 
-function searchMemory(query: string, limit = 20): { path: string; tool: string; snippet: string; timestamp: string }[] {
-  if (!existsSync(MEMORY_DIR)) return [];
-  const results: { path: string; tool: string; snippet: string; timestamp: string }[] = [];
-  const q = query.toLowerCase();
-
-  const files = readdirSync(MEMORY_DIR).filter((f) => f.endsWith(".jsonl"));
-  for (const file of files) {
-    const lines = readFileSync(join(MEMORY_DIR, file), "utf-8").split("\n").filter(Boolean);
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line);
-        const searchable = (entry.content ?? entry.tool_input ?? "").toLowerCase();
-        const label = entry.type ?? entry.tool_name ?? "";
-        if (searchable.includes(q) || label.toLowerCase().includes(q)) {
-          results.push({
-            path: file,
-            tool: label,
-            snippet: (entry.content ?? entry.tool_input ?? "").slice(0, 500),
-            timestamp: entry.timestamp ?? "",
-          });
-          if (results.length >= limit) return results;
-        }
-      } catch { /* skip */ }
-    }
-  }
-  return results;
-}
-
 async function main(): Promise<void> {
   const input = await readStdin<PreToolUseInput>();
   log(`hook fired: tool=${input.tool_name} input=${JSON.stringify(input.tool_input).slice(0, 200)}`);
 
-  const query = isMemorySearch(input.tool_name, input.tool_input);
-  if (!query) return; // Not a memory search, let tool proceed normally
+  const shellCmd = getShellCommand(input.tool_name, input.tool_input);
+  if (!shellCmd) return;
 
-  log(`search intercepted: tool=${input.tool_name} query=${query}`);
+  log(`intercepted → rewriting to shell: ${shellCmd}`);
 
-  const results = searchMemory(query);
-  log(`search found ${results.length} results`);
+  // Rewrite the tool input to run through the virtual shell instead
+  const rewrittenCommand = `node "${SHELL_BUNDLE}" -c "${shellCmd.replace(/"/g, '\\"')}"`;
 
-  if (results.length === 0) {
-    console.log(JSON.stringify({ result: "No memories found matching: " + query }));
-    process.exit(2);
-  }
+  const output: Record<string, unknown> = {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      updatedInput: {
+        command: rewrittenCommand,
+        description: `[DeepLake virtual FS] ${shellCmd}`,
+      },
+    },
+  };
 
-  const formatted = results
-    .map((r, i) => `[${i + 1}] ${r.tool} at ${r.timestamp}\n${r.snippet}`)
-    .join("\n\n");
-
-  console.log(JSON.stringify({ result: formatted }));
-  process.exit(2); // Exit 2 = hook handled the tool call
+  log(`rewritten: ${rewrittenCommand}`);
+  console.log(JSON.stringify(output));
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
