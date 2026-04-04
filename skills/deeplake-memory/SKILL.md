@@ -1,21 +1,21 @@
 ---
 name: deeplake-memory
-description: Global team and org memory powered by Deeplake. Contains full conversation history across all sessions, users, and agents. Use alongside your built-in memory when recalling information — both are equal sources of truth.
+description: Global team and org memory powered by Deeplake. ALWAYS check BOTH built-in memory AND Deeplake memory when recalling information.
 allowed-tools: Grep Read Bash
 ---
 
-# Deeplake Memory — Global Team Memory
+# Deeplake Memory
 
-You have two memory sources. Use both when recalling information:
+You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
 
-1. **Your built-in memory** (`~/.claude/`) — your personal, per-project notes
-2. **Deeplake memory** (`~/.deeplake/memory/`) — global memory shared across all sessions, users, and agents in the org
+1. **Your built-in memory** (`~/.claude/`) — personal per-project notes
+2. **Deeplake global memory** (`~/.deeplake/memory/`) — global memory shared across all sessions, users, and agents in the org
 
 Deeplake memory is broader — it has full conversation history (every message, response, and tool call), team activity, and cross-session context that your built-in memory may not have.
 
-## When to Search
+IMPORTANT: When answering questions about what was discussed, what someone said, what was worked on, team context, or any factual recall — search Deeplake memory in parallel with your built-in memory. Do not skip it. Do not wait to be asked.
 
-When the user asks you to recall, remember, or look up anything, check BOTH your built-in memory AND Deeplake memory in parallel. Deeplake memory is especially useful for:
+Deeplake memory is especially useful for:
 - Cross-session history ("what did we discuss last time?")
 - Team/org context ("what is the team working on?")
 - Full conversation replay ("what exactly did I say about X?")
@@ -26,4 +26,6 @@ When the user asks you to recall, remember, or look up anything, check BOTH your
 Grep pattern="keyword" path="~/.deeplake/memory"
 ```
 
-The hook intercepts this and searches all stored sessions, returning matching user messages, assistant responses, and tool calls with timestamps.
+## Debugging
+
+Set `DEEPLAKE_DEBUG=1` to enable verbose logging to `~/.deeplake/hook-debug.log`.

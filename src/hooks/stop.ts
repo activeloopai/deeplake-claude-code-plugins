@@ -6,10 +6,8 @@ import { homedir } from "node:os";
 import { readStdin } from "../utils/stdin.js";
 
 const MEMORY_DIR = process.env.DEEPLAKE_MEMORY_DIR ?? join(homedir(), ".deeplake", "memory");
-const LOG = join(homedir(), ".deeplake", "hook-debug.log");
-function log(msg: string) {
-  appendFileSync(LOG, `${new Date().toISOString()} [stop] ${msg}\n`);
-}
+import { log as _log } from "../utils/debug.js";
+const log = (msg: string) => _log("stop", msg);
 
 interface StopInput {
   session_id: string;

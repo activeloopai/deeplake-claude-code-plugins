@@ -7,10 +7,8 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { readStdin } from "../utils/stdin.js";
 
-const LOG = join(homedir(), ".deeplake", "hook-debug.log");
-function log(msg: string) {
-  appendFileSync(LOG, `${new Date().toISOString()} [pre] ${msg}\n`);
-}
+import { log as _log } from "../utils/debug.js";
+const log = (msg: string) => _log("pre", msg);
 
 const MEMORY_PATH = join(homedir(), ".deeplake", "memory");
 const TILDE_PATH = "~/.deeplake/memory";
