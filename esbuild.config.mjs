@@ -2,6 +2,7 @@ import { build } from "esbuild";
 import { chmodSync } from "node:fs";
 
 const entryPoints = [
+  "dist/hooks/pre-tool-use.js",
   "dist/hooks/post-tool-use.js",
   "dist/shell/deeplake-shell.js",
 ];

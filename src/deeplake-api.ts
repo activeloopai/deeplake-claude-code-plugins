@@ -1,6 +1,56 @@
-import { basename } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
-const esc = (s: string) => s.replace(/'/g, "''");
+// ── Local file-based API (used by PostToolUse hook) ───────────────────────────
+
+export interface SearchResult {
+  path: string;
+  op: string;
+  snippet: string;
+  timestamp: string;
+}
+
+export class DeepLakeApi {
+  constructor(private memoryDir: string) {
+    if (!existsSync(memoryDir)) {
+      mkdirSync(memoryDir, { recursive: true });
+    }
+  }
+
+  async logOp(sessionId: string, toolName: string, op: string, content: string): Promise<void> {
+    const entry = {
+      id: crypto.randomUUID(),
+      session_id: sessionId,
+      path: toolName,
+      op,
+      content,
+      timestamp: new Date().toISOString(),
+    };
+    const file = join(this.memoryDir, `session_${sessionId}.jsonl`);
+    appendFileSync(file, JSON.stringify(entry) + "\n");
+  }
+
+  async search(query: string, limit = 20): Promise<SearchResult[]> {
+    const results: SearchResult[] = [];
+    const q = query.toLowerCase();
+    const files = readdirSync(this.memoryDir).filter((f) => f.endsWith(".jsonl"));
+    for (const file of files) {
+      const lines = readFileSync(join(this.memoryDir, file), "utf-8").split("\n").filter(Boolean);
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line);
+          if (entry.content?.toLowerCase().includes(q) || entry.path?.toLowerCase().includes(q)) {
+            results.push({ path: entry.path, op: entry.op, snippet: String(entry.content).slice(0, 500), timestamp: entry.timestamp });
+            if (results.length >= limit) return results;
+          }
+        } catch { /* skip malformed lines */ }
+      }
+    }
+    return results;
+  }
+}
+
+// ── HTTP SQL client (used by DeeplakeFs / virtual shell) ──────────────────────
 
 export class DeeplakeApi {
   constructor(
@@ -30,18 +80,6 @@ export class DeeplakeApi {
     if (!raw?.rows || !raw?.columns) return [];
     return raw.rows.map(row =>
       Object.fromEntries(raw.columns!.map((col, i) => [col, row[i]]))
-    );
-  }
-
-  /** Record a file operation (used by the PostToolUse hook). */
-  async logOp(sessionId: string, path: string, op: string, content: string): Promise<void> {
-    const filename = basename(path);
-    const sizeBytes = Buffer.byteLength(content, "utf-8");
-    const mime = filename.endsWith(".json") ? "application/json" : "text/plain";
-    const meta = JSON.stringify({ session_id: sessionId, op, timestamp: new Date().toISOString() });
-    await this.query(
-      `INSERT INTO "${this.tableName}" (path, filename, content, content_text, mime_type, size_bytes) ` +
-      `VALUES ('${esc(path)}', '${esc(filename)}', '${esc(content)}', '${esc(meta)}', '${esc(mime)}', ${sizeBytes})`
     );
   }
 }

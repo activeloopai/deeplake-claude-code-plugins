@@ -45,7 +45,7 @@ export function extractMemoryOp(
     }
     case "Bash": {
       const cmd = toolInput.command as string | undefined;
-      if (cmd && cmd.includes(mp)) return { path: mp, op: "bash" };
+      if (cmd && (cmd.includes(mp) || cmd.includes("~/.deeplake/memory"))) return { path: mp, op: "bash" };
       break;
     }
   }
