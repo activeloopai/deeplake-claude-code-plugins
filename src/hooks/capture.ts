@@ -7,7 +7,10 @@ import { readStdin } from "../utils/stdin.js";
 
 const MEMORY_DIR = process.env.DEEPLAKE_MEMORY_DIR ?? join(homedir(), ".deeplake", "memory");
 const LOG = join(homedir(), ".deeplake", "hook-debug.log");
+const DEBUG = process.env.DEEPLAKE_DEBUG === "1";
+const CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
 function log(msg: string) {
+  if (!DEBUG) return;
   appendFileSync(LOG, `${new Date().toISOString()} [capture] ${msg}\n`);
 }
 
@@ -26,6 +29,7 @@ interface HookInput {
 }
 
 async function main(): Promise<void> {
+  if (!CAPTURE) return; // opted out
   const input = await readStdin<HookInput>();
   if (!existsSync(MEMORY_DIR)) mkdirSync(MEMORY_DIR, { recursive: true });
 

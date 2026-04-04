@@ -25,7 +25,7 @@ import { createInterface } from "node:readline";
 import { Bash } from "just-bash";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { DeeplakeFs } from "./deeplake-fs.js";
+import { DeeplakeFS } from "./deeplake-fs.js";
 import { createGrepCommand } from "./grep-interceptor.js";
 
 async function main(): Promise<void> {
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
 
   process.stderr.write(`Mounting deeplake://${config.workspaceId}/${table} at ${mount} ...\n`);
 
-  const fs = await DeeplakeFs.create(client, table, mount);
+  const fs = await DeeplakeFS.create(client, table, mount);
   const fileCount = fs.getAllPaths().filter(p => !!p).length;
   process.stderr.write(`Ready. ${fileCount} files loaded.\n`);
 

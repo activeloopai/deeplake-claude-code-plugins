@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createGrepCommand } from "../src/shell/grep-interceptor.js";
-import { DeeplakeFs } from "../src/shell/deeplake-fs.js";
+import { DeeplakeFS } from "../src/shell/deeplake-fs.js";
 
 // ── Minimal mocks ─────────────────────────────────────────────────────────────
 function makeClient(queryResults: Record<string, string>[] = []) {
@@ -16,14 +16,14 @@ function makeClient(queryResults: Record<string, string>[] = []) {
 
 async function makeFs(files: Record<string, string> = {}) {
   const client = makeClient();
-  const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+  const fs = await DeeplakeFS.create(client as never, "test", "/memory");
   for (const [path, content] of Object.entries(files)) {
     await fs.writeFile(path, content);
   }
   return { fs, client };
 }
 
-function makeCtx(fs: DeeplakeFs, cwd = "/memory") {
+function makeCtx(fs: DeeplakeFS, cwd = "/memory") {
   return { fs, cwd, env: new Map<string, string>(), stdin: "" };
 }
 
@@ -43,7 +43,7 @@ describe("grep interceptor", () => {
 
     const client = makeClient([{ path: "/memory/a.txt" }]);
     // Re-create fs with this client so getField works for readFile
-    const fs2 = await DeeplakeFs.create(client as never, "test", "/memory");
+    const fs2 = await DeeplakeFS.create(client as never, "test", "/memory");
     await fs2.writeFile("/memory/a.txt", "hello world");
     await fs2.writeFile("/memory/b.txt", "goodbye");
 
@@ -63,7 +63,7 @@ describe("grep interceptor", () => {
       .mockResolvedValueOnce([])                          // BM25 — no results
       .mockResolvedValueOnce([{ path: "/memory/a.txt" }]); // ILIKE — hit
 
-    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    const fs = await DeeplakeFS.create(client as never, "test", "/memory");
     await fs.writeFile("/memory/a.txt", "hello world");
     client.query.mockClear(); // clear bootstrap + write calls
     // Now set up for the grep calls
@@ -82,7 +82,7 @@ describe("grep interceptor", () => {
 
   it("returns exitCode=1 when no matches found", async () => {
     const client = makeClient([]);
-    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    const fs = await DeeplakeFS.create(client as never, "test", "/memory");
     const cmd = createGrepCommand(client as never, fs, "test");
     const result = await cmd.execute(["zzznomatch", "/memory"], makeCtx(fs) as never);
     expect(result.exitCode).toBe(1);
@@ -91,7 +91,7 @@ describe("grep interceptor", () => {
 
   it("respects -i (ignore-case) flag", async () => {
     const client = makeClient([{ path: "/memory/a.txt" }]);
-    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    const fs = await DeeplakeFS.create(client as never, "test", "/memory");
     await fs.writeFile("/memory/a.txt", "Hello World");
 
     const cmd = createGrepCommand(client as never, fs, "test");
@@ -106,7 +106,7 @@ describe("grep interceptor", () => {
       { path: "/memory/a.txt" },
       { path: "/memory/b.txt" },
     ]);
-    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    const fs = await DeeplakeFS.create(client as never, "test", "/memory");
     await fs.writeFile("/memory/a.txt", "match here\nmatch again");
     await fs.writeFile("/memory/b.txt", "also match");
 
@@ -122,7 +122,7 @@ describe("grep interceptor", () => {
 
   it("respects -v (invert-match) flag", async () => {
     const client = makeClient([{ path: "/memory/a.txt" }]);
-    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    const fs = await DeeplakeFS.create(client as never, "test", "/memory");
     await fs.writeFile("/memory/a.txt", "keep this\nremove match\nkeep this too");
 
     const cmd = createGrepCommand(client as never, fs, "test");
@@ -134,7 +134,7 @@ describe("grep interceptor", () => {
 
   it("prefetches candidates into fs content cache before matching", async () => {
     const client = makeClient([{ path: "/memory/a.txt" }]);
-    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    const fs = await DeeplakeFS.create(client as never, "test", "/memory");
     await fs.writeFile("/memory/a.txt", "cached content");
 
     const readFileSpy = vi.spyOn(fs, "readFile");

@@ -66,8 +66,8 @@ interface PendingRow {
   contentText: string; mimeType: string; sizeBytes: number;
 }
 
-// ── DeeplakeFs ────────────────────────────────────────────────────────────────
-export class DeeplakeFs implements IFileSystem {
+// ── DeeplakeFS ────────────────────────────────────────────────────────────────
+export class DeeplakeFS implements IFileSystem {
   // path → Buffer (content) or null (exists but not fetched yet)
   private files = new Map<string, Buffer | null>();
   private meta  = new Map<string, FileMeta>();
@@ -92,12 +92,14 @@ export class DeeplakeFs implements IFileSystem {
     client: DeeplakeApi,
     table: string,
     mount = "/memory",
-  ): Promise<DeeplakeFs> {
+    /** Pre-loaded rows from SessionStart cache — skips DB query when provided. */
+    cachedRows?: Record<string, unknown>[],
+  ): Promise<DeeplakeFS> {
     const safeTable = sqlIdent(table); // validates table name is alphanumeric+_
-    const fs = new DeeplakeFs(client, safeTable, mount);
-    // Bootstrap: SQL is reliable and returns path + metadata without large content
+    const fs = new DeeplakeFS(client, safeTable, mount);
+    // Bootstrap: use cache from SessionStart if available, otherwise query DB.
     try {
-      const rows = await client.query(
+      const rows = cachedRows ?? await client.query(
         `SELECT path, size_bytes, mime_type FROM "${safeTable}" ORDER BY path`
       );
       for (const row of rows) {

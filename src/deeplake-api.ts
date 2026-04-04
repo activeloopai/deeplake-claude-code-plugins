@@ -10,7 +10,7 @@ export interface SearchResult {
   timestamp: string;
 }
 
-export class DeepLakeApi {
+export class DeeplakeLocalStore {
   constructor(private memoryDir: string) {
     if (!existsSync(memoryDir)) {
       mkdirSync(memoryDir, { recursive: true });

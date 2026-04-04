@@ -2,16 +2,21 @@
 /**
  * PreToolUse hook — intercepts tool calls targeting the Deeplake virtual filesystem.
  *
- * For safe commands (no external binaries) touching DEEPLAKE_MEMORY_PATH:
- *   - Structured tools (Read, Write, Edit, Glob, Grep): execute via DeeplakeFs directly
- *   - Bash tool: run through just-bash + DeeplakeFs if command is safe
+ * For safe commands touching DEEPLAKE_MEMORY_PATH:
+ *   - Structured tools (Read, Write, Edit, Glob, Grep): execute via DeeplakeFS directly
+ *   - Bash tool: run through just-bash + DeeplakeFS if command uses only safe builtins
  *   Returns result to Claude and blocks the real tool (exit 2).
  *
- * For unsafe Bash commands (python, node, etc.) or paths outside memory: exit 0,
- * let the real tool run normally.
+ * For unsafe Bash (python, node, etc.) or paths outside memory: exit 0,
+ * let the real tool run normally (or show CLI install prompt).
+ *
+ * Bootstrap cache: SessionStart writes ~/.deeplake/.cache/bootstrap-{sessionId}.json
+ * so this hook avoids a DB round-trip on every tool call.
+ *
+ * Set DEEPLAKE_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log.
  */
 
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -19,20 +24,35 @@ import { Bash } from "just-bash";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { DeeplakeFs } from "../shell/deeplake-fs.js";
+import { DeeplakeFS } from "../shell/deeplake-fs.js";
 
+const DEBUG = process.env.DEEPLAKE_DEBUG === "1";
+const CACHE_DIR = join(homedir(), ".deeplake", ".cache");
 const LOG = join(homedir(), ".deeplake", "hook-debug.log");
+
 function log(msg: string) {
+  if (!DEBUG) return;
   appendFileSync(LOG, `${new Date().toISOString()} [pre] ${msg}\n`);
 }
 
-// ── Safe-command detection ────────────────────────────────────────────────────
-// Any command containing these external binaries cannot run in just-bash.
-const UNSAFE_BINARIES =
-  /\b(python3?|node|ruby|perl|php|java|cargo|make|npm|yarn|pip3?|curl|wget|ssh|docker|kubectl|go\s+run|Rscript)\b/;
+// ── Safe-command detection (allowlist) ───────────────────────────────────────
+// Only commands whose every pipeline stage starts with one of these builtins
+// can run inside just-bash. Anything else needs real bash + FUSE.
+const SAFE_BUILTINS = new Set([
+  "cat", "ls", "echo", "grep", "find", "wc", "head", "tail", "sort",
+  "uniq", "cut", "mkdir", "rm", "cp", "mv", "touch", "pwd", "printf",
+  "tr", "basename", "dirname", "date", "test", "[", "true", "false",
+  "sed", "awk", "read", "export", "cd",
+]);
 
 function isSafeForJustBash(cmd: string): boolean {
-  return !UNSAFE_BINARIES.test(cmd);
+  // Split on pipe, semicolon, &&, || to get individual command stages
+  const stages = cmd.split(/\||;|&&|\|\|/);
+  for (const stage of stages) {
+    const firstToken = stage.trim().split(/\s+/)[0] ?? "";
+    if (firstToken && !SAFE_BUILTINS.has(firstToken)) return false;
+  }
+  return true;
 }
 
 // ── Shell escaping ────────────────────────────────────────────────────────────
@@ -210,7 +230,17 @@ async function main(): Promise<void> {
 
   try {
     const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
-    const fs = await DeeplakeFs.create(api, table, "/");
+
+    // Use bootstrap cache written by SessionStart to avoid a DB round-trip here.
+    const cachePath = join(CACHE_DIR, `bootstrap-${input.session_id}.json`);
+    let cachedRows: Record<string, unknown>[] | undefined;
+    if (existsSync(cachePath)) {
+      try {
+        const { rows, ts } = JSON.parse(readFileSync(cachePath, "utf-8")) as { rows: Record<string, unknown>[]; ts: number };
+        if (Date.now() - ts < 60_000) cachedRows = rows; // 60s TTL
+      } catch { /* stale or corrupt cache — fall through to DB */ }
+    }
+    const fs = await DeeplakeFS.create(api, table, "/", cachedRows);
 
     let result: string;
 

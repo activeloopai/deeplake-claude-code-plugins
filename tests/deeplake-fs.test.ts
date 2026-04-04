@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { DeeplakeFs, isText, guessMime } from "../src/shell/deeplake-fs.js";
+import { DeeplakeFS, isText, guessMime } from "../src/shell/deeplake-fs.js";
 
 // ── Mock ManagedClient ────────────────────────────────────────────────────────
 type Row = {
@@ -96,7 +96,7 @@ async function makeFs(seed: Record<string, string | Buffer> = {}) {
     bufSeed[k] = typeof v === "string" ? Buffer.from(v, "utf-8") : v;
   }
   const client = makeClient(bufSeed);
-  const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+  const fs = await DeeplakeFS.create(client as never, "test", "/memory");
   return { fs, client };
 }
 
@@ -122,7 +122,7 @@ describe("guessMime", () => {
 });
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
-describe("DeeplakeFs bootstrap", () => {
+describe("DeeplakeFS bootstrap", () => {
   it("populates files and dirs from getColumnData", async () => {
     const { fs } = await makeFs({ "/memory/notes.txt": "hello" });
     expect(await fs.exists("/memory/notes.txt")).toBe(true);

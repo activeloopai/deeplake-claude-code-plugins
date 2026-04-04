@@ -1,7 +1,7 @@
 import type { DeeplakeApi } from "../deeplake-api.js";
 import { defineCommand } from "just-bash";
 import yargsParser from "yargs-parser";
-import type { DeeplakeFs } from "./deeplake-fs.js";
+import type { DeeplakeFS } from "./deeplake-fs.js";
 import { sqlStr, sqlLike, sqlIdent } from "../utils/sql.js";
 
 /**
@@ -17,7 +17,7 @@ import { sqlStr, sqlLike, sqlIdent } from "../utils/sql.js";
  */
 export function createGrepCommand(
   client: DeeplakeApi,
-  fs: DeeplakeFs,
+  fs: DeeplakeFS,
   table: string,
 ) {
   return defineCommand("grep", async (args, ctx) => {
