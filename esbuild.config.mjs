@@ -12,7 +12,11 @@ const shell = [
   { entry: "dist/src/shell/deeplake-shell.js", out: "shell/deeplake-shell" },
 ];
 
-const all = [...hooks, ...shell];
+const commands = [
+  { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
+];
+
+const all = [...hooks, ...shell, ...commands];
 
 await build({
   entryPoints: Object.fromEntries(all.map(h => [h.out, h.entry])),

@@ -6,8 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/session-start.js\"",
-            "timeout": 5
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/session-start.js\""
           }
         ]
       }

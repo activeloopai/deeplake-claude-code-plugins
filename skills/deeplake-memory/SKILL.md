@@ -26,12 +26,14 @@ Deeplake memory is especially useful for:
 Grep pattern="keyword" path="~/.deeplake/memory"
 ```
 
-## Parsing JSONL Files
+## Organization Management
 
-Deeplake memory files are JSONL. Use `jq` to parse them, NOT python3 or node. Example:
-```
-cat ~/.deeplake/memory/file.jsonl | jq -r 'select(.type=="user") | .message.content'
-```
+The auth command path is injected at session start. Use the exact path from the session context. Commands:
+- `org list` — list organizations
+- `org switch <name-or-id>` — switch organization
+- `invite <email> <ADMIN|WRITE|READ>` — invite member
+- `members` — list members
+- `login` — re-login
 
 ## Limits
 
