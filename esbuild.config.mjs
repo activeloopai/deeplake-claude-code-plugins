@@ -2,8 +2,9 @@ import { build } from "esbuild";
 import { chmodSync } from "node:fs";
 
 const entryPoints = [
+  "dist/hooks/session-start.js",
+  "dist/hooks/capture.js",
   "dist/hooks/pre-tool-use.js",
-  "dist/hooks/post-tool-use.js",
 ];
 
 await build({

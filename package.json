@@ -1,7 +1,7 @@
 {
   "name": "deeplake-claude-code-plugins",
   "version": "0.1.0",
-  "description": "Claude Code plugin for DeepLake memory — captures file ops and syncs to DeepLake cloud",
+  "description": "Claude Code plugin for Deeplake memory — captures file ops and syncs to Deeplake cloud",
   "type": "module",
   "scripts": {
     "build": "tsc && node esbuild.config.mjs",

@@ -60,12 +60,13 @@ function searchMemory(query: string, limit = 20): { path: string; tool: string; 
     for (const line of lines) {
       try {
         const entry = JSON.parse(line);
-        const content = entry.tool_input ?? "";
-        if (content.toLowerCase().includes(q) || (entry.tool_name ?? "").toLowerCase().includes(q)) {
+        const searchable = (entry.content ?? entry.tool_input ?? "").toLowerCase();
+        const label = entry.type ?? entry.tool_name ?? "";
+        if (searchable.includes(q) || label.toLowerCase().includes(q)) {
           results.push({
             path: file,
-            tool: entry.tool_name ?? "",
-            snippet: content.slice(0, 500),
+            tool: label,
+            snippet: (entry.content ?? entry.tool_input ?? "").slice(0, 500),
             timestamp: entry.timestamp ?? "",
           });
           if (results.length >= limit) return results;
@@ -78,6 +79,7 @@ function searchMemory(query: string, limit = 20): { path: string; tool: string; 
 
 async function main(): Promise<void> {
   const input = await readStdin<PreToolUseInput>();
+  log(`hook fired: tool=${input.tool_name} input=${JSON.stringify(input.tool_input).slice(0, 200)}`);
 
   const query = isMemorySearch(input.tool_name, input.tool_input);
   if (!query) return; // Not a memory search, let tool proceed normally
