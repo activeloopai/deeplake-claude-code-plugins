@@ -19,10 +19,31 @@ const SHELL_BUNDLE = existsSync(join(__bundleDir, "shell", "deeplake-shell.js"))
   ? join(__bundleDir, "shell", "deeplake-shell.js")
   : join(__bundleDir, "..", "shell", "deeplake-shell.js");
 
+// All commands supported by just-bash + shell control flow
 const SAFE_BUILTINS = new Set([
-  "cat", "ls", "echo", "grep", "find", "wc", "head", "tail", "sort",
-  "uniq", "cut", "mkdir", "rm", "cp", "mv", "touch", "pwd", "printf",
-  "tr", "basename", "dirname", "date", "test", "true", "false", "cd",
+  // filesystem
+  "cat", "ls", "cp", "mv", "rm", "rmdir", "mkdir", "touch", "ln", "chmod",
+  "stat", "readlink", "du", "tree", "file",
+  // text processing
+  "grep", "egrep", "fgrep", "rg", "sed", "awk", "cut", "tr", "sort", "uniq",
+  "wc", "head", "tail", "tac", "rev", "nl", "fold", "expand", "unexpand",
+  "paste", "join", "comm", "column", "diff", "strings", "split",
+  // search
+  "find", "xargs", "which",
+  // data formats
+  "jq", "yq", "xan", "base64", "od",
+  // archives
+  "tar", "gzip", "gunzip", "zcat",
+  // hashing
+  "md5sum", "sha1sum", "sha256sum",
+  // output/io
+  "echo", "printf", "tee", "cat",
+  // path/env
+  "pwd", "cd", "basename", "dirname", "env", "printenv", "hostname", "whoami",
+  // misc
+  "date", "seq", "expr", "sleep", "timeout", "time", "true", "false", "test",
+  "alias", "unalias", "history", "help", "clear",
+  // shell control flow
   "for", "while", "do", "done", "if", "then", "else", "fi", "case", "esac",
 ]);
 
