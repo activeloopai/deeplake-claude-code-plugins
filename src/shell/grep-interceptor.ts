@@ -2,8 +2,7 @@ import type { DeeplakeApi } from "../deeplake-api.js";
 import { defineCommand } from "just-bash";
 import yargsParser from "yargs-parser";
 import type { DeeplakeFs } from "./deeplake-fs.js";
-
-const esc = (s: string) => s.replace(/'/g, "''");
+import { sqlStr, sqlLike, sqlIdent } from "../utils/sql.js";
 
 /**
  * Custom grep command for just-bash that replaces the built-in when the target
@@ -52,9 +51,10 @@ export function createGrepCommand(
     // ── Phase 1: coarse BM25 / ILIKE filter ─────────────────────────────────
     let candidates: string[] = [];
 
+    const safeTable = sqlIdent(table);
     try {
       const bm25 = await client.query(
-        `SELECT path FROM "${table}" WHERE content_text <#> '${esc(pattern)}' LIMIT 50`
+        `SELECT path FROM "${safeTable}" WHERE content_text <#> '${sqlStr(pattern)}' LIMIT 50`
       );
       candidates = bm25.map(r => r["path"] as string).filter(Boolean);
     } catch {
@@ -66,7 +66,8 @@ export function createGrepCommand(
       const col = ignoreCase ? `LOWER(content_text)` : `content_text`;
       const pat = ignoreCase ? pattern.toLowerCase() : pattern;
       const ilike = await client.query(
-        `SELECT path FROM "${table}" WHERE ${col} LIKE '%${esc(pat)}%' LIMIT 50`
+        // sqlLike escapes %, _ in addition to quote/control chars
+        `SELECT path FROM "${safeTable}" WHERE ${col} LIKE '%${sqlLike(pat)}%' LIMIT 50`
       );
       candidates = ilike.map(r => r["path"] as string).filter(Boolean);
     }

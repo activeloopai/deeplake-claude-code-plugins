@@ -35,6 +35,16 @@ function isSafeForJustBash(cmd: string): boolean {
   return !UNSAFE_BINARIES.test(cmd);
 }
 
+// ── Shell escaping ────────────────────────────────────────────────────────────
+/**
+ * POSIX single-quote shell escape. Wraps the argument in single quotes and
+ * escapes any embedded single quotes so no shell metacharacter can escape.
+ * Safe for use in execSync() command strings.
+ */
+function shellEscape(arg: string): string {
+  return "'" + arg.replace(/'/g, "'\\''") + "'";
+}
+
 // ── Deeplake CLI detection ────────────────────────────────────────────────────
 function isDeeplakeCLIInstalled(): boolean {
   try {
@@ -62,7 +72,7 @@ function rewriteGrepToBM25(cmd: string, memoryPath: string): string {
   return cmd.replace(
     /\bgrep\s+((?:-\S+\s+)*)(['"]?)([^'"|\s]+)\2\s+(\S*(?:\.deeplake\/memory|deeplake\/memory)\S*)/g,
     (_match, _flags, _q, pattern, path) =>
-      `deeplake search ${JSON.stringify(pattern)} ${path}`,
+      `deeplake search ${shellEscape(pattern)} ${shellEscape(path)}`,
   );
 }
 

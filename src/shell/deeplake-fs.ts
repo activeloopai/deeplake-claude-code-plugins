@@ -1,5 +1,6 @@
 import { basename, posix } from "node:path";
 import type { DeeplakeApi } from "../deeplake-api.js";
+import { sqlStr, sqlIdent, sqlNum } from "../utils/sql.js";
 import type {
   IFileSystem, FsStat, MkdirOptions, RmOptions, CpOptions,
   FileContent, ReadFileOptions, WriteFileOptions, BufferEncoding, DirentEntry,
@@ -21,9 +22,6 @@ function parentOf(p: string): string {
   return i <= 0 ? "/" : p.slice(0, i);
 }
 
-function esc(s: string): string {
-  return s.replace(/'/g, "''");
-}
 
 export function isText(buf: Buffer): boolean {
   const end = Math.min(buf.length, TEXT_DETECT_BYTES);
@@ -83,7 +81,7 @@ export class DeeplakeFs implements IFileSystem {
 
   private constructor(
     private readonly client: DeeplakeApi,
-    private readonly table: string,
+    private readonly table: string,  // pre-validated via sqlIdent in create()
     readonly mountPoint: string,
   ) {
     this.dirs.set(mountPoint, new Set());
@@ -95,11 +93,12 @@ export class DeeplakeFs implements IFileSystem {
     table: string,
     mount = "/memory",
   ): Promise<DeeplakeFs> {
-    const fs = new DeeplakeFs(client, table, mount);
+    const safeTable = sqlIdent(table); // validates table name is alphanumeric+_
+    const fs = new DeeplakeFs(client, safeTable, mount);
     // Bootstrap: SQL is reliable and returns path + metadata without large content
     try {
       const rows = await client.query(
-        `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`
+        `SELECT path, size_bytes, mime_type FROM "${safeTable}" ORDER BY path`
       );
       for (const row of rows) {
         const p = row["path"] as string;
@@ -158,15 +157,16 @@ export class DeeplakeFs implements IFileSystem {
     // SQL upsert: DELETE + INSERT with hex-encoded binary content.
     // Two calls per row — avoids WASM ingest() compatibility issues.
     for (const r of rows) {
-      const hex   = r.content.toString("hex");
-      const text  = esc(r.contentText);
-      const p     = esc(r.path);
-      const fname = esc(r.filename);
-      const mime  = esc(r.mimeType);
+      const hex   = r.content.toString("hex");  // hex chars only — inherently safe
+      const text  = sqlStr(r.contentText);
+      const p     = sqlStr(r.path);
+      const fname = sqlStr(r.filename);
+      const mime  = sqlStr(r.mimeType);
+      const size  = sqlNum(r.sizeBytes);
       await this.client.query(`DELETE FROM "${this.table}" WHERE path = '${p}'`);
       await this.client.query(
         `INSERT INTO "${this.table}" (path, filename, content, content_text, mime_type, size_bytes) ` +
-        `VALUES ('${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes})`
+        `VALUES ('${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${size})`
       );
     }
   }
@@ -188,7 +188,7 @@ export class DeeplakeFs implements IFileSystem {
 
     // 3. SQL query — content column (BYTEA returned as hex '\x...')
     const rows = await this.client.query(
-      `SELECT content FROM "${this.table}" WHERE path = '${esc(p)}' LIMIT 1`
+      `SELECT content FROM "${this.table}" WHERE path = '${sqlStr(p)}' LIMIT 1`
     );
     if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
     const buf = decodeContent(rows[0]["content"]);
@@ -207,7 +207,7 @@ export class DeeplakeFs implements IFileSystem {
 
     // For text files prefer content_text (avoids decoding binary column)
     const rows = await this.client.query(
-      `SELECT content_text, content FROM "${this.table}" WHERE path = '${esc(p)}' LIMIT 1`
+      `SELECT content_text, content FROM "${this.table}" WHERE path = '${sqlStr(p)}' LIMIT 1`
     );
     if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
     const row = rows[0];
@@ -358,11 +358,11 @@ export class DeeplakeFs implements IFileSystem {
       this.dirs.get(parentOf(p))?.delete(basename(p));
 
       if (toDelete.length > 0) {
-        const inList = toDelete.map(fp => `'${esc(fp)}'`).join(", ");
+        const inList = toDelete.map(fp => `'${sqlStr(fp)}'`).join(", ");
         await this.client.query(`DELETE FROM "${this.table}" WHERE path IN (${inList})`);
       }
     } else {
-      await this.client.query(`DELETE FROM "${this.table}" WHERE path = '${esc(p)}'`);
+      await this.client.query(`DELETE FROM "${this.table}" WHERE path = '${sqlStr(p)}'`);
       this.removeFromTree(p);
     }
   }
