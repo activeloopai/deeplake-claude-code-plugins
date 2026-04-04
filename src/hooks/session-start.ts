@@ -18,6 +18,8 @@ Deeplake memory is especially useful for:
 
 Search command: Grep pattern="keyword" path="~/.deeplake/memory"
 
+LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty, you may retry once. If results are still unavailable after a few attempts, report what you found and move on.
+
 Debugging: Set DEEPLAKE_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
 
 console.log(JSON.stringify({

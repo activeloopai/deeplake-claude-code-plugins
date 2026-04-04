@@ -12,11 +12,27 @@ const log = (msg: string) => _log("pre", msg);
 
 const MEMORY_PATH = join(homedir(), ".deeplake", "memory");
 const TILDE_PATH = "~/.deeplake/memory";
+const HOME_VAR_PATH = "$HOME/.deeplake/memory";
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
 const SHELL_BUNDLE = existsSync(join(__bundleDir, "shell", "deeplake-shell.js"))
   ? join(__bundleDir, "shell", "deeplake-shell.js")
   : join(__bundleDir, "..", "shell", "deeplake-shell.js");
+
+const SAFE_BUILTINS = new Set([
+  "cat", "ls", "echo", "grep", "find", "wc", "head", "tail", "sort",
+  "uniq", "cut", "mkdir", "rm", "cp", "mv", "touch", "pwd", "printf",
+  "tr", "basename", "dirname", "date", "test", "true", "false", "cd",
+]);
+
+function isSafe(cmd: string): boolean {
+  const stages = cmd.split(/\||;|&&|\|\|/);
+  for (const stage of stages) {
+    const firstToken = stage.trim().split(/\s+/)[0] ?? "";
+    if (firstToken && !SAFE_BUILTINS.has(firstToken)) return false;
+  }
+  return true;
+}
 
 interface PreToolUseInput {
   session_id: string;
@@ -25,11 +41,23 @@ interface PreToolUseInput {
   tool_use_id: string;
 }
 
+function touchesMemory(p: string): boolean {
+  return p.startsWith(MEMORY_PATH) || p.startsWith(TILDE_PATH) || p.includes(HOME_VAR_PATH);
+}
+
+function rewritePaths(cmd: string): string {
+  return cmd
+    .replace(new RegExp(MEMORY_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?", "g"), "/")
+    .replace(/~\/.deeplake\/memory\/?/g, "/")
+    .replace(/\$HOME\/.deeplake\/memory\/?/g, "/")
+    .replace(/"\$HOME\/.deeplake\/memory\/?"/g, '"/"');
+}
+
 function getShellCommand(toolName: string, toolInput: Record<string, unknown>): string | null {
   switch (toolName) {
     case "Grep": {
       const p = toolInput.path as string | undefined;
-      if (p && (p.startsWith(MEMORY_PATH) || p.startsWith(TILDE_PATH))) {
+      if (p && touchesMemory(p)) {
         const pattern = toolInput.pattern as string ?? "";
         const flags: string[] = ["-r"];
         if (toolInput["-i"]) flags.push("-i");
@@ -40,24 +68,27 @@ function getShellCommand(toolName: string, toolInput: Record<string, unknown>): 
     }
     case "Read": {
       const fp = toolInput.file_path as string | undefined;
-      if (fp && (fp.startsWith(MEMORY_PATH) || fp.startsWith(TILDE_PATH))) {
-        const virtualPath = fp.replace(MEMORY_PATH, "").replace(homedir() + "/.deeplake/memory", "") || "/";
+      if (fp && touchesMemory(fp)) {
+        const virtualPath = rewritePaths(fp) || "/";
         return `cat ${virtualPath}`;
       }
       break;
     }
     case "Bash": {
       const cmd = toolInput.command as string | undefined;
-      if (cmd && (cmd.includes(MEMORY_PATH) || cmd.includes(TILDE_PATH))) {
-        return cmd
-          .replace(new RegExp(MEMORY_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?", "g"), "/")
-          .replace(/~\/.deeplake\/memory\/?/g, "/");
+      if (cmd && touchesMemory(cmd)) {
+        const rewritten = rewritePaths(cmd);
+        if (!isSafe(rewritten)) {
+          log(`unsafe command blocked: ${rewritten.slice(0, 100)}`);
+          return null;
+        }
+        return rewritten;
       }
       break;
     }
     case "Glob": {
       const p = toolInput.path as string | undefined;
-      if (p && (p.startsWith(MEMORY_PATH) || p.startsWith(TILDE_PATH))) {
+      if (p && touchesMemory(p)) {
         return `ls /`;
       }
       break;

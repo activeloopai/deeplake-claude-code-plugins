@@ -98,11 +98,15 @@ export class DeeplakeFs implements IFileSystem {
     mount = "/memory",
   ): Promise<DeeplakeFs> {
     const fs = new DeeplakeFs(client, table, mount);
-    // Bootstrap: SQL is reliable and returns path + metadata without large content
+    // Bootstrap: load path metadata. Retry once on 503 (API cold-start issue).
+    const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
     try {
-      const rows = await client.query(
-        `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`
-      );
+      let rows: Record<string, unknown>[];
+      try {
+        rows = await client.query(sql);
+      } catch {
+        rows = await client.query(sql);
+      }
       for (const row of rows) {
         const p = row["path"] as string;
         fs.files.set(p, null);
