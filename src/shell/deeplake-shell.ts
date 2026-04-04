@@ -38,8 +38,10 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const table = process.env["DEEPLAKE_TABLE"] ?? config.tableName;
-  const mount = process.env["DEEPLAKE_MOUNT"] ?? "/memory";
+  // Shell defaults to "memory" regardless of DEEPLAKE_MEMORY_TABLE (used by hooks).
+  // Override explicitly with DEEPLAKE_TABLE if needed.
+  const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
+  const mount = process.env["DEEPLAKE_MOUNT"] ?? "/";
 
   const client = new DeeplakeApi(
     config.token, config.apiUrl, config.orgId, config.workspaceId, table
