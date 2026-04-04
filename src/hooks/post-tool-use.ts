@@ -3,7 +3,7 @@
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { extractMemoryOp } from "../path-match.js";
-import { DeepLakeApi } from "../deeplake-api.js";
+import { DeeplakeApi } from "../deeplake-api.js";
 
 interface PostToolUseInput {
   session_id: string;
@@ -22,7 +22,7 @@ async function main(): Promise<void> {
   const match = extractMemoryOp(input.tool_name, input.tool_input, config.memoryPath);
   if (!match) return;
 
-  const api = new DeepLakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
 
   let content = "";
   switch (match.op) {

@@ -1,3 +1,8 @@
 node_modules/
 dist/
 bundle/
+tmp/
+*.js.map
+*.d.ts.map
+.env
+.env.*

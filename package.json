@@ -1,20 +1,29 @@
 {
   "name": "deeplake-claude-code-plugins",
   "version": "0.1.0",
-  "description": "Claude Code plugin for DeepLake memory — captures file ops and syncs to DeepLake cloud",
+  "description": "Claude Code plugin for Deeplake memory — captures file ops and syncs to Deeplake cloud",
   "type": "module",
+  "bin": {
+    "deeplake-shell": "bundle/deeplake-shell.js"
+  },
   "scripts": {
     "build": "tsc && node esbuild.config.mjs",
     "bundle": "node esbuild.config.mjs",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "shell": "tsx src/shell/deeplake-shell.ts",
+    "test": "vitest run"
   },
   "dependencies": {
-    "just-bash": "*"
+    "just-bash": "^2.14.0",
+    "yargs-parser": "^21.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/yargs-parser": "^21.0.3",
     "esbuild": "^0.27.7",
-    "typescript": "^5.7.0"
+    "tsx": "^4.7.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.0.0"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -3,6 +3,7 @@ import { chmodSync } from "node:fs";
 
 const entryPoints = [
   "dist/hooks/post-tool-use.js",
+  "dist/shell/deeplake-shell.js",
 ];
 
 await build({
@@ -11,7 +12,9 @@ await build({
   platform: "node",
   format: "esm",
   outdir: "bundle",
-  external: ["node:*"],
+  // deeplake SDK ships its own WASM binary — keep it external so
+  // esbuild doesn't try to inline the 63MB .wasm file
+  external: ["node:*", "deeplake"],
 });
 
 for (const entry of entryPoints) {
@@ -19,4 +22,4 @@ for (const entry of entryPoints) {
   chmodSync(`bundle/${filename}`, 0o755);
 }
 
-console.log(`Bundled ${entryPoints.length} hooks into bundle/`);
+console.log(`Bundled ${entryPoints.length} entries into bundle/`);
