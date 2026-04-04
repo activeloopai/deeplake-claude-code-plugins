@@ -11,7 +11,8 @@
  * let the real tool run normally.
  */
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Bash } from "just-bash";
@@ -32,6 +33,37 @@ const UNSAFE_BINARIES =
 
 function isSafeForJustBash(cmd: string): boolean {
   return !UNSAFE_BINARIES.test(cmd);
+}
+
+// ── Deeplake CLI detection ────────────────────────────────────────────────────
+function isDeeplakeCLIInstalled(): boolean {
+  try {
+    execSync("which deeplake", { stdio: "ignore", timeout: 2000 });
+    return true;
+  } catch {
+    return [
+      "/usr/local/bin/deeplake",
+      "/usr/bin/deeplake",
+      join(homedir(), ".local", "bin", "deeplake"),
+      join(homedir(), ".deeplake", "bin", "deeplake"),
+    ].some(existsSync);
+  }
+}
+
+/**
+ * Rewrite any `grep` calls in a command to use `deeplake search` for BM25.
+ * Only rewrites greps that target the memory path — other greps are left alone.
+ *
+ * e.g. grep -r "foo" ~/.deeplake/memory
+ *   →  deeplake search "foo" ~/.deeplake/memory
+ */
+function rewriteGrepToBM25(cmd: string, memoryPath: string): string {
+  // Match: grep [flags] <pattern> <path-containing-memoryPath>
+  return cmd.replace(
+    /\bgrep\s+((?:-\S+\s+)*)(['"]?)([^'"|\s]+)\2\s+(\S*(?:\.deeplake\/memory|deeplake\/memory)\S*)/g,
+    (_match, _flags, _q, pattern, path) =>
+      `deeplake search ${JSON.stringify(pattern)} ${path}`,
+  );
 }
 
 // ── Memory path detection ─────────────────────────────────────────────────────
@@ -173,8 +205,28 @@ async function main(): Promise<void> {
     let result: string;
 
     if (target.tool === "Bash" && target.unsafe) {
-      // Command contains external binaries (python, node, etc.) that require
-      // a real FUSE mount. Prompt the agent to install the Deeplake CLI.
+      if (isDeeplakeCLIInstalled()) {
+        // CLI is installed (FUSE mount available) — forward to real bash.
+        // Rewrite any grep calls to use deeplake search (BM25) instead.
+        const rewritten = rewriteGrepToBM25(target.value, memoryPath);
+        if (rewritten !== target.value) {
+          log(`grep rewritten to deeplake search: ${rewritten.slice(0, 100)}`);
+        }
+        // If grep was rewritten, run the modified command and return result.
+        // Otherwise exit 0 and let real bash + FUSE handle everything natively.
+        if (rewritten !== target.value) {
+          const { execSync: run } = await import("node:child_process");
+          const out = run(rewritten, { encoding: "utf-8", timeout: 30_000 });
+          console.log(JSON.stringify({ result: out }));
+          process.exit(2);
+          return;
+        }
+        // No grep rewrite needed — let real bash run via FUSE (exit 0)
+        log(`forwarding to real bash + FUSE`);
+        return;
+      }
+
+      // CLI not installed — prompt the agent to install it.
       result = [
         `⚠️  This command requires advanced filesystem support not available in the lightweight plugin.`,
         ``,
@@ -192,7 +244,7 @@ async function main(): Promise<void> {
         `Alternatively, rewrite the command using only basic tools (cat, ls, grep, find, wc,`,
         `head, tail, sort, uniq) which are supported natively by this lightweight plugin.`,
       ].join("\n");
-      log(`unsafe bash blocked, prompted CLI install`);
+      log(`unsafe bash blocked — CLI not installed, showed install prompt`);
       console.log(JSON.stringify({ result }));
       process.exit(2);
       return;
