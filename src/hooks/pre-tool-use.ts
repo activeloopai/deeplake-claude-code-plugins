@@ -1,16 +1,150 @@
 #!/usr/bin/env node
+/**
+ * PreToolUse hook — intercepts tool calls targeting the Deeplake virtual filesystem.
+ *
+ * For safe commands (no external binaries) touching DEEPLAKE_MEMORY_PATH:
+ *   - Structured tools (Read, Write, Edit, Glob, Grep): execute via DeeplakeFs directly
+ *   - Bash tool: run through just-bash + DeeplakeFs if command is safe
+ *   Returns result to Claude and blocks the real tool (exit 2).
+ *
+ * For unsafe Bash commands (python, node, etc.) or paths outside memory: exit 0,
+ * let the real tool run normally.
+ */
 
-import { appendFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
+import { Bash } from "just-bash";
 import { readStdin } from "../utils/stdin.js";
+import { loadConfig } from "../config.js";
+import { DeeplakeApi } from "../deeplake-api.js";
+import { DeeplakeFs } from "../shell/deeplake-fs.js";
 
-const MEMORY_DIR = process.env.DEEPLAKE_MEMORY_DIR ?? join(homedir(), ".deeplake", "memory");
 const LOG = join(homedir(), ".deeplake", "hook-debug.log");
 function log(msg: string) {
   appendFileSync(LOG, `${new Date().toISOString()} [pre] ${msg}\n`);
 }
 
+// ── Safe-command detection ────────────────────────────────────────────────────
+// Any command containing these external binaries cannot run in just-bash.
+const UNSAFE_BINARIES =
+  /\b(python3?|node|ruby|perl|php|java|cargo|make|npm|yarn|pip3?|curl|wget|ssh|docker|kubectl|go\s+run|Rscript)\b/;
+
+function isSafeForJustBash(cmd: string): boolean {
+  return !UNSAFE_BINARIES.test(cmd);
+}
+
+// ── Memory path detection ─────────────────────────────────────────────────────
+interface MemoryTarget {
+  tool: string;
+  /** Resolved path or command string */
+  value: string;
+}
+
+function detectMemoryTarget(
+  toolName: string,
+  input: Record<string, unknown>,
+  memoryPath: string,
+): MemoryTarget | null {
+  const tilde = "~/.deeplake/memory";
+  const touches = (p?: string) =>
+    !!p && (p.startsWith(memoryPath) || p.includes(tilde));
+
+  switch (toolName) {
+    case "Read": {
+      const p = input["file_path"] as string | undefined;
+      if (touches(p)) return { tool: "Read", value: p! };
+      break;
+    }
+    case "Write": {
+      const p = input["file_path"] as string | undefined;
+      if (touches(p)) return { tool: "Write", value: p! };
+      break;
+    }
+    case "Edit": {
+      const p = input["file_path"] as string | undefined;
+      if (touches(p)) return { tool: "Edit", value: p! };
+      break;
+    }
+    case "Glob": {
+      const p = input["pattern"] as string | undefined;
+      if (touches(p)) return { tool: "Glob", value: p! };
+      break;
+    }
+    case "Grep": {
+      const p = input["path"] as string | undefined;
+      if (touches(p)) return { tool: "Grep", value: p! };
+      break;
+    }
+    case "Bash": {
+      const cmd = input["command"] as string | undefined;
+      if (!cmd) break;
+      if (!touches(cmd)) break;
+      if (!isSafeForJustBash(cmd)) {
+        log(`unsafe bash skipped: ${cmd.slice(0, 100)}`);
+        return null; // let real bash handle it
+      }
+      return { tool: "Bash", value: cmd };
+    }
+  }
+  return null;
+}
+
+// ── Structured tool execution via DeeplakeFs ──────────────────────────────────
+async function execStructuredTool(
+  toolName: string,
+  input: Record<string, unknown>,
+  fs: DeeplakeFs,
+): Promise<string> {
+  switch (toolName) {
+    case "Read": {
+      const p = input["file_path"] as string;
+      return await fs.readFile(p);
+    }
+    case "Write": {
+      const p = input["file_path"] as string;
+      const content = (input["content"] as string) ?? "";
+      await fs.writeFile(p, content);
+      await fs.flush();
+      return `Successfully wrote to ${p}`;
+    }
+    case "Edit": {
+      const p = input["file_path"] as string;
+      const oldStr = (input["old_string"] as string) ?? "";
+      const newStr = (input["new_string"] as string) ?? "";
+      const existing = await fs.readFile(p);
+      if (!existing.includes(oldStr)) throw new Error(`old_string not found in ${p}`);
+      await fs.writeFile(p, existing.replace(oldStr, newStr));
+      await fs.flush();
+      return `Successfully edited ${p}`;
+    }
+    case "Glob": {
+      const pattern = (input["pattern"] as string) ?? "*";
+      // Use getAllPaths and filter by glob-like pattern (convert * and ** to regex)
+      const regexStr = pattern
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replace(/\*\*/g, ".+")
+        .replace(/\*/g, "[^/]+");
+      const re = new RegExp(`^${regexStr}$`);
+      const matches = fs.getAllPaths().filter(p => re.test(p));
+      return matches.join("\n");
+    }
+    case "Grep": {
+      // Delegate to just-bash grep via Bash exec on the same FS
+      const bash = new Bash({ fs, cwd: "/" });
+      const pattern = (input["pattern"] as string) ?? "";
+      const path = (input["path"] as string) ?? "/";
+      const flags = (input["flags"] as string) ?? "";
+      const cmd = `grep -r ${flags} ${JSON.stringify(pattern)} ${JSON.stringify(path)}`;
+      const result = await bash.exec(cmd);
+      return result.stdout || result.stderr;
+    }
+    default:
+      throw new Error(`Unhandled tool: ${toolName}`);
+  }
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 interface PreToolUseInput {
   session_id: string;
   tool_name: string;
@@ -18,88 +152,51 @@ interface PreToolUseInput {
   tool_use_id: string;
 }
 
-function isMemorySearch(toolName: string, toolInput: Record<string, unknown>): string | null {
-  const mp = MEMORY_DIR;
-  const tilde = "~/.deeplake/memory";
-  switch (toolName) {
-    case "Grep": {
-      const p = toolInput.path as string | undefined;
-      if (p && (p.startsWith(mp) || p.startsWith(tilde))) {
-        return (toolInput.pattern as string) ?? "";
-      }
-      break;
-    }
-    case "Read": {
-      const fp = toolInput.file_path as string | undefined;
-      if (fp && (fp.startsWith(mp) || fp.startsWith(tilde))) {
-        return fp;
-      }
-      break;
-    }
-    case "Bash": {
-      const cmd = toolInput.command as string | undefined;
-      if (cmd && (cmd.includes(mp) || cmd.includes(tilde)) &&
-          (cmd.includes("grep") || cmd.includes("cat") || cmd.includes("ls") || cmd.includes("find"))) {
-        const grepMatch = cmd.match(/grep\s+(?:-[a-zA-Z]*\s+)*['"]?([^'">\s]+)/);
-        return grepMatch?.[1] ?? "";
-      }
-      break;
-    }
-  }
-  return null;
-}
-
-function searchMemory(query: string, limit = 20): { path: string; tool: string; snippet: string; timestamp: string }[] {
-  if (!existsSync(MEMORY_DIR)) return [];
-  const results: { path: string; tool: string; snippet: string; timestamp: string }[] = [];
-  const q = query.toLowerCase();
-
-  const files = readdirSync(MEMORY_DIR).filter((f) => f.endsWith(".jsonl"));
-  for (const file of files) {
-    const lines = readFileSync(join(MEMORY_DIR, file), "utf-8").split("\n").filter(Boolean);
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line);
-        const searchable = (entry.content ?? entry.tool_input ?? "").toLowerCase();
-        const label = entry.type ?? entry.tool_name ?? "";
-        if (searchable.includes(q) || label.toLowerCase().includes(q)) {
-          results.push({
-            path: file,
-            tool: label,
-            snippet: (entry.content ?? entry.tool_input ?? "").slice(0, 500),
-            timestamp: entry.timestamp ?? "",
-          });
-          if (results.length >= limit) return results;
-        }
-      } catch { /* skip */ }
-    }
-  }
-  return results;
-}
-
 async function main(): Promise<void> {
   const input = await readStdin<PreToolUseInput>();
-  log(`hook fired: tool=${input.tool_name} input=${JSON.stringify(input.tool_input).slice(0, 200)}`);
+  log(`tool=${input.tool_name} input=${JSON.stringify(input.tool_input).slice(0, 150)}`);
 
-  const query = isMemorySearch(input.tool_name, input.tool_input);
-  if (!query) return; // Not a memory search, let tool proceed normally
+  const config = loadConfig();
+  if (!config) return; // no creds, let tool proceed
 
-  log(`search intercepted: tool=${input.tool_name} query=${query}`);
+  const memoryPath = process.env["DEEPLAKE_MEMORY_PATH"] ?? config.memoryPath;
+  const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
 
-  const results = searchMemory(query);
-  log(`search found ${results.length} results`);
+  const target = detectMemoryTarget(input.tool_name, input.tool_input, memoryPath);
+  if (!target) return; // not targeting memory, or unsafe bash — exit 0
 
-  if (results.length === 0) {
-    console.log(JSON.stringify({ result: "No memories found matching: " + query }));
-    process.exit(2);
+  log(`intercepting ${target.tool}: ${target.value.slice(0, 100)}`);
+
+  try {
+    const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
+    const fs = await DeeplakeFs.create(api, table, "/");
+
+    let result: string;
+
+    if (target.tool === "Bash") {
+      const bash = new Bash({
+        fs,
+        cwd: "/",
+        customCommands: [],
+        env: { HOME: memoryPath },
+      });
+      // Normalize tilde references so just-bash resolves them correctly
+      const cmd = target.value.replace(/~\/.deeplake\/memory/g, memoryPath);
+      const out = await bash.exec(cmd);
+      result = out.stdout + (out.stderr ? `\nstderr: ${out.stderr}` : "");
+      log(`bash done exitCode=${out.exitCode} stdout=${out.stdout.slice(0, 100)}`);
+    } else {
+      result = await execStructuredTool(target.tool, input.tool_input, fs);
+      log(`${target.tool} done result=${result.slice(0, 100)}`);
+    }
+
+    console.log(JSON.stringify({ result }));
+    process.exit(2); // block real tool — Claude uses our result
+  } catch (e) {
+    // On any error let the real tool run rather than silently failing
+    log(`error: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(0);
   }
-
-  const formatted = results
-    .map((r, i) => `[${i + 1}] ${r.tool} at ${r.timestamp}\n${r.snippet}`)
-    .join("\n\n");
-
-  console.log(JSON.stringify({ result: formatted }));
-  process.exit(2); // Exit 2 = hook handled the tool call
 }
 
-main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
+main().catch((e) => { log(`fatal: ${e instanceof Error ? e.message : String(e)}`); process.exit(0); });
