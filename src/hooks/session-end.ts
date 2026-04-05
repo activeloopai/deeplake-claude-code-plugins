@@ -4,15 +4,20 @@
  * SessionEnd (Stop) hook — builds session summaries and index.
  * Direct port of deeplake-wiki.sh from the CLI.
  *
- * Difference from CLI version: paths use ~/.deeplake/memory/ (plugin virtual FS)
- * instead of resolving a FUSE mount from mounts.json.
+ * Reads session JSONL from Deeplake server (via DeeplakeFs), dumps to a temp
+ * file, spawns claude -p to generate the summary to temp paths, then uploads
+ * the results back to the server via DeeplakeFs.
  */
 
 import { execSync, spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, statSync } from "node:fs";
-import { join, basename } from "node:path";
-import { homedir } from "node:os";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, createWriteStream, unlinkSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { readStdin } from "../utils/stdin.js";
+import { loadConfig } from "../config.js";
+import { DeeplakeApi } from "../deeplake-api.js";
+import { DeeplakeFs } from "../shell/deeplake-fs.js";
+import { sqlStr } from "../utils/sql.js";
 import { log as _log } from "../utils/debug.js";
 
 const log = (msg: string) => _log("session-end", msg);
@@ -50,58 +55,84 @@ async function main(): Promise<void> {
   const cwd = input.cwd ?? "";
   if (!sessionId) return;
 
-  const summaryFile = join(SUMMARIES_DIR, `${sessionId}.md`);
+  // --- Read JSONL directly from Deeplake server via SQL (bypass DeeplakeFs cache) ---
+  const config = loadConfig();
+  if (!config) { log("no config"); return; }
 
-  // --- SessionStart-equivalent: create placeholder + index entry ---
-  // The CLI version does this on SessionStart, but the plugin hooks.json
-  // only wires session-end to Stop. So we handle both: create placeholder
-  // if it doesn't exist yet, then generate summary.
-  mkdirSync(SUMMARIES_DIR, { recursive: true });
+  const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
+  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
 
-  if (!existsSync(INDEX_FILE)) {
-    writeFileSync(INDEX_FILE, [
-      "# Session Index",
-      "",
-      "List of all Claude Code sessions with summaries.",
-      "",
-      "| Session | Date | Project | Description |",
-      "|---------|------|---------|-------------|",
-      "",
-    ].join("\n"));
-    wikiLog("Created index.md");
+  // Find the session JSONL — matches CLI pattern: /sessions/<user>/<user>_<org>_<ws>_<slug>.jsonl
+  // The slug may be the session ID or a project slug. Search by session ID in the path.
+  const rows = await api.query(
+    `SELECT path, content_text FROM "${table}" WHERE path LIKE '${sqlStr(`/sessions/%${sessionId}%`)}' LIMIT 1`
+  );
+
+  // Fallback: also check old plugin path /session_<id>.jsonl
+  if (rows.length === 0) {
+    const fallbackRows = await api.query(
+      `SELECT path, content_text FROM "${table}" WHERE path = '${sqlStr(`/session_${sessionId}.jsonl`)}' LIMIT 1`
+    );
+    if (fallbackRows.length > 0) rows.push(...fallbackRows);
   }
 
-  // --- Find the session JSONL ---
-  // Plugin captures to ~/.deeplake/memory/session_<id>.jsonl via capture.ts
-  const jsonl = join(MEMORY_PATH, `session_${sessionId}.jsonl`);
-
-  if (!existsSync(jsonl)) {
-    wikiLog(`SessionEnd: no JSONL for ${sessionId} at ${jsonl}`);
+  if (rows.length === 0 || !rows[0]["content_text"]) {
+    wikiLog(`SessionEnd: no JSONL on server for ${sessionId}`);
     return;
   }
 
-  const jsonlSize = statSync(jsonl).size;
-  const jsonlContent = readFileSync(jsonl, "utf-8");
+  const jsonlServerPath = rows[0]["path"] as string;
+  const jsonlContent = rows[0]["content_text"] as string;
+  wikiLog(`SessionEnd: found JSONL at ${jsonlServerPath}`);
+  if (!jsonlContent.trim()) {
+    wikiLog(`SessionEnd: empty JSONL for ${sessionId}`);
+    return;
+  }
+
   const jsonlLines = jsonlContent.split("\n").filter(Boolean).length;
 
-  wikiLog(`SessionEnd: processing ${sessionId} (JSONL: ${jsonlSize} bytes, ${jsonlLines} lines)`);
+  // Dump JSONL to temp file so claude -p can read it
+  const tmpDir = join(tmpdir(), `deeplake-wiki-${sessionId}`);
+  mkdirSync(tmpDir, { recursive: true });
+  const tmpJsonl = join(tmpDir, "session.jsonl");
+  const tmpSummary = join(tmpDir, "summary.md");
+  const tmpIndex = join(tmpDir, "index.md");
+  writeFileSync(tmpJsonl, jsonlContent);
 
-  // Check if summary already exists (resumed session) — extract JSONL offset
+  wikiLog(`SessionEnd: processing ${sessionId} (${jsonlLines} lines, tmp: ${tmpDir})`);
+
+  // Check if summary already exists on server (resumed session) — extract JSONL offset
   let prevOffset = 0;
-  if (existsSync(summaryFile)) {
-    const existing = readFileSync(summaryFile, "utf-8");
-    const match = existing.match(/\*\*JSONL offset\*\*:\s*(\d+)/);
-    if (match) prevOffset = parseInt(match[1], 10);
-  }
+  try {
+    const sumRows = await api.query(
+      `SELECT content_text FROM "${table}" WHERE path = '${sqlStr(`/summaries/${sessionId}.md`)}' LIMIT 1`
+    );
+    if (sumRows.length > 0 && sumRows[0]["content_text"]) {
+      const existing = sumRows[0]["content_text"] as string;
+      const match = existing.match(/\*\*JSONL offset\*\*:\s*(\d+)/);
+      if (match) prevOffset = parseInt(match[1], 10);
+      writeFileSync(tmpSummary, existing);
+    }
+  } catch { /* no existing summary */ }
+
+  // Read existing index from server
+  try {
+    const idxRows = await api.query(
+      `SELECT content_text FROM "${table}" WHERE path = '/index.md' LIMIT 1`
+    );
+    if (idxRows.length > 0 && idxRows[0]["content_text"]) {
+      writeFileSync(tmpIndex, idxRows[0]["content_text"] as string);
+    }
+  } catch { /* no existing index */ }
 
   const claudeBin = findClaudeBin();
 
-  // Build the prompt — same as deeplake-wiki.sh
+  // Build the prompt — same as deeplake-wiki.sh, but writes to temp paths
   const wikiPrompt = `You are a session summarizer. Read the session JSONL and generate a structured summary.
 
-SESSION JSONL path: ${jsonl}
-SUMMARY FILE to write: ${summaryFile}
-INDEX FILE to update: ${INDEX_FILE}
+SESSION JSONL path: ${tmpJsonl}
+SUMMARY FILE to write: ${tmpSummary}
+INDEX FILE to update: ${tmpIndex}
 SESSION ID: ${sessionId}
 PROJECT: ${cwd}
 PREVIOUS JSONL OFFSET (lines already processed): ${prevOffset}
@@ -116,7 +147,7 @@ Steps:
 2. Write the summary file at the path above with this format:
 
 # Session ${sessionId}
-- **Source**: session_${sessionId}.jsonl
+- **Source**: ${jsonlServerPath}
 - **Started**: <extract from JSONL>
 - **Ended**: <now>
 - **Project**: ${cwd}
@@ -138,25 +169,90 @@ If the line does not exist, append it.
 
 Be factual and dense. Capture every detail that could be asked about later.`;
 
-  // Spawn in background — don't block the session exit
-  const child = spawn(claudeBin, [
-    "-p", wikiPrompt,
-    "--no-session-persistence",
-    "--model", "haiku",
-    "--permission-mode", "bypassPermissions",
-  ], {
-    detached: true,
-    stdio: ["ignore", "pipe", "pipe"],
+  // Write prompt to a file to avoid shell escaping issues
+  const promptFile = join(tmpDir, "prompt.txt");
+  writeFileSync(promptFile, wikiPrompt);
+
+  // Write config for upload script
+  const configFile = join(tmpDir, "config.json");
+  writeFileSync(configFile, JSON.stringify({
+    apiUrl: config.apiUrl,
+    token: config.token,
+    orgId: config.orgId,
+    workspaceId: config.workspaceId,
+    table,
+    sessionId,
+    summaryPath: tmpSummary,
+    indexPath: tmpIndex,
+    summariesDir: SUMMARIES_DIR,
+    indexFile: INDEX_FILE,
+    tmpDir,
+  }));
+
+  // Write the upload script (runs after claude -p finishes)
+  const uploadScript = join(tmpDir, "upload.mjs");
+  writeFileSync(uploadScript, `import { readFileSync, existsSync } from "node:fs";
+const cfg = JSON.parse(readFileSync("${configFile}", "utf-8"));
+function esc(s) { return s.replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "''").replace(/[\\x01-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]/g, ""); }
+async function query(sql) {
+  const r = await fetch(cfg.apiUrl + "/workspaces/" + cfg.workspaceId + "/tables/query", {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + cfg.token, "Content-Type": "application/json", "X-Activeloop-Org-Id": cfg.orgId },
+    body: JSON.stringify({ query: sql }),
   });
+  if (!r.ok) throw new Error("API " + r.status + ": " + (await r.text()).slice(0, 200));
+}
+async function upload(vpath, localPath) {
+  if (!existsSync(localPath)) return;
+  const text = readFileSync(localPath, "utf-8");
+  if (!text.trim()) return;
+  const hex = Buffer.from(text, "utf-8").toString("hex");
+  const fname = vpath.split("/").pop();
+  await query("DELETE FROM \\"" + cfg.table + "\\" WHERE path = '" + esc(vpath) + "'");
+  await query("INSERT INTO \\"" + cfg.table + "\\" (path, filename, content, content_text, mime_type, size_bytes) VALUES ('" + esc(vpath) + "', '" + esc(fname) + "', E'\\\\\\\\x" + hex + "', E'" + esc(text) + "', 'text/markdown', " + Buffer.byteLength(text) + ")");
+  console.log("Uploaded " + vpath);
+}
+await upload("/summaries/" + cfg.sessionId + ".md", cfg.summaryPath);
+await upload("/index.md", cfg.indexPath);
+console.log("Server upload complete for " + cfg.sessionId);
+`);
 
-  // Redirect stdout/stderr to log file
-  const { createWriteStream } = await import("node:fs");
-  const logStream = createWriteStream(WIKI_LOG, { flags: "a" });
-  child.stdout?.pipe(logStream);
-  child.stderr?.pipe(logStream);
-  child.unref();
+  // Write the wrapper bash script — same nohup pattern as CLI's deeplake-wiki.sh
+  const wrapperScript = join(tmpDir, "wiki-worker.sh");
+  writeFileSync(wrapperScript, `#!/bin/bash
+LOG="${WIKI_LOG}"
+PROMPT_FILE="${promptFile}"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] wiki-worker: starting claude -p for ${sessionId}" >> "$LOG"
 
-  wikiLog(`SessionEnd: spawned wiki processor for ${sessionId} (pid ${child.pid})`);
+PROMPT=$(cat "$PROMPT_FILE")
+"${claudeBin}" -p "$PROMPT" \\
+  --no-session-persistence \\
+  --model haiku \\
+  --permission-mode bypassPermissions \\
+  >> "$LOG" 2>&1
+
+EXIT_CODE=$?
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] wiki-worker: claude -p exited (code $EXIT_CODE) for ${sessionId}" >> "$LOG"
+
+# Copy to local disk
+mkdir -p "${SUMMARIES_DIR}"
+[ -f "${tmpSummary}" ] && cp "${tmpSummary}" "${join(SUMMARIES_DIR, `${sessionId}.md`)}"
+[ -f "${tmpIndex}" ] && cp "${tmpIndex}" "${INDEX_FILE}"
+
+# Upload to server
+node "${uploadScript}" >> "$LOG" 2>&1
+
+# Cleanup
+rm -rf "${tmpDir}"
+`, { mode: 0o755 });
+
+  // Spawn in background with nohup — same as CLI's deeplake-wiki.sh
+  spawn("nohup", ["bash", wrapperScript], {
+    detached: true,
+    stdio: ["ignore", "ignore", "ignore"],
+  }).unref();
+
+  wikiLog(`SessionEnd: spawned wiki worker for ${sessionId} (script: ${wrapperScript})`);
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
