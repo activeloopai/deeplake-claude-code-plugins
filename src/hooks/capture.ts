@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir, userInfo } from "node:os";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
@@ -9,6 +12,7 @@ const log = (msg: string) => _log("capture", msg);
 
 interface HookInput {
   session_id: string;
+  cwd?: string;
   prompt?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
@@ -18,6 +22,39 @@ interface HookInput {
 }
 
 const CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
+
+/** Build the session JSONL path matching the CLI convention:
+ *  /sessions/<username>/<username>_<org>_<workspace>_<slug>.jsonl */
+function buildSessionPath(config: { orgId: string; workspaceId: string }, sessionId: string): string {
+  // Try to get userName from credentials.json (may have been saved by auth flow)
+  let userName = "user";
+  let orgName = "org";
+  try {
+    const creds = JSON.parse(readFileSync(join(homedir(), ".deeplake", "credentials.json"), "utf-8"));
+    userName = creds.userName ?? userInfo().username ?? "user";
+    orgName = creds.orgName ?? "org";
+  } catch {
+    userName = userInfo().username ?? "user";
+  }
+  const workspace = config.workspaceId ?? "default";
+
+  // Try to extract slug from local Claude JSONL
+  let slug = sessionId;
+  try {
+    const projectsDir = join(homedir(), ".claude", "projects");
+    const dirs = readdirSync(projectsDir);
+    for (const dir of dirs) {
+      try {
+        const jsonlPath = join(projectsDir, dir, `${sessionId}.jsonl`);
+        const content = readFileSync(jsonlPath, "utf-8");
+        const match = content.match(/"slug":"([^"]*)"/);
+        if (match) { slug = match[1]; break; }
+      } catch { /* skip */ }
+    }
+  } catch { /* skip */ }
+
+  return `/sessions/${userName}/${userName}_${orgName}_${workspace}_${slug}.jsonl`;
+}
 
 async function main(): Promise<void> {
   if (!CAPTURE) return;
@@ -65,8 +102,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  const filename = `session_${input.session_id}.jsonl`;
-  await fs.appendFile(`/${filename}`, JSON.stringify(entry) + "\n");
+  const sessionPath = buildSessionPath(config, input.session_id);
+  log(`writing to ${sessionPath}`);
+
+  // Ensure sessions directory exists
+  const dir = sessionPath.substring(0, sessionPath.lastIndexOf("/"));
+  try { await fs.mkdir("/sessions"); } catch { /* exists */ }
+  try { await fs.mkdir(dir); } catch { /* exists */ }
+
+  await fs.appendFile(sessionPath, JSON.stringify(entry) + "\n");
   await fs.flush();
   log("capture ok → cloud");
 }
