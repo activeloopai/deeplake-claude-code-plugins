@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { appendFileSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -101,10 +102,13 @@ function getShellCommand(toolName: string, toolInput: Record<string, unknown>): 
     }
     case "Bash": {
       const cmd = toolInput.command as string | undefined;
-      if (cmd && touchesMemory(cmd)) {
+      if (!cmd || !touchesMemory(cmd)) break;
+      // Let deeplake CLI commands pass through to real bash (install, mount, login, etc.)
+      if (/\bdeeplake\s+(mount|login|unmount|status)\b/.test(cmd) || cmd.includes("deeplake.ai/install")) break;
+      {
         const rewritten = rewritePaths(cmd);
         if (!isSafe(rewritten)) {
-          log(`unsafe command blocked: ${rewritten.slice(0, 100)}`);
+          log(`unsafe command blocked: ${rewritten}`);
           return null;
         }
         return rewritten;
@@ -124,20 +128,41 @@ function getShellCommand(toolName: string, toolInput: Record<string, unknown>): 
 
 async function main(): Promise<void> {
   const input = await readStdin<PreToolUseInput>();
-  log(`hook fired: tool=${input.tool_name} input=${JSON.stringify(input.tool_input).slice(0, 200)}`);
+  log(`hook fired: tool=${input.tool_name} input=${JSON.stringify(input.tool_input)}`);
 
   const cmd = (input.tool_input.command as string) ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
 
+  // Let deeplake CLI commands (install, mount, login) pass through to real bash
+  if (!shellCmd && touchesMemory(cmd) && (/\bdeeplake\s+(mount|login|unmount|status)\b/.test(cmd) || cmd.includes("deeplake.ai/install"))) {
+    log(`deeplake CLI command — passing through to real bash`);
+    return;
+  }
+
   if (!shellCmd && touchesMemory(cmd)) {
-    // Unsafe command targeting memory — show CLI install prompt
-    log(`unsafe → showing CLI install prompt`);
-    const installPrompt = `echo "This command requires the Deeplake CLI (FUSE mount). Install: curl -fsSL https://deeplake.ai/install.sh | bash && deeplake mount ~/.deeplake/memory — Or rewrite using safe builtins: cat, ls, grep, jq, head, tail, sort, wc, find"`;
+    // Check if deeplake CLI is installed — if yes, let it run on real FUSE mount
+    let cliInstalled = false;
+    try {
+      execFileSync("which", ["deeplake"], { stdio: "ignore", timeout: 2000 });
+      cliInstalled = true;
+    } catch {
+      // Also check common install paths
+      const paths = ["/usr/local/bin/deeplake", join(homedir(), ".local", "bin", "deeplake"), join(homedir(), ".deeplake", "bin", "deeplake")];
+      cliInstalled = paths.some(p => existsSync(p));
+    }
+
+    if (cliInstalled) {
+      log(`unsafe but CLI installed — passing through to real bash`);
+      return; // Let real bash + FUSE handle it
+    }
+
+    log(`unsafe → denying, suggesting CLI install`);
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        permissionDecision: "allow",
-        updatedInput: { command: installPrompt, description: "[DeepLake] CLI required for this command" },
+        permissionDecision: "deny",
+        permissionDecisionReason: "This command requires the Deeplake CLI with FUSE mount support.",
+        additionalContext: "Ask the user if they want to install the Deeplake CLI. Do NOT silently rewrite or skip. If they agree, run: curl -fsSL https://deeplake.ai/install.sh | bash && deeplake mount ~/.deeplake/memory — then retry the original command. If they decline, rewrite using safe builtins (cat, grep, jq, head, tail). If install fails (FUSE not supported, Windows, permission error), report the error and stop.",
       },
     }));
     return;
