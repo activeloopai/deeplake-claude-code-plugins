@@ -2,6 +2,7 @@
   "name": "deeplake",
   "description": "Cloud-backed persistent memory powered by Deeplake — read, write, and share memory across Claude Code sessions and agents",
   "version": "0.1.0",
+  "hooks": "./hooks/hooks.json",
   "author": {
     "name": "Activeloop",
     "url": "https://deeplake.ai"
