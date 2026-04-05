@@ -35,10 +35,6 @@ The auth command path is injected at session start. Use the exact path from the 
 - `members` — list members
 - `login` — re-login
 
-## Limits
-
-Do NOT spawn subagents to read deeplake memory. If a file returns empty, you may retry once. If results are still unavailable after a few attempts, report what you found and move on.
-
 ## Debugging
 
 Set `DEEPLAKE_DEBUG=1` to enable verbose logging to `~/.deeplake/hook-debug.log`.
