@@ -1,0 +1,18 @@
+{
+  "name": "deeplake-claude-code-plugins",
+  "owner": {
+    "name": "Activeloop",
+    "email": "support@activeloop.ai"
+  },
+  "metadata": {
+    "description": "Cloud-backed persistent memory for Claude Code — captures conversations and makes them searchable across sessions, users, and agents"
+  },
+  "plugins": [
+    {
+      "name": "deeplake-hivemind",
+      "description": "Persistent shared memory powered by Deeplake — captures all session activity and provides cross-session, cross-agent memory search via virtual filesystem",
+      "source": "./",
+      "homepage": "https://github.com/activeloopai/deeplake-claude-code-plugins"
+    }
+  ]
+}
