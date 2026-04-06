@@ -254,14 +254,26 @@ export class DeeplakeFs implements IFileSystem {
 
   async appendFile(path: string, content: FileContent, opts?: WriteFileOptions | BufferEncoding): Promise<void> {
     const p = normPath(path);
-    let existing = Buffer.alloc(0);
-    try {
-      if (this.files.has(p)) existing = Buffer.from(await this.readFileBuffer(p));
-    } catch {
-      // File doesn't exist yet — start empty
+    const add = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
+
+    // Fast path: SQL-level concat — no read-back, O(1) per append
+    if (this.files.has(p) || await this.exists(p).catch(() => false)) {
+      const addHex = Buffer.from(add, "utf-8").toString("hex");
+      await this.client.query(
+        `UPDATE "${this.table}" SET ` +
+        `content_text = content_text || E'${esc(add)}', ` +
+        `content = content || E'\\\\x${addHex}', ` +
+        `size_bytes = size_bytes + ${Buffer.byteLength(add, "utf-8")} ` +
+        `WHERE path = '${esc(p)}'`
+      );
+      // Update local metadata
+      const m = this.meta.get(p);
+      if (m) m.size += Buffer.byteLength(add, "utf-8");
+    } else {
+      // File doesn't exist yet — create it
+      await this.writeFile(p, typeof content === "string" ? Buffer.from(content, "utf-8") : Buffer.from(content), opts);
+      await this.flush();
     }
-    const add = typeof content === "string" ? Buffer.from(content, "utf-8") : Buffer.from(content);
-    await this.writeFile(p, Buffer.concat([existing, add]), opts);
   }
 
   // ── IFileSystem: metadata ─────────────────────────────────────────────────
