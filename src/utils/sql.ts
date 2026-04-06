@@ -14,7 +14,7 @@ export function sqlStr(value: string): string {
     .replace(/\\/g, "\\\\")
     .replace(/'/g, "''")
     .replace(/\0/g, "")
-    .replace(/[\x01-\x1f\x7f]/g, "");
+    .replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 
 /**
