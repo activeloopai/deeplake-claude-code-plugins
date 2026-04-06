@@ -7,6 +7,7 @@
     "deeplake-shell": "bundle/deeplake-shell.js"
   },
   "scripts": {
+    "postinstall": "node scripts/patch-wasm.mjs",
     "build": "tsc && node esbuild.config.mjs",
     "bundle": "node esbuild.config.mjs",
     "dev": "tsc --watch",
@@ -14,6 +15,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "deeplake": "^0.3.28",
     "just-bash": "^2.14.0",
     "yargs-parser": "^21.1.1"
   },
