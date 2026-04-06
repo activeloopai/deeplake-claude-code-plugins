@@ -99,6 +99,10 @@ export class DeeplakeFs implements IFileSystem {
     mount = "/memory",
   ): Promise<DeeplakeFs> {
     const fs = new DeeplakeFs(client, table, mount);
+    // Ensure the table exists before bootstrapping.
+    await client.ensureTable();
+    // Sync table to ensure query engine sees latest writes.
+    await client.query(`SELECT deeplake_sync_table('${table}')`);
     // Bootstrap: load path metadata. Retry once on 503 (API cold-start issue).
     const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
     try {
@@ -178,6 +182,8 @@ export class DeeplakeFs implements IFileSystem {
         `VALUES ('${id}', '${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes}, '${ts}')`
       );
     }
+    // Sync so subsequent reads see the new data.
+    await this.client.query(`SELECT deeplake_sync_table('${this.table}')`);
   }
 
   // ── IFileSystem: reads ────────────────────────────────────────────────────

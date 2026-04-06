@@ -11,6 +11,8 @@ function makeClient(queryResults: Record<string, string>[] = []) {
     getField:      vi.fn().mockResolvedValue(""),
     ingest:        vi.fn().mockResolvedValue({ tableName: "t", rowCount: 0, datasetPath: "" }),
     query:         vi.fn().mockResolvedValue(queryResults),
+    listTables:    vi.fn().mockResolvedValue(["test"]),
+    ensureTable:   vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -55,29 +57,22 @@ describe("grep interceptor", () => {
     expect(result.exitCode).toBe(0);
   });
 
-  it("falls back to ILIKE when BM25 returns nothing", async () => {
+  it("falls back to in-memory search when BM25 returns nothing", async () => {
     const client = makeClient([]);
-    // Bootstrap returns [] (empty table), then BM25 returns [], then ILIKE returns a hit
-    client.query
-      .mockResolvedValueOnce([])                          // bootstrap SELECT
-      .mockResolvedValueOnce([])                          // BM25 — no results
-      .mockResolvedValueOnce([{ path: "/memory/a.txt" }]); // ILIKE — hit
 
     const fs = await DeeplakeFs.create(client as never, "test", "/memory");
     await fs.writeFile("/memory/a.txt", "hello world");
     client.query.mockClear(); // clear bootstrap + write calls
-    // Now set up for the grep calls
-    client.query
-      .mockResolvedValueOnce([])                          // BM25 — no results
-      .mockResolvedValueOnce([{ path: "/memory/a.txt" }]); // ILIKE — hit
+    // BM25 returns no results — should fall back to in-memory getAllPaths
+    client.query.mockResolvedValueOnce([]);
 
     const cmd = createGrepCommand(client as never, fs, "test");
     const result = await cmd.execute(["hello", "/memory"], makeCtx(fs) as never);
 
     const calls = client.query.mock.calls as [string][];
     expect(calls[0][0]).toContain("<#>");
-    expect(calls[1][0]).toContain("LIKE");
     expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("hello world");
   });
 
   it("returns exitCode=1 when no matches found", async () => {

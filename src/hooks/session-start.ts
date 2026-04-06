@@ -8,9 +8,12 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { existsSync, writeFileSync, mkdirSync, appendFileSync, readFileSync } from "node:fs";
+import { mkdirSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { loadCredentials, login } from "../commands/auth.js";
+import { loadConfig } from "../config.js";
+import { DeeplakeApi } from "../deeplake-api.js";
+import { DeeplakeFs } from "../shell/deeplake-fs.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("session-start", msg);
@@ -44,9 +47,6 @@ LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty 
 Debugging: Set DEEPLAKE_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
 
 const HOME = homedir();
-const MEMORY_PATH = join(HOME, ".deeplake", "memory");
-const SUMMARIES_DIR = join(MEMORY_PATH, "summaries");
-const INDEX_FILE = join(MEMORY_PATH, "index.md");
 const WIKI_LOG = join(HOME, ".claude", "hooks", "deeplake-wiki.log");
 
 function wikiLog(msg: string): void {
@@ -56,12 +56,15 @@ function wikiLog(msg: string): void {
   } catch { /* ignore */ }
 }
 
-function createPlaceholder(sessionId: string, cwd: string): void {
-  mkdirSync(SUMMARIES_DIR, { recursive: true });
+async function createPlaceholder(fs: DeeplakeFs, sessionId: string, cwd: string): Promise<void> {
+  // Ensure directories
+  try { await fs.mkdir("/summaries"); } catch { /* exists */ }
+  try { await fs.mkdir("/sessions"); } catch { /* exists */ }
 
   // Bootstrap index if missing
-  if (!existsSync(INDEX_FILE)) {
-    writeFileSync(INDEX_FILE, [
+  const indexExists = await fs.exists("/index.md");
+  if (!indexExists) {
+    await fs.writeFile("/index.md", [
       "# Session Index",
       "",
       "List of all Claude Code sessions with summaries.",
@@ -73,12 +76,12 @@ function createPlaceholder(sessionId: string, cwd: string): void {
     wikiLog("Created index.md");
   }
 
-  const summaryFile = join(SUMMARIES_DIR, `${sessionId}.md`);
+  const summaryPath = `/summaries/${sessionId}.md`;
+  const summaryExists = await fs.exists(summaryPath);
 
-  // Only create placeholder if this session doesn't already have a summary (new session)
-  if (!existsSync(summaryFile)) {
+  if (!summaryExists) {
     const now = new Date().toISOString();
-    writeFileSync(summaryFile, [
+    await fs.writeFile(summaryPath, [
       `# Session ${sessionId}`,
       `- **Started**: ${now}`,
       `- **Project**: ${cwd}`,
@@ -89,7 +92,8 @@ function createPlaceholder(sessionId: string, cwd: string): void {
     // Append to index
     const shortDate = now.slice(0, 10);
     const projectName = cwd.split("/").pop() ?? "unknown";
-    appendFileSync(INDEX_FILE, `| [${sessionId}](summaries/${sessionId}.md) | ${shortDate} | ${projectName} | in progress |\n`);
+    await fs.appendFile("/index.md", `| [${sessionId}](summaries/${sessionId}.md) | ${shortDate} | ${projectName} | in progress |\n`);
+    await fs.flush();
 
     wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
   } else {
@@ -104,11 +108,6 @@ interface SessionStartInput {
 
 async function main(): Promise<void> {
   const input = await readStdin<SessionStartInput>();
-
-  // Create placeholder summary + index entry
-  if (input.session_id) {
-    createPlaceholder(input.session_id, input.cwd ?? "");
-  }
 
   let creds = loadCredentials();
 
@@ -130,6 +129,22 @@ async function main(): Promise<void> {
         creds.userName = userInfo().username ?? "user";
         log(`backfilled userName: ${creds.userName}`);
       } catch { /* non-fatal */ }
+    }
+  }
+
+  // Create placeholder summary + index entry via Deeplake API
+  if (input.session_id && creds?.token) {
+    try {
+      const config = loadConfig();
+      if (config) {
+        const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
+        const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
+        const fs = await DeeplakeFs.create(api, table, "/");
+        await createPlaceholder(fs, input.session_id, input.cwd ?? "");
+        log("placeholder created");
+      }
+    } catch (e: any) {
+      log(`placeholder failed: ${e.message}`);
     }
   }
 

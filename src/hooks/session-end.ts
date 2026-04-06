@@ -23,9 +23,6 @@ import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("session-end", msg);
 
 const HOME = homedir();
-const MEMORY_PATH = join(HOME, ".deeplake", "memory");
-const SUMMARIES_DIR = join(MEMORY_PATH, "summaries");
-const INDEX_FILE = join(MEMORY_PATH, "index.md");
 const WIKI_LOG = join(HOME, ".claude", "hooks", "deeplake-wiki.log");
 
 interface StopInput {
@@ -198,8 +195,6 @@ IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact. Future you w
     sessionId,
     summaryPath: tmpSummary,
     indexPath: tmpIndex,
-    summariesDir: SUMMARIES_DIR,
-    indexFile: INDEX_FILE,
     tmpDir,
   }));
 
@@ -247,11 +242,6 @@ PROMPT=$(cat "$PROMPT_FILE")
 
 EXIT_CODE=$?
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] wiki-worker: claude -p exited (code $EXIT_CODE) for ${sessionId}" >> "$LOG"
-
-# Copy to local disk
-mkdir -p "${SUMMARIES_DIR}"
-[ -f "${tmpSummary}" ] && cp "${tmpSummary}" "${join(SUMMARIES_DIR, `${sessionId}.md`)}"
-[ -f "${tmpIndex}" ] && cp "${tmpIndex}" "${INDEX_FILE}"
 
 # Upload to server
 node "${uploadScript}" >> "$LOG" 2>&1

@@ -149,8 +149,10 @@ export class DeeplakeApi {
 
   private async upsertRowSql(row: WriteRow): Promise<void> {
     const hex = row.content.toString("hex");
-    const sql = `INSERT INTO "${this.tableName}" (path, filename, content, content_text, mime_type, size_bytes) ` +
-      `VALUES ('${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'\\\\x${hex}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes})`;
+    const id = randomUUID();
+    const ts = new Date().toISOString();
+    const sql = `INSERT INTO "${this.tableName}" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) ` +
+      `VALUES ('${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'\\\\x${hex}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${ts}')`;
     try {
       await this.query(sql);
     } catch (e: any) {
@@ -174,5 +176,25 @@ export class DeeplakeApi {
   /** List all tables in the workspace. */
   async listTables(): Promise<string[]> {
     return this.client.listTables();
+  }
+
+  /** Create the table if it doesn't already exist. Uses USING deeplake for proper storage. */
+  async ensureTable(): Promise<void> {
+    const tables = await this.listTables();
+    if (tables.includes(this.tableName)) return;
+    log(`table "${this.tableName}" not found, creating`);
+    await this.query(
+      `CREATE TABLE IF NOT EXISTS "${this.tableName}" (` +
+        `id TEXT NOT NULL DEFAULT '', ` +
+        `path TEXT NOT NULL DEFAULT '', ` +
+        `filename TEXT NOT NULL DEFAULT '', ` +
+        `content BYTEA NOT NULL DEFAULT ''::bytea, ` +
+        `content_text TEXT NOT NULL DEFAULT '', ` +
+        `mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', ` +
+        `size_bytes BIGINT NOT NULL DEFAULT 0, ` +
+        `timestamp TEXT NOT NULL DEFAULT ''` +
+      `) USING deeplake`,
+    );
+    log(`table "${this.tableName}" created`);
   }
 }

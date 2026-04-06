@@ -38,8 +38,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Shell defaults to "memory" regardless of DEEPLAKE_MEMORY_TABLE (used by hooks).
-  // Override explicitly with DEEPLAKE_TABLE if needed.
   const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
   const mount = process.env["DEEPLAKE_MOUNT"] ?? "/";
 
