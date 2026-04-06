@@ -155,17 +155,31 @@ async function main(): Promise<void> {
     }
 
     if (cliInstalled) {
-      log(`unsafe but CLI installed — passing through to real bash`);
-      return; // Let real bash + FUSE handle it
+      // Check if FUSE mount is active
+      const mountActive = existsSync(join(MEMORY_PATH, ".deeplake"));
+      if (mountActive) {
+        log(`unsafe, CLI installed + mounted — passing through to real bash`);
+        return;
+      }
+      log(`unsafe, CLI installed but not mounted → suggesting mount`);
+      console.log(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: "The Deeplake CLI is installed but the memory filesystem is not mounted.",
+          additionalContext: "Ask the user: 'The Deeplake memory filesystem needs to be mounted. Shall I mount it?' If they agree, run: deeplake mount ~/.deeplake/memory — then retry the original command. If mount fails, report the error and stop.",
+        },
+      }));
+      return;
     }
 
-    log(`unsafe → denying, suggesting CLI install`);
+    log(`unsafe, CLI not installed → suggesting install`);
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
         permissionDecisionReason: "This command requires the Deeplake CLI with FUSE mount support.",
-        additionalContext: "Ask the user if they want to install the Deeplake CLI. Do NOT silently rewrite or skip. If they agree, run: curl -fsSL https://deeplake.ai/install.sh | bash && deeplake mount ~/.deeplake/memory — then retry the original command. If they decline, rewrite using safe builtins (cat, grep, jq, head, tail). If install fails (FUSE not supported, Windows, permission error), report the error and stop.",
+        additionalContext: "Ask the user: 'This command needs the Deeplake CLI. Shall I install it?' If they agree, run: curl -fsSL https://deeplake.ai/install.sh | bash && deeplake mount ~/.deeplake/memory — then retry the original command. If they decline, rewrite using safe builtins (cat, grep, jq, head, tail). If install fails (FUSE not supported, Windows, permission error), report the error and stop.",
       },
     }));
     return;

@@ -14,7 +14,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "deeplake": "^0.3.29",
+    "deeplake": "^0.3.30",
     "just-bash": "^2.14.0",
     "yargs-parser": "^21.1.1"
   },

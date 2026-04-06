@@ -9,6 +9,6 @@
   },
   "homepage": "https://deeplake.ai",
   "repository": "https://github.com/activeloopai/deeplake-claude-code-plugins",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": ["memory", "deeplake", "persistent-memory", "shared-memory", "agent-memory"]
 }
