@@ -197,4 +197,4 @@ After making changes, run `npm run build` and send a new message in Claude Code 
 
 ## License
 
-Proprietary — © Activeloop, Inc.
+Apache License 2.0 — © Activeloop, Inc. See [LICENSE](LICENSE) for details.
