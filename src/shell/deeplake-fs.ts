@@ -1,4 +1,5 @@
 import { basename, posix } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { DeeplakeApi } from "../deeplake-api.js";
 import type {
   IFileSystem, FsStat, MkdirOptions, RmOptions, CpOptions,
@@ -169,10 +170,12 @@ export class DeeplakeFs implements IFileSystem {
       const p     = esc(r.path);
       const fname = esc(r.filename);
       const mime  = esc(r.mimeType);
+      const id = randomUUID();
+      const ts = new Date().toISOString();
       await this.client.query(`DELETE FROM "${this.table}" WHERE path = '${p}'`);
       await this.client.query(
-        `INSERT INTO "${this.table}" (path, filename, content, content_text, mime_type, size_bytes) ` +
-        `VALUES ('${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes})`
+        `INSERT INTO "${this.table}" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) ` +
+        `VALUES ('${id}', '${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes}, '${ts}')`
       );
     }
   }

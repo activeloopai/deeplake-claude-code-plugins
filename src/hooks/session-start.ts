@@ -123,6 +123,14 @@ async function main(): Promise<void> {
     }
   } else {
     log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
+    // Backfill userName if missing (for users who logged in before this field was added)
+    if (creds.token && !creds.userName) {
+      try {
+        const { userInfo } = await import("node:os");
+        creds.userName = userInfo().username ?? "user";
+        log(`backfilled userName: ${creds.userName}`);
+      } catch { /* non-fatal */ }
+    }
   }
 
   const resolvedContext = context.replace(/DEEPLAKE_AUTH_CMD/g, AUTH_CMD);
