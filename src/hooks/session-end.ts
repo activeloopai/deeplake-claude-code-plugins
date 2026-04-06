@@ -127,8 +127,8 @@ async function main(): Promise<void> {
 
   const claudeBin = findClaudeBin();
 
-  // Build the prompt — same as deeplake-wiki.sh, but writes to temp paths
-  const wikiPrompt = `You are a session summarizer. Read the session JSONL and generate a structured summary.
+  // Build the prompt — Karpathy-style personal wiki generation
+  const wikiPrompt = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge — entities, decisions, relationships, and facts — into a structured, searchable wiki entry. Think of this as building a knowledge graph, not writing a summary.
 
 SESSION JSONL path: ${tmpJsonl}
 SUMMARY FILE to write: ${tmpSummary}
@@ -153,21 +153,35 @@ Steps:
 - **Project**: ${cwd}
 - **JSONL offset**: ${jsonlLines}
 
-## Summary
-<2-3 sentences of what was accomplished>
+## What Happened
+<2-3 dense sentences. What was the goal, what was accomplished, what's left.>
+
+## People
+<For each person mentioned: name, role, what they did/said. Format: **Name** — role — action>
+
+## Entities
+<Every named thing: repos, branches, files, APIs, tools, services, tables, features, bugs.
+Format: **entity** (type) — what was done with it, its current state>
+
+## Decisions & Reasoning
+<Every decision made and WHY. Not just "did X" but "did X because Y, considered Z but rejected it because W">
 
 ## Key Facts
-<bullet list: every decision, bug fix, file change, entity, reasoning>
+<Bullet list of atomic facts that could answer future questions. Each fact should stand alone.
+Example: "- The memory table uses DELETE+INSERT, not UPDATE (WASM doesn't support upsert)">
 
 ## Files Modified
-<bullet list with (new/modified/deleted)>
+<bullet list: path (new/modified/deleted) — what changed>
+
+## Open Questions / TODO
+<Anything unresolved, blocked, or explicitly deferred>
 
 3. Update the index file: find the line containing ${sessionId} and replace it with:
 | [${sessionId}](summaries/${sessionId}.md) | <date> | <project> | <short 1-line description max 80 chars> |
 
 If the line does not exist, append it.
 
-Be factual and dense. Capture every detail that could be asked about later.`;
+IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact. Future you will search this wiki to answer questions like "who worked on X", "why did we choose Y", "what's the status of Z". If a detail exists in the session, it should be in the wiki.`;
 
   // Write prompt to a file to avoid shell escaping issues
   const promptFile = join(tmpDir, "prompt.txt");

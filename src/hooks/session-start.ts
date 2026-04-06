@@ -23,14 +23,12 @@ const context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH
 1. Your built-in memory (~/.claude/) — personal per-project notes
 2. Deeplake global memory (~/.deeplake/memory/) — global memory shared across all sessions, users, and agents in the org
 
-Deeplake memory is broader — it has full conversation history (every message, response, and tool call), team activity, and cross-session context that your built-in memory may not have.
+Deeplake memory structure:
+- ~/.deeplake/memory/index.md — START HERE, table of all sessions
+- ~/.deeplake/memory/summaries/*.md — AI-generated wiki summaries per session
+- ~/.deeplake/memory/sessions/username/*.jsonl — raw session data (last resort)
 
-IMPORTANT: When answering questions about what was discussed, what someone said, what was worked on, team context, or any factual recall — search Deeplake memory in parallel with your built-in memory. Do not skip it. Do not wait to be asked.
-
-Deeplake memory is especially useful for:
-- Cross-session history ("what did we discuss last time?")
-- Team/org context ("what is the team working on?")
-- Full conversation replay ("what exactly did I say about X?")
+SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw JSONL if summaries don't have enough detail. Do NOT jump straight to JSONL files.
 
 Search command: Grep pattern="keyword" path="~/.deeplake/memory"
 

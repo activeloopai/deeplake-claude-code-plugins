@@ -7,7 +7,6 @@
     "deeplake-shell": "bundle/deeplake-shell.js"
   },
   "scripts": {
-    "postinstall": "node scripts/patch-wasm.mjs",
     "build": "tsc && node esbuild.config.mjs",
     "bundle": "node esbuild.config.mjs",
     "dev": "tsc --watch",
