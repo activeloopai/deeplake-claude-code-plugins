@@ -31,7 +31,7 @@ function buildSessionPath(config: { orgId: string; workspaceId: string }, sessio
   let orgName = "org";
   try {
     const creds = JSON.parse(readFileSync(join(homedir(), ".deeplake", "credentials.json"), "utf-8"));
-    userName = creds.userName ?? userInfo().username ?? "user";
+    userName = creds.userName ?? creds.orgName ?? userInfo().username ?? "user";
     orgName = creds.orgName ?? "org";
   } catch {
     userName = userInfo().username ?? "user";

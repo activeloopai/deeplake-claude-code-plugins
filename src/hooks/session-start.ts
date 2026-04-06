@@ -125,6 +125,24 @@ async function main(): Promise<void> {
     }
   } else {
     log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
+    // Backfill userName if missing (for users who logged in before this field was added)
+    if (creds.token && !creds.userName) {
+      try {
+        const resp = await fetch(`${creds.apiUrl ?? "https://api.deeplake.ai"}/me`, {
+          headers: { Authorization: `Bearer ${creds.token}` },
+        });
+        if (resp.ok) {
+          const user = await resp.json() as { name?: string; email?: string };
+          const userName = user.name || (user.email ? user.email.split("@")[0] : "");
+          if (userName) {
+            creds.userName = userName;
+            const { saveCredentials } = await import("../commands/auth.js");
+            saveCredentials(creds);
+            log(`backfilled userName: ${userName}`);
+          }
+        }
+      } catch { /* ignore */ }
+    }
   }
 
   const resolvedContext = context.replace(/DEEPLAKE_AUTH_CMD/g, AUTH_CMD);

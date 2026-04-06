@@ -20,6 +20,7 @@ export interface Credentials {
   token: string;
   orgId: string;
   orgName?: string;
+  userName?: string;
   workspaceId?: string;
   apiUrl?: string;
   savedAt: string;
@@ -235,8 +236,9 @@ export async function login(apiUrl = DEFAULT_API_URL): Promise<Credentials> {
   const { token: authToken } = await deviceFlowLogin(apiUrl);
 
   // Step 2: Get user info
-  const user = await apiGet("/me", authToken, apiUrl) as { id: string; name: string };
-  console.log(`\nLogged in as: ${user.name}`);
+  const user = await apiGet("/me", authToken, apiUrl) as { id: string; name: string; email?: string };
+  const userName = user.name || (user.email ? user.email.split("@")[0] : "user");
+  console.log(`\nLogged in as: ${userName}`);
 
   // Step 3: List orgs and select
   const orgs = await listOrgs(authToken, apiUrl);
@@ -271,6 +273,7 @@ export async function login(apiUrl = DEFAULT_API_URL): Promise<Credentials> {
     token: apiToken,
     orgId,
     orgName,
+    userName,
     workspaceId: "default",
     apiUrl,
     savedAt: new Date().toISOString(),
