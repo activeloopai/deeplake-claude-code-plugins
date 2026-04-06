@@ -5,5 +5,9 @@
   "author": {
     "name": "Activeloop",
     "url": "https://deeplake.ai"
-  }
+  },
+  "homepage": "https://deeplake.ai",
+  "repository": "https://github.com/activeloopai/deeplake-claude-code-plugins",
+  "license": "MIT",
+  "keywords": ["memory", "deeplake", "persistent-memory", "shared-memory", "agent-memory"]
 }

@@ -38,6 +38,7 @@ Organization management (DEEPLAKE_AUTH_CMD will be replaced with actual path bel
 - List members: node "DEEPLAKE_AUTH_CMD" members
 - Re-login: node "DEEPLAKE_AUTH_CMD" login
 
+LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set DEEPLAKE_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
 
