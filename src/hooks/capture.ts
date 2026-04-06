@@ -41,7 +41,7 @@ function buildSessionPath(config: { orgId: string; workspaceId: string }, sessio
   let orgName = "org";
   try {
     const creds = JSON.parse(readFileSync(join(homedir(), ".deeplake", "credentials.json"), "utf-8"));
-    userName = creds.userName ?? userInfo().username ?? "user";
+    userName = creds.userName ?? creds.orgName ?? userInfo().username ?? "user";
     orgName = creds.orgName ?? "org";
   } catch {
     userName = userInfo().username ?? "user";
@@ -106,8 +106,8 @@ async function main(): Promise<void> {
       type: "tool_call",
       tool_name: input.tool_name,
       tool_use_id: input.tool_use_id,
-      tool_input: JSON.stringify(input.tool_input).slice(0, 10000),
-      tool_response: JSON.stringify(input.tool_response).slice(0, 10000),
+      tool_input: JSON.stringify(input.tool_input),
+      tool_response: JSON.stringify(input.tool_response),
     };
   } else if (input.last_assistant_message !== undefined) {
     log(`assistant session=${input.session_id}`);

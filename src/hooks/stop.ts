@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 
-import { appendFileSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { readStdin } from "../utils/stdin.js";
-
-const MEMORY_DIR = process.env.DEEPLAKE_MEMORY_DIR ?? join(homedir(), ".deeplake", "memory");
+import { loadConfig } from "../config.js";
+import { DeeplakeApi } from "../deeplake-api.js";
+import { DeeplakeFs } from "../shell/deeplake-fs.js";
 import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("stop", msg);
 
@@ -22,7 +20,15 @@ async function main(): Promise<void> {
   const input = await readStdin<StopInput>();
   log(`session=${input.session_id} response=${(input.last_assistant_message ?? "").slice(0, 100)}`);
 
-  if (!existsSync(MEMORY_DIR)) mkdirSync(MEMORY_DIR, { recursive: true });
+  const config = loadConfig();
+  if (!config) { log("no config"); return; }
+
+  const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
+  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
+  const fs = await DeeplakeFs.create(api, table, "/");
+
+  const userName = config.userName ?? "user";
+  const sessionPath = `/sessions/${userName}/${userName}_${config.orgName ?? config.orgId}_${config.workspaceId}_${input.session_id}.jsonl`;
 
   const entry = {
     id: crypto.randomUUID(),
@@ -32,9 +38,11 @@ async function main(): Promise<void> {
     timestamp: new Date().toISOString(),
   };
 
-  const file = join(MEMORY_DIR, `session_${input.session_id}.jsonl`);
-  appendFileSync(file, JSON.stringify(entry) + "\n");
-  log("capture ok");
+  try { await fs.mkdir("/sessions"); } catch { /* exists */ }
+  try { await fs.mkdir(`/sessions/${userName}`); } catch { /* exists */ }
+  await fs.appendFile(sessionPath, JSON.stringify(entry) + "\n");
+  await fs.flush();
+  log("capture ok → cloud");
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });

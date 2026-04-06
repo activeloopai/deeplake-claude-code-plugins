@@ -11,20 +11,28 @@ You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall,
 1. **Your built-in memory** (`~/.claude/`) — personal per-project notes
 2. **Deeplake global memory** (`~/.deeplake/memory/`) — global memory shared across all sessions, users, and agents in the org
 
-Deeplake memory is broader — it has full conversation history (every message, response, and tool call), team activity, and cross-session context that your built-in memory may not have.
+## Memory Structure
 
-IMPORTANT: When answering questions about what was discussed, what someone said, what was worked on, team context, or any factual recall — search Deeplake memory in parallel with your built-in memory. Do not skip it. Do not wait to be asked.
-
-Deeplake memory is especially useful for:
-- Cross-session history ("what did we discuss last time?")
-- Team/org context ("what is the team working on?")
-- Full conversation replay ("what exactly did I say about X?")
+```
+~/.deeplake/memory/
+├── index.md                          ← START HERE — table of all sessions
+├── summaries/
+│   ├── session-abc.md                ← AI-generated wiki summary
+│   └── session-xyz.md
+└── sessions/
+    └── username/
+        ├── user_org_ws_slug1.jsonl   ← raw session data
+        └── user_org_ws_slug2.jsonl
+```
 
 ## How to Search
 
-```
-Grep pattern="keyword" path="~/.deeplake/memory"
-```
+1. **First**: Read `~/.deeplake/memory/index.md` — quick scan of all sessions with dates, projects, descriptions
+2. **If you need details**: Read the specific summary at `~/.deeplake/memory/summaries/<session>.md`
+3. **If you need raw data**: Read the session JSONL at `~/.deeplake/memory/sessions/<user>/<file>.jsonl`
+4. **Keyword search**: `Grep pattern="keyword" path="~/.deeplake/memory"`
+
+Do NOT jump straight to reading raw JSONL files. Always start with index.md and summaries.
 
 ## Organization Management
 
@@ -37,7 +45,7 @@ The auth command path is injected at session start. Use the exact path from the 
 
 ## Limits
 
-Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
+If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 ## Debugging
 

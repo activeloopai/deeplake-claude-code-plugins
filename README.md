@@ -79,8 +79,8 @@ This plugin captures the following data and stores it in your Deeplake workspace
 | Data | What | Where |
 |------|------|-------|
 | User prompts | Every message you send to Claude | Shared Deeplake workspace |
-| Tool calls | Tool name + input (up to 5000 chars) | Shared Deeplake workspace |
-| Tool responses | Tool output (up to 5000 chars) | Shared Deeplake workspace |
+| Tool calls | Tool name + full input | Shared Deeplake workspace |
+| Tool responses | Full tool output | Shared Deeplake workspace |
 | Assistant responses | Claude's final response text | Shared Deeplake workspace |
 | Subagent activity | Subagent tool calls and responses | Shared Deeplake workspace |
 
@@ -151,6 +151,8 @@ PostToolUse hook → captures tool activity (async)
 Stop hook        → captures final assistant response
     ↓
 SubagentStop     → captures subagent activity (async)
+    ↓
+SessionEnd hook  → generates AI summary via claude -p → /summaries/*.md + /index.md
 
 DeeplakeFS (virtual filesystem)
     ↓ bootstrap: SELECT path, size_bytes, mime_type
@@ -158,7 +160,7 @@ DeeplakeFS (virtual filesystem)
     ↓ writes: DELETE + INSERT with hex-encoded binary content
     ↓ search: BM25 via content_text <#> 'pattern' (with in-memory fallback)
     ↓
-Deeplake SQL API (https://api.deeplake.ai)
+Deeplake JS SDK (npm i deeplake)
 ```
 
 ### Hook events
@@ -171,6 +173,7 @@ Deeplake SQL API (https://api.deeplake.ai)
 | `PostToolUse` | Capture tool call + response | Yes |
 | `Stop` | Capture assistant response | No |
 | `SubagentStop` | Capture subagent activity | Yes |
+| `SessionEnd` | Generate AI summary of session | No |
 
 ## Security
 
@@ -194,4 +197,4 @@ After making changes, run `npm run build` and send a new message in Claude Code 
 
 ## License
 
-Proprietary — © Activeloop, Inc.
+Apache License 2.0 — © Activeloop, Inc. See [LICENSE](LICENSE) for details.

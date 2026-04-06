@@ -11,19 +11,30 @@
     "bundle": "node esbuild.config.mjs",
     "dev": "tsc --watch",
     "shell": "tsx src/shell/deeplake-shell.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "ci": "npm run typecheck && npm test",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "tsc --noEmit --skipLibCheck"
+    ]
   },
   "dependencies": {
+    "deeplake": "^0.3.30",
     "just-bash": "^2.14.0",
-    "yargs-parser": "^21.1.1"
+    "yargs-parser": "^22.0.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^25.0.0",
     "@types/yargs-parser": "^21.0.3",
-    "esbuild": "^0.27.7",
+    "esbuild": "^0.28.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "tsx": "^4.7.0",
-    "typescript": "^5.7.0",
-    "vitest": "^2.0.0"
+    "typescript": "^6.0.0",
+    "vitest": "^4.0.0"
   },
   "engines": {
     "node": ">=20.0.0"
