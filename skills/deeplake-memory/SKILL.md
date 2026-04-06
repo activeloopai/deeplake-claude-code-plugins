@@ -37,7 +37,7 @@ The auth command path is injected at session start. Use the exact path from the 
 
 ## Limits
 
-Do NOT spawn subagents to read deeplake memory. If a file returns empty, you may retry once. If results are still unavailable after a few attempts, report what you found and move on.
+Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 ## Debugging
 

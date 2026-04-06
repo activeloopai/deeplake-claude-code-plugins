@@ -257,7 +257,11 @@ export class DeeplakeFs implements IFileSystem {
   async appendFile(path: string, content: FileContent, opts?: WriteFileOptions | BufferEncoding): Promise<void> {
     const p = normPath(path);
     let existing = Buffer.alloc(0);
-    if (this.files.has(p)) existing = Buffer.from(await this.readFileBuffer(p));
+    try {
+      if (this.files.has(p)) existing = Buffer.from(await this.readFileBuffer(p));
+    } catch {
+      // File doesn't exist yet — start empty
+    }
     const add = typeof content === "string" ? Buffer.from(content, "utf-8") : Buffer.from(content);
     await this.writeFile(p, Buffer.concat([existing, add]), opts);
   }
