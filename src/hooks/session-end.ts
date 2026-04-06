@@ -217,8 +217,10 @@ async function upload(vpath, localPath) {
   if (!text.trim()) return;
   const hex = Buffer.from(text, "utf-8").toString("hex");
   const fname = vpath.split("/").pop();
+  const id = crypto.randomUUID();
+  const ts = new Date().toISOString();
   await query("DELETE FROM \\"" + cfg.table + "\\" WHERE path = '" + esc(vpath) + "'");
-  await query("INSERT INTO \\"" + cfg.table + "\\" (path, filename, content, content_text, mime_type, size_bytes) VALUES ('" + esc(vpath) + "', '" + esc(fname) + "', E'\\\\\\\\x" + hex + "', E'" + esc(text) + "', 'text/markdown', " + Buffer.byteLength(text) + ")");
+  await query("INSERT INTO \\"" + cfg.table + "\\" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) VALUES ('" + id + "', '" + esc(vpath) + "', '" + esc(fname) + "', E'\\\\\\\\x" + hex + "', E'" + esc(text) + "', 'text/markdown', " + Buffer.byteLength(text) + ", '" + ts + "')");
   console.log("Uploaded " + vpath);
 }
 await upload("/summaries/" + cfg.sessionId + ".md", cfg.summaryPath);
