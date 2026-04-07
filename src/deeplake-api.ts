@@ -61,15 +61,6 @@ export class DeeplakeApi {
     const rows = this._pendingRows;
     this._pendingRows = [];
 
-    // Pre-delete existing rows
-    const paths = rows.map(r => r.path);
-    const escapedPaths = paths.map(p => `'${sqlStr(p)}'`).join(", ");
-    try {
-      await this.query(`DELETE FROM "${this.tableName}" WHERE path IN (${escapedPaths})`);
-    } catch {
-      // May fail for new files — that's fine
-    }
-
     const CONCURRENCY = 10;
     for (let i = 0; i < rows.length; i += CONCURRENCY) {
       const chunk = rows.slice(i, i + CONCURRENCY);
@@ -80,20 +71,22 @@ export class DeeplakeApi {
 
   private async upsertRowSql(row: WriteRow): Promise<void> {
     const hex = row.content.toString("hex");
-    const id = randomUUID();
     const ts = new Date().toISOString();
-    const sql = `INSERT INTO "${this.tableName}" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) ` +
-      `VALUES ('${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'\\\\x${hex}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${ts}')`;
-    try {
-      await this.query(sql);
-    } catch (e: any) {
-      if (e.message?.includes("duplicate") || e.message?.includes("unique")) {
-        const updateSql = `UPDATE "${this.tableName}" SET content = E'\\\\x${hex}', content_text = E'${sqlStr(row.contentText)}', ` +
-          `mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes} WHERE path = '${sqlStr(row.path)}'`;
-        await this.query(updateSql);
-      } else {
-        throw e;
-      }
+    const exists = await this.query(
+      `SELECT path FROM "${this.tableName}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`
+    );
+    if (exists.length > 0) {
+      await this.query(
+        `UPDATE "${this.tableName}" SET content = E'\\\\x${hex}', content_text = E'${sqlStr(row.contentText)}', ` +
+        `mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, timestamp = '${ts}' ` +
+        `WHERE path = '${sqlStr(row.path)}'`
+      );
+    } else {
+      const id = randomUUID();
+      await this.query(
+        `INSERT INTO "${this.tableName}" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) ` +
+        `VALUES ('${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'\\\\x${hex}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${ts}')`
+      );
     }
   }
 
