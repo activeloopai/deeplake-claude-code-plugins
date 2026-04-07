@@ -22,11 +22,16 @@ function loadCredentials() {
     return null;
   }
 }
+function saveCredentials(creds) {
+  if (!existsSync(CONFIG_DIR))
+    mkdirSync(CONFIG_DIR, { recursive: true, mode: 448 });
+  writeFileSync(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
+}
 
 // dist/src/config.js
 import { readFileSync as readFileSync2, existsSync as existsSync2 } from "node:fs";
 import { join as join2 } from "node:path";
-import { homedir as homedir2 } from "node:os";
+import { homedir as homedir2, userInfo } from "node:os";
 function loadConfig() {
   const home = homedir2();
   const credPath = join2(home, ".deeplake", "credentials.json");
@@ -46,7 +51,7 @@ function loadConfig() {
     token,
     orgId,
     orgName: creds?.orgName ?? orgId,
-    userName: creds?.userName ?? "user",
+    userName: creds?.userName || userInfo().username || "unknown",
     workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
     apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.DEEPLAKE_TABLE ?? "memory",
@@ -382,15 +387,17 @@ var DeeplakeFs = class _DeeplakeFs {
     ];
     for (const row of rows) {
       const p = row["path"];
-      const match = p.match(/\/summaries\/(.+)\.md$/);
+      const match = p.match(/\/summaries\/(?:([^/]+)\/)?([^/]+)\.md$/);
       if (!match)
         continue;
-      const sessionId = match[1];
+      const userName = match[1] || "";
+      const sessionId = match[2];
+      const relPath = userName ? `summaries/${userName}/${sessionId}.md` : `summaries/${sessionId}.md`;
       const project = row["project"] || "";
       const description = row["description"] || "";
       const creationDate = row["creation_date"] || "";
       const lastUpdateDate = row["last_update_date"] || "";
-      lines.push(`| [${sessionId}](summaries/${sessionId}.md) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
+      lines.push(`| [${sessionId}](${relPath}) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
     }
     lines.push("");
     return lines.join("\n");
@@ -708,7 +715,7 @@ var context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH w
 
 Deeplake memory structure:
 - ~/.deeplake/memory/index.md \u2014 START HERE, table of all sessions
-- ~/.deeplake/memory/summaries/*.md \u2014 AI-generated wiki summaries per session
+- ~/.deeplake/memory/summaries/username/*.md \u2014 AI-generated wiki summaries per session
 - ~/.deeplake/memory/sessions/username/*.jsonl \u2014 raw session data (last resort)
 
 SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw JSONL if summaries don't have enough detail. Do NOT jump straight to JSONL files.
@@ -741,10 +748,14 @@ async function createPlaceholder(fs, sessionId, cwd, userName, orgName, workspac
   } catch {
   }
   try {
+    await fs.mkdir(`/summaries/${userName}`);
+  } catch {
+  }
+  try {
     await fs.mkdir("/sessions");
   } catch {
   }
-  const summaryPath = `/summaries/${sessionId}.md`;
+  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
   const summaryExists = await fs.exists(summaryPath);
   if (!summaryExists) {
     const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -778,9 +789,10 @@ async function main() {
     log3(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
     if (creds.token && !creds.userName) {
       try {
-        const { userInfo } = await import("node:os");
-        creds.userName = userInfo().username ?? "user";
-        log3(`backfilled userName: ${creds.userName}`);
+        const { userInfo: userInfo2 } = await import("node:os");
+        creds.userName = userInfo2().username ?? "unknown";
+        saveCredentials(creds);
+        log3(`backfilled and persisted userName: ${creds.userName}`);
       } catch {
       }
     }

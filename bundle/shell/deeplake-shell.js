@@ -66723,7 +66723,7 @@ function Bi3(e6) {
 // dist/src/config.js
 import { readFileSync, existsSync as existsSync2 } from "node:fs";
 import { join as join4 } from "node:path";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 function loadConfig() {
   const home = homedir();
   const credPath = join4(home, ".deeplake", "credentials.json");
@@ -66743,7 +66743,7 @@ function loadConfig() {
     token,
     orgId,
     orgName: creds?.orgName ?? orgId,
-    userName: creds?.userName ?? "user",
+    userName: creds?.userName || userInfo().username || "unknown",
     workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
     apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.DEEPLAKE_TABLE ?? "memory",
@@ -67079,15 +67079,17 @@ var DeeplakeFs = class _DeeplakeFs {
     ];
     for (const row of rows) {
       const p22 = row["path"];
-      const match2 = p22.match(/\/summaries\/(.+)\.md$/);
+      const match2 = p22.match(/\/summaries\/(?:([^/]+)\/)?([^/]+)\.md$/);
       if (!match2)
         continue;
-      const sessionId = match2[1];
+      const userName = match2[1] || "";
+      const sessionId = match2[2];
+      const relPath = userName ? `summaries/${userName}/${sessionId}.md` : `summaries/${sessionId}.md`;
       const project = row["project"] || "";
       const description = row["description"] || "";
       const creationDate = row["creation_date"] || "";
       const lastUpdateDate = row["last_update_date"] || "";
-      lines.push(`| [${sessionId}](summaries/${sessionId}.md) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
+      lines.push(`| [${sessionId}](${relPath}) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
     }
     lines.push("");
     return lines.join("\n");

@@ -26,7 +26,7 @@ function readStdin() {
 // dist/src/config.js
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 function loadConfig() {
   const home = homedir();
   const credPath = join(home, ".deeplake", "credentials.json");
@@ -46,7 +46,7 @@ function loadConfig() {
     token,
     orgId,
     orgName: creds?.orgName ?? orgId,
-    userName: creds?.userName ?? "user",
+    userName: creds?.userName || userInfo().username || "unknown",
     workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
     apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.DEEPLAKE_TABLE ?? "memory",
@@ -257,7 +257,7 @@ async function main() {
   wikiLog(`SessionEnd: processing ${sessionId} (${jsonlLines} lines, tmp: ${tmpDir})`);
   let prevOffset = 0;
   try {
-    const sumRows = await api.query(`SELECT content_text FROM "${table}" WHERE path = '${sqlStr(`/summaries/${sessionId}.md`)}' LIMIT 1`);
+    const sumRows = await api.query(`SELECT content_text FROM "${table}" WHERE path = '${sqlStr(`/summaries/${config.userName}/${sessionId}.md`)}' LIMIT 1`);
     if (sumRows.length > 0 && sumRows[0]["content_text"]) {
       const existing = sumRows[0]["content_text"];
       const match = existing.match(/\*\*JSONL offset\*\*:\s*(\d+)/);
@@ -331,6 +331,7 @@ LENGTH LIMIT: Keep the total summary under 4000 characters. Be dense and concise
     workspaceId: config.workspaceId,
     table,
     sessionId,
+    userName: config.userName,
     summaryPath: tmpSummary,
     project: cwd.split("/").pop() || "unknown",
     tmpDir
@@ -368,14 +369,14 @@ async function upload(vpath, localPath) {
   }
   console.log("Uploaded " + vpath);
 }
-await upload("/summaries/" + cfg.sessionId + ".md", cfg.summaryPath);
+await upload("/summaries/" + cfg.userName + "/" + cfg.sessionId + ".md", cfg.summaryPath);
 // Update summary row metadata (description + last_update_date) for virtual index.md
 try {
   var summaryText = existsSync(cfg.summaryPath) ? readFileSync(cfg.summaryPath, "utf-8") : "";
   var whatHappened = summaryText.match(/## What Happened\\n([\\s\\S]*?)(?=\\n##|$)/);
   var desc = whatHappened ? whatHappened[1].trim().slice(0, 300) : "completed";
   var ts = new Date().toISOString();
-  await query("UPDATE \\"" + cfg.table + "\\" SET description = E'" + esc(desc) + "', last_update_date = '" + ts + "' WHERE path = '/summaries/" + cfg.sessionId + ".md'");
+  await query("UPDATE \\"" + cfg.table + "\\" SET description = E'" + esc(desc) + "', last_update_date = '" + ts + "' WHERE path = '/summaries/" + cfg.userName + "/" + cfg.sessionId + ".md'");
   console.log("Updated description for " + cfg.sessionId);
 } catch(e) { console.log("Failed to update description: " + e.message); }
 console.log("Server upload complete for " + cfg.sessionId);

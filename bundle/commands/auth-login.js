@@ -151,7 +151,7 @@ async function removeMember(userId, token, orgId, apiUrl = DEFAULT_API_URL) {
 async function login(apiUrl = DEFAULT_API_URL) {
   const { token: authToken } = await deviceFlowLogin(apiUrl);
   const user = await apiGet("/me", authToken, apiUrl);
-  const userName = user.name || (user.email ? user.email.split("@")[0] : "user");
+  const userName = user.name || (user.email ? user.email.split("@")[0] : "unknown");
   process.stderr.write(`
 Logged in as: ${userName}
 `);
