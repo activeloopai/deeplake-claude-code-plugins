@@ -3,18 +3,20 @@ import { DeeplakeFs, isText, guessMime } from "../src/shell/deeplake-fs.js";
 
 // ── Mock ManagedClient ────────────────────────────────────────────────────────
 type Row = {
-  path: string; filename: string; content: Buffer;
-  content_text: string; mime_type: string; size_bytes: number;
+  id: string; path: string; filename: string; content: Buffer;
+  content_text: string; mime_type: string; size_bytes: number; timestamp: string;
 };
 
 function makeClient(seed: Record<string, Buffer> = {}) {
   const rows: Row[] = Object.entries(seed).map(([path, content]) => ({
+    id: `seed-${path}`,
     path,
     filename: path.split("/").pop()!,
     content,
     content_text: isText(content) ? content.toString("utf-8") : "",
     mime_type: guessMime(path.split("/").pop()!),
     size_bytes: content.length,
+    timestamp: "2026-01-01T00:00:00.000Z",
   }));
 
   const client = {
@@ -63,41 +65,64 @@ function makeClient(seed: Record<string, Buffer> = {}) {
         }
         return [];
       }
-      // UPDATE (appendFile SQL-level concat)
+      // UPDATE — distinguish append (content_text || ) from full overwrite (content_text = E'...')
       if (sql.startsWith("UPDATE")) {
         const match = sql.match(/WHERE path = '([^']+)'/);
-        const hexMatch = sql.match(/E'\\\\x([0-9a-f]*)'/);
         if (match) {
           const row = rows.find(r => r.path === match[1]);
-          if (row && hexMatch) {
-            const appendBuf = Buffer.from(hexMatch[1], "hex");
-            row.content = Buffer.concat([row.content, appendBuf]);
-            row.content_text += appendBuf.toString("utf-8");
-            row.size_bytes = row.content.length;
+          if (row) {
+            // Extract timestamp if present
+            const tsMatch = sql.match(/timestamp = '([^']+)'/);
+            if (tsMatch) row.timestamp = tsMatch[1];
+
+            if (sql.includes("content_text = content_text ||")) {
+              // appendFile: SQL-level concat
+              const hexMatch = sql.match(/content \|\| E'\\\\x([0-9a-f]*)'/);
+              if (hexMatch) {
+                const appendBuf = Buffer.from(hexMatch[1], "hex");
+                row.content = Buffer.concat([row.content, appendBuf]);
+                row.content_text += appendBuf.toString("utf-8");
+                row.size_bytes = row.content.length;
+              }
+            } else {
+              // Full overwrite UPDATE (_doFlush for existing paths)
+              const hexMatch = sql.match(/content = E'\\\\x([0-9a-f]*)'/);
+              const textMatch = sql.match(/content_text = E'((?:[^']|'')*)'/);
+              if (hexMatch) {
+                row.content = Buffer.from(hexMatch[1], "hex");
+                row.size_bytes = row.content.length;
+              }
+              if (textMatch) {
+                row.content_text = textMatch[1].replace(/''/g, "'");
+              }
+            }
           }
         }
         return [];
       }
-      // INSERT — handle both 6-col (api) and 8-col (flush: id, path, ..., timestamp) formats
+      // INSERT
       if (sql.startsWith("INSERT")) {
-        // Extract path: second value for 8-col format (id first), first value for 6-col
         const hasId = sql.includes("(id,");
         const valuesMatch = sql.match(/VALUES \((.+)\)$/s);
         if (valuesMatch) {
+          const idMatch = hasId ? sql.match(/VALUES \('([^']+)'/) : null;
           const pathMatch = hasId
             ? sql.match(/VALUES \('[^']+', '([^']+)'/)   // skip id
             : sql.match(/VALUES \('([^']+)'/);
           const hexMatch = sql.match(/E'\\\\x([0-9a-f]*)'/);
           const textMatch = sql.match(/E'\\\\x[0-9a-f]*', E'((?:[^']|'')*)'/);
+          const tsMatch = sql.match(/, '(\d{4}-\d{2}-\d{2}T[^']+)'\)$/);
           if (pathMatch) {
             const path = pathMatch[1];
             const filename = path.split("/").pop()!;
             const content = hexMatch ? Buffer.from(hexMatch[1], "hex") : Buffer.alloc(0);
             const content_text = textMatch?.[1]?.replace(/''/g, "'") ?? "";
+            const id = idMatch?.[1] ?? "";
+            const timestamp = tsMatch?.[1] ?? new Date().toISOString();
             // Remove existing row if any (upsert)
             const idx = rows.findIndex(r => r.path === path);
             if (idx >= 0) rows.splice(idx, 1);
-            rows.push({ path, filename, content, content_text, mime_type: "text/plain", size_bytes: content.length });
+            rows.push({ id, path, filename, content, content_text, mime_type: "text/plain", size_bytes: content.length, timestamp });
           }
         }
         return [];
@@ -240,15 +265,13 @@ describe("writeFile", () => {
     expect(await fs.readdir("/memory/sub")).toContain("file.txt");
   });
 
-  it("batches and flushes on BATCH_SIZE writes (DELETE+INSERT per row)", async () => {
+  it("batches and flushes on BATCH_SIZE writes (INSERT per new row)", async () => {
     const { fs, client } = await makeFs({});
     const promises: Promise<void>[] = [];
     for (let i = 0; i < 10; i++) {
       promises.push(fs.writeFile(`/memory/file${i}.txt`, `content ${i}`));
     }
     await Promise.all(promises);
-    // 10 rows × 2 SQL calls (DELETE + INSERT) = 20 calls minimum
-    // Plus 1 bootstrap SELECT = 21 total, but bootstrap is during create()
     const insertCalls = (client.query.mock.calls as [string][]).filter(c => (c[0] as string).startsWith("INSERT"));
     expect(insertCalls.length).toBe(10);
   });
@@ -445,6 +468,122 @@ describe("getAllPaths", () => {
     expect(paths).toContain("/memory/sub/file.txt");
     expect(paths).toContain("/memory/sub");
     expect(paths).toContain("/memory");
+  });
+});
+
+// ── Upsert: id stability & timestamp ─────────────────────────────────────────
+describe("flush upsert", () => {
+  it("INSERT for new file sets id and timestamp", async () => {
+    const { fs, client } = await makeFs({});
+    // Write 10 files to trigger flush
+    for (let i = 0; i < 10; i++) await fs.writeFile(`/memory/f${i}.txt`, `v${i}`);
+    const insertCalls = (client.query.mock.calls as [string][]).filter(c => (c[0] as string).startsWith("INSERT"));
+    expect(insertCalls.length).toBe(10);
+    // Every INSERT should include id and timestamp columns
+    for (const [sql] of insertCalls) {
+      expect(sql).toContain("(id,");
+      expect(sql).toContain("timestamp)");
+    }
+  });
+
+  it("UPDATE for existing file preserves id", async () => {
+    const { fs, client } = await makeFs({ "/memory/existing.txt": "old" });
+    const originalId = client._rows.find(r => r.path === "/memory/existing.txt")!.id;
+
+    // Overwrite and trigger flush
+    for (let i = 0; i < 9; i++) await fs.writeFile(`/memory/pad${i}.txt`, "x");
+    await fs.writeFile("/memory/existing.txt", "new");
+
+    // Should emit UPDATE (not INSERT) for the existing path
+    const updateCalls = (client.query.mock.calls as [string][]).filter(
+      c => (c[0] as string).startsWith("UPDATE") && (c[0] as string).includes("existing.txt")
+    );
+    expect(updateCalls.length).toBe(1);
+    // No DELETE for existing.txt
+    const deleteCalls = (client.query.mock.calls as [string][]).filter(
+      c => (c[0] as string).startsWith("DELETE") && (c[0] as string).includes("existing.txt")
+    );
+    expect(deleteCalls.length).toBe(0);
+    // id should be preserved
+    const row = client._rows.find(r => r.path === "/memory/existing.txt")!;
+    expect(row.id).toBe(originalId);
+    expect(row.content_text).toBe("new");
+  });
+
+  it("UPDATE includes timestamp", async () => {
+    const { fs, client } = await makeFs({ "/memory/ts.txt": "old" });
+    const originalTs = client._rows.find(r => r.path === "/memory/ts.txt")!.timestamp;
+
+    for (let i = 0; i < 9; i++) await fs.writeFile(`/memory/pad${i}.txt`, "x");
+    await fs.writeFile("/memory/ts.txt", "new");
+
+    const row = client._rows.find(r => r.path === "/memory/ts.txt")!;
+    expect(row.timestamp).not.toBe(originalTs);
+    expect(row.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("multiple overwrites of same file never change id", async () => {
+    const { fs, client } = await makeFs({ "/memory/stable.txt": "v0" });
+    const originalId = client._rows.find(r => r.path === "/memory/stable.txt")!.id;
+
+    for (let round = 1; round <= 3; round++) {
+      for (let i = 0; i < 9; i++) await fs.writeFile(`/memory/pad${i}.txt`, "x");
+      await fs.writeFile("/memory/stable.txt", `v${round}`);
+    }
+
+    const row = client._rows.find(r => r.path === "/memory/stable.txt")!;
+    expect(row.id).toBe(originalId);
+    expect(row.content_text).toBe("v3");
+  });
+
+  it("new file after delete gets a new id", async () => {
+    const { fs, client } = await makeFs({ "/memory/recycle.txt": "first" });
+    const originalId = client._rows.find(r => r.path === "/memory/recycle.txt")!.id;
+
+    await fs.rm("/memory/recycle.txt");
+    // Write enough to flush
+    for (let i = 0; i < 9; i++) await fs.writeFile(`/memory/pad${i}.txt`, "x");
+    await fs.writeFile("/memory/recycle.txt", "second");
+
+    const row = client._rows.find(r => r.path === "/memory/recycle.txt")!;
+    expect(row.id).not.toBe(originalId);
+    expect(row.content_text).toBe("second");
+  });
+});
+
+describe("appendFile upsert", () => {
+  it("preserves id on append", async () => {
+    const { fs, client } = await makeFs({ "/memory/log.txt": "line1\n" });
+    const originalId = client._rows.find(r => r.path === "/memory/log.txt")!.id;
+
+    await fs.appendFile("/memory/log.txt", "line2\n");
+
+    const row = client._rows.find(r => r.path === "/memory/log.txt")!;
+    expect(row.id).toBe(originalId);
+  });
+
+  it("updates timestamp on append", async () => {
+    const { fs, client } = await makeFs({ "/memory/log.txt": "line1\n" });
+    const originalTs = client._rows.find(r => r.path === "/memory/log.txt")!.timestamp;
+
+    await fs.appendFile("/memory/log.txt", "line2\n");
+
+    const row = client._rows.find(r => r.path === "/memory/log.txt")!;
+    expect(row.timestamp).not.toBe(originalTs);
+    expect(row.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("multiple appends preserve same id", async () => {
+    const { fs, client } = await makeFs({ "/memory/log.txt": "" });
+    const originalId = client._rows.find(r => r.path === "/memory/log.txt")!.id;
+
+    for (let i = 0; i < 5; i++) {
+      await fs.appendFile("/memory/log.txt", `line${i}\n`);
+    }
+
+    const row = client._rows.find(r => r.path === "/memory/log.txt")!;
+    expect(row.id).toBe(originalId);
+    expect(row.content_text).toBe("line0\nline1\nline2\nline3\nline4\n");
   });
 });
 
