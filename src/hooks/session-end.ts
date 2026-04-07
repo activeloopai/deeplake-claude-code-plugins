@@ -101,7 +101,7 @@ async function main(): Promise<void> {
   let prevOffset = 0;
   try {
     const sumRows = await api.query(
-      `SELECT content_text FROM "${table}" WHERE path = '${sqlStr(`/summaries/${sessionId}.md`)}' LIMIT 1`
+      `SELECT content_text FROM "${table}" WHERE path = '${sqlStr(`/summaries/${config.userName}/${sessionId}.md`)}' LIMIT 1`
     );
     if (sumRows.length > 0 && sumRows[0]["content_text"]) {
       const existing = sumRows[0]["content_text"] as string;
@@ -181,6 +181,7 @@ LENGTH LIMIT: Keep the total summary under 4000 characters. Be dense and concise
     workspaceId: config.workspaceId,
     table,
     sessionId,
+    userName: config.userName,
     summaryPath: tmpSummary,
     project: cwd.split("/").pop() || "unknown",
     tmpDir,
@@ -220,14 +221,14 @@ async function upload(vpath, localPath) {
   }
   console.log("Uploaded " + vpath);
 }
-await upload("/summaries/" + cfg.sessionId + ".md", cfg.summaryPath);
+await upload("/summaries/" + cfg.userName + "/" + cfg.sessionId + ".md", cfg.summaryPath);
 // Update summary row metadata (description + last_update_date) for virtual index.md
 try {
   var summaryText = existsSync(cfg.summaryPath) ? readFileSync(cfg.summaryPath, "utf-8") : "";
   var whatHappened = summaryText.match(/## What Happened\\n([\\s\\S]*?)(?=\\n##|$)/);
   var desc = whatHappened ? whatHappened[1].trim().slice(0, 300) : "completed";
   var ts = new Date().toISOString();
-  await query("UPDATE \\"" + cfg.table + "\\" SET description = E'" + esc(desc) + "', last_update_date = '" + ts + "' WHERE path = '/summaries/" + cfg.sessionId + ".md'");
+  await query("UPDATE \\"" + cfg.table + "\\" SET description = E'" + esc(desc) + "', last_update_date = '" + ts + "' WHERE path = '/summaries/" + cfg.userName + "/" + cfg.sessionId + ".md'");
   console.log("Updated description for " + cfg.sessionId);
 } catch(e) { console.log("Failed to update description: " + e.message); }
 console.log("Server upload complete for " + cfg.sessionId);
