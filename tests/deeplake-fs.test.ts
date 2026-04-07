@@ -664,16 +664,19 @@ describe("unsupported ops", () => {
 
 // ── Virtual index.md ─────────────────────────────────────────────────────────
 describe("virtual index.md", () => {
-  /** Helper: create FS mounted at "/" with summary rows that have metadata columns set. */
-  async function makeFsWithSummaries(summaries: { id: string; project: string; description: string; creationDate: string; lastUpdateDate: string; content: string }[], extraSeed: Record<string, string> = {}) {
+  /** Helper: create FS mounted at "/" with summary rows that have metadata columns set.
+   *  If `userName` is provided, paths use /summaries/<userName>/<id>.md; otherwise legacy /summaries/<id>.md */
+  async function makeFsWithSummaries(summaries: { id: string; userName?: string; project: string; description: string; creationDate: string; lastUpdateDate: string; content: string }[], extraSeed: Record<string, string> = {}) {
     const seed: Record<string, string> = { ...extraSeed };
     for (const s of summaries) {
-      seed[`/summaries/${s.id}.md`] = s.content;
+      const path = s.userName ? `/summaries/${s.userName}/${s.id}.md` : `/summaries/${s.id}.md`;
+      seed[path] = s.content;
     }
     const { fs, client } = await makeFs(seed, "/");
     // Set metadata on summary rows
     for (const s of summaries) {
-      const row = client._rows.find(r => r.path === `/summaries/${s.id}.md`);
+      const path = s.userName ? `/summaries/${s.userName}/${s.id}.md` : `/summaries/${s.id}.md`;
+      const row = client._rows.find(r => r.path === path);
       if (row) {
         row.project = s.project;
         row.description = s.description;
@@ -757,6 +760,42 @@ describe("virtual index.md", () => {
     const entries = await fs.readdir("/");
     const indexEntries = entries.filter(e => e === "index.md");
     expect(indexEntries.length).toBe(1);
+  });
+
+  it("virtual index uses summaries/username/id.md links for new paths", async () => {
+    const { fs } = await makeFsWithSummaries([
+      { id: "sess-001", userName: "alice", project: "proj-a", description: "Did stuff", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T11:00:00.000Z", content: "# Session sess-001" },
+    ]);
+    const content = await fs.readFile("/index.md");
+    expect(content).toContain("summaries/alice/sess-001.md");
+    expect(content).toContain("sess-001");
+    expect(content).toContain("Did stuff");
+  });
+
+  it("virtual index supports both legacy and username-based paths", async () => {
+    const { fs } = await makeFsWithSummaries([
+      { id: "old-sess", project: "proj-a", description: "Legacy session", creationDate: "2026-04-01T10:00:00.000Z", lastUpdateDate: "2026-04-01T11:00:00.000Z", content: "# Old" },
+      { id: "new-sess", userName: "bob", project: "proj-b", description: "New session", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T12:00:00.000Z", content: "# New" },
+    ]);
+    const content = await fs.readFile("/index.md");
+    // Legacy: summaries/old-sess.md (no username)
+    expect(content).toContain("summaries/old-sess.md");
+    expect(content).not.toContain("summaries//old-sess.md");
+    // New: summaries/bob/new-sess.md
+    expect(content).toContain("summaries/bob/new-sess.md");
+    // Both descriptions present
+    expect(content).toContain("Legacy session");
+    expect(content).toContain("New session");
+  });
+
+  it("virtual index links multiple users correctly", async () => {
+    const { fs } = await makeFsWithSummaries([
+      { id: "s1", userName: "alice", project: "proj", description: "Alice work", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T10:00:00.000Z", content: "# S1" },
+      { id: "s2", userName: "bob", project: "proj", description: "Bob work", creationDate: "2026-04-07T11:00:00.000Z", lastUpdateDate: "2026-04-07T11:00:00.000Z", content: "# S2" },
+    ]);
+    const content = await fs.readFile("/index.md");
+    expect(content).toContain("summaries/alice/s1.md");
+    expect(content).toContain("summaries/bob/s2.md");
   });
 });
 
