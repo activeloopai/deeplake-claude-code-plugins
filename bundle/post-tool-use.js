@@ -20,7 +20,7 @@ function readStdin() {
 // dist/src/config.js
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 function loadConfig() {
   const home = homedir();
   const credPath = join(home, ".deeplake", "credentials.json");
@@ -40,7 +40,7 @@ function loadConfig() {
     token,
     orgId,
     orgName: creds?.orgName ?? orgId,
-    userName: creds?.userName ?? "user",
+    userName: creds?.userName || userInfo().username || "unknown",
     workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
     apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.DEEPLAKE_TABLE ?? "memory",
@@ -376,15 +376,17 @@ var DeeplakeFs = class _DeeplakeFs {
     ];
     for (const row of rows) {
       const p = row["path"];
-      const match = p.match(/\/summaries\/(.+)\.md$/);
+      const match = p.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
       if (!match)
         continue;
-      const sessionId = match[1];
+      const summaryUser = match[1];
+      const sessionId = match[2];
+      const relPath = `summaries/${summaryUser}/${sessionId}.md`;
       const project = row["project"] || "";
       const description = row["description"] || "";
       const creationDate = row["creation_date"] || "";
       const lastUpdateDate = row["last_update_date"] || "";
-      lines.push(`| [${sessionId}](summaries/${sessionId}.md) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
+      lines.push(`| [${sessionId}](${relPath}) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
     }
     lines.push("");
     return lines.join("\n");
@@ -687,7 +689,7 @@ async function main() {
   const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
   const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
   const fs = await DeeplakeFs.create(api, table, "/");
-  const userName = config.userName ?? "user";
+  const userName = config.userName;
   const sessionPath = `/sessions/${userName}/${userName}_${config.orgName ?? config.orgId}_${config.workspaceId}_${input.session_id}.jsonl`;
   const entry = {
     id: crypto.randomUUID(),

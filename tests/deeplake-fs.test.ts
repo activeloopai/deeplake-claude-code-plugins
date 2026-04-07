@@ -665,15 +665,15 @@ describe("unsupported ops", () => {
 // ── Virtual index.md ─────────────────────────────────────────────────────────
 describe("virtual index.md", () => {
   /** Helper: create FS mounted at "/" with summary rows that have metadata columns set. */
-  async function makeFsWithSummaries(summaries: { id: string; project: string; description: string; creationDate: string; lastUpdateDate: string; content: string }[], extraSeed: Record<string, string> = {}) {
+  async function makeFsWithSummaries(summaries: { id: string; userName: string; project: string; description: string; creationDate: string; lastUpdateDate: string; content: string }[], extraSeed: Record<string, string> = {}) {
     const seed: Record<string, string> = { ...extraSeed };
     for (const s of summaries) {
-      seed[`/summaries/${s.id}.md`] = s.content;
+      seed[`/summaries/${s.userName}/${s.id}.md`] = s.content;
     }
     const { fs, client } = await makeFs(seed, "/");
     // Set metadata on summary rows
     for (const s of summaries) {
-      const row = client._rows.find(r => r.path === `/summaries/${s.id}.md`);
+      const row = client._rows.find(r => r.path === `/summaries/${s.userName}/${s.id}.md`);
       if (row) {
         row.project = s.project;
         row.description = s.description;
@@ -686,8 +686,8 @@ describe("virtual index.md", () => {
 
   it("generates virtual index when no /index.md row exists", async () => {
     const { fs } = await makeFsWithSummaries([
-      { id: "aaa-111", project: "my-project", description: "Fixed auth bug", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T11:00:00.000Z", content: "# Session aaa-111" },
-      { id: "bbb-222", project: "other-proj", description: "in progress", creationDate: "2026-04-07T12:00:00.000Z", lastUpdateDate: "2026-04-07T12:00:00.000Z", content: "# Session bbb-222" },
+      { id: "aaa-111", userName: "alice", project: "my-project", description: "Fixed auth bug", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T11:00:00.000Z", content: "# Session aaa-111" },
+      { id: "bbb-222", userName: "alice", project: "other-proj", description: "in progress", creationDate: "2026-04-07T12:00:00.000Z", lastUpdateDate: "2026-04-07T12:00:00.000Z", content: "# Session bbb-222" },
     ]);
     const content = await fs.readFile("/index.md");
     expect(content).toContain("# Session Index");
@@ -701,7 +701,7 @@ describe("virtual index.md", () => {
 
   it("serves real /index.md row when it exists", async () => {
     const { fs } = await makeFsWithSummaries(
-      [{ id: "aaa-111", project: "proj", description: "desc", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T10:00:00.000Z", content: "# Session" }],
+      [{ id: "aaa-111", userName: "alice", project: "proj", description: "desc", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T10:00:00.000Z", content: "# Session" }],
       { "/index.md": "# My Custom Index\nHello" },
     );
     const content = await fs.readFile("/index.md");
@@ -715,7 +715,7 @@ describe("virtual index.md", () => {
 
   it("readdir('/') includes index.md even without a real row", async () => {
     const { fs } = await makeFsWithSummaries([
-      { id: "aaa-111", project: "proj", description: "desc", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T10:00:00.000Z", content: "# Session" },
+      { id: "aaa-111", userName: "alice", project: "proj", description: "desc", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T10:00:00.000Z", content: "# Session" },
     ]);
     const entries = await fs.readdir("/");
     expect(entries).toContain("index.md");
@@ -731,8 +731,8 @@ describe("virtual index.md", () => {
 
   it("virtual index shows all summary rows ordered", async () => {
     const { fs } = await makeFsWithSummaries([
-      { id: "old-session", project: "proj-a", description: "Old work", creationDate: "2026-04-01T10:00:00.000Z", lastUpdateDate: "2026-04-01T11:00:00.000Z", content: "# Old" },
-      { id: "new-session", project: "proj-b", description: "New work", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T12:00:00.000Z", content: "# New" },
+      { id: "old-session", userName: "alice", project: "proj-a", description: "Old work", creationDate: "2026-04-01T10:00:00.000Z", lastUpdateDate: "2026-04-01T11:00:00.000Z", content: "# Old" },
+      { id: "new-session", userName: "alice", project: "proj-b", description: "New work", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T12:00:00.000Z", content: "# New" },
     ]);
     const content = await fs.readFile("/index.md");
     // Both sessions should appear
@@ -757,6 +757,41 @@ describe("virtual index.md", () => {
     const entries = await fs.readdir("/");
     const indexEntries = entries.filter(e => e === "index.md");
     expect(indexEntries.length).toBe(1);
+  });
+
+  it("virtual index uses summaries/username/id.md links for new paths", async () => {
+    const { fs } = await makeFsWithSummaries([
+      { id: "sess-001", userName: "alice", project: "proj-a", description: "Did stuff", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T11:00:00.000Z", content: "# Session sess-001" },
+    ]);
+    const content = await fs.readFile("/index.md");
+    expect(content).toContain("summaries/alice/sess-001.md");
+    expect(content).toContain("sess-001");
+    expect(content).toContain("Did stuff");
+  });
+
+  it("virtual index skips summaries without username in path", async () => {
+    const { fs, client } = await makeFsWithSummaries([
+      { id: "new-sess", userName: "bob", project: "proj-b", description: "New session", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T12:00:00.000Z", content: "# New" },
+    ]);
+    // Manually insert a legacy row (no username dir)
+    client._rows.push({
+      id: "legacy", path: "/summaries/old-sess.md", filename: "old-sess.md",
+      content: Buffer.from("# Old"), content_text: "# Old", mime_type: "text/markdown",
+      size_bytes: 5, project: "proj-a", description: "Legacy", creation_date: "2026-04-01", last_update_date: "2026-04-01",
+    });
+    const content = await fs.readFile("/index.md");
+    expect(content).toContain("summaries/bob/new-sess.md");
+    expect(content).not.toContain("old-sess");
+  });
+
+  it("virtual index links multiple users correctly", async () => {
+    const { fs } = await makeFsWithSummaries([
+      { id: "s1", userName: "alice", project: "proj", description: "Alice work", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T10:00:00.000Z", content: "# S1" },
+      { id: "s2", userName: "bob", project: "proj", description: "Bob work", creationDate: "2026-04-07T11:00:00.000Z", lastUpdateDate: "2026-04-07T11:00:00.000Z", content: "# S2" },
+    ]);
+    const content = await fs.readFile("/index.md");
+    expect(content).toContain("summaries/alice/s1.md");
+    expect(content).toContain("summaries/bob/s2.md");
   });
 });
 

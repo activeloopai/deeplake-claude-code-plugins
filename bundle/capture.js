@@ -3,7 +3,7 @@
 // dist/src/hooks/capture.js
 import { readdirSync, readFileSync as readFileSync2 } from "node:fs";
 import { join as join3 } from "node:path";
-import { homedir as homedir3, userInfo } from "node:os";
+import { homedir as homedir3 } from "node:os";
 
 // dist/src/utils/stdin.js
 function readStdin() {
@@ -25,7 +25,7 @@ function readStdin() {
 // dist/src/config.js
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 function loadConfig() {
   const home = homedir();
   const credPath = join(home, ".deeplake", "credentials.json");
@@ -45,7 +45,7 @@ function loadConfig() {
     token,
     orgId,
     orgName: creds?.orgName ?? orgId,
-    userName: creds?.userName ?? "user",
+    userName: creds?.userName || userInfo().username || "unknown",
     workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
     apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.DEEPLAKE_TABLE ?? "memory",
@@ -381,15 +381,17 @@ var DeeplakeFs = class _DeeplakeFs {
     ];
     for (const row of rows) {
       const p = row["path"];
-      const match = p.match(/\/summaries\/(.+)\.md$/);
+      const match = p.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
       if (!match)
         continue;
-      const sessionId = match[1];
+      const summaryUser = match[1];
+      const sessionId = match[2];
+      const relPath = `summaries/${summaryUser}/${sessionId}.md`;
       const project = row["project"] || "";
       const description = row["description"] || "";
       const creationDate = row["creation_date"] || "";
       const lastUpdateDate = row["last_update_date"] || "";
-      lines.push(`| [${sessionId}](summaries/${sessionId}.md) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
+      lines.push(`| [${sessionId}](${relPath}) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
     }
     lines.push("");
     return lines.join("\n");
@@ -683,15 +685,8 @@ var DeeplakeFs = class _DeeplakeFs {
 var log3 = (msg) => log("capture", msg);
 var CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
 function buildSessionPath(config, sessionId) {
-  let userName = "user";
-  let orgName = "org";
-  try {
-    const creds = JSON.parse(readFileSync2(join3(homedir3(), ".deeplake", "credentials.json"), "utf-8"));
-    userName = creds.userName ?? creds.orgName ?? userInfo().username ?? "user";
-    orgName = creds.orgName ?? "org";
-  } catch {
-    userName = userInfo().username ?? "user";
-  }
+  const userName = config.userName;
+  const orgName = config.orgName;
   const workspace = config.workspaceId ?? "default";
   let slug = sessionId;
   try {

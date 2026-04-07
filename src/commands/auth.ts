@@ -241,7 +241,7 @@ export async function login(apiUrl = DEFAULT_API_URL): Promise<Credentials> {
 
   // Step 2: Get user info
   const user = await apiGet("/me", authToken, apiUrl) as { id: string; name: string; email?: string };
-  const userName = user.name || (user.email ? user.email.split("@")[0] : "user");
+  const userName = user.name || (user.email ? user.email.split("@")[0] : "unknown");
   process.stderr.write(`\nLogged in as: ${userName}\n`);
 
   // Step 3: List orgs and select

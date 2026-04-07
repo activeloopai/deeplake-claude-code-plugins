@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { mkdirSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { loadCredentials, login } from "../commands/auth.js";
+import { loadCredentials, saveCredentials, login } from "../commands/auth.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { DeeplakeFs } from "../shell/deeplake-fs.js";
@@ -28,7 +28,7 @@ const context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH
 
 Deeplake memory structure:
 - ~/.deeplake/memory/index.md — START HERE, table of all sessions
-- ~/.deeplake/memory/summaries/*.md — AI-generated wiki summaries per session
+- ~/.deeplake/memory/summaries/username/*.md — AI-generated wiki summaries per session
 - ~/.deeplake/memory/sessions/username/*.jsonl — raw session data (last resort)
 
 SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw JSONL if summaries don't have enough detail. Do NOT jump straight to JSONL files.
@@ -59,9 +59,10 @@ function wikiLog(msg: string): void {
 async function createPlaceholder(fs: DeeplakeFs, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
   // Ensure directories
   try { await fs.mkdir("/summaries"); } catch { /* exists */ }
+  try { await fs.mkdir(`/summaries/${userName}`); } catch { /* exists */ }
   try { await fs.mkdir("/sessions"); } catch { /* exists */ }
 
-  const summaryPath = `/summaries/${sessionId}.md`;
+  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
   const summaryExists = await fs.exists(summaryPath);
 
   if (!summaryExists) {
@@ -107,8 +108,9 @@ async function main(): Promise<void> {
     if (creds.token && !creds.userName) {
       try {
         const { userInfo } = await import("node:os");
-        creds.userName = userInfo().username ?? "user";
-        log(`backfilled userName: ${creds.userName}`);
+        creds.userName = userInfo().username ?? "unknown";
+        saveCredentials(creds);
+        log(`backfilled and persisted userName: ${creds.userName}`);
       } catch { /* non-fatal */ }
     }
   }

@@ -160,9 +160,10 @@ async function createPlaceholder(
   userName: string, orgName: string, workspaceId: string,
 ) {
   try { await fs.mkdir("/summaries"); } catch { /* exists */ }
+  try { await fs.mkdir(`/summaries/${userName}`); } catch { /* exists */ }
   try { await fs.mkdir("/sessions"); } catch { /* exists */ }
 
-  const summaryPath = `/summaries/${sessionId}.md`;
+  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
   const summaryExists = await fs.exists(summaryPath);
 
   if (!summaryExists) {
@@ -189,9 +190,9 @@ async function createPlaceholder(
 // ── Simulate session-end summary upload (mirrors upload.mjs logic) ───────────
 async function uploadSummary(
   fs: DeeplakeFs, client: ReturnType<typeof makeClient>,
-  sessionId: string, summaryContent: string, projectName: string,
+  sessionId: string, userName: string, summaryContent: string, projectName: string,
 ) {
-  const summaryPath = `/summaries/${sessionId}.md`;
+  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
   await fs.writeFileWithMeta(summaryPath, summaryContent, {
     project: projectName,
     description: summaryContent.match(/## What Happened\n([\s\S]*?)(?=\n##|$)/)?.[1]?.trim().slice(0, 80) ?? "completed",
@@ -228,7 +229,7 @@ describe("session summary — no global paths", () => {
       const { fs, client } = await makeFs({});
       await createPlaceholder(fs, sessionId, globalPath, userName, orgName, workspaceId);
 
-      const row = client._rows.find(r => r.path === `/summaries/${sessionId}.md`);
+      const row = client._rows.find(r => r.path.endsWith(`/${sessionId}.md`) && r.path.startsWith("/summaries/"));
       expect(row).toBeDefined();
       const content = row!.content_text;
 
@@ -256,7 +257,7 @@ describe("session summary — Source field structure", () => {
     const sessionId = "abc-123-def";
     await createPlaceholder(fs, sessionId, "/some/deep/path/my-repo", "alice", "acme-corp", "prod");
 
-    const content = client._rows.find(r => r.path === `/summaries/${sessionId}.md`)!.content_text;
+    const content = client._rows.find(r => r.path.endsWith(`/${sessionId}.md`) && r.path.startsWith("/summaries/"))!.content_text;
     expect(content).toContain("- **Source**: /sessions/alice/alice_acme-corp_prod_abc-123-def.jsonl");
   });
 });
@@ -280,7 +281,7 @@ describe("session summary — resumed sessions update last_update_date", () => {
     await createPlaceholder(fs, sessionId, cwd, "testuser", "testorg", "default");
     await fs.flush();
 
-    const rowAfterStart = client._rows.find(r => r.path === `/summaries/${sessionId}.md`)!;
+    const rowAfterStart = client._rows.find(r => r.path.endsWith(`/${sessionId}.md`) && r.path.startsWith("/summaries/"))!;
     const initialDate = rowAfterStart.last_update_date;
     expect(rowAfterStart.description).toBe("in progress");
     expect(rowAfterStart.project).toBe("my-app");
@@ -304,9 +305,9 @@ describe("session summary — resumed sessions update last_update_date", () => {
       "- Auth tokens now refresh automatically",
     ].join("\n");
 
-    await uploadSummary(fs, client, sessionId, completedSummary, "my-app");
+    await uploadSummary(fs, client, sessionId, "testuser", completedSummary, "my-app");
 
-    const rowAfterEnd = client._rows.find(r => r.path === `/summaries/${sessionId}.md`)!;
+    const rowAfterEnd = client._rows.find(r => r.path.endsWith(`/${sessionId}.md`) && r.path.startsWith("/summaries/"))!;
     // last_update_date must have changed
     expect(rowAfterEnd.last_update_date).not.toBe(initialDate);
     // description must be extracted from What Happened section
@@ -326,12 +327,12 @@ describe("session summary — resumed sessions update last_update_date", () => {
     // Round 1: placeholder
     await createPlaceholder(fs, sessionId, "/opt/repos/backend", "dev", "corp", "staging");
     await fs.flush();
-    const date1 = client._rows.find(r => r.path === `/summaries/${sessionId}.md`)!.last_update_date;
+    const date1 = client._rows.find(r => r.path.endsWith(`/${sessionId}.md`) && r.path.startsWith("/summaries/"))!.last_update_date;
 
     await new Promise(r => setTimeout(r, 50));
 
     // Round 2: first summary
-    await uploadSummary(fs, client, sessionId, [
+    await uploadSummary(fs, client, sessionId, "dev", [
       `# Session ${sessionId}`,
       `- **Source**: /sessions/dev/dev_corp_staging_${sessionId}.jsonl`,
       `- **Project**: backend`,
@@ -341,13 +342,13 @@ describe("session summary — resumed sessions update last_update_date", () => {
       "Initial API endpoint scaffolding.",
     ].join("\n"), "backend");
 
-    const date2 = client._rows.find(r => r.path === `/summaries/${sessionId}.md`)!.last_update_date;
+    const date2 = client._rows.find(r => r.path.endsWith(`/${sessionId}.md`) && r.path.startsWith("/summaries/"))!.last_update_date;
     expect(date2).not.toBe(date1);
 
     await new Promise(r => setTimeout(r, 50));
 
     // Round 3: resumed session with more content
-    await uploadSummary(fs, client, sessionId, [
+    await uploadSummary(fs, client, sessionId, "dev", [
       `# Session ${sessionId}`,
       `- **Source**: /sessions/dev/dev_corp_staging_${sessionId}.jsonl`,
       `- **Project**: backend`,
@@ -357,7 +358,7 @@ describe("session summary — resumed sessions update last_update_date", () => {
       "Initial API endpoint scaffolding. Added auth middleware and rate limiting.",
     ].join("\n"), "backend");
 
-    const rowFinal = client._rows.find(r => r.path === `/summaries/${sessionId}.md`)!;
+    const rowFinal = client._rows.find(r => r.path.endsWith(`/${sessionId}.md`) && r.path.startsWith("/summaries/"))!;
     const date3 = rowFinal.last_update_date;
     expect(date3).not.toBe(date2);
     expect(rowFinal.content_text).toContain("rate limiting");

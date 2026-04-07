@@ -2,7 +2,7 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir, userInfo } from "node:os";
+import { homedir } from "node:os";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
@@ -35,17 +35,9 @@ const CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
 
 /** Build the session JSONL path matching the CLI convention:
  *  /sessions/<username>/<username>_<org>_<workspace>_<slug>.jsonl */
-function buildSessionPath(config: { orgId: string; workspaceId: string }, sessionId: string): string {
-  // Try to get userName from credentials.json (may have been saved by auth flow)
-  let userName = "user";
-  let orgName = "org";
-  try {
-    const creds = JSON.parse(readFileSync(join(homedir(), ".deeplake", "credentials.json"), "utf-8"));
-    userName = creds.userName ?? creds.orgName ?? userInfo().username ?? "user";
-    orgName = creds.orgName ?? "org";
-  } catch {
-    userName = userInfo().username ?? "user";
-  }
+function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
+  const userName = config.userName;
+  const orgName = config.orgName;
   const workspace = config.workspaceId ?? "default";
 
   // Try to extract slug from local Claude JSONL
