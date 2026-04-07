@@ -67079,12 +67079,12 @@ var DeeplakeFs = class _DeeplakeFs {
     ];
     for (const row of rows) {
       const p22 = row["path"];
-      const match2 = p22.match(/\/summaries\/(?:([^/]+)\/)?([^/]+)\.md$/);
+      const match2 = p22.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
       if (!match2)
         continue;
-      const userName = match2[1] || "";
+      const summaryUser = match2[1];
       const sessionId = match2[2];
-      const relPath = userName ? `summaries/${userName}/${sessionId}.md` : `summaries/${sessionId}.md`;
+      const relPath = `summaries/${summaryUser}/${sessionId}.md`;
       const project = row["project"] || "";
       const description = row["description"] || "";
       const creationDate = row["creation_date"] || "";
