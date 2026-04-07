@@ -13,7 +13,6 @@ import { homedir } from "node:os";
 import { execSync } from "node:child_process";
 var CONFIG_DIR = join(homedir(), ".deeplake");
 var CREDS_PATH = join(CONFIG_DIR, "credentials.json");
-var DEFAULT_API_URL = "https://api.deeplake.ai";
 function loadCredentials() {
   if (!existsSync(CREDS_PATH))
     return null;
@@ -22,147 +21,6 @@ function loadCredentials() {
   } catch {
     return null;
   }
-}
-function saveCredentials(creds) {
-  if (!existsSync(CONFIG_DIR))
-    mkdirSync(CONFIG_DIR, { recursive: true, mode: 448 });
-  writeFileSync(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
-}
-async function apiGet(path, token, apiUrl, orgId) {
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json"
-  };
-  if (orgId)
-    headers["X-Activeloop-Org-Id"] = orgId;
-  const resp = await fetch(`${apiUrl}${path}`, { headers });
-  if (!resp.ok)
-    throw new Error(`API ${resp.status}: ${await resp.text().catch(() => "")}`);
-  return resp.json();
-}
-async function apiPost(path, body, token, apiUrl, orgId) {
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json"
-  };
-  if (orgId)
-    headers["X-Activeloop-Org-Id"] = orgId;
-  const resp = await fetch(`${apiUrl}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
-  if (!resp.ok)
-    throw new Error(`API ${resp.status}: ${await resp.text().catch(() => "")}`);
-  return resp.json();
-}
-async function requestDeviceCode(apiUrl = DEFAULT_API_URL) {
-  const resp = await fetch(`${apiUrl}/auth/device/code`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" }
-  });
-  if (!resp.ok)
-    throw new Error(`Device flow unavailable: HTTP ${resp.status}`);
-  return resp.json();
-}
-async function pollForToken(deviceCode, apiUrl = DEFAULT_API_URL) {
-  const resp = await fetch(`${apiUrl}/auth/device/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ device_code: deviceCode })
-  });
-  if (resp.ok)
-    return resp.json();
-  if (resp.status === 400) {
-    const err = await resp.json().catch(() => null);
-    if (err?.error === "authorization_pending" || err?.error === "slow_down")
-      return null;
-    if (err?.error === "expired_token")
-      throw new Error("Device code expired. Try again.");
-    if (err?.error === "access_denied")
-      throw new Error("Authorization denied.");
-  }
-  throw new Error(`Token polling failed: HTTP ${resp.status}`);
-}
-function openBrowser(url) {
-  try {
-    const cmd = process.platform === "darwin" ? `open "${url}"` : process.platform === "win32" ? `start "${url}"` : `xdg-open "${url}" 2>/dev/null`;
-    execSync(cmd, { stdio: "ignore", timeout: 5e3 });
-    return true;
-  } catch {
-    return false;
-  }
-}
-async function deviceFlowLogin(apiUrl = DEFAULT_API_URL) {
-  const code = await requestDeviceCode(apiUrl);
-  const opened = openBrowser(code.verification_uri_complete);
-  const msg = [
-    "\nDeeplake Authentication",
-    "\u2500".repeat(40),
-    `
-Open this URL: ${code.verification_uri_complete}`,
-    `Or visit ${code.verification_uri} and enter code: ${code.user_code}`,
-    opened ? "\nBrowser opened. Waiting for sign in..." : "\nWaiting for sign in..."
-  ].join("\n");
-  process.stderr.write(msg + "\n");
-  const interval = Math.max(code.interval || 5, 5) * 1e3;
-  const deadline = Date.now() + code.expires_in * 1e3;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, interval));
-    const result = await pollForToken(code.device_code, apiUrl);
-    if (result) {
-      process.stderr.write("\nAuthentication successful!\n");
-      return { token: result.access_token, expiresIn: result.expires_in };
-    }
-  }
-  throw new Error("Device code expired.");
-}
-async function listOrgs(token, apiUrl = DEFAULT_API_URL) {
-  const data = await apiGet("/organizations", token, apiUrl);
-  return Array.isArray(data) ? data : [];
-}
-async function login(apiUrl = DEFAULT_API_URL) {
-  const { token: authToken } = await deviceFlowLogin(apiUrl);
-  const user = await apiGet("/me", authToken, apiUrl);
-  const userName = user.name || (user.email ? user.email.split("@")[0] : "user");
-  process.stderr.write(`
-Logged in as: ${userName}
-`);
-  const orgs = await listOrgs(authToken, apiUrl);
-  let orgId;
-  let orgName;
-  if (orgs.length === 1) {
-    orgId = orgs[0].id;
-    orgName = orgs[0].name;
-    process.stderr.write(`Organization: ${orgName}
-`);
-  } else {
-    process.stderr.write("\nOrganizations:\n");
-    orgs.forEach((org, i) => process.stderr.write(`  ${i + 1}. ${org.name}
-`));
-    orgId = orgs[0].id;
-    orgName = orgs[0].name;
-    process.stderr.write(`
-Using: ${orgName} (switch with /deeplake:deeplake-org)
-`);
-  }
-  const tokenName = `deeplake-plugin-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}`;
-  const tokenData = await apiPost("/users/me/tokens", {
-    name: tokenName,
-    duration: 365 * 24 * 3600,
-    organization_id: orgId
-  }, authToken, apiUrl);
-  const apiToken = tokenData.token.token;
-  const creds = {
-    token: apiToken,
-    orgId,
-    orgName,
-    userName,
-    workspaceId: "default",
-    apiUrl,
-    savedAt: (/* @__PURE__ */ new Date()).toISOString()
-  };
-  saveCredentials(creds);
-  process.stderr.write(`
-Credentials saved to ${CREDS_PATH}
-`);
-  return creds;
 }
 
 // dist/src/config.js
@@ -806,13 +664,7 @@ async function main() {
   const input = await readStdin();
   let creds = loadCredentials();
   if (!creds?.token) {
-    log3("no credentials found, starting device flow login");
-    try {
-      creds = await login();
-      log3(`login ok: org=${creds.orgName ?? creds.orgId}`);
-    } catch (e) {
-      log3(`login failed: ${e.message}`);
-    }
+    log3("no credentials found \u2014 skipping auth (non-blocking)");
   } else {
     log3(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
     if (creds.token && !creds.userName) {
