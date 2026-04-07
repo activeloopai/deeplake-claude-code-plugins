@@ -259,7 +259,7 @@ export async function login(apiUrl = DEFAULT_API_URL): Promise<Credentials> {
     // Default to first org — Claude can switch later
     orgId = orgs[0].id;
     orgName = orgs[0].name;
-    process.stderr.write(`\nUsing: ${orgName} (switch with /deeplake:deeplake-org)\n`);
+    process.stderr.write(`\nUsing: ${orgName}\n`);
   }
 
   // Step 4: Exchange for long-lived API token
@@ -283,7 +283,21 @@ export async function login(apiUrl = DEFAULT_API_URL): Promise<Credentials> {
     savedAt: new Date().toISOString(),
   };
   saveCredentials(creds);
-  process.stderr.write(`\nCredentials saved to ${CREDS_PATH}\n`);
+
+  process.stderr.write(`
+🐝 Welcome to Deeplake Hivemind!
+
+Your Claude Code agents can now talk to each other and share memory across sessions, teammates, and machines.
+
+Get started:
+  1. Verify sync: spin up multiple sessions and confirm agents share context (try it across machines too)
+  2. Invite a teammate: ask Claude Code to add them to your org
+  3. Switch orgs: ask Claude Code to list or switch your organizations
+
+One brain for every agent on your team.
+
+Credentials saved to ${CREDS_PATH}
+`);
 
   return creds;
 }

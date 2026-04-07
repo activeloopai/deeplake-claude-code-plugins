@@ -19,6 +19,7 @@ From within Claude Code, run:
 /plugin marketplace add activeloopai/deeplake-claude-code-plugins
 /plugin install deeplake-hivemind@deeplake-claude-code-plugins
 /reload-plugins
+/deeplake-hivemind:login
 ```
 
 ### From source (development)
@@ -27,31 +28,25 @@ From within Claude Code, run:
 npm install
 npm run build
 claude --plugin-dir /path/to/deeplake-claude-code-plugins
+/deeplake-hivemind:login
 ```
 
 ## Authentication
 
-On first session start, the plugin automatically triggers a browser-based login via the OAuth Device Authorization Flow (RFC 8628). No manual token setup required.
+After installing the plugin, run `/deeplake-hivemind:login` to authenticate. This opens a browser for SSO login via the OAuth Device Authorization Flow (RFC 8628).
 
-1. The plugin detects no credentials at `~/.deeplake/credentials.json`
-2. Opens your browser to sign in at Deeplake
-3. Polls for the token and saves it locally (permissions: 0600)
+1. Run `/deeplake-hivemind:login` in Claude Code
+2. Browser opens — sign in at Deeplake
+3. Select your organization
+4. Credentials saved to `~/.deeplake/credentials.json` (permissions: 0600)
 
-To re-login or switch organizations, use the commands injected at session start:
+On subsequent sessions, the plugin detects existing credentials and connects automatically.
 
-```bash
-# Re-login
-node "<auth-cmd-path>" login
+To re-login or switch organizations:
 
-# List and switch organizations
-node "<auth-cmd-path>" org list
-node "<auth-cmd-path>" org switch <name-or-id>
-
-# Invite members
-node "<auth-cmd-path>" invite <email> <ADMIN|WRITE|READ>
 ```
-
-The exact `<auth-cmd-path>` is injected into Claude's context at session start.
+/deeplake-hivemind:login
+```
 
 Alternatively, set environment variables directly:
 
@@ -60,16 +55,6 @@ export DEEPLAKE_TOKEN=your-token
 export DEEPLAKE_ORG_ID=your-org-id
 export DEEPLAKE_WORKSPACE_ID=default   # optional
 ```
-
-Or add to `~/.claude/settings.json`:
-
-```json
-{
-  "env": {
-    "DEEPLAKE_TOKEN": "your-token",
-    "DEEPLAKE_ORG_ID": "your-org-id"
-  }
-}
 ```
 
 ## ⚠️ Data Collection Notice
@@ -102,6 +87,16 @@ To opt out of capture: `export DEEPLAKE_CAPTURE=false`
 | `DEEPLAKE_MEMORY_PATH` | `~/.deeplake/memory` | Path that triggers interception |
 | `DEEPLAKE_CAPTURE` | `true` | Set to `false` to disable capture |
 | `DEEPLAKE_DEBUG` | — | Set to `1` for verbose hook debug logs |
+
+### Debug mode and capture control
+
+```bash
+# Enable debug logging (writes to ~/.deeplake/hook-debug.log)
+DEEPLAKE_DEBUG=1 claude
+
+# Disable session capture
+DEEPLAKE_CAPTURE=false claude
+```
 
 ## Usage
 
