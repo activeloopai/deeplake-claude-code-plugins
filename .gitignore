@@ -1,8 +1,9 @@
 node_modules/
 dist/
-# bundle/ is checked in so the plugin works without a build step
 tmp/
 *.js.map
 *.d.ts.map
 .env
 .env.*
+bundle/
+coverage/
