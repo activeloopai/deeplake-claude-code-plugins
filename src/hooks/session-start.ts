@@ -56,43 +56,31 @@ function wikiLog(msg: string): void {
   } catch { /* ignore */ }
 }
 
-async function createPlaceholder(fs: DeeplakeFs, sessionId: string, cwd: string): Promise<void> {
+async function createPlaceholder(fs: DeeplakeFs, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
   // Ensure directories
   try { await fs.mkdir("/summaries"); } catch { /* exists */ }
   try { await fs.mkdir("/sessions"); } catch { /* exists */ }
-
-  // Bootstrap index if missing
-  const indexExists = await fs.exists("/index.md");
-  if (!indexExists) {
-    await fs.writeFile("/index.md", [
-      "# Session Index",
-      "",
-      "List of all Claude Code sessions with summaries.",
-      "",
-      "| Session | Date | Project | Description |",
-      "|---------|------|---------|-------------|",
-      "",
-    ].join("\n"));
-    wikiLog("Created index.md");
-  }
 
   const summaryPath = `/summaries/${sessionId}.md`;
   const summaryExists = await fs.exists(summaryPath);
 
   if (!summaryExists) {
     const now = new Date().toISOString();
-    await fs.writeFile(summaryPath, [
+    const projectName = cwd.split("/").pop() ?? "unknown";
+    const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
+    await fs.writeFileWithMeta(summaryPath, [
       `# Session ${sessionId}`,
+      `- **Source**: ${sessionSource}`,
       `- **Started**: ${now}`,
-      `- **Project**: ${cwd}`,
+      `- **Project**: ${projectName}`,
       `- **Status**: in-progress`,
       "",
-    ].join("\n"));
-
-    // Append to index
-    const shortDate = now.slice(0, 10);
-    const projectName = cwd.split("/").pop() ?? "unknown";
-    await fs.appendFile("/index.md", `| [${sessionId}](summaries/${sessionId}.md) | ${shortDate} | ${projectName} | in progress |\n`);
+    ].join("\n"), {
+      project: projectName,
+      description: "in progress",
+      creationDate: now,
+      lastUpdateDate: now,
+    });
     await fs.flush();
 
     wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
@@ -133,7 +121,7 @@ async function main(): Promise<void> {
         const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
         const fs = await DeeplakeFs.create(api, table, "/");
-        await createPlaceholder(fs, input.session_id, input.cwd ?? "");
+        await createPlaceholder(fs, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
         log("placeholder created");
       }
     } catch (e: any) {
