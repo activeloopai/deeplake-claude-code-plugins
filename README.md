@@ -183,14 +183,43 @@ Deeplake JS SDK (npm i deeplake)
 - Device flow login — no tokens in environment or code
 - `DEEPLAKE_CAPTURE=false` fully disables data collection
 
-## Development
+## Local development
+
+### Prerequisites
+
+- **Node.js >= 22** — install via [nodejs.org](https://nodejs.org) or a version manager:
+  ```bash
+  # nvm
+  nvm install 22
+
+  # brew
+  brew install node
+  ```
+
+### Setup
 
 ```bash
+git clone https://github.com/activeloopai/deeplake-claude-code-plugins.git
+cd deeplake-claude-code-plugins
 npm install
+npm run build     # tsc + esbuild → bundle/
+```
+
+### Commands
+
+```bash
+npm run build     # TypeScript compile + esbuild bundle
+npm run bundle    # esbuild bundle only (skip tsc)
+npm run dev       # TypeScript watch mode
 npm test          # vitest unit tests
-npm run build     # tsc + esbuild bundle
 npm run shell     # interactive shell against real Deeplake
 DEEPLAKE_DEBUG=1 npm run shell  # with debug logging
+```
+
+### Test the plugin locally with Claude Code
+
+```bash
+claude --plugin-dir .
 ```
 
 After making changes, run `npm run build` and send a new message in Claude Code to pick up the updated hooks.
