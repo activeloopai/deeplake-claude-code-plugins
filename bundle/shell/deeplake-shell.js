@@ -67085,8 +67085,8 @@ var DeeplakeFs = class _DeeplakeFs {
       const sessionId = match2[1];
       const project = row["project"] || "";
       const description = row["description"] || "";
-      const creationDate = (row["creation_date"] || "").slice(0, 10);
-      const lastUpdateDate = (row["last_update_date"] || "").slice(0, 10);
+      const creationDate = row["creation_date"] || "";
+      const lastUpdateDate = row["last_update_date"] || "";
       lines.push(`| [${sessionId}](summaries/${sessionId}.md) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
     }
     lines.push("");

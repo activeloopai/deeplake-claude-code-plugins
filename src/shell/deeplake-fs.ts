@@ -231,8 +231,8 @@ export class DeeplakeFs implements IFileSystem {
       const sessionId = match[1];
       const project = (row["project"] as string) || "";
       const description = (row["description"] as string) || "";
-      const creationDate = ((row["creation_date"] as string) || "").slice(0, 10);
-      const lastUpdateDate = ((row["last_update_date"] as string) || "").slice(0, 10);
+      const creationDate = (row["creation_date"] as string) || "";
+      const lastUpdateDate = (row["last_update_date"] as string) || "";
       lines.push(`| [${sessionId}](summaries/${sessionId}.md) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
     }
     lines.push("");
