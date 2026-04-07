@@ -66752,6 +66752,7 @@ function loadConfig() {
 }
 
 // dist/src/deeplake-api.js
+import { ManagedClient, initializeWasm, deeplakeSetEndpointAndOpen, deeplakeAppend, deeplakeCommit } from "deeplake";
 import { randomUUID } from "node:crypto";
 
 // dist/src/utils/debug.js
@@ -66774,12 +66775,17 @@ function sqlStr(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
+var wasmInitialized = false;
 var DeeplakeApi = class {
   token;
   apiUrl;
   orgId;
   workspaceId;
   tableName;
+  client;
+  _credsApplied = false;
+  _wasmDs = null;
+  _wasmHealthy = true;
   _pendingRows = [];
   constructor(token, apiUrl, orgId, workspaceId, tableName) {
     this.token = token;
@@ -66787,44 +66793,98 @@ var DeeplakeApi = class {
     this.orgId = orgId;
     this.workspaceId = workspaceId;
     this.tableName = tableName;
+    this.client = new ManagedClient({
+      token,
+      workspaceId,
+      apiUrl,
+      orgId
+    });
+  }
+  /** Initialize WASM engine (once per process). */
+  static async initWasm() {
+    if (wasmInitialized)
+      return;
+    await initializeWasm();
+    wasmInitialized = true;
+  }
+  /** Apply storage credentials for read/write access. */
+  async applyStorageCreds(mode = "readwrite") {
+    if (this._credsApplied)
+      return;
+    await this.client.applyStorageCreds(mode);
+    this._credsApplied = true;
+  }
+  /** Open the WASM dataset for direct S3 writes. Uses al:// path like the CLI. */
+  async openDataset(timeoutMs = 3e4) {
+    if (this._wasmDs)
+      return;
+    try {
+      const alPath = `al://${this.workspaceId}/${this.tableName}`;
+      log2(`opening dataset: ${alPath}`);
+      const openPromise = deeplakeSetEndpointAndOpen(this.apiUrl, alPath, "", this.token);
+      const timeout = new Promise((_16, reject) => setTimeout(() => reject(new Error("dataset open timed out")), timeoutMs));
+      this._wasmDs = await Promise.race([openPromise, timeout]);
+      log2("dataset opened");
+    } catch (e6) {
+      log2(`dataset open failed (will use SQL fallback): ${e6.message}`);
+      this._wasmHealthy = false;
+    }
+  }
+  /** Get the underlying ManagedClient. */
+  getClient() {
+    return this.client;
   }
   /** Execute SQL and return results as row-objects. */
   async query(sql) {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        "X-Activeloop-Org-Id": this.orgId
-      },
-      body: JSON.stringify({ query: sql })
-    });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
-    }
-    const raw = await resp.json();
-    if (!raw?.rows || !raw?.columns)
-      return [];
-    return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i11) => [col, row[i11]])));
+    return this.client.query(sql);
   }
   // ── Writes ──────────────────────────────────────────────────────────────────
   /** Queue rows for writing. Call commit() to flush. */
   appendRows(rows) {
     this._pendingRows.push(...rows);
   }
-  /** Flush pending rows via SQL. */
+  /** Flush pending rows — WASM path first, SQL fallback on failure. */
   async commit() {
     if (this._pendingRows.length === 0)
       return;
     const rows = this._pendingRows;
     this._pendingRows = [];
+    const paths = rows.map((r10) => r10.path);
+    const escapedPaths = paths.map((p22) => `'${sqlStr(p22)}'`).join(", ");
+    try {
+      await this.query(`DELETE FROM "${this.tableName}" WHERE path IN (${escapedPaths})`);
+    } catch {
+    }
+    if (this._wasmDs && this._wasmHealthy) {
+      try {
+        const batch = {
+          _id: rows.map(() => randomUUID()),
+          content: rows.map((r10) => r10.content),
+          content_text: rows.map((r10) => r10.contentText),
+          filename: rows.map((r10) => r10.filename),
+          mime_type: rows.map((r10) => r10.mimeType),
+          path: rows.map((r10) => r10.path),
+          size_bytes: rows.map((r10) => r10.sizeBytes)
+        };
+        await deeplakeAppend(this._wasmDs, batch);
+        await deeplakeCommit(this._wasmDs);
+        log2(`WASM commit: ${rows.length} rows`);
+        return;
+      } catch (e6) {
+        log2(`WASM commit failed, falling back to SQL: ${e6.message}`);
+        this._wasmHealthy = false;
+      }
+    }
+    await this.commitViaSql(rows);
+  }
+  /** SQL fallback — hex-encoded INSERT with concurrency limit. */
+  async commitViaSql(rows) {
     const CONCURRENCY = 10;
     for (let i11 = 0; i11 < rows.length; i11 += CONCURRENCY) {
       const chunk = rows.slice(i11, i11 + CONCURRENCY);
       await Promise.allSettled(chunk.map((r10) => this.upsertRowSql(r10)));
     }
-    log2(`commit: ${rows.length} rows`);
+    log2(`SQL commit: ${rows.length} rows`);
   }
   async upsertRowSql(row) {
     const hex = row.content.toString("hex");
@@ -66862,22 +66922,13 @@ var DeeplakeApi = class {
   // ── Convenience ─────────────────────────────────────────────────────────────
   /** Create a BM25 search index on a column. */
   async createIndex(column) {
-    await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
+    await this.client.createIndex(this.tableName, column);
   }
   /** List all tables in the workspace. */
   async listTables() {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "X-Activeloop-Org-Id": this.orgId
-      }
-    });
-    if (!resp.ok)
-      return [];
-    const data = await resp.json();
-    return (data.tables ?? []).map((t6) => t6.table_name);
+    return this.client.listTables();
   }
-  /** Create the table if it doesn't already exist. Migrate columns on existing tables. */
+  /** Create the table if it doesn't already exist. */
   async ensureTable() {
     const tables = await this.listTables();
     if (!tables.includes(this.tableName)) {

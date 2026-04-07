@@ -1,10 +1,19 @@
+import {
+  ManagedClient,
+  initializeWasm,
+  deeplakeSetEndpointAndOpen,
+  deeplakeAppend,
+  deeplakeCommit,
+} from "deeplake";
 import { randomUUID } from "node:crypto";
 import { log as _log } from "./utils/debug.js";
 import { sqlStr } from "./utils/sql.js";
 
 const log = (msg: string) => _log("sdk", msg);
 
-// ── SDK-backed client (ManagedClient for all reads/writes) ───────────────────
+// ── SDK-backed client ────────────────────────────────────────────────────────
+
+let wasmInitialized = false;
 
 export interface WriteRow {
   path: string;
@@ -20,6 +29,10 @@ export interface WriteRow {
 }
 
 export class DeeplakeApi {
+  private client: ManagedClient;
+  private _credsApplied = false;
+  private _wasmDs: any = null;
+  private _wasmHealthy = true;
   private _pendingRows: WriteRow[] = [];
 
   constructor(
@@ -28,28 +41,56 @@ export class DeeplakeApi {
     private orgId: string,
     private workspaceId: string,
     readonly tableName: string,
-  ) {}
+  ) {
+    this.client = new ManagedClient({
+      token,
+      workspaceId,
+      apiUrl,
+      orgId,
+    });
+  }
+
+  /** Initialize WASM engine (once per process). */
+  static async initWasm(): Promise<void> {
+    if (wasmInitialized) return;
+    await initializeWasm();
+    wasmInitialized = true;
+  }
+
+  /** Apply storage credentials for read/write access. */
+  async applyStorageCreds(mode = "readwrite"): Promise<void> {
+    if (this._credsApplied) return;
+    await this.client.applyStorageCreds(mode);
+    this._credsApplied = true;
+  }
+
+  /** Open the WASM dataset for direct S3 writes. Uses al:// path like the CLI. */
+  async openDataset(timeoutMs = 30000): Promise<void> {
+    if (this._wasmDs) return;
+    try {
+      // Use al:// path — triggers credential resolution in WASM C++ backend
+      const alPath = `al://${this.workspaceId}/${this.tableName}`;
+      log(`opening dataset: ${alPath}`);
+      const openPromise = deeplakeSetEndpointAndOpen(this.apiUrl, alPath, "", this.token);
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("dataset open timed out")), timeoutMs),
+      );
+      this._wasmDs = await Promise.race([openPromise, timeout]);
+      log("dataset opened");
+    } catch (e: any) {
+      log(`dataset open failed (will use SQL fallback): ${e.message}`);
+      this._wasmHealthy = false;
+    }
+  }
+
+  /** Get the underlying ManagedClient. */
+  getClient(): ManagedClient {
+    return this.client;
+  }
 
   /** Execute SQL and return results as row-objects. */
   async query(sql: string): Promise<Record<string, unknown>[]> {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        "X-Activeloop-Org-Id": this.orgId,
-      },
-      body: JSON.stringify({ query: sql }),
-    });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
-    }
-    const raw = await resp.json() as { columns?: string[]; rows?: unknown[][]; row_count?: number } | null;
-    if (!raw?.rows || !raw?.columns) return [];
-    return raw.rows.map(row =>
-      Object.fromEntries(raw.columns!.map((col, i) => [col, row[i]]))
-    );
+    return this.client.query(sql);
   }
 
   // ── Writes ──────────────────────────────────────────────────────────────────
@@ -59,18 +100,55 @@ export class DeeplakeApi {
     this._pendingRows.push(...rows);
   }
 
-  /** Flush pending rows via SQL. */
+  /** Flush pending rows — WASM path first, SQL fallback on failure. */
   async commit(): Promise<void> {
     if (this._pendingRows.length === 0) return;
     const rows = this._pendingRows;
     this._pendingRows = [];
 
+    // Pre-delete existing rows (WASM does INSERT, not UPSERT)
+    const paths = rows.map(r => r.path);
+    const escapedPaths = paths.map(p => `'${sqlStr(p)}'`).join(", ");
+    try {
+      await this.query(`DELETE FROM "${this.tableName}" WHERE path IN (${escapedPaths})`);
+    } catch {
+      // May fail for new files — that's fine
+    }
+
+    // WASM write path (primary)
+    if (this._wasmDs && this._wasmHealthy) {
+      try {
+        const batch: Record<string, unknown[]> = {
+          _id: rows.map(() => randomUUID()),
+          content: rows.map(r => r.content),
+          content_text: rows.map(r => r.contentText),
+          filename: rows.map(r => r.filename),
+          mime_type: rows.map(r => r.mimeType),
+          path: rows.map(r => r.path),
+          size_bytes: rows.map(r => r.sizeBytes),
+        };
+        await deeplakeAppend(this._wasmDs, batch);
+        await deeplakeCommit(this._wasmDs);
+        log(`WASM commit: ${rows.length} rows`);
+        return;
+      } catch (e: any) {
+        log(`WASM commit failed, falling back to SQL: ${e.message}`);
+        this._wasmHealthy = false;
+      }
+    }
+
+    // SQL fallback
+    await this.commitViaSql(rows);
+  }
+
+  /** SQL fallback — hex-encoded INSERT with concurrency limit. */
+  private async commitViaSql(rows: WriteRow[]): Promise<void> {
     const CONCURRENCY = 10;
     for (let i = 0; i < rows.length; i += CONCURRENCY) {
       const chunk = rows.slice(i, i + CONCURRENCY);
       await Promise.allSettled(chunk.map(r => this.upsertRowSql(r)));
     }
-    log(`commit: ${rows.length} rows`);
+    log(`SQL commit: ${rows.length} rows`);
   }
 
   private async upsertRowSql(row: WriteRow): Promise<void> {
@@ -115,23 +193,15 @@ export class DeeplakeApi {
 
   /** Create a BM25 search index on a column. */
   async createIndex(column: string): Promise<void> {
-    await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
+    await this.client.createIndex(this.tableName, column);
   }
 
   /** List all tables in the workspace. */
   async listTables(): Promise<string[]> {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "X-Activeloop-Org-Id": this.orgId,
-      },
-    });
-    if (!resp.ok) return [];
-    const data = await resp.json() as { tables?: { table_name: string }[] };
-    return (data.tables ?? []).map(t => t.table_name);
+    return this.client.listTables();
   }
 
-  /** Create the table if it doesn't already exist. Migrate columns on existing tables. */
+  /** Create the table if it doesn't already exist. */
   async ensureTable(): Promise<void> {
     const tables = await this.listTables();
     if (!tables.includes(this.tableName)) {
