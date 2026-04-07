@@ -1,15 +1,110 @@
 # Deeplake Memory — Claude Code Plugin
 
-Persistent, shared memory for Claude Code backed by [Deeplake](https://deeplake.ai). Captures conversation history, tool calls, and responses across sessions and makes them searchable by any agent or user in the same workspace.
+Persistent, shared memory for [Claude Code](https://claude.ai/code) backed by [Deeplake](https://deeplake.ai). Read, write, and search memory that survives across sessions and is shared across agents in the same workspace.
 
-## What it does
+## Features
 
-- **Captures** every session's prompts, tool calls, and responses into a shared Deeplake table
-- **Intercepts** file operations targeting `~/.deeplake/memory/` and routes them through a virtual filesystem backed by Deeplake cloud SQL
-- **Provides** BM25 full-text search across all captured memory via `Grep pattern="keyword" path="~/.deeplake/memory"`
-- **Upgrades** gracefully: basic mode (just-bash virtual FS) works out of the box; install the Deeplake CLI for full FUSE mount support
+- **Persistent memory** — file operations on `~/.deeplake/memory/` are intercepted and routed to Deeplake cloud SQL, no local storage needed
+- **Automatic capture** — prompts, tool calls, and responses are logged to a shared Deeplake table (opt-out available)
+- **Full-text search** — BM25-powered search across all stored memory via `Grep`
+- **Multi-agent sync** — all agents and users in the same workspace share the same memory in real-time
+- **Virtual filesystem** — safe shell commands (cat, ls, grep, jq, ...) run against Deeplake-backed storage without a FUSE mount
+- **SSO login** — browser-based device flow authentication, org switching, and member management
 
-## ⚠️ Data Collection Notice
+## Quick start
+
+### Prerequisites
+
+- **Node.js >= 22** — install via [nodejs.org](https://nodejs.org) or a version manager:
+  ```bash
+  # nvm
+  nvm install 22
+
+  # brew
+  brew install node
+  ```
+
+### 1. Install the plugin
+
+**From the Claude Code marketplace (coming soon):**
+
+```bash
+# One-time: add the marketplace
+/plugin marketplace add activeloopai/deeplake-claude-code-plugins
+
+# Install the plugin
+/plugin install deeplake-hivemind@deeplake-claude-code-plugins
+```
+
+**From source (development):**
+
+```bash
+git clone <repo-url> deeplake-claude-code-plugins
+cd deeplake-claude-code-plugins
+npm install && npm run build
+claude --plugin-dir .
+```
+
+### 2. Authenticate
+
+On first launch, the plugin checks for credentials. If none are found it starts a browser-based device flow:
+
+```
+[deeplake] No credentials found — opening browser for login...
+[deeplake] Visit: https://app.activeloop.ai/device?code=ABCD-1234
+```
+
+Credentials are saved to `~/.deeplake/credentials.json` (mode 0600).
+
+You can also set credentials manually:
+
+```json
+{
+  "token": "your-deeplake-api-token",
+  "orgId": "your-org-id",
+  "workspaceId": "default"
+}
+```
+
+Or via environment variables:
+
+```bash
+export DEEPLAKE_TOKEN=your-token
+export DEEPLAKE_ORG_ID=your-org-id
+```
+
+Get your token at [app.activeloop.ai](https://app.activeloop.ai).
+
+### 3. Use it
+
+Once installed, Claude Code automatically has access to persistent memory. Just ask:
+
+> "Save a note that the auth service uses JWT with RS256"
+
+> "What did we discuss about the database schema last week?"
+
+> "Search memory for authentication"
+
+## Plugin management
+
+```bash
+# List installed plugins (inside Claude Code)
+/plugin
+
+# Disable without removing
+claude plugin disable deeplake
+
+# Re-enable
+claude plugin enable deeplake
+
+# Update to latest version
+claude plugin update deeplake
+
+# Remove completely
+claude plugin uninstall deeplake
+```
+
+## Data collection notice
 
 This plugin captures the following data and stores it in your Deeplake workspace:
 
@@ -22,43 +117,64 @@ This plugin captures the following data and stores it in your Deeplake workspace
 
 **All users with access to your Deeplake workspace can read this data.**
 
-To opt out of capture: `export DEEPLAKE_CAPTURE=false`
-
-## Setup
-
-### 1. Credentials
-
-Create `~/.deeplake/credentials.json` (permissions: 0600):
-
-```json
-{
-  "token": "your-deeplake-api-token",
-  "orgId": "your-org-id",
-  "workspaceId": "default"
-}
-```
-
-Or use environment variables:
+To opt out of capture:
 
 ```bash
-export DEEPLAKE_TOKEN=your-token
-export DEEPLAKE_ORG_ID=your-org-id
-export DEEPLAKE_WORKSPACE_ID=default   # optional, defaults to "default"
-export DEEPLAKE_API_URL=https://api.deeplake.ai  # optional
+export DEEPLAKE_CAPTURE=false
 ```
 
-Get your token at [app.activeloop.ai](https://app.activeloop.ai).
+## Usage
 
-### 2. Install the plugin
+### Memory operations (inside Claude Code)
+
+Claude Code can read and write files in `~/.deeplake/memory/` using its normal tools — the plugin intercepts these operations and routes them through the Deeplake virtual filesystem:
+
+```
+# Claude uses Read, Write, Grep, Glob as usual — the plugin handles the rest
+Read  path="~/.deeplake/memory/notes.md"
+Write path="~/.deeplake/memory/notes.md" content="..."
+Grep  pattern="authentication" path="~/.deeplake/memory"
+```
+
+### Interactive shell
 
 ```bash
-# In your Claude Code settings, add this plugin directory
-# or install via the Claude Code marketplace
+npm run shell
+# ds:/$ ls /
+# ds:/$ cat /memory/notes.txt
+# ds:/$ echo "todo: fix the bug" > /memory/todo.txt
+# ds:/$ grep -r 'keyword' /memory
 ```
 
-### 3. Optional: Install Deeplake CLI for FUSE support
+### One-shot commands
 
-The lightweight plugin uses a virtual filesystem (just-bash) for basic operations. For full FUSE mount support (required for Python pipelines, arbitrary shell scripts, etc.):
+```bash
+npm run shell -- -c "ls /"
+npm run shell -- -c "cat /memory/notes.txt"
+npm run shell -- -c "grep -ri 'auth' /memory"
+```
+
+### Organization management
+
+Inside Claude Code, use the `/deeplake` skill:
+
+```
+# List organizations
+deeplake org list
+
+# Switch organization
+deeplake org switch <org-id>
+
+# Invite a member
+deeplake invite user@example.com
+
+# List members
+deeplake members
+```
+
+### Optional: FUSE mount
+
+The plugin works out of the box with a virtual filesystem. For full FUSE mount support (needed for Python pipelines, arbitrary shell scripts, etc.):
 
 ```bash
 curl -fsSL https://deeplake.ai/install.sh | bash
@@ -69,46 +185,16 @@ deeplake mount ~/.deeplake/memory
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEEPLAKE_TOKEN` | — | API token (required) |
-| `DEEPLAKE_ORG_ID` | — | Organization ID (required) |
+| `DEEPLAKE_TOKEN` | — | API token (required unless using device flow) |
+| `DEEPLAKE_ORG_ID` | — | Organization ID (required unless using device flow) |
 | `DEEPLAKE_WORKSPACE_ID` | `default` | Workspace name |
 | `DEEPLAKE_API_URL` | `https://api.deeplake.ai` | API endpoint |
-| `DEEPLAKE_TABLE` | `memory` | SQL table for shell/virtual FS |
+| `DEEPLAKE_TABLE` | `memory` | SQL table for shell / virtual FS |
 | `DEEPLAKE_MEMORY_TABLE` | `memory` | SQL table for hook captures |
 | `DEEPLAKE_MOUNT` | `/` | Virtual FS mount point |
 | `DEEPLAKE_MEMORY_PATH` | `~/.deeplake/memory` | Local memory path |
-| `DEEPLAKE_MEMORY_DIR` | `~/.deeplake/memory` | Local capture directory |
 | `DEEPLAKE_CAPTURE` | `true` | Set to `false` to disable capture |
-| `DEEPLAKE_DEBUG` | `false` | Set to `1` for hook debug logs |
-
-## Usage
-
-### Search memory
-
-```bash
-# In Claude Code, ask Claude to search memory:
-# "Search for what we discussed about authentication"
-
-# Or use the shell directly:
-npm run shell -- -c "grep -r 'authentication' /"
-```
-
-### Interactive shell
-
-```bash
-npm run shell
-# ds:/$ ls /
-# ds:/$ cat /memory/notes.txt
-# ds:/$ echo "todo: fix the bug" > /memory/todo.txt
-```
-
-### One-shot commands
-
-```bash
-npm run shell -- -c "ls /"
-npm run shell -- -c "cat /CLAUDE.md"
-npm run shell -- -c "grep -r 'keyword' /memory"
-```
+| `DEEPLAKE_DEBUG` | `false` | Set to `1` for debug logs → `~/.deeplake/hook-debug.log` |
 
 ## Architecture
 
@@ -136,19 +222,25 @@ Deeplake SQL API (https://api.deeplake.ai)
 
 ## Security
 
-- SQL values are escaped with `sqlStr()`, `sqlLike()`, `sqlIdent()` (see `src/utils/sql.ts`)
+- SQL values escaped with `sqlStr()`, `sqlLike()`, `sqlIdent()` — no raw interpolation
 - Shell arguments use POSIX single-quote escaping before `execSync()`
-- Only commands using allowlisted builtins (cat, ls, grep, find, etc.) run in the virtual FS
-- Credentials are loaded from file or environment — never hardcoded
+- Only allowlisted builtins (cat, ls, grep, find, jq, ...) run in the virtual FS
+- Credentials loaded from file (mode 0600) or environment — never hardcoded
 
 ## Development
 
 ```bash
 npm install
+npm run build     # tsc + esbuild → bundle/
 npm test          # vitest unit tests
-npm run build     # tsc + esbuild bundle
 npm run shell     # interactive shell against real Deeplake
-DEEPLAKE_DEBUG=1 npm run shell  # with debug logging
+npm run dev       # tsc watch mode
+
+# Debug mode
+DEEPLAKE_DEBUG=1 npm run shell
+
+# Test the plugin locally with Claude Code
+claude --plugin-dir .
 ```
 
 ## License
