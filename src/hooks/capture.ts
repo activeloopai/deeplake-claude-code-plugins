@@ -132,8 +132,23 @@ async function main(): Promise<void> {
   try { await fs.mkdir("/sessions"); } catch { /* exists */ }
   try { await fs.mkdir(dir); } catch { /* exists */ }
 
-  await fs.appendFile(sessionPath, JSON.stringify(entry) + "\n");
-  await fs.flush();
+  // First write: set project metadata on the session JSONL row
+  if (!(await fs.exists(sessionPath).catch(() => false))) {
+    const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
+    const userName = sessionPath.split("/")[2] || "user";
+    const shortId = input.session_id.slice(0, 8);
+    const shortDate = new Date().toISOString().slice(0, 10);
+    await fs.writeFileWithMeta(sessionPath, JSON.stringify(entry) + "\n", {
+      project: projectName,
+      description: `${userName} - ${shortId} - ${shortDate}`,
+      creationDate: new Date().toISOString(),
+      lastUpdateDate: new Date().toISOString(),
+    });
+    await fs.flush();
+  } else {
+    await fs.appendFile(sessionPath, JSON.stringify(entry) + "\n");
+    await fs.flush();
+  }
   log("capture ok → cloud");
 }
 
