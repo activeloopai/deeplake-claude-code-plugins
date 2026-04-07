@@ -1,6 +1,6 @@
 {
   "name": "deeplake-claude-code-plugins",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Claude Code plugin for Deeplake memory — captures file ops and syncs to Deeplake cloud",
   "type": "module",
   "bin": {
@@ -29,6 +29,7 @@
   "devDependencies": {
     "@types/node": "^25.0.0",
     "@types/yargs-parser": "^21.0.3",
+    "@vitest/coverage-v8": "^4.1.3",
     "esbuild": "^0.28.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
