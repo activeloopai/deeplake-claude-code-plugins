@@ -47,6 +47,13 @@ The auth command path is injected at session start. Use the exact path from the 
 
 If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
-## Debugging
+## Getting Started
 
-Set `DEEPLAKE_DEBUG=1` to enable verbose logging to `~/.deeplake/hook-debug.log`.
+After installing the plugin:
+1. Run `/deeplake-hivemind:login` to authenticate
+2. Start using memory — ask questions, Claude automatically captures and searches
+
+## Configuration
+
+- `DEEPLAKE_DEBUG=1 claude` — enable verbose logging to `~/.deeplake/hook-debug.log`
+- `DEEPLAKE_CAPTURE=false claude` — disable session capture
