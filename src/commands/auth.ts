@@ -14,6 +14,10 @@ const CONFIG_DIR = join(homedir(), ".deeplake");
 const CREDS_PATH = join(CONFIG_DIR, "credentials.json");
 const DEFAULT_API_URL = "https://api.deeplake.ai";
 
+// Output goes to stderr by default (safe for hooks).
+// auth-login.js sets this to console.log for direct CLI usage.
+export let authLog = (msg: string) => process.stderr.write(msg + "\n");
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface Credentials {

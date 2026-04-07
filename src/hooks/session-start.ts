@@ -112,14 +112,7 @@ async function main(): Promise<void> {
   let creds = loadCredentials();
 
   if (!creds?.token) {
-    log("no credentials found, starting device flow login");
-    try {
-      creds = await login();
-      log(`login ok: org=${creds.orgName ?? creds.orgId}`);
-    } catch (e: any) {
-      log(`login failed: ${e.message}`);
-      // Still inject context — memory search won't work but other features will
-    }
+    log("no credentials found — run /deeplake-hivemind:login to authenticate");
   } else {
     log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
     // Backfill userName if missing (for users who logged in before this field was added)
