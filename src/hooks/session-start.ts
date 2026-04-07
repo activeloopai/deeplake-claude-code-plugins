@@ -112,9 +112,13 @@ async function main(): Promise<void> {
   let creds = loadCredentials();
 
   if (!creds?.token) {
-    log("no credentials found — skipping auth (non-blocking)");
-    // Don't block session start with interactive auth.
-    // Claude will be told to ask the user to log in.
+    log("no credentials found, starting device flow login");
+    try {
+      creds = await login();
+      log(`login ok: org=${creds.orgName ?? creds.orgId}`);
+    } catch (e: any) {
+      log(`login failed: ${e.message}`);
+    }
   } else {
     log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
     // Backfill userName if missing (for users who logged in before this field was added)
