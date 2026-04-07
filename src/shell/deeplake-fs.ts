@@ -80,6 +80,8 @@ export class DeeplakeFs implements IFileSystem {
   private dirs  = new Map<string, Set<string>>();
   // batched writes pending SQL flush
   private pending = new Map<string, PendingRow>();
+  // paths that have been flushed (INSERT) at least once — subsequent flushes use UPDATE
+  private flushed = new Set<string>();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   // serialize flushes
   private flushChain: Promise<void> = Promise.resolve();
@@ -121,6 +123,7 @@ export class DeeplakeFs implements IFileSystem {
           mtime: new Date(),
         });
         fs.addToTree(p);
+        fs.flushed.add(p);
       }
     } catch {
       // Table may not exist yet — start empty
@@ -142,6 +145,7 @@ export class DeeplakeFs implements IFileSystem {
     this.files.delete(filePath);
     this.meta.delete(filePath);
     this.pending.delete(filePath);
+    this.flushed.delete(filePath);
     const parent = parentOf(filePath);
     this.dirs.get(parent)?.delete(basename(filePath));
   }
@@ -166,21 +170,29 @@ export class DeeplakeFs implements IFileSystem {
     const rows = [...this.pending.values()];
     this.pending.clear();
 
-    // SQL upsert: DELETE + INSERT with hex-encoded binary content.
-    // Two calls per row — avoids WASM ingest() compatibility issues.
+    // Upsert: UPDATE existing rows, INSERT new ones. Preserves stable id.
     for (const r of rows) {
       const hex   = r.content.toString("hex");
       const text  = esc(r.contentText);
       const p     = esc(r.path);
       const fname = esc(r.filename);
       const mime  = esc(r.mimeType);
-      const id = randomUUID();
       const ts = new Date().toISOString();
-      await this.client.query(`DELETE FROM "${this.table}" WHERE path = '${p}'`);
-      await this.client.query(
-        `INSERT INTO "${this.table}" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) ` +
-        `VALUES ('${id}', '${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes}, '${ts}')`
-      );
+      if (this.flushed.has(r.path)) {
+        await this.client.query(
+          `UPDATE "${this.table}" SET ` +
+          `filename = '${fname}', content = E'\\\\x${hex}', content_text = E'${text}', ` +
+          `mime_type = '${mime}', size_bytes = ${r.sizeBytes}, timestamp = '${ts}' ` +
+          `WHERE path = '${p}'`
+        );
+      } else {
+        const id = randomUUID();
+        await this.client.query(
+          `INSERT INTO "${this.table}" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) ` +
+          `VALUES ('${id}', '${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes}, '${ts}')`
+        );
+        this.flushed.add(r.path);
+      }
     }
     // Sync so subsequent reads see the new data.
     await this.client.query(`SELECT deeplake_sync_table('${this.table}')`);
@@ -268,16 +280,18 @@ export class DeeplakeFs implements IFileSystem {
     // Fast path: SQL-level concat — no read-back, O(1) per append
     if (this.files.has(p) || await this.exists(p).catch(() => false)) {
       const addHex = Buffer.from(add, "utf-8").toString("hex");
+      const ts = new Date().toISOString();
       await this.client.query(
         `UPDATE "${this.table}" SET ` +
         `content_text = content_text || E'${esc(add)}', ` +
         `content = content || E'\\\\x${addHex}', ` +
-        `size_bytes = size_bytes + ${Buffer.byteLength(add, "utf-8")} ` +
+        `size_bytes = size_bytes + ${Buffer.byteLength(add, "utf-8")}, ` +
+        `timestamp = '${ts}' ` +
         `WHERE path = '${esc(p)}'`
       );
       // Update local metadata
       const m = this.meta.get(p);
-      if (m) m.size += Buffer.byteLength(add, "utf-8");
+      if (m) { m.size += Buffer.byteLength(add, "utf-8"); m.mtime = new Date(ts); }
     } else {
       // File doesn't exist yet — create it
       await this.writeFile(p, typeof content === "string" ? Buffer.from(content, "utf-8") : Buffer.from(content), opts);
