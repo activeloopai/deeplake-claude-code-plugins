@@ -49,7 +49,6 @@ function loadConfig() {
 }
 
 // dist/src/deeplake-api.js
-import { ManagedClient } from "deeplake";
 import { randomUUID } from "node:crypto";
 
 // dist/src/utils/debug.js
@@ -78,8 +77,6 @@ var DeeplakeApi = class {
   orgId;
   workspaceId;
   tableName;
-  client;
-  _credsApplied = false;
   _pendingRows = [];
   constructor(token, apiUrl, orgId, workspaceId, tableName) {
     this.token = token;
@@ -87,27 +84,26 @@ var DeeplakeApi = class {
     this.orgId = orgId;
     this.workspaceId = workspaceId;
     this.tableName = tableName;
-    this.client = new ManagedClient({
-      token,
-      workspaceId,
-      apiUrl,
-      orgId
-    });
-  }
-  /** Apply storage credentials for read/write access. */
-  async applyStorageCreds(mode = "readwrite") {
-    if (this._credsApplied)
-      return;
-    await this.client.applyStorageCreds(mode);
-    this._credsApplied = true;
-  }
-  /** Get the underlying ManagedClient. */
-  getClient() {
-    return this.client;
   }
   /** Execute SQL and return results as row-objects. */
   async query(sql) {
-    return this.client.query(sql);
+    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        "Content-Type": "application/json",
+        "X-Activeloop-Org-Id": this.orgId
+      },
+      body: JSON.stringify({ query: sql })
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
+    }
+    const raw = await resp.json();
+    if (!raw?.rows || !raw?.columns)
+      return [];
+    return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i) => [col, row[i]])));
   }
   // ── Writes ──────────────────────────────────────────────────────────────────
   /** Queue rows for writing. Call commit() to flush. */
@@ -152,11 +148,20 @@ var DeeplakeApi = class {
   // ── Convenience ─────────────────────────────────────────────────────────────
   /** Create a BM25 search index on a column. */
   async createIndex(column) {
-    await this.client.createIndex(this.tableName, column);
+    await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
   /** List all tables in the workspace. */
   async listTables() {
-    return this.client.listTables();
+    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        "X-Activeloop-Org-Id": this.orgId
+      }
+    });
+    if (!resp.ok)
+      return [];
+    const data = await resp.json();
+    return (data.tables ?? []).map((t) => t.table_name);
   }
   /** Create the table if it doesn't already exist. */
   async ensureTable() {

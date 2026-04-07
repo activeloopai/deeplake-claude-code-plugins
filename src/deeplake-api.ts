@@ -1,4 +1,3 @@
-import { ManagedClient } from "deeplake";
 import { randomUUID } from "node:crypto";
 import { log as _log } from "./utils/debug.js";
 import { sqlStr } from "./utils/sql.js";
@@ -17,8 +16,6 @@ export interface WriteRow {
 }
 
 export class DeeplakeApi {
-  private client: ManagedClient;
-  private _credsApplied = false;
   private _pendingRows: WriteRow[] = [];
 
   constructor(
@@ -27,30 +24,28 @@ export class DeeplakeApi {
     private orgId: string,
     private workspaceId: string,
     readonly tableName: string,
-  ) {
-    this.client = new ManagedClient({
-      token,
-      workspaceId,
-      apiUrl,
-      orgId,
-    });
-  }
-
-  /** Apply storage credentials for read/write access. */
-  async applyStorageCreds(mode = "readwrite"): Promise<void> {
-    if (this._credsApplied) return;
-    await this.client.applyStorageCreds(mode);
-    this._credsApplied = true;
-  }
-
-  /** Get the underlying ManagedClient. */
-  getClient(): ManagedClient {
-    return this.client;
-  }
+  ) {}
 
   /** Execute SQL and return results as row-objects. */
   async query(sql: string): Promise<Record<string, unknown>[]> {
-    return this.client.query(sql);
+    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        "Content-Type": "application/json",
+        "X-Activeloop-Org-Id": this.orgId,
+      },
+      body: JSON.stringify({ query: sql }),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
+    }
+    const raw = await resp.json() as { columns?: string[]; rows?: unknown[][]; row_count?: number } | null;
+    if (!raw?.rows || !raw?.columns) return [];
+    return raw.rows.map(row =>
+      Object.fromEntries(raw.columns!.map((col, i) => [col, row[i]]))
+    );
   }
 
   // ── Writes ──────────────────────────────────────────────────────────────────
@@ -106,12 +101,20 @@ export class DeeplakeApi {
 
   /** Create a BM25 search index on a column. */
   async createIndex(column: string): Promise<void> {
-    await this.client.createIndex(this.tableName, column);
+    await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
 
   /** List all tables in the workspace. */
   async listTables(): Promise<string[]> {
-    return this.client.listTables();
+    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        "X-Activeloop-Org-Id": this.orgId,
+      },
+    });
+    if (!resp.ok) return [];
+    const data = await resp.json() as { tables?: { table_name: string }[] };
+    return (data.tables ?? []).map(t => t.table_name);
   }
 
   /** Create the table if it doesn't already exist. */
