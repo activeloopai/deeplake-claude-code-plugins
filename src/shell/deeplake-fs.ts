@@ -225,15 +225,17 @@ export class DeeplakeFs implements IFileSystem {
     ];
     for (const row of rows) {
       const p = row["path"] as string;
-      // Extract session ID from path: /summaries/<id>.md
-      const match = p.match(/\/summaries\/(.+)\.md$/);
+      // Extract session ID from path: /summaries/<user>/<id>.md or /summaries/<id>.md (legacy)
+      const match = p.match(/\/summaries\/(?:([^/]+)\/)?([^/]+)\.md$/);
       if (!match) continue;
-      const sessionId = match[1];
+      const userName = match[1] || "";
+      const sessionId = match[2];
+      const relPath = userName ? `summaries/${userName}/${sessionId}.md` : `summaries/${sessionId}.md`;
       const project = (row["project"] as string) || "";
       const description = (row["description"] as string) || "";
       const creationDate = (row["creation_date"] as string) || "";
       const lastUpdateDate = (row["last_update_date"] as string) || "";
-      lines.push(`| [${sessionId}](summaries/${sessionId}.md) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
+      lines.push(`| [${sessionId}](${relPath}) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
     }
     lines.push("");
     return lines.join("\n");
