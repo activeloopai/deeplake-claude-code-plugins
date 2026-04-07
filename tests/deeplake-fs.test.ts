@@ -4,7 +4,8 @@ import { DeeplakeFs, isText, guessMime } from "../src/shell/deeplake-fs.js";
 // ── Mock ManagedClient ────────────────────────────────────────────────────────
 type Row = {
   id: string; path: string; filename: string; content: Buffer;
-  content_text: string; mime_type: string; size_bytes: number; timestamp: string;
+  content_text: string; mime_type: string; size_bytes: number;
+  project: string; description: string; creation_date: string; last_update_date: string;
 };
 
 function makeClient(seed: Record<string, Buffer> = {}) {
@@ -16,7 +17,10 @@ function makeClient(seed: Record<string, Buffer> = {}) {
     content_text: isText(content) ? content.toString("utf-8") : "",
     mime_type: guessMime(path.split("/").pop()!),
     size_bytes: content.length,
-    timestamp: "2026-01-01T00:00:00.000Z",
+    project: "",
+    description: "",
+    creation_date: "",
+    last_update_date: "",
   }));
 
   const client = {
@@ -39,6 +43,15 @@ function makeClient(seed: Record<string, Buffer> = {}) {
         const match = sql.match(/path = '([^']+)'/);
         const row = match ? rows.find(r => r.path === match[1]) : undefined;
         return row ? [{ content_text: row.content_text, content: `\\x${row.content.toString("hex")}` }] : [];
+      }
+      // Virtual index: SELECT path, project, description, creation_date, last_update_date FROM ... WHERE path LIKE '/summaries/%'
+      if (sql.includes("SELECT path, project, description, creation_date, last_update_date")) {
+        return rows
+          .filter(r => r.path.startsWith("/summaries/"))
+          .map(r => ({
+            path: r.path, project: r.project, description: r.description,
+            creation_date: r.creation_date, last_update_date: r.last_update_date,
+          }));
       }
       // BM25 / ILIKE for grep
       if (sql.includes("<#>") || sql.includes("LIKE")) {
@@ -71,9 +84,11 @@ function makeClient(seed: Record<string, Buffer> = {}) {
         if (match) {
           const row = rows.find(r => r.path === match[1]);
           if (row) {
-            // Extract timestamp if present
-            const tsMatch = sql.match(/timestamp = '([^']+)'/);
-            if (tsMatch) row.timestamp = tsMatch[1];
+            // Extract dates if present
+            const cdMatch2 = sql.match(/creation_date = '([^']+)'/);
+            if (cdMatch2) row.creation_date = cdMatch2[1];
+            const ludMatch2 = sql.match(/last_update_date = '([^']+)'/);
+            if (ludMatch2) row.last_update_date = ludMatch2[1];
 
             if (sql.includes("content_text = content_text ||")) {
               // appendFile: SQL-level concat
@@ -96,6 +111,15 @@ function makeClient(seed: Record<string, Buffer> = {}) {
                 row.content_text = textMatch[1].replace(/''/g, "'");
               }
             }
+            // Handle new metadata columns in any UPDATE
+            const projMatch = sql.match(/project = '([^']*)'/);
+            if (projMatch) row.project = projMatch[1];
+            const descMatch = sql.match(/description = '([^']*)'/);
+            if (descMatch) row.description = descMatch[1];
+            const cdMatch = sql.match(/creation_date = '([^']*)'/);
+            if (cdMatch) row.creation_date = cdMatch[1];
+            const ludMatch = sql.match(/last_update_date = '([^']*)'/);
+            if (ludMatch) row.last_update_date = ludMatch[1];
           }
         }
         return [];
@@ -111,18 +135,50 @@ function makeClient(seed: Record<string, Buffer> = {}) {
             : sql.match(/VALUES \('([^']+)'/);
           const hexMatch = sql.match(/E'\\\\x([0-9a-f]*)'/);
           const textMatch = sql.match(/E'\\\\x[0-9a-f]*', E'((?:[^']|'')*)'/);
-          const tsMatch = sql.match(/, '(\d{4}-\d{2}-\d{2}T[^']+)'\)$/);
           if (pathMatch) {
             const path = pathMatch[1];
             const filename = path.split("/").pop()!;
             const content = hexMatch ? Buffer.from(hexMatch[1], "hex") : Buffer.alloc(0);
             const content_text = textMatch?.[1]?.replace(/''/g, "'") ?? "";
             const id = idMatch?.[1] ?? "";
-            const timestamp = tsMatch?.[1] ?? new Date().toISOString();
+            // Parse columns and values positionally
+            const colsPart = sql.match(/\(([^)]+)\)\s+VALUES/)?.[1] ?? "";
+            const colsList = colsPart.split(",").map(c => c.trim());
+            // Extract all quoted values from VALUES(...)
+            const valsStr = valuesMatch[1];
+            const allVals: string[] = [];
+            let i = 0;
+            while (i < valsStr.length) {
+              if (valsStr[i] === "'" || (valsStr.slice(i, i + 2) === "E'")) {
+                // String value — find matching close quote (handle '' escapes)
+                const start = valsStr[i] === "E" ? i + 2 : i + 1;
+                let end = start;
+                while (end < valsStr.length) {
+                  if (valsStr[end] === "'" && valsStr[end + 1] !== "'") break;
+                  if (valsStr[end] === "'" && valsStr[end + 1] === "'") end++; // skip escaped
+                  end++;
+                }
+                allVals.push(valsStr.slice(start, end).replace(/''/g, "'"));
+                i = end + 1;
+              } else if (/\d/.test(valsStr[i])) {
+                const m = valsStr.slice(i).match(/^(\d+)/);
+                if (m) { allVals.push(m[1]); i += m[1].length; }
+                else i++;
+              } else { i++; }
+            }
+            // Map column names to values
+            const colMap: Record<string, string> = {};
+            for (let c = 0; c < colsList.length; c++) {
+              colMap[colsList[c]] = allVals[c] ?? "";
+            }
+            const project = colMap["project"] ?? "";
+            const description = colMap["description"] ?? "";
+            const creation_date = colMap["creation_date"] ?? "";
+            const last_update_date = colMap["last_update_date"] ?? "";
             // Remove existing row if any (upsert)
             const idx = rows.findIndex(r => r.path === path);
             if (idx >= 0) rows.splice(idx, 1);
-            rows.push({ id, path, filename, content, content_text, mime_type: "text/plain", size_bytes: content.length, timestamp });
+            rows.push({ id, path, filename, content, content_text, mime_type: "text/plain", size_bytes: content.length, project, description, creation_date, last_update_date });
           }
         }
         return [];
@@ -141,13 +197,13 @@ function makeClient(seed: Record<string, Buffer> = {}) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-async function makeFs(seed: Record<string, string | Buffer> = {}) {
+async function makeFs(seed: Record<string, string | Buffer> = {}, mount = "/memory") {
   const bufSeed: Record<string, Buffer> = {};
   for (const [k, v] of Object.entries(seed)) {
     bufSeed[k] = typeof v === "string" ? Buffer.from(v, "utf-8") : v;
   }
   const client = makeClient(bufSeed);
-  const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+  const fs = await DeeplakeFs.create(client as never, "test", mount);
   return { fs, client };
 }
 
@@ -471,18 +527,19 @@ describe("getAllPaths", () => {
   });
 });
 
-// ── Upsert: id stability & timestamp ─────────────────────────────────────────
+// ── Upsert: id stability & dates ─────────────────────────────────────────────
 describe("flush upsert", () => {
-  it("INSERT for new file sets id and timestamp", async () => {
+  it("INSERT for new file sets id, creation_date and last_update_date", async () => {
     const { fs, client } = await makeFs({});
     // Write 10 files to trigger flush
     for (let i = 0; i < 10; i++) await fs.writeFile(`/memory/f${i}.txt`, `v${i}`);
     const insertCalls = (client.query.mock.calls as [string][]).filter(c => (c[0] as string).startsWith("INSERT"));
     expect(insertCalls.length).toBe(10);
-    // Every INSERT should include id and timestamp columns
+    // Every INSERT should include id, creation_date and last_update_date columns
     for (const [sql] of insertCalls) {
       expect(sql).toContain("(id,");
-      expect(sql).toContain("timestamp)");
+      expect(sql).toContain("creation_date");
+      expect(sql).toContain("last_update_date");
     }
   });
 
@@ -510,16 +567,16 @@ describe("flush upsert", () => {
     expect(row.content_text).toBe("new");
   });
 
-  it("UPDATE includes timestamp", async () => {
+  it("UPDATE includes last_update_date", async () => {
     const { fs, client } = await makeFs({ "/memory/ts.txt": "old" });
-    const originalTs = client._rows.find(r => r.path === "/memory/ts.txt")!.timestamp;
+    const originalLud = client._rows.find(r => r.path === "/memory/ts.txt")!.last_update_date;
 
     for (let i = 0; i < 9; i++) await fs.writeFile(`/memory/pad${i}.txt`, "x");
     await fs.writeFile("/memory/ts.txt", "new");
 
     const row = client._rows.find(r => r.path === "/memory/ts.txt")!;
-    expect(row.timestamp).not.toBe(originalTs);
-    expect(row.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(row.last_update_date).not.toBe(originalLud);
+    expect(row.last_update_date).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it("multiple overwrites of same file never change id", async () => {
@@ -562,15 +619,15 @@ describe("appendFile upsert", () => {
     expect(row.id).toBe(originalId);
   });
 
-  it("updates timestamp on append", async () => {
+  it("updates last_update_date on append", async () => {
     const { fs, client } = await makeFs({ "/memory/log.txt": "line1\n" });
-    const originalTs = client._rows.find(r => r.path === "/memory/log.txt")!.timestamp;
+    const originalLud = client._rows.find(r => r.path === "/memory/log.txt")!.last_update_date;
 
     await fs.appendFile("/memory/log.txt", "line2\n");
 
     const row = client._rows.find(r => r.path === "/memory/log.txt")!;
-    expect(row.timestamp).not.toBe(originalTs);
-    expect(row.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(row.last_update_date).not.toBe(originalLud);
+    expect(row.last_update_date).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it("multiple appends preserve same id", async () => {
@@ -602,5 +659,188 @@ describe("unsupported ops", () => {
   it("readlink throws EINVAL", async () => {
     const { fs } = await makeFs({});
     await expect(fs.readlink("/memory/a")).rejects.toMatchObject({ code: "EINVAL" });
+  });
+});
+
+// ── Virtual index.md ─────────────────────────────────────────────────────────
+describe("virtual index.md", () => {
+  /** Helper: create FS mounted at "/" with summary rows that have metadata columns set. */
+  async function makeFsWithSummaries(summaries: { id: string; project: string; description: string; creationDate: string; lastUpdateDate: string; content: string }[], extraSeed: Record<string, string> = {}) {
+    const seed: Record<string, string> = { ...extraSeed };
+    for (const s of summaries) {
+      seed[`/summaries/${s.id}.md`] = s.content;
+    }
+    const { fs, client } = await makeFs(seed, "/");
+    // Set metadata on summary rows
+    for (const s of summaries) {
+      const row = client._rows.find(r => r.path === `/summaries/${s.id}.md`);
+      if (row) {
+        row.project = s.project;
+        row.description = s.description;
+        row.creation_date = s.creationDate;
+        row.last_update_date = s.lastUpdateDate;
+      }
+    }
+    return { fs, client };
+  }
+
+  it("generates virtual index when no /index.md row exists", async () => {
+    const { fs } = await makeFsWithSummaries([
+      { id: "aaa-111", project: "my-project", description: "Fixed auth bug", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T11:00:00.000Z", content: "# Session aaa-111" },
+      { id: "bbb-222", project: "other-proj", description: "in progress", creationDate: "2026-04-07T12:00:00.000Z", lastUpdateDate: "2026-04-07T12:00:00.000Z", content: "# Session bbb-222" },
+    ]);
+    const content = await fs.readFile("/index.md");
+    expect(content).toContain("# Session Index");
+    expect(content).toContain("| Session | Created | Last Updated | Project | Description |");
+    expect(content).toContain("aaa-111");
+    expect(content).toContain("bbb-222");
+    expect(content).toContain("my-project");
+    expect(content).toContain("Fixed auth bug");
+    expect(content).toContain("2026-04-07");
+  });
+
+  it("serves real /index.md row when it exists", async () => {
+    const { fs } = await makeFsWithSummaries(
+      [{ id: "aaa-111", project: "proj", description: "desc", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T10:00:00.000Z", content: "# Session" }],
+      { "/index.md": "# My Custom Index\nHello" },
+    );
+    const content = await fs.readFile("/index.md");
+    expect(content).toBe("# My Custom Index\nHello");
+  });
+
+  it("exists() returns true for /index.md even without a real row", async () => {
+    const { fs } = await makeFs({}, "/");
+    expect(await fs.exists("/index.md")).toBe(true);
+  });
+
+  it("readdir('/') includes index.md even without a real row", async () => {
+    const { fs } = await makeFsWithSummaries([
+      { id: "aaa-111", project: "proj", description: "desc", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T10:00:00.000Z", content: "# Session" },
+    ]);
+    const entries = await fs.readdir("/");
+    expect(entries).toContain("index.md");
+    expect(entries).toContain("summaries");
+  });
+
+  it("stat('/index.md') returns file stat even without a real row", async () => {
+    const { fs } = await makeFs({}, "/");
+    const s = await fs.stat("/index.md");
+    expect(s.isFile).toBe(true);
+    expect(s.isDirectory).toBe(false);
+  });
+
+  it("virtual index shows all summary rows ordered", async () => {
+    const { fs } = await makeFsWithSummaries([
+      { id: "old-session", project: "proj-a", description: "Old work", creationDate: "2026-04-01T10:00:00.000Z", lastUpdateDate: "2026-04-01T11:00:00.000Z", content: "# Old" },
+      { id: "new-session", project: "proj-b", description: "New work", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T12:00:00.000Z", content: "# New" },
+    ]);
+    const content = await fs.readFile("/index.md");
+    // Both sessions should appear
+    expect(content).toContain("old-session");
+    expect(content).toContain("new-session");
+    expect(content).toContain("proj-a");
+    expect(content).toContain("proj-b");
+  });
+
+  it("virtual index handles empty summaries table", async () => {
+    const { fs } = await makeFs({}, "/");
+    const content = await fs.readFile("/index.md");
+    expect(content).toContain("# Session Index");
+    expect(content).toContain("| Session | Created | Last Updated | Project | Description |");
+    // No data rows
+    const lines = content.split("\n").filter(l => l.startsWith("| ["));
+    expect(lines.length).toBe(0);
+  });
+
+  it("readdir does not duplicate index.md when real row exists", async () => {
+    const { fs } = await makeFs({ "/index.md": "real" }, "/");
+    const entries = await fs.readdir("/");
+    const indexEntries = entries.filter(e => e === "index.md");
+    expect(indexEntries.length).toBe(1);
+  });
+});
+
+// ── writeFileWithMeta ────────────────────────────────────────────────────────
+describe("writeFileWithMeta", () => {
+  it("stores metadata columns on INSERT", async () => {
+    const { fs, client } = await makeFs({}, "/");
+    // Write enough to trigger flush (10 files)
+    for (let i = 0; i < 9; i++) await fs.writeFile(`/pad${i}.txt`, "x");
+    await fs.writeFileWithMeta("/summaries/test-123.md", "# Test", {
+      project: "my-project",
+      description: "in progress",
+      creationDate: "2026-04-07T10:00:00.000Z",
+      lastUpdateDate: "2026-04-07T10:00:00.000Z",
+    });
+
+    const row = client._rows.find(r => r.path === "/summaries/test-123.md");
+    expect(row).toBeDefined();
+    expect(row!.project).toBe("my-project");
+    expect(row!.description).toBe("in progress");
+    expect(row!.creation_date).toBe("2026-04-07T10:00:00.000Z");
+    expect(row!.last_update_date).toBe("2026-04-07T10:00:00.000Z");
+  });
+
+  it("updates metadata columns on UPDATE of existing file", async () => {
+    const { fs, client } = await makeFs({ "/summaries/existing.md": "# Old" }, "/");
+    // Set initial metadata
+    const row = client._rows.find(r => r.path === "/summaries/existing.md")!;
+    row.project = "old-proj";
+    row.description = "old desc";
+
+    // Write enough to trigger flush
+    for (let i = 0; i < 9; i++) await fs.writeFile(`/pad${i}.txt`, "x");
+    await fs.writeFileWithMeta("/summaries/existing.md", "# New", {
+      project: "new-proj",
+      description: "new desc",
+      lastUpdateDate: "2026-04-07T15:00:00.000Z",
+    });
+
+    const updated = client._rows.find(r => r.path === "/summaries/existing.md")!;
+    expect(updated.project).toBe("new-proj");
+    expect(updated.description).toBe("new desc");
+    expect(updated.last_update_date).toBe("2026-04-07T15:00:00.000Z");
+  });
+});
+
+// ── readdirWithFileTypes ─────────────────────────────────────────────────────
+describe("readdirWithFileTypes", () => {
+  it("returns entries with correct isFile/isDirectory", async () => {
+    const { fs } = await makeFs({
+      "/memory/file.txt": "hello",
+      "/memory/sub/nested.txt": "deep",
+    });
+    const entries = await fs.readdirWithFileTypes("/memory");
+    const file = entries.find(e => e.name === "file.txt");
+    const dir = entries.find(e => e.name === "sub");
+    expect(file).toBeDefined();
+    expect(file!.isFile).toBe(true);
+    expect(file!.isDirectory).toBe(false);
+    expect(dir).toBeDefined();
+    expect(dir!.isFile).toBe(false);
+    expect(dir!.isDirectory).toBe(true);
+  });
+
+  it("includes virtual index.md in root listing", async () => {
+    const { fs } = await makeFs({ "/summaries/test.md": "x" }, "/");
+    const entries = await fs.readdirWithFileTypes("/");
+    const idx = entries.find(e => e.name === "index.md");
+    expect(idx).toBeDefined();
+    expect(idx!.isFile).toBe(true);
+  });
+});
+
+// ── cp recursive ─────────────────────────────────────────────────────────────
+describe("cp recursive", () => {
+  it("copies directory recursively", async () => {
+    const { fs } = await makeFs({
+      "/memory/src/a.txt": "aaa",
+      "/memory/src/b.txt": "bbb",
+    });
+    await fs.cp("/memory/src", "/memory/dst", { recursive: true });
+    expect(await fs.readFile("/memory/dst/a.txt")).toBe("aaa");
+    expect(await fs.readFile("/memory/dst/b.txt")).toBe("bbb");
+    // Source still exists
+    expect(await fs.readFile("/memory/src/a.txt")).toBe("aaa");
   });
 });
