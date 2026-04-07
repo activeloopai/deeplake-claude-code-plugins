@@ -1,4 +1,5 @@
 import { basename, posix } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { DeeplakeApi } from "../deeplake-api.js";
 import type {
   IFileSystem, FsStat, MkdirOptions, RmOptions, CpOptions,
@@ -98,6 +99,10 @@ export class DeeplakeFs implements IFileSystem {
     mount = "/memory",
   ): Promise<DeeplakeFs> {
     const fs = new DeeplakeFs(client, table, mount);
+    // Ensure the table exists before bootstrapping.
+    await client.ensureTable();
+    // Sync table to ensure query engine sees latest writes.
+    await client.query(`SELECT deeplake_sync_table('${table}')`);
     // Bootstrap: load path metadata. Retry once on 503 (API cold-start issue).
     const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
     try {
@@ -169,12 +174,16 @@ export class DeeplakeFs implements IFileSystem {
       const p     = esc(r.path);
       const fname = esc(r.filename);
       const mime  = esc(r.mimeType);
+      const id = randomUUID();
+      const ts = new Date().toISOString();
       await this.client.query(`DELETE FROM "${this.table}" WHERE path = '${p}'`);
       await this.client.query(
-        `INSERT INTO "${this.table}" (path, filename, content, content_text, mime_type, size_bytes) ` +
-        `VALUES ('${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes})`
+        `INSERT INTO "${this.table}" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) ` +
+        `VALUES ('${id}', '${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes}, '${ts}')`
       );
     }
+    // Sync so subsequent reads see the new data.
+    await this.client.query(`SELECT deeplake_sync_table('${this.table}')`);
   }
 
   // ── IFileSystem: reads ────────────────────────────────────────────────────
@@ -254,10 +263,26 @@ export class DeeplakeFs implements IFileSystem {
 
   async appendFile(path: string, content: FileContent, opts?: WriteFileOptions | BufferEncoding): Promise<void> {
     const p = normPath(path);
-    let existing = Buffer.alloc(0);
-    if (this.files.has(p)) existing = Buffer.from(await this.readFileBuffer(p));
-    const add = typeof content === "string" ? Buffer.from(content, "utf-8") : Buffer.from(content);
-    await this.writeFile(p, Buffer.concat([existing, add]), opts);
+    const add = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
+
+    // Fast path: SQL-level concat — no read-back, O(1) per append
+    if (this.files.has(p) || await this.exists(p).catch(() => false)) {
+      const addHex = Buffer.from(add, "utf-8").toString("hex");
+      await this.client.query(
+        `UPDATE "${this.table}" SET ` +
+        `content_text = content_text || E'${esc(add)}', ` +
+        `content = content || E'\\\\x${addHex}', ` +
+        `size_bytes = size_bytes + ${Buffer.byteLength(add, "utf-8")} ` +
+        `WHERE path = '${esc(p)}'`
+      );
+      // Update local metadata
+      const m = this.meta.get(p);
+      if (m) m.size += Buffer.byteLength(add, "utf-8");
+    } else {
+      // File doesn't exist yet — create it
+      await this.writeFile(p, typeof content === "string" ? Buffer.from(content, "utf-8") : Buffer.from(content), opts);
+      await this.flush();
+    }
   }
 
   // ── IFileSystem: metadata ─────────────────────────────────────────────────

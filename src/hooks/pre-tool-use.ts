@@ -7,6 +7,9 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { readStdin } from "../utils/stdin.js";
+import { loadConfig } from "../config.js";
+import { DeeplakeApi } from "../deeplake-api.js";
+import { sqlStr } from "../utils/sql.js";
 
 import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("pre", msg);
@@ -152,17 +155,31 @@ async function main(): Promise<void> {
     }
 
     if (cliInstalled) {
-      log(`unsafe but CLI installed — passing through to real bash`);
-      return; // Let real bash + FUSE handle it
+      // Check if FUSE mount is active
+      const mountActive = existsSync(join(MEMORY_PATH, ".deeplake"));
+      if (mountActive) {
+        log(`unsafe, CLI installed + mounted — passing through to real bash`);
+        return;
+      }
+      log(`unsafe, CLI installed but not mounted → suggesting mount`);
+      console.log(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: "The Deeplake CLI is installed but the memory filesystem is not mounted.",
+          additionalContext: "Ask the user: 'The Deeplake memory filesystem needs to be mounted. Shall I mount it?' If they agree, run: deeplake mount ~/.deeplake/memory — then retry the original command. If mount fails, report the error and stop.",
+        },
+      }));
+      return;
     }
 
-    log(`unsafe → denying, suggesting CLI install`);
+    log(`unsafe, CLI not installed → suggesting install`);
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
         permissionDecisionReason: "This command requires the Deeplake CLI with FUSE mount support.",
-        additionalContext: "Ask the user if they want to install the Deeplake CLI. Do NOT silently rewrite or skip. If they agree, run: curl -fsSL https://deeplake.ai/install.sh | bash && deeplake mount ~/.deeplake/memory — then retry the original command. If they decline, rewrite using safe builtins (cat, grep, jq, head, tail). If install fails (FUSE not supported, Windows, permission error), report the error and stop.",
+        additionalContext: "Ask the user: 'This command needs the Deeplake CLI. Shall I install it?' If they agree, run: curl -fsSL https://deeplake.ai/install.sh | bash && deeplake mount ~/.deeplake/memory — then retry the original command. If they decline, rewrite using safe builtins (cat, grep, jq, head, tail). If install fails (FUSE not supported, Windows, permission error), report the error and stop.",
       },
     }));
     return;
@@ -170,9 +187,79 @@ async function main(): Promise<void> {
 
   if (!shellCmd) return;
 
+  // ── Fast path: handle Read and Grep directly via SQL (no shell spawn) ──
+  const config = loadConfig();
+  if (config && (input.tool_name === "Read" || input.tool_name === "Grep")) {
+    const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
+    const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
+
+    try {
+      if (input.tool_name === "Read") {
+        const virtualPath = rewritePaths((input.tool_input.file_path as string) ?? "");
+        log(`direct read: ${virtualPath}`);
+        const rows = await api.query(
+          `SELECT content_text FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
+        );
+        if (rows.length > 0 && rows[0]["content_text"]) {
+          console.log(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "allow",
+              updatedInput: {
+                command: `echo ${JSON.stringify(rows[0]["content_text"])}`,
+                description: `[DeepLake direct] cat ${virtualPath}`,
+              },
+            },
+          }));
+          return;
+        }
+      } else if (input.tool_name === "Grep") {
+        const pattern = (input.tool_input.pattern as string) ?? "";
+        const ignoreCase = !!input.tool_input["-i"];
+        log(`direct grep: ${pattern}`);
+        // Only fetch paths first (fast), then fetch content for matches
+        const pathRows = await api.query(
+          `SELECT path FROM "${table}" WHERE content_text ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 10`
+        );
+        if (pathRows.length > 0) {
+          // Fetch content for matched files and extract matching lines
+          const allResults: string[] = [];
+          for (const pr of pathRows.slice(0, 5)) {
+            const p = pr["path"] as string;
+            const contentRows = await api.query(
+              `SELECT content_text FROM "${table}" WHERE path = '${sqlStr(p)}' LIMIT 1`
+            );
+            if (!contentRows[0]?.["content_text"]) continue;
+            const text = contentRows[0]["content_text"] as string;
+            const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
+            const matches = text.split("\n")
+              .filter(line => re.test(line))
+              .slice(0, 5)
+              .map(line => `${p}:${line.slice(0, 300)}`);
+            allResults.push(...matches);
+          }
+          const results = allResults.join("\n");
+          console.log(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "allow",
+              updatedInput: {
+                command: `echo ${JSON.stringify(results || "(no matches)")}`,
+                description: `[DeepLake direct] grep ${pattern}`,
+              },
+            },
+          }));
+          return;
+        }
+      }
+    } catch (e: any) {
+      log(`direct query failed, falling back to shell: ${e.message}`);
+    }
+  }
+
+  // ── Slow path: rewrite to virtual shell (for Bash, Glob, or when direct fails) ──
   log(`intercepted → rewriting to shell: ${shellCmd}`);
 
-  // Rewrite the tool input to run through the virtual shell instead
   const rewrittenCommand = `node "${SHELL_BUNDLE}" -c "${shellCmd.replace(/"/g, '\\"')}"`;
 
   const output: Record<string, unknown> = {

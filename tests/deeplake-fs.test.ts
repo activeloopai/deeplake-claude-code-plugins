@@ -63,24 +63,50 @@ function makeClient(seed: Record<string, Buffer> = {}) {
         }
         return [];
       }
-      // INSERT
-      if (sql.startsWith("INSERT")) {
-        const pathMatch = sql.match(/VALUES \('([^']+)'/);
-        const filenameMatch = sql.match(/VALUES \('[^']+', '([^']+)'/);
+      // UPDATE (appendFile SQL-level concat)
+      if (sql.startsWith("UPDATE")) {
+        const match = sql.match(/WHERE path = '([^']+)'/);
         const hexMatch = sql.match(/E'\\\\x([0-9a-f]*)'/);
-        const textMatch = sql.match(/E'\\\\x[0-9a-f]*', E'((?:[^']|'')*)'/);
-        const mimeMatch = sql.match(/E'((?:[^']|'')*)', (\d+)\)$/);
-        if (pathMatch) {
-          const path = pathMatch[1];
-          const filename = filenameMatch?.[1] ?? path.split("/").pop()!;
-          const content = hexMatch ? Buffer.from(hexMatch[1], "hex") : Buffer.alloc(0);
-          const content_text = textMatch?.[1]?.replace(/''/g, "'") ?? "";
-          rows.push({ path, filename, content, content_text, mime_type: "text/plain", size_bytes: content.length });
+        if (match) {
+          const row = rows.find(r => r.path === match[1]);
+          if (row && hexMatch) {
+            const appendBuf = Buffer.from(hexMatch[1], "hex");
+            row.content = Buffer.concat([row.content, appendBuf]);
+            row.content_text += appendBuf.toString("utf-8");
+            row.size_bytes = row.content.length;
+          }
+        }
+        return [];
+      }
+      // INSERT — handle both 6-col (api) and 8-col (flush: id, path, ..., timestamp) formats
+      if (sql.startsWith("INSERT")) {
+        // Extract path: second value for 8-col format (id first), first value for 6-col
+        const hasId = sql.includes("(id,");
+        const valuesMatch = sql.match(/VALUES \((.+)\)$/s);
+        if (valuesMatch) {
+          const pathMatch = hasId
+            ? sql.match(/VALUES \('[^']+', '([^']+)'/)   // skip id
+            : sql.match(/VALUES \('([^']+)'/);
+          const hexMatch = sql.match(/E'\\\\x([0-9a-f]*)'/);
+          const textMatch = sql.match(/E'\\\\x[0-9a-f]*', E'((?:[^']|'')*)'/);
+          if (pathMatch) {
+            const path = pathMatch[1];
+            const filename = path.split("/").pop()!;
+            const content = hexMatch ? Buffer.from(hexMatch[1], "hex") : Buffer.alloc(0);
+            const content_text = textMatch?.[1]?.replace(/''/g, "'") ?? "";
+            // Remove existing row if any (upsert)
+            const idx = rows.findIndex(r => r.path === path);
+            if (idx >= 0) rows.splice(idx, 1);
+            rows.push({ path, filename, content, content_text, mime_type: "text/plain", size_bytes: content.length });
+          }
         }
         return [];
       }
       return [];
     }),
+
+    listTables: vi.fn().mockResolvedValue(["test"]),
+    ensureTable: vi.fn().mockResolvedValue(undefined),
 
     // Expose internal rows for test assertions
     _rows: rows,

@@ -5,6 +5,8 @@ import { homedir } from "node:os";
 export interface Config {
   token: string;
   orgId: string;
+  orgName: string;
+  userName: string;
   workspaceId: string;
   apiUrl: string;
   tableName: string;
@@ -14,6 +16,8 @@ export interface Config {
 interface Credentials {
   token: string;
   orgId: string;
+  orgName?: string;
+  userName?: string;
   workspaceId?: string;
   apiUrl?: string;
 }
@@ -38,9 +42,11 @@ export function loadConfig(): Config | null {
   return {
     token,
     orgId,
+    orgName: creds?.orgName ?? orgId,
+    userName: creds?.userName ?? "user",
     workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
     apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: process.env.DEEPLAKE_MEMORY_TABLE ?? "memory_hooks",
+    tableName: process.env.DEEPLAKE_TABLE ?? "memory",
     memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory"),
   };
 }

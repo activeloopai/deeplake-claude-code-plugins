@@ -8,7 +8,13 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { mkdirSync, appendFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { loadCredentials, login } from "../commands/auth.js";
+import { loadConfig } from "../config.js";
+import { DeeplakeApi } from "../deeplake-api.js";
+import { DeeplakeFs } from "../shell/deeplake-fs.js";
+import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("session-start", msg);
 
@@ -20,14 +26,12 @@ const context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH
 1. Your built-in memory (~/.claude/) — personal per-project notes
 2. Deeplake global memory (~/.deeplake/memory/) — global memory shared across all sessions, users, and agents in the org
 
-Deeplake memory is broader — it has full conversation history (every message, response, and tool call), team activity, and cross-session context that your built-in memory may not have.
+Deeplake memory structure:
+- ~/.deeplake/memory/index.md — START HERE, table of all sessions
+- ~/.deeplake/memory/summaries/*.md — AI-generated wiki summaries per session
+- ~/.deeplake/memory/sessions/username/*.jsonl — raw session data (last resort)
 
-IMPORTANT: When answering questions about what was discussed, what someone said, what was worked on, team context, or any factual recall — search Deeplake memory in parallel with your built-in memory. Do not skip it. Do not wait to be asked.
-
-Deeplake memory is especially useful for:
-- Cross-session history ("what did we discuss last time?")
-- Team/org context ("what is the team working on?")
-- Full conversation replay ("what exactly did I say about X?")
+SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw JSONL if summaries don't have enough detail. Do NOT jump straight to JSONL files.
 
 Search command: Grep pattern="keyword" path="~/.deeplake/memory"
 
@@ -38,11 +42,73 @@ Organization management (DEEPLAKE_AUTH_CMD will be replaced with actual path bel
 - List members: node "DEEPLAKE_AUTH_CMD" members
 - Re-login: node "DEEPLAKE_AUTH_CMD" login
 
-LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty, you may retry once. If results are still unavailable after a few attempts, report what you found and move on.
+LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set DEEPLAKE_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
 
+const HOME = homedir();
+const WIKI_LOG = join(HOME, ".claude", "hooks", "deeplake-wiki.log");
+
+function wikiLog(msg: string): void {
+  try {
+    mkdirSync(join(HOME, ".claude", "hooks"), { recursive: true });
+    appendFileSync(WIKI_LOG, `[${new Date().toISOString().replace("T", " ").slice(0, 19)}] ${msg}\n`);
+  } catch { /* ignore */ }
+}
+
+async function createPlaceholder(fs: DeeplakeFs, sessionId: string, cwd: string): Promise<void> {
+  // Ensure directories
+  try { await fs.mkdir("/summaries"); } catch { /* exists */ }
+  try { await fs.mkdir("/sessions"); } catch { /* exists */ }
+
+  // Bootstrap index if missing
+  const indexExists = await fs.exists("/index.md");
+  if (!indexExists) {
+    await fs.writeFile("/index.md", [
+      "# Session Index",
+      "",
+      "List of all Claude Code sessions with summaries.",
+      "",
+      "| Session | Date | Project | Description |",
+      "|---------|------|---------|-------------|",
+      "",
+    ].join("\n"));
+    wikiLog("Created index.md");
+  }
+
+  const summaryPath = `/summaries/${sessionId}.md`;
+  const summaryExists = await fs.exists(summaryPath);
+
+  if (!summaryExists) {
+    const now = new Date().toISOString();
+    await fs.writeFile(summaryPath, [
+      `# Session ${sessionId}`,
+      `- **Started**: ${now}`,
+      `- **Project**: ${cwd}`,
+      `- **Status**: in-progress`,
+      "",
+    ].join("\n"));
+
+    // Append to index
+    const shortDate = now.slice(0, 10);
+    const projectName = cwd.split("/").pop() ?? "unknown";
+    await fs.appendFile("/index.md", `| [${sessionId}](summaries/${sessionId}.md) | ${shortDate} | ${projectName} | in progress |\n`);
+    await fs.flush();
+
+    wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
+  } else {
+    wikiLog(`SessionStart: summary exists for ${sessionId} (resumed)`);
+  }
+}
+
+interface SessionStartInput {
+  session_id: string;
+  cwd?: string;
+}
+
 async function main(): Promise<void> {
+  const input = await readStdin<SessionStartInput>();
+
   let creds = loadCredentials();
 
   if (!creds?.token) {
@@ -56,6 +122,30 @@ async function main(): Promise<void> {
     }
   } else {
     log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
+    // Backfill userName if missing (for users who logged in before this field was added)
+    if (creds.token && !creds.userName) {
+      try {
+        const { userInfo } = await import("node:os");
+        creds.userName = userInfo().username ?? "user";
+        log(`backfilled userName: ${creds.userName}`);
+      } catch { /* non-fatal */ }
+    }
+  }
+
+  // Create placeholder summary + index entry via Deeplake API
+  if (input.session_id && creds?.token) {
+    try {
+      const config = loadConfig();
+      if (config) {
+        const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
+        const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
+        const fs = await DeeplakeFs.create(api, table, "/");
+        await createPlaceholder(fs, input.session_id, input.cwd ?? "");
+        log("placeholder created");
+      }
+    } catch (e: any) {
+      log(`placeholder failed: ${e.message}`);
+    }
   }
 
   const resolvedContext = context.replace(/DEEPLAKE_AUTH_CMD/g, AUTH_CMD);
