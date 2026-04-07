@@ -69,6 +69,8 @@ interface FileMeta { size: number; mime: string; mtime: Date; }
 interface PendingRow {
   path: string; filename: string; content: Buffer;
   contentText: string; mimeType: string; sizeBytes: number;
+  project?: string; description?: string;
+  creationDate?: string; lastUpdateDate?: string;
 }
 
 // ── DeeplakeFs ────────────────────────────────────────────────────────────────
@@ -178,24 +180,63 @@ export class DeeplakeFs implements IFileSystem {
       const fname = esc(r.filename);
       const mime  = esc(r.mimeType);
       const ts = new Date().toISOString();
+      const cd = r.creationDate ?? ts;
+      const lud = r.lastUpdateDate ?? ts;
       if (this.flushed.has(r.path)) {
+        let setClauses = `filename = '${fname}', content = E'\\\\x${hex}', content_text = E'${text}', ` +
+          `mime_type = '${mime}', size_bytes = ${r.sizeBytes}, last_update_date = '${esc(lud)}'`;
+        if (r.project !== undefined) setClauses += `, project = '${esc(r.project)}'`;
+        if (r.description !== undefined) setClauses += `, description = '${esc(r.description)}'`;
         await this.client.query(
-          `UPDATE "${this.table}" SET ` +
-          `filename = '${fname}', content = E'\\\\x${hex}', content_text = E'${text}', ` +
-          `mime_type = '${mime}', size_bytes = ${r.sizeBytes}, timestamp = '${ts}' ` +
-          `WHERE path = '${p}'`
+          `UPDATE "${this.table}" SET ${setClauses} WHERE path = '${p}'`
         );
       } else {
         const id = randomUUID();
+        const cols = "id, path, filename, content, content_text, mime_type, size_bytes, creation_date, last_update_date" +
+          (r.project !== undefined ? ", project" : "") +
+          (r.description !== undefined ? ", description" : "");
+        const vals = `'${id}', '${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes}, '${esc(cd)}', '${esc(lud)}'` +
+          (r.project !== undefined ? `, '${esc(r.project)}'` : "") +
+          (r.description !== undefined ? `, '${esc(r.description)}'` : "");
         await this.client.query(
-          `INSERT INTO "${this.table}" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) ` +
-          `VALUES ('${id}', '${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes}, '${ts}')`
+          `INSERT INTO "${this.table}" (${cols}) VALUES (${vals})`
         );
         this.flushed.add(r.path);
       }
     }
     // Sync so subsequent reads see the new data.
     await this.client.query(`SELECT deeplake_sync_table('${this.table}')`);
+  }
+
+  // ── Virtual index.md generation ────────────────────────────────────────────
+
+  private async generateVirtualIndex(): Promise<string> {
+    const rows = await this.client.query(
+      `SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" ` +
+      `WHERE path LIKE '${esc("/summaries/")}%' ORDER BY last_update_date DESC`
+    );
+    const lines: string[] = [
+      "# Session Index",
+      "",
+      "List of all Claude Code sessions with summaries.",
+      "",
+      "| Session | Created | Last Updated | Project | Description |",
+      "|---------|---------|--------------|---------|-------------|",
+    ];
+    for (const row of rows) {
+      const p = row["path"] as string;
+      // Extract session ID from path: /summaries/<id>.md
+      const match = p.match(/\/summaries\/(.+)\.md$/);
+      if (!match) continue;
+      const sessionId = match[1];
+      const project = (row["project"] as string) || "";
+      const description = (row["description"] as string) || "";
+      const creationDate = ((row["creation_date"] as string) || "").slice(0, 10);
+      const lastUpdateDate = ((row["last_update_date"] as string) || "").slice(0, 10);
+      lines.push(`| [${sessionId}](summaries/${sessionId}.md) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
+    }
+    lines.push("");
+    return lines.join("\n");
   }
 
   // ── IFileSystem: reads ────────────────────────────────────────────────────
@@ -226,6 +267,23 @@ export class DeeplakeFs implements IFileSystem {
   async readFile(path: string, _opts?: ReadFileOptions | BufferEncoding): Promise<string> {
     const p = normPath(path);
     if (this.dirs.has(p) && !this.files.has(p)) throw fsErr("EISDIR", "illegal operation on a directory", p);
+
+    // Virtual index.md: if no real row exists, generate from summary rows
+    if (p === "/index.md" && !this.files.has(p)) {
+      // Check if a real /index.md row exists in the table
+      const realRows = await this.client.query(
+        `SELECT content_text FROM "${this.table}" WHERE path = '${esc("/index.md")}' LIMIT 1`
+      );
+      if (realRows.length > 0 && realRows[0]["content_text"]) {
+        const text = realRows[0]["content_text"] as string;
+        const buf = Buffer.from(text, "utf-8");
+        this.files.set(p, buf);
+        return text;
+      }
+      // No real row — generate virtual index
+      return this.generateVirtualIndex();
+    }
+
     if (!this.files.has(p)) throw fsErr("ENOENT", "no such file or directory", p);
 
     // Pending batch
@@ -251,6 +309,32 @@ export class DeeplakeFs implements IFileSystem {
   }
 
   // ── IFileSystem: writes ───────────────────────────────────────────────────
+
+  /** Write a file with optional row-level metadata (project, description, dates). */
+  async writeFileWithMeta(
+    path: string, content: FileContent,
+    meta: { project?: string; description?: string; creationDate?: string; lastUpdateDate?: string },
+  ): Promise<void> {
+    const p = normPath(path);
+    if (this.dirs.has(p) && !this.files.has(p)) throw fsErr("EISDIR", "illegal operation on a directory", p);
+
+    const buf = typeof content === "string" ? Buffer.from(content, "utf-8") : Buffer.from(content);
+    const mime = guessMime(basename(p));
+    const contentText = isText(buf) ? buf.toString("utf-8") : "";
+
+    this.files.set(p, buf);
+    this.meta.set(p, { size: buf.length, mime, mtime: new Date() });
+    this.addToTree(p);
+
+    this.pending.set(p, {
+      path: p, filename: basename(p), content: buf,
+      contentText, mimeType: mime, sizeBytes: buf.length,
+      ...meta,
+    });
+
+    if (this.pending.size >= BATCH_SIZE) await this.flush();
+    else this.scheduleFlush();
+  }
 
   async writeFile(path: string, content: FileContent, _opts?: WriteFileOptions | BufferEncoding): Promise<void> {
     const p = normPath(path);
@@ -286,7 +370,7 @@ export class DeeplakeFs implements IFileSystem {
         `content_text = content_text || E'${esc(add)}', ` +
         `content = content || E'\\\\x${addHex}', ` +
         `size_bytes = size_bytes + ${Buffer.byteLength(add, "utf-8")}, ` +
-        `timestamp = '${ts}' ` +
+        `last_update_date = '${ts}' ` +
         `WHERE path = '${esc(p)}'`
       );
       // Update local metadata
@@ -303,6 +387,7 @@ export class DeeplakeFs implements IFileSystem {
 
   async exists(path: string): Promise<boolean> {
     const p = normPath(path);
+    if (p === "/index.md") return true; // Virtual index always exists
     return this.files.has(p) || this.dirs.has(p);
   }
 
@@ -310,6 +395,13 @@ export class DeeplakeFs implements IFileSystem {
     const p = normPath(path);
     const isFile = this.files.has(p);
     const isDir  = this.dirs.has(p);
+    // Virtual index.md: always exists as a file
+    if (p === "/index.md" && !isFile && !isDir) {
+      return {
+        isFile: true, isDirectory: false, isSymbolicLink: false,
+        mode: 0o644, size: 0, mtime: new Date(),
+      };
+    }
     if (!isFile && !isDir) throw fsErr("ENOENT", "no such file or directory", p);
     const m = this.meta.get(p);
     return {
@@ -331,6 +423,7 @@ export class DeeplakeFs implements IFileSystem {
   async readlink(path: string): Promise<string> { throw fsErr("EINVAL", "invalid argument", path); }
   async realpath(path: string): Promise<string> {
     const p = normPath(path);
+    if (p === "/index.md") return p; // Virtual index always exists
     if (!this.files.has(p) && !this.dirs.has(p)) throw fsErr("ENOENT", "no such file or directory", p);
     return p;
   }
@@ -357,7 +450,12 @@ export class DeeplakeFs implements IFileSystem {
   async readdir(path: string): Promise<string[]> {
     const p = normPath(path);
     if (!this.dirs.has(p)) throw fsErr("ENOTDIR", "not a directory", p);
-    return [...(this.dirs.get(p) ?? [])];
+    const entries = [...(this.dirs.get(p) ?? [])];
+    // Virtual index.md: always show in root listing even if no real row exists
+    if (p === "/" && !entries.includes("index.md")) {
+      entries.push("index.md");
+    }
+    return entries;
   }
 
   async readdirWithFileTypes(path: string): Promise<DirentEntry[]> {
@@ -367,7 +465,7 @@ export class DeeplakeFs implements IFileSystem {
       const child = p === "/" ? `/${name}` : `${p}/${name}`;
       return {
         name,
-        isFile: this.files.has(child) && !this.dirs.has(child),
+        isFile: (this.files.has(child) || child === "/index.md") && !this.dirs.has(child),
         isDirectory: this.dirs.has(child),
         isSymbolicLink: false,
       };

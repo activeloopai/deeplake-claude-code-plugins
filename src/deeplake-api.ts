@@ -13,6 +13,10 @@ export interface WriteRow {
   contentText: string;
   mimeType: string;
   sizeBytes: number;
+  project?: string;
+  description?: string;
+  creationDate?: string;
+  lastUpdateDate?: string;
 }
 
 export class DeeplakeApi {
@@ -72,22 +76,39 @@ export class DeeplakeApi {
   private async upsertRowSql(row: WriteRow): Promise<void> {
     const hex = row.content.toString("hex");
     const ts = new Date().toISOString();
+    const cd = row.creationDate ?? ts;
+    const lud = row.lastUpdateDate ?? ts;
     const exists = await this.query(
       `SELECT path FROM "${this.tableName}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`
     );
     if (exists.length > 0) {
+      let setClauses = `content = E'\\\\x${hex}', content_text = E'${sqlStr(row.contentText)}', ` +
+        `mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
+      if (row.project !== undefined) setClauses += `, project = '${sqlStr(row.project)}'`;
+      if (row.description !== undefined) setClauses += `, description = '${sqlStr(row.description)}'`;
       await this.query(
-        `UPDATE "${this.tableName}" SET content = E'\\\\x${hex}', content_text = E'${sqlStr(row.contentText)}', ` +
-        `mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, timestamp = '${ts}' ` +
-        `WHERE path = '${sqlStr(row.path)}'`
+        `UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(row.path)}'`
       );
     } else {
       const id = randomUUID();
+      let cols = "id, path, filename, content, content_text, mime_type, size_bytes, creation_date, last_update_date";
+      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'\\\\x${hex}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
+      if (row.project !== undefined) { cols += ", project"; vals += `, '${sqlStr(row.project)}'`; }
+      if (row.description !== undefined) { cols += ", description"; vals += `, '${sqlStr(row.description)}'`; }
       await this.query(
-        `INSERT INTO "${this.tableName}" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) ` +
-        `VALUES ('${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'\\\\x${hex}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${ts}')`
+        `INSERT INTO "${this.tableName}" (${cols}) VALUES (${vals})`
       );
     }
+  }
+
+  /** Update specific columns on a row by path. */
+  async updateColumns(path: string, columns: Record<string, string | number>): Promise<void> {
+    const setClauses = Object.entries(columns)
+      .map(([col, val]) => typeof val === "number" ? `${col} = ${val}` : `${col} = '${sqlStr(String(val))}'`)
+      .join(", ");
+    await this.query(
+      `UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(path)}'`
+    );
   }
 
   // ── Convenience ─────────────────────────────────────────────────────────────
@@ -110,23 +131,37 @@ export class DeeplakeApi {
     return (data.tables ?? []).map(t => t.table_name);
   }
 
-  /** Create the table if it doesn't already exist. */
+  /** Create the table if it doesn't already exist. Migrate columns on existing tables. */
   async ensureTable(): Promise<void> {
     const tables = await this.listTables();
-    if (tables.includes(this.tableName)) return;
-    log(`table "${this.tableName}" not found, creating`);
-    await this.query(
-      `CREATE TABLE IF NOT EXISTS "${this.tableName}" (` +
-        `id TEXT NOT NULL DEFAULT '', ` +
-        `path TEXT NOT NULL DEFAULT '', ` +
-        `filename TEXT NOT NULL DEFAULT '', ` +
-        `content BYTEA NOT NULL DEFAULT ''::bytea, ` +
-        `content_text TEXT NOT NULL DEFAULT '', ` +
-        `mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', ` +
-        `size_bytes BIGINT NOT NULL DEFAULT 0, ` +
-        `timestamp TEXT NOT NULL DEFAULT ''` +
-      `) USING deeplake`,
-    );
-    log(`table "${this.tableName}" created`);
+    if (!tables.includes(this.tableName)) {
+      log(`table "${this.tableName}" not found, creating`);
+      await this.query(
+        `CREATE TABLE IF NOT EXISTS "${this.tableName}" (` +
+          `id TEXT NOT NULL DEFAULT '', ` +
+          `path TEXT NOT NULL DEFAULT '', ` +
+          `filename TEXT NOT NULL DEFAULT '', ` +
+          `content BYTEA NOT NULL DEFAULT ''::bytea, ` +
+          `content_text TEXT NOT NULL DEFAULT '', ` +
+          `mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', ` +
+          `size_bytes BIGINT NOT NULL DEFAULT 0, ` +
+          `project TEXT NOT NULL DEFAULT '', ` +
+          `description TEXT NOT NULL DEFAULT '', ` +
+          `creation_date TEXT NOT NULL DEFAULT '', ` +
+          `last_update_date TEXT NOT NULL DEFAULT ''` +
+        `) USING deeplake`,
+      );
+      log(`table "${this.tableName}" created`);
+    } else {
+      // Migrate: add new columns if missing on existing tables
+      for (const col of ["project", "description", "creation_date", "last_update_date"]) {
+        try {
+          await this.query(`ALTER TABLE "${this.tableName}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
+          log(`added column "${col}" to "${this.tableName}"`);
+        } catch {
+          // Column already exists — ignore
+        }
+      }
+    }
   }
 }

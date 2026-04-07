@@ -5,5 +5,4 @@ tmp/
 *.d.ts.map
 .env
 .env.*
-bundle/
 coverage/
