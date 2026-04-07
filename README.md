@@ -22,6 +22,12 @@ From within Claude Code, run:
 /deeplake-hivemind:login
 ```
 
+### Updating
+
+```
+/deeplake-hivemind:update
+```
+
 ### From source (development)
 
 ```bash
@@ -61,13 +67,13 @@ export DEEPLAKE_WORKSPACE_ID=default   # optional
 
 This plugin captures the following data and stores it in your Deeplake workspace:
 
-| Data | What | Where |
-|------|------|-------|
-| User prompts | Every message you send to Claude | Shared Deeplake workspace |
-| Tool calls | Tool name + full input | Shared Deeplake workspace |
-| Tool responses | Full tool output | Shared Deeplake workspace |
-| Assistant responses | Claude's final response text | Shared Deeplake workspace |
-| Subagent activity | Subagent tool calls and responses | Shared Deeplake workspace |
+| Data                  | What                               | Where                     |
+|-----------------------|------------------------------------|---------------------------|
+| User prompts          | Every message you send to Claude   | Shared Deeplake workspace |
+| Tool calls            | Tool name + full input             | Shared Deeplake workspace |
+| Tool responses        | Full tool output                   | Shared Deeplake workspace |
+| Assistant responses   | Claude's final response text       | Shared Deeplake workspace |
+| Subagent activity     | Subagent tool calls and responses  | Shared Deeplake workspace |
 
 **All users with access to your Deeplake workspace can read this data.**
 
@@ -77,16 +83,16 @@ To opt out of capture: `export DEEPLAKE_CAPTURE=false`
 
 ## Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DEEPLAKE_TOKEN` | — | API token (auto-set by device login) |
-| `DEEPLAKE_ORG_ID` | — | Organization ID (auto-set by device login) |
-| `DEEPLAKE_WORKSPACE_ID` | `default` | Workspace name |
-| `DEEPLAKE_API_URL` | `https://api.deeplake.ai` | API endpoint |
-| `DEEPLAKE_TABLE` | `memory` | SQL table for virtual FS |
-| `DEEPLAKE_MEMORY_PATH` | `~/.deeplake/memory` | Path that triggers interception |
-| `DEEPLAKE_CAPTURE` | `true` | Set to `false` to disable capture |
-| `DEEPLAKE_DEBUG` | — | Set to `1` for verbose hook debug logs |
+| Variable                 | Default                   | Description                               |
+|--------------------------|---------------------------|-------------------------------------------|
+| `DEEPLAKE_TOKEN`         | —                         | API token (auto-set by device login)      |
+| `DEEPLAKE_ORG_ID`        | —                         | Organization ID (auto-set by device login)|
+| `DEEPLAKE_WORKSPACE_ID`  | `default`                 | Workspace name                            |
+| `DEEPLAKE_API_URL`       | `https://api.deeplake.ai` | API endpoint                              |
+| `DEEPLAKE_TABLE`         | `memory`                  | SQL table for virtual FS                  |
+| `DEEPLAKE_MEMORY_PATH`   | `~/.deeplake/memory`      | Path that triggers interception           |
+| `DEEPLAKE_CAPTURE`       | `true`                    | Set to `false` to disable capture         |
+| `DEEPLAKE_DEBUG`         | —                         | Set to `1` for verbose hook debug logs    |
 
 ### Debug mode and capture control
 
@@ -132,43 +138,62 @@ npm run shell -- -c "grep -r 'keyword' /"
 ## Architecture
 
 ```
-Claude Code
-    ↓
-SessionStart hook → auth login (device flow) + injects memory context + DATA NOTICE
-    ↓
-PreToolUse hook  → intercepts Read/Grep/Glob/Bash on ~/.deeplake/memory/
-    |                safe commands (cat, ls, grep, jq, find, etc.) → just-bash + DeeplakeFS
-    |                unsafe commands (python3, node) → pass through if CLI installed, deny if not
-    |                deeplake CLI commands (mount, login) → pass through to real bash
-    ↓
-PostToolUse hook → captures tool activity (async)
-    ↓
-Stop hook        → captures final assistant response
-    ↓
-SubagentStop     → captures subagent activity (async)
-    ↓
-SessionEnd hook  → generates AI summary via claude -p → /summaries/*.md + /index.md
-
-DeeplakeFS (virtual filesystem)
-    ↓ bootstrap: SELECT path, size_bytes, mime_type
-    ↓ reads:  SELECT content_text, content WHERE path = ?
-    ↓ writes: DELETE + INSERT with hex-encoded binary content
-    ↓ search: BM25 via content_text <#> 'pattern' (with in-memory fallback)
-    ↓
-Deeplake JS SDK (npm i deeplake)
+┌─────────────────────────────────────────────────────────────┐
+│                        Claude Code                          │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│  SessionStart                                               │
+│  Auth login (device flow) + inject context + DATA NOTICE    │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│  UserPromptSubmit → capture user message                    │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│  PreToolUse — intercept commands on ~/.deeplake/memory/     │
+│                                                             │
+│  ├─ safe (cat, ls, grep, jq...) → just-bash + DeeplakeFS    │
+│  ├─ unsafe + CLI installed      → real bash + FUSE mount    │
+│  ├─ unsafe + no CLI             → deny + install prompt     │
+│  └─ deeplake mount/login        → pass through              │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│  PostToolUse (async) → capture tool call + response         │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│  Stop → capture final assistant response                    │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│  SubagentStop (async) → capture subagent activity           │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│  SessionEnd → AI wiki summary via claude -p                 │
+│  → /summaries/*.md + /index.md                              │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│                   Deeplake REST API                         │
+│         sessions/ · summaries/ · index.md                   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ### Hook events
 
-| Hook | Purpose | Async |
-|------|---------|-------|
-| `SessionStart` | Auth login, inject context, DATA NOTICE | No |
-| `UserPromptSubmit` | Capture user message | No |
-| `PreToolUse` | Intercept and rewrite memory-targeting commands | No |
-| `PostToolUse` | Capture tool call + response | Yes |
-| `Stop` | Capture assistant response | No |
-| `SubagentStop` | Capture subagent activity | Yes |
-| `SessionEnd` | Generate AI summary of session | No |
+| Hook                | Purpose                                        | Async |
+|---------------------|------------------------------------------------|-------|
+| `SessionStart`      | Auth login, inject context, DATA NOTICE        |  No   |
+| `UserPromptSubmit`  | Capture user message                           |  No   |
+| `PreToolUse`        | Intercept and rewrite memory-targeting commands|  No   |
+| `PostToolUse`       | Capture tool call + response                   |  Yes  |
+| `Stop`              | Capture assistant response                     |  No   |
+| `SubagentStop`      | Capture subagent activity                      |  Yes  |
+| `SessionEnd`        | Generate AI summary of session                 |  No   |
 
 ## Security
 

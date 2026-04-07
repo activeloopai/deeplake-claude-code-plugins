@@ -12,6 +12,7 @@
  *   node auth-login.js invite <email> <mode> — invite member
  *   node auth-login.js members            — list members
  *   node auth-login.js whoami             — show current user/org
+ *   node auth-login.js update            — update plugin to latest version
  */
 
 import {

@@ -9,12 +9,47 @@ permissions:
 
 jobs:
   release:
-    name: Create Release Tag
+    name: Auto-bump version and create release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version from package.json
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.12'
+
+      - name: Check if version was already bumped in this push
+        id: check_bump
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          if echo "$COMMIT_MSG" | grep -q "chore: bump version"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump patch version
+        if: steps.check_bump.outputs.skip == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          npm version patch --no-git-tag-version
+          VERSION=$(node -p "require('./package.json').version")
+          # Also update plugin.json
+          node -e "
+            const f = '.claude-plugin/plugin.json';
+            const d = JSON.parse(require('fs').readFileSync(f, 'utf-8'));
+            d.version = '$VERSION';
+            require('fs').writeFileSync(f, JSON.stringify(d, null, 2) + '\n');
+          "
+          git add package.json package-lock.json .claude-plugin/plugin.json
+          git commit -m "chore: bump version to $VERSION"
+          git push
+
+      - name: Extract version
         id: version
         run: |
           VERSION=$(node -p "require('./package.json').version")
