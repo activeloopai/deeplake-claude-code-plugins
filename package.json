@@ -19,7 +19,8 @@
   "lint-staged": {
     "*.ts": [
       "bash -c 'tsc --noEmit --skipLibCheck'"
-    ]
+    ],
+    "*.md": []
   },
   "dependencies": {
     "deeplake": "^0.3.30",
