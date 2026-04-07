@@ -157,7 +157,7 @@ export async function deviceFlowLogin(apiUrl = DEFAULT_API_URL): Promise<{ token
   ].join("\n");
 
   // Return the message and polling function for the caller to handle
-  console.log(msg);
+  process.stderr.write(msg + "\n");
 
   const interval = Math.max(code.interval || 5, 5) * 1000;
   const deadline = Date.now() + code.expires_in * 1000;
@@ -166,7 +166,7 @@ export async function deviceFlowLogin(apiUrl = DEFAULT_API_URL): Promise<{ token
     await new Promise(r => setTimeout(r, interval));
     const result = await pollForToken(code.device_code, apiUrl);
     if (result) {
-      console.log("\nAuthentication successful!");
+      process.stderr.write("\nAuthentication successful!\n");
       return { token: result.access_token, expiresIn: result.expires_in };
     }
   }
@@ -238,7 +238,7 @@ export async function login(apiUrl = DEFAULT_API_URL): Promise<Credentials> {
   // Step 2: Get user info
   const user = await apiGet("/me", authToken, apiUrl) as { id: string; name: string; email?: string };
   const userName = user.name || (user.email ? user.email.split("@")[0] : "user");
-  console.log(`\nLogged in as: ${userName}`);
+  process.stderr.write(`\nLogged in as: ${userName}\n`);
 
   // Step 3: List orgs and select
   const orgs = await listOrgs(authToken, apiUrl);
@@ -248,14 +248,14 @@ export async function login(apiUrl = DEFAULT_API_URL): Promise<Credentials> {
   if (orgs.length === 1) {
     orgId = orgs[0].id;
     orgName = orgs[0].name;
-    console.log(`Organization: ${orgName}`);
+    process.stderr.write(`Organization: ${orgName}\n`);
   } else {
-    console.log("\nOrganizations:");
-    orgs.forEach((org, i) => console.log(`  ${i + 1}. ${org.name}`));
+    process.stderr.write("\nOrganizations:\n");
+    orgs.forEach((org, i) => process.stderr.write(`  ${i + 1}. ${org.name}\n`));
     // Default to first org — Claude can switch later
     orgId = orgs[0].id;
     orgName = orgs[0].name;
-    console.log(`\nUsing: ${orgName} (switch with /deeplake:deeplake-org)`);
+    process.stderr.write(`\nUsing: ${orgName} (switch with /deeplake:deeplake-org)\n`);
   }
 
   // Step 4: Exchange for long-lived API token
@@ -279,7 +279,7 @@ export async function login(apiUrl = DEFAULT_API_URL): Promise<Credentials> {
     savedAt: new Date().toISOString(),
   };
   saveCredentials(creds);
-  console.log(`\nCredentials saved to ${CREDS_PATH}`);
+  process.stderr.write(`\nCredentials saved to ${CREDS_PATH}\n`);
 
   return creds;
 }

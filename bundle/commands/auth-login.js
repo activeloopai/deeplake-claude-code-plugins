@@ -105,14 +105,14 @@ Open this URL: ${code.verification_uri_complete}`,
     `Or visit ${code.verification_uri} and enter code: ${code.user_code}`,
     opened ? "\nBrowser opened. Waiting for sign in..." : "\nWaiting for sign in..."
   ].join("\n");
-  console.log(msg);
+  process.stderr.write(msg + "\n");
   const interval = Math.max(code.interval || 5, 5) * 1e3;
   const deadline = Date.now() + code.expires_in * 1e3;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, interval));
     const result = await pollForToken(code.device_code, apiUrl);
     if (result) {
-      console.log("\nAuthentication successful!");
+      process.stderr.write("\nAuthentication successful!\n");
       return { token: result.access_token, expiresIn: result.expires_in };
     }
   }
@@ -152,22 +152,26 @@ async function login(apiUrl = DEFAULT_API_URL) {
   const { token: authToken } = await deviceFlowLogin(apiUrl);
   const user = await apiGet("/me", authToken, apiUrl);
   const userName = user.name || (user.email ? user.email.split("@")[0] : "user");
-  console.log(`
-Logged in as: ${userName}`);
+  process.stderr.write(`
+Logged in as: ${userName}
+`);
   const orgs = await listOrgs(authToken, apiUrl);
   let orgId;
   let orgName;
   if (orgs.length === 1) {
     orgId = orgs[0].id;
     orgName = orgs[0].name;
-    console.log(`Organization: ${orgName}`);
+    process.stderr.write(`Organization: ${orgName}
+`);
   } else {
-    console.log("\nOrganizations:");
-    orgs.forEach((org, i) => console.log(`  ${i + 1}. ${org.name}`));
+    process.stderr.write("\nOrganizations:\n");
+    orgs.forEach((org, i) => process.stderr.write(`  ${i + 1}. ${org.name}
+`));
     orgId = orgs[0].id;
     orgName = orgs[0].name;
-    console.log(`
-Using: ${orgName} (switch with /deeplake:deeplake-org)`);
+    process.stderr.write(`
+Using: ${orgName} (switch with /deeplake:deeplake-org)
+`);
   }
   const tokenName = `deeplake-plugin-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}`;
   const tokenData = await apiPost("/users/me/tokens", {
@@ -186,8 +190,9 @@ Using: ${orgName} (switch with /deeplake:deeplake-org)`);
     savedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
   saveCredentials(creds);
-  console.log(`
-Credentials saved to ${CREDS_PATH}`);
+  process.stderr.write(`
+Credentials saved to ${CREDS_PATH}
+`);
   return creds;
 }
 
