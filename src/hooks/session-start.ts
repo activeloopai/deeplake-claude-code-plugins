@@ -144,7 +144,7 @@ async function main(): Promise<void> {
   const resolvedContext = context.replace(/DEEPLAKE_AUTH_CMD/g, AUTH_CMD);
   const additionalContext = creds?.token
     ? `${resolvedContext}\n\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})`
-    : `${resolvedContext}\n\n⚠️ Not logged in to Deeplake. Memory search will not work. Ask the user to run /deeplake:deeplake-login.`;
+    : `${resolvedContext}\n\n⚠️ Not logged in to Deeplake. Memory search will not work. Ask the user to run /deeplake-hivemind:login`;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {

@@ -695,7 +695,7 @@ async function main() {
 
 Logged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})` : `${resolvedContext}
 
-\u26A0\uFE0F Not logged in to Deeplake. Memory search will not work. Ask the user to run /deeplake:deeplake-login.`;
+\u26A0\uFE0F Not logged in to Deeplake. Memory search will not work. Ask the user to run /deeplake-hivemind:login`;
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "SessionStart",

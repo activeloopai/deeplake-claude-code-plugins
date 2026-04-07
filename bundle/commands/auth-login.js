@@ -170,7 +170,7 @@ Logged in as: ${userName}
     orgId = orgs[0].id;
     orgName = orgs[0].name;
     process.stderr.write(`
-Using: ${orgName} (switch with /deeplake:deeplake-org)
+Using: ${orgName}
 `);
   }
   const tokenName = `deeplake-plugin-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}`;

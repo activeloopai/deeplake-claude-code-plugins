@@ -259,7 +259,7 @@ export async function login(apiUrl = DEFAULT_API_URL): Promise<Credentials> {
     // Default to first org — Claude can switch later
     orgId = orgs[0].id;
     orgName = orgs[0].name;
-    process.stderr.write(`\nUsing: ${orgName} (switch with /deeplake:deeplake-org)\n`);
+    process.stderr.write(`\nUsing: ${orgName}\n`);
   }
 
   // Step 4: Exchange for long-lived API token
