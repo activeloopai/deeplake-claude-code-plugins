@@ -25,7 +25,7 @@ await build({
   platform: "node",
   format: "esm",
   outdir: "bundle",
-  external: ["node:*", "deeplake", "node-liblzma", "@mongodb-js/zstd"],
+  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
 });
 
 for (const h of all) {
