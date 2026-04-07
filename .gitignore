@@ -1,6 +1,6 @@
 node_modules/
 dist/
-bundle/
+# bundle/ is checked in so the plugin works without a build step
 tmp/
 *.js.map
 *.d.ts.map
