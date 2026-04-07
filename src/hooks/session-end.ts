@@ -89,11 +89,10 @@ async function main(): Promise<void> {
   const jsonlLines = jsonlContent.split("\n").filter(Boolean).length;
 
   // Dump JSONL to temp file so claude -p can read it
-  const tmpDir = join(tmpdir(), `deeplake-wiki-${sessionId}`);
+  const tmpDir = join(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
   mkdirSync(tmpDir, { recursive: true });
   const tmpJsonl = join(tmpDir, "session.jsonl");
   const tmpSummary = join(tmpDir, "summary.md");
-  const tmpIndex = join(tmpDir, "index.md");
   writeFileSync(tmpJsonl, jsonlContent);
 
   wikiLog(`SessionEnd: processing ${sessionId} (${jsonlLines} lines, tmp: ${tmpDir})`);
@@ -112,26 +111,16 @@ async function main(): Promise<void> {
     }
   } catch { /* no existing summary */ }
 
-  // Read existing index from server
-  try {
-    const idxRows = await api.query(
-      `SELECT content_text FROM "${table}" WHERE path = '/index.md' LIMIT 1`
-    );
-    if (idxRows.length > 0 && idxRows[0]["content_text"]) {
-      writeFileSync(tmpIndex, idxRows[0]["content_text"] as string);
-    }
-  } catch { /* no existing index */ }
-
   const claudeBin = findClaudeBin();
+  const projectName = cwd.split("/").pop() || "unknown";
 
   // Build the prompt — Karpathy-style personal wiki generation
   const wikiPrompt = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge — entities, decisions, relationships, and facts — into a structured, searchable wiki entry. Think of this as building a knowledge graph, not writing a summary.
 
 SESSION JSONL path: ${tmpJsonl}
 SUMMARY FILE to write: ${tmpSummary}
-INDEX FILE to update: ${tmpIndex}
 SESSION ID: ${sessionId}
-PROJECT: ${cwd}
+PROJECT: ${projectName}
 PREVIOUS JSONL OFFSET (lines already processed): ${prevOffset}
 CURRENT JSONL LINES: ${jsonlLines}
 
@@ -141,13 +130,13 @@ Steps:
      then focus on lines AFTER the offset for new content. Merge new facts into the existing summary.
    - If offset is 0, generate from scratch.
 
-2. Write the summary file at the path above with this format:
+2. Write the summary file at the path above with this EXACT format. The header fields (Source, Project) are pre-filled — copy them VERBATIM, do NOT replace them with paths from the JSONL content:
 
 # Session ${sessionId}
 - **Source**: ${jsonlServerPath}
 - **Started**: <extract from JSONL>
 - **Ended**: <now>
-- **Project**: ${cwd}
+- **Project**: ${projectName}
 - **JSONL offset**: ${jsonlLines}
 
 ## What Happened
@@ -173,12 +162,11 @@ Example: "- The memory table uses DELETE+INSERT, not UPDATE (WASM doesn't suppor
 ## Open Questions / TODO
 <Anything unresolved, blocked, or explicitly deferred>
 
-3. Update the index file: find the line containing ${sessionId} and replace it with:
-| [${sessionId}](summaries/${sessionId}.md) | <date> | <project> | <short 1-line description max 80 chars> |
+IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact. Future you will search this wiki to answer questions like "who worked on X", "why did we choose Y", "what's the status of Z". If a detail exists in the session, it should be in the wiki.
 
-If the line does not exist, append it.
+PRIVACY: Never include absolute filesystem paths (e.g. /home/user/..., /Users/..., C:\\...) in the summary. Use only project-relative paths or the project name. The Source and Project fields above are already correct — do not change them.
 
-IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact. Future you will search this wiki to answer questions like "who worked on X", "why did we choose Y", "what's the status of Z". If a detail exists in the session, it should be in the wiki.`;
+LENGTH LIMIT: Keep the total summary under 4000 characters. Be dense and concise — prioritize facts over prose. If a session is short, the summary should be short too.`;
 
   // Write prompt to a file to avoid shell escaping issues
   const promptFile = join(tmpDir, "prompt.txt");
@@ -194,7 +182,7 @@ IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact. Future you w
     table,
     sessionId,
     summaryPath: tmpSummary,
-    indexPath: tmpIndex,
+    project: cwd.split("/").pop() || "unknown",
     tmpDir,
   }));
 
@@ -210,7 +198,10 @@ async function query(sql) {
     body: JSON.stringify({ query: sql }),
   });
   if (!r.ok) throw new Error("API " + r.status + ": " + (await r.text()).slice(0, 200));
-  return r.json().then(j => j.data || []).catch(() => []);
+  return r.json().then(j => {
+    if (!j.columns || !j.rows) return [];
+    return j.rows.map(row => Object.fromEntries(j.columns.map((col, i) => [col, row[i]])));
+  }).catch(() => []);
 }
 async function upload(vpath, localPath) {
   if (!existsSync(localPath)) return;
@@ -219,17 +210,26 @@ async function upload(vpath, localPath) {
   const hex = Buffer.from(text, "utf-8").toString("hex");
   const fname = vpath.split("/").pop();
   const ts = new Date().toISOString();
+  await query("SELECT deeplake_sync_table('" + cfg.table + "')");
   const rows = await query("SELECT path FROM \\"" + cfg.table + "\\" WHERE path = '" + esc(vpath) + "' LIMIT 1");
   if (rows.length > 0) {
-    await query("UPDATE \\"" + cfg.table + "\\" SET content = E'\\\\\\\\x" + hex + "', content_text = E'" + esc(text) + "', size_bytes = " + Buffer.byteLength(text) + ", timestamp = '" + ts + "' WHERE path = '" + esc(vpath) + "'");
+    await query("UPDATE \\"" + cfg.table + "\\" SET content = E'\\\\\\\\x" + hex + "', content_text = E'" + esc(text) + "', size_bytes = " + Buffer.byteLength(text) + ", last_update_date = '" + ts + "' WHERE path = '" + esc(vpath) + "'");
   } else {
     const id = crypto.randomUUID();
-    await query("INSERT INTO \\"" + cfg.table + "\\" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) VALUES ('" + id + "', '" + esc(vpath) + "', '" + esc(fname) + "', E'\\\\\\\\x" + hex + "', E'" + esc(text) + "', 'text/markdown', " + Buffer.byteLength(text) + ", '" + ts + "')");
+    await query("INSERT INTO \\"" + cfg.table + "\\" (id, path, filename, content, content_text, mime_type, size_bytes, project, creation_date, last_update_date) VALUES ('" + id + "', '" + esc(vpath) + "', '" + esc(fname) + "', E'\\\\\\\\x" + hex + "', E'" + esc(text) + "', 'text/markdown', " + Buffer.byteLength(text) + ", '" + esc(cfg.project) + "', '" + ts + "', '" + ts + "')");
   }
   console.log("Uploaded " + vpath);
 }
 await upload("/summaries/" + cfg.sessionId + ".md", cfg.summaryPath);
-await upload("/index.md", cfg.indexPath);
+// Update summary row metadata (description + last_update_date) for virtual index.md
+try {
+  var summaryText = existsSync(cfg.summaryPath) ? readFileSync(cfg.summaryPath, "utf-8") : "";
+  var whatHappened = summaryText.match(/## What Happened\\n([\\s\\S]*?)(?=\\n##|$)/);
+  var desc = whatHappened ? whatHappened[1].trim().slice(0, 300) : "completed";
+  var ts = new Date().toISOString();
+  await query("UPDATE \\"" + cfg.table + "\\" SET description = E'" + esc(desc) + "', last_update_date = '" + ts + "' WHERE path = '/summaries/" + cfg.sessionId + ".md'");
+  console.log("Updated description for " + cfg.sessionId);
+} catch(e) { console.log("Failed to update description: " + e.message); }
 console.log("Server upload complete for " + cfg.sessionId);
 `);
 
