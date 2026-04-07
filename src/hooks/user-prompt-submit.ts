@@ -23,7 +23,7 @@ async function main(): Promise<void> {
   const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
   const fs = await DeeplakeFs.create(api, table, "/");
 
-  const userName = config.userName ?? "user";
+  const userName = config.userName;
   const sessionPath = `/sessions/${userName}/${userName}_${config.orgName ?? config.orgId}_${config.workspaceId}_${input.session_id}.jsonl`;
 
   const entry = {
