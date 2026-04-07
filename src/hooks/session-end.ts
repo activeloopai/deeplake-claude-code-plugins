@@ -210,6 +210,7 @@ async function query(sql) {
     body: JSON.stringify({ query: sql }),
   });
   if (!r.ok) throw new Error("API " + r.status + ": " + (await r.text()).slice(0, 200));
+  return r.json().then(j => j.data || []).catch(() => []);
 }
 async function upload(vpath, localPath) {
   if (!existsSync(localPath)) return;
@@ -217,10 +218,14 @@ async function upload(vpath, localPath) {
   if (!text.trim()) return;
   const hex = Buffer.from(text, "utf-8").toString("hex");
   const fname = vpath.split("/").pop();
-  const id = crypto.randomUUID();
   const ts = new Date().toISOString();
-  await query("DELETE FROM \\"" + cfg.table + "\\" WHERE path = '" + esc(vpath) + "'");
-  await query("INSERT INTO \\"" + cfg.table + "\\" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) VALUES ('" + id + "', '" + esc(vpath) + "', '" + esc(fname) + "', E'\\\\\\\\x" + hex + "', E'" + esc(text) + "', 'text/markdown', " + Buffer.byteLength(text) + ", '" + ts + "')");
+  const rows = await query("SELECT path FROM \\"" + cfg.table + "\\" WHERE path = '" + esc(vpath) + "' LIMIT 1");
+  if (rows.length > 0) {
+    await query("UPDATE \\"" + cfg.table + "\\" SET content = E'\\\\\\\\x" + hex + "', content_text = E'" + esc(text) + "', size_bytes = " + Buffer.byteLength(text) + ", timestamp = '" + ts + "' WHERE path = '" + esc(vpath) + "'");
+  } else {
+    const id = crypto.randomUUID();
+    await query("INSERT INTO \\"" + cfg.table + "\\" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) VALUES ('" + id + "', '" + esc(vpath) + "', '" + esc(fname) + "', E'\\\\\\\\x" + hex + "', E'" + esc(text) + "', 'text/markdown', " + Buffer.byteLength(text) + ", '" + ts + "')");
+  }
   console.log("Uploaded " + vpath);
 }
 await upload("/summaries/" + cfg.sessionId + ".md", cfg.summaryPath);
