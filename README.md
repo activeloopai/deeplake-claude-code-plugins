@@ -148,52 +148,56 @@ npm run shell -- -c "grep -r 'keyword' /"
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
-│  UserPromptSubmit → capture user message                    │
+│  UserPromptSubmit → capture.js → INSERT row into sessions   │
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
 │  PreToolUse — intercept commands on ~/.deeplake/memory/     │
 │                                                             │
-│  ├─ safe (cat, ls, grep, jq...) → just-bash + DeeplakeFS    │
+│  ├─ Read/Grep (fast path)       → direct SQL query          │
+│  ├─ safe (cat, ls, jq...)       → just-bash + DeeplakeFS    │
 │  ├─ unsafe + CLI installed      → real bash + FUSE mount    │
 │  ├─ unsafe + no CLI             → deny + install prompt     │
 │  └─ deeplake mount/login        → pass through              │
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
-│  PostToolUse (async) → capture tool call + response         │
+│  PostToolUse (async) → capture.js → INSERT row into sessions│
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
-│  Stop → capture final assistant response                    │
+│  Stop → capture.js → INSERT row into sessions               │
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
-│  SubagentStop (async) → capture subagent activity           │
+│  SubagentStop (async) → capture.js → INSERT row into sessions│
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
-│  SessionEnd → AI wiki summary via claude -p                 │
+│  SessionEnd → spawns wiki-worker.js in background           │
+│  → fetches events, runs claude -p, uploads summary          │
 │  → /summaries/*.md + /index.md                              │
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
 │                   Deeplake REST API                         │
-│         sessions/ · summaries/ · index.md                   │
+│       sessions table · memory table (summaries, index)      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### Hook events
 
-| Hook                | Purpose                                        | Async |
-|---------------------|------------------------------------------------|-------|
-| `SessionStart`      | Auth login, inject context, DATA NOTICE        |  No   |
-| `UserPromptSubmit`  | Capture user message                           |  No   |
-| `PreToolUse`        | Intercept and rewrite memory-targeting commands|  No   |
-| `PostToolUse`       | Capture tool call + response                   |  Yes  |
-| `Stop`              | Capture assistant response                     |  No   |
-| `SubagentStop`      | Capture subagent activity                      |  Yes  |
-| `SessionEnd`        | Generate AI summary of session                 |  No   |
+All capture hooks use a single unified `capture.js` bundle — one INSERT per event into the sessions SQL table.
+
+| Hook                | Bundle           | Purpose                                        | Async |
+|---------------------|------------------|-------------------------------------------------|-------|
+| `SessionStart`      | `session-start`  | Auth login, inject context, DATA NOTICE         |  No   |
+| `UserPromptSubmit`  | `capture`        | Capture user message                            |  No   |
+| `PreToolUse`        | `pre-tool-use`   | Intercept and rewrite memory-targeting commands  |  No   |
+| `PostToolUse`       | `capture`        | Capture tool call + response                    |  Yes  |
+| `Stop`              | `capture`        | Capture assistant response                      |  No   |
+| `SubagentStop`      | `capture`        | Capture subagent activity                       |  Yes  |
+| `SessionEnd`        | `session-end`    | Spawn wiki-worker for AI summary                |  No   |
 
 ## Security
 
