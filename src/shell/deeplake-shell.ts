@@ -39,6 +39,7 @@ async function main(): Promise<void> {
   }
 
   const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
+  const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
   const mount = process.env["DEEPLAKE_MOUNT"] ?? "/";
 
   const client = new DeeplakeApi(
@@ -47,7 +48,7 @@ async function main(): Promise<void> {
 
   process.stderr.write(`Mounting deeplake://${config.workspaceId}/${table} at ${mount} ...\n`);
 
-  const fs = await DeeplakeFs.create(client, table, mount);
+  const fs = await DeeplakeFs.create(client, table, mount, sessionsTable);
   const fileCount = fs.getAllPaths().filter(p => !!p).length;
   process.stderr.write(`Ready. ${fileCount} files loaded.\n`);
 

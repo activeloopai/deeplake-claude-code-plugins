@@ -84,9 +84,16 @@ export class DeeplakeFs implements IFileSystem {
   private pending = new Map<string, PendingRow>();
   // paths that have been flushed (INSERT) at least once — subsequent flushes use UPDATE
   private flushed = new Set<string>();
+
+  /** Number of files loaded from the server during bootstrap. */
+  get fileCount(): number { return this.files.size; }
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   // serialize flushes
   private flushChain: Promise<void> = Promise.resolve();
+
+  // Paths that live in the sessions table (multi-row, read by concatenation)
+  private sessionPaths = new Set<string>();
+  private sessionsTable: string | null = null;
 
   private constructor(
     private readonly client: DeeplakeApi,
@@ -101,13 +108,15 @@ export class DeeplakeFs implements IFileSystem {
     client: DeeplakeApi,
     table: string,
     mount = "/memory",
+    sessionsTable?: string,
   ): Promise<DeeplakeFs> {
     const fs = new DeeplakeFs(client, table, mount);
+    fs.sessionsTable = sessionsTable ?? null;
     // Ensure the table exists before bootstrapping.
     await client.ensureTable();
     // Sync table to ensure query engine sees latest writes.
     await client.query(`SELECT deeplake_sync_table('${table}')`);
-    // Bootstrap: load path metadata. Retry once on 503 (API cold-start issue).
+    // Bootstrap: load path metadata from memory table.
     const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
     try {
       let rows: Record<string, unknown>[];
@@ -130,6 +139,32 @@ export class DeeplakeFs implements IFileSystem {
     } catch {
       // Table may not exist yet — start empty
     }
+
+    // Bootstrap: load session paths from sessions table (distinct paths only).
+    if (sessionsTable) {
+      try {
+        await client.query(`SELECT deeplake_sync_table('${sessionsTable}')`);
+        const sessionRows = await client.query(
+          `SELECT path, SUM(size_bytes) as total_size FROM "${sessionsTable}" GROUP BY path ORDER BY path`
+        );
+        for (const row of sessionRows) {
+          const p = row["path"] as string;
+          if (!fs.files.has(p)) {
+            fs.files.set(p, null);
+            fs.meta.set(p, {
+              size: Number(row["total_size"] ?? 0),
+              mime: "application/x-ndjson",
+              mtime: new Date(),
+            });
+            fs.addToTree(p);
+          }
+          fs.sessionPaths.add(p);
+        }
+      } catch {
+        // Sessions table may not exist yet
+      }
+    }
+
     return fs;
   }
 
@@ -256,7 +291,19 @@ export class DeeplakeFs implements IFileSystem {
     const pend = this.pending.get(p);
     if (pend) { this.files.set(p, pend.content); return pend.content; }
 
-    // 3. SQL query — content column (BYTEA returned as hex '\x...')
+    // 3. Session files: concatenate rows from sessions table
+    if (this.sessionPaths.has(p) && this.sessionsTable) {
+      const rows = await this.client.query(
+        `SELECT content_text FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC`
+      );
+      if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
+      const text = rows.map(r => typeof r["content_text"] === "string" ? r["content_text"] : JSON.stringify(r["content_text"])).join("\n");
+      const buf = Buffer.from(text, "utf-8");
+      this.files.set(p, buf);
+      return buf;
+    }
+
+    // 4. SQL query — content column (BYTEA returned as hex '\x...')
     const rows = await this.client.query(
       `SELECT content FROM "${this.table}" WHERE path = '${esc(p)}' LIMIT 1`
     );
@@ -291,6 +338,18 @@ export class DeeplakeFs implements IFileSystem {
     // Pending batch
     const pend = this.pending.get(p);
     if (pend) return pend.contentText || pend.content.toString("utf-8");
+
+    // Session files: concatenate rows from sessions table, ordered by creation_date
+    if (this.sessionPaths.has(p) && this.sessionsTable) {
+      const rows = await this.client.query(
+        `SELECT content_text FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC`
+      );
+      if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
+      const text = rows.map(r => typeof r["content_text"] === "string" ? r["content_text"] : JSON.stringify(r["content_text"])).join("\n");
+      const buf = Buffer.from(text, "utf-8");
+      this.files.set(p, buf);
+      return text;
+    }
 
     // For text files prefer content_text (avoids decoding binary column)
     const rows = await this.client.query(

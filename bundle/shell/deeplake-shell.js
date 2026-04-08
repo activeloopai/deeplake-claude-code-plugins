@@ -66747,6 +66747,7 @@ function loadConfig() {
     workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
     apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.DEEPLAKE_TABLE ?? "memory",
+    sessionsTableName: process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
     memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join4(home, ".deeplake", "memory")
   };
 }
@@ -66877,21 +66878,31 @@ var DeeplakeApi = class {
     const data = await resp.json();
     return (data.tables ?? []).map((t6) => t6.table_name);
   }
-  /** Create the table if it doesn't already exist. Migrate columns on existing tables. */
-  async ensureTable() {
+  /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
+  async ensureTable(name) {
+    const tbl = name ?? this.tableName;
     const tables = await this.listTables();
-    if (!tables.includes(this.tableName)) {
-      log2(`table "${this.tableName}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${this.tableName}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content BYTEA NOT NULL DEFAULT ''::bytea, content_text TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
-      log2(`table "${this.tableName}" created`);
+    if (!tables.includes(tbl)) {
+      log2(`table "${tbl}" not found, creating`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content BYTEA NOT NULL DEFAULT ''::bytea, content_text TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      log2(`table "${tbl}" created`);
     } else {
       for (const col of ["project", "description", "creation_date", "last_update_date"]) {
         try {
-          await this.query(`ALTER TABLE "${this.tableName}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
-          log2(`added column "${col}" to "${this.tableName}"`);
+          await this.query(`ALTER TABLE "${tbl}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
+          log2(`added column "${col}" to "${tbl}"`);
         } catch {
         }
       }
+    }
+  }
+  /** Create the sessions table (uses JSONB for content_text since every row is a JSON event). */
+  async ensureSessionsTable(name) {
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      log2(`table "${name}" not found, creating`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content_text JSONB, mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      log2(`table "${name}" created`);
     }
   }
 };
@@ -66962,9 +66973,16 @@ var DeeplakeFs = class _DeeplakeFs {
   pending = /* @__PURE__ */ new Map();
   // paths that have been flushed (INSERT) at least once — subsequent flushes use UPDATE
   flushed = /* @__PURE__ */ new Set();
+  /** Number of files loaded from the server during bootstrap. */
+  get fileCount() {
+    return this.files.size;
+  }
   flushTimer = null;
   // serialize flushes
   flushChain = Promise.resolve();
+  // Paths that live in the sessions table (multi-row, read by concatenation)
+  sessionPaths = /* @__PURE__ */ new Set();
+  sessionsTable = null;
   constructor(client, table, mountPoint) {
     this.client = client;
     this.table = table;
@@ -66973,8 +66991,9 @@ var DeeplakeFs = class _DeeplakeFs {
     if (mountPoint !== "/")
       this.dirs.set("/", /* @__PURE__ */ new Set([mountPoint.slice(1)]));
   }
-  static async create(client, table, mount = "/memory") {
+  static async create(client, table, mount = "/memory", sessionsTable) {
     const fs3 = new _DeeplakeFs(client, table, mount);
+    fs3.sessionsTable = sessionsTable ?? null;
     await client.ensureTable();
     await client.query(`SELECT deeplake_sync_table('${table}')`);
     const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
@@ -66997,6 +67016,26 @@ var DeeplakeFs = class _DeeplakeFs {
         fs3.flushed.add(p22);
       }
     } catch {
+    }
+    if (sessionsTable) {
+      try {
+        await client.query(`SELECT deeplake_sync_table('${sessionsTable}')`);
+        const sessionRows = await client.query(`SELECT path, SUM(size_bytes) as total_size FROM "${sessionsTable}" GROUP BY path ORDER BY path`);
+        for (const row of sessionRows) {
+          const p22 = row["path"];
+          if (!fs3.files.has(p22)) {
+            fs3.files.set(p22, null);
+            fs3.meta.set(p22, {
+              size: Number(row["total_size"] ?? 0),
+              mime: "application/x-ndjson",
+              mtime: /* @__PURE__ */ new Date()
+            });
+            fs3.addToTree(p22);
+          }
+          fs3.sessionPaths.add(p22);
+        }
+      } catch {
+      }
     }
     return fs3;
   }
@@ -67109,6 +67148,15 @@ var DeeplakeFs = class _DeeplakeFs {
       this.files.set(p22, pend.content);
       return pend.content;
     }
+    if (this.sessionPaths.has(p22) && this.sessionsTable) {
+      const rows2 = await this.client.query(`SELECT content_text FROM "${this.sessionsTable}" WHERE path = '${sqlStr(p22)}' ORDER BY creation_date ASC`);
+      if (rows2.length === 0)
+        throw fsErr("ENOENT", "no such file or directory", p22);
+      const text = rows2.map((r10) => typeof r10["content_text"] === "string" ? r10["content_text"] : JSON.stringify(r10["content_text"])).join("\n");
+      const buf2 = Buffer.from(text, "utf-8");
+      this.files.set(p22, buf2);
+      return buf2;
+    }
     const rows = await this.client.query(`SELECT content FROM "${this.table}" WHERE path = '${sqlStr(p22)}' LIMIT 1`);
     if (rows.length === 0)
       throw fsErr("ENOENT", "no such file or directory", p22);
@@ -67135,6 +67183,15 @@ var DeeplakeFs = class _DeeplakeFs {
     const pend = this.pending.get(p22);
     if (pend)
       return pend.contentText || pend.content.toString("utf-8");
+    if (this.sessionPaths.has(p22) && this.sessionsTable) {
+      const rows2 = await this.client.query(`SELECT content_text FROM "${this.sessionsTable}" WHERE path = '${sqlStr(p22)}' ORDER BY creation_date ASC`);
+      if (rows2.length === 0)
+        throw fsErr("ENOENT", "no such file or directory", p22);
+      const text2 = rows2.map((r10) => typeof r10["content_text"] === "string" ? r10["content_text"] : JSON.stringify(r10["content_text"])).join("\n");
+      const buf2 = Buffer.from(text2, "utf-8");
+      this.files.set(p22, buf2);
+      return text2;
+    }
     const rows = await this.client.query(`SELECT content_text, content FROM "${this.table}" WHERE path = '${sqlStr(p22)}' LIMIT 1`);
     if (rows.length === 0)
       throw fsErr("ENOENT", "no such file or directory", p22);
@@ -68451,11 +68508,12 @@ async function main() {
     process.exit(1);
   }
   const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
+  const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
   const mount = process.env["DEEPLAKE_MOUNT"] ?? "/";
   const client = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
   process.stderr.write(`Mounting deeplake://${config.workspaceId}/${table} at ${mount} ...
 `);
-  const fs3 = await DeeplakeFs.create(client, table, mount);
+  const fs3 = await DeeplakeFs.create(client, table, mount, sessionsTable);
   const fileCount = fs3.getAllPaths().filter((p22) => !!p22).length;
   process.stderr.write(`Ready. ${fileCount} files loaded.
 `);

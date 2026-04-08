@@ -10,6 +10,7 @@ export interface Config {
   workspaceId: string;
   apiUrl: string;
   tableName: string;
+  sessionsTableName: string;
   memoryPath: string;
 }
 
@@ -47,6 +48,7 @@ export function loadConfig(): Config | null {
     workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
     apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.DEEPLAKE_TABLE ?? "memory",
+    sessionsTableName: process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
     memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory"),
   };
 }

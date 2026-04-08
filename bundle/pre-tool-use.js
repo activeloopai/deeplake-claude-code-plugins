@@ -52,6 +52,7 @@ function loadConfig() {
     workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
     apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.DEEPLAKE_TABLE ?? "memory",
+    sessionsTableName: process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
     memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory")
   };
 }
@@ -182,21 +183,31 @@ var DeeplakeApi = class {
     const data = await resp.json();
     return (data.tables ?? []).map((t) => t.table_name);
   }
-  /** Create the table if it doesn't already exist. Migrate columns on existing tables. */
-  async ensureTable() {
+  /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
+  async ensureTable(name) {
+    const tbl = name ?? this.tableName;
     const tables = await this.listTables();
-    if (!tables.includes(this.tableName)) {
-      log2(`table "${this.tableName}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${this.tableName}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content BYTEA NOT NULL DEFAULT ''::bytea, content_text TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
-      log2(`table "${this.tableName}" created`);
+    if (!tables.includes(tbl)) {
+      log2(`table "${tbl}" not found, creating`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content BYTEA NOT NULL DEFAULT ''::bytea, content_text TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      log2(`table "${tbl}" created`);
     } else {
       for (const col of ["project", "description", "creation_date", "last_update_date"]) {
         try {
-          await this.query(`ALTER TABLE "${this.tableName}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
-          log2(`added column "${col}" to "${this.tableName}"`);
+          await this.query(`ALTER TABLE "${tbl}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
+          log2(`added column "${col}" to "${tbl}"`);
         } catch {
         }
       }
+    }
+  }
+  /** Create the sessions table (uses JSONB for content_text since every row is a JSON event). */
+  async ensureSessionsTable(name) {
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      log2(`table "${name}" not found, creating`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content_text JSONB, mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      log2(`table "${name}" created`);
     }
   }
 };
