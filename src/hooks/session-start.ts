@@ -158,6 +158,8 @@ async function main(): Promise<void> {
         const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
         const sessionsTable = config.sessionsTableName;
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
+        // Ensure sessions table exists (once per session, so capture doesn't have to check every event)
+        await api.ensureSessionsTable(sessionsTable);
         log("creating DeeplakeFs...");
         const fs = await DeeplakeFs.create(api, table, "/", sessionsTable);
         log(`DeeplakeFs ready (${fs.fileCount} files)`);

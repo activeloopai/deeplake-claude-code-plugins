@@ -57,9 +57,6 @@ async function main(): Promise<void> {
   const sessionsTable = config.sessionsTableName;
   const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
 
-  // Ensure sessions table exists (JSONB schema)
-  await api.ensureSessionsTable(sessionsTable);
-
   // Build the event entry
   const ts = new Date().toISOString();
   const meta = {

@@ -224,7 +224,6 @@ async function main() {
   }
   const sessionsTable = config.sessionsTableName;
   const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
-  await api.ensureSessionsTable(sessionsTable);
   const ts = (/* @__PURE__ */ new Date()).toISOString();
   const meta = {
     session_id: input.session_id,
