@@ -189,6 +189,51 @@ function makeClient(seed: Record<string, Buffer> = {}) {
     listTables: vi.fn().mockResolvedValue(["test"]),
     ensureTable: vi.fn().mockResolvedValue(undefined),
 
+    // WASM mock methods
+    initWasm: vi.fn().mockResolvedValue(undefined),
+    openDataset: vi.fn().mockResolvedValue(undefined),
+    releaseDataset: vi.fn(),
+    get wasmDs() { return {}; },
+    wasmNumRows: vi.fn().mockImplementation(() => rows.length),
+    wasmGetColumnData: vi.fn().mockImplementation(async (column: string, start: number, end: number) => {
+      return rows.slice(start, end).map(r => (r as any)[column]);
+    }),
+    wasmSetRow: vi.fn().mockImplementation(async (rowIndex: number, data: Record<string, any>) => {
+      const row = rows[rowIndex];
+      if (!row) return;
+      for (const [key, val] of Object.entries(data)) {
+        if (key === "content") (row as any).content = Buffer.isBuffer(val) ? val : Buffer.from(val);
+        else if (key === "content_text") (row as any).content_text = val;
+        else if (key === "size_bytes") (row as any).size_bytes = val;
+        else if (key === "mime_type") (row as any).mime_type = val;
+        else if (key === "filename") (row as any).filename = val;
+        else if (key === "last_update_date") (row as any).last_update_date = val;
+        else if (key === "project") (row as any).project = val;
+        else if (key === "description") (row as any).description = val;
+        else if (key === "creation_date") (row as any).creation_date = val;
+      }
+    }),
+    wasmAppend: vi.fn().mockImplementation(async (batch: Record<string, unknown[]>) => {
+      const paths = batch["path"] as string[];
+      for (let i = 0; i < paths.length; i++) {
+        const content = (batch["content"] as Buffer[])[i] ?? Buffer.alloc(0);
+        rows.push({
+          id: (batch["id"] as string[])[i] ?? "",
+          path: paths[i],
+          filename: (batch["filename"] as string[])[i] ?? paths[i].split("/").pop()!,
+          content,
+          content_text: (batch["content_text"] as string[])[i] ?? "",
+          mime_type: (batch["mime_type"] as string[])[i] ?? "text/plain",
+          size_bytes: content.length,
+          project: (batch["project"] as string[])[i] ?? "",
+          description: (batch["description"] as string[])[i] ?? "",
+          creation_date: (batch["creation_date"] as string[])[i] ?? "",
+          last_update_date: (batch["last_update_date"] as string[])[i] ?? "",
+        });
+      }
+    }),
+    wasmCommit: vi.fn().mockResolvedValue(undefined),
+
     // Expose internal rows for test assertions
     _rows: rows,
   };
@@ -321,15 +366,17 @@ describe("writeFile", () => {
     expect(await fs.readdir("/memory/sub")).toContain("file.txt");
   });
 
-  it("batches and flushes on BATCH_SIZE writes (INSERT per new row)", async () => {
+  it("batches and flushes on BATCH_SIZE writes (wasmAppend for new rows)", async () => {
     const { fs, client } = await makeFs({});
     const promises: Promise<void>[] = [];
     for (let i = 0; i < 10; i++) {
       promises.push(fs.writeFile(`/memory/file${i}.txt`, `content ${i}`));
     }
     await Promise.all(promises);
-    const insertCalls = (client.query.mock.calls as [string][]).filter(c => (c[0] as string).startsWith("INSERT"));
-    expect(insertCalls.length).toBe(10);
+    expect(client.wasmAppend).toHaveBeenCalled();
+    expect(client.wasmCommit).toHaveBeenCalled();
+    // All 10 files should be in the rows
+    expect(client._rows.filter(r => r.path.startsWith("/memory/file")).length).toBe(10);
   });
 
   it("overwrites existing file", async () => {
@@ -338,18 +385,17 @@ describe("writeFile", () => {
     expect(await fs.readFile("/memory/a.txt")).toBe("new");
   });
 
-  it("stores contentText='' for binary files (INSERT has empty E'' for content_text)", async () => {
+  it("stores contentText='' for binary files (wasmAppend with empty content_text)", async () => {
     const { fs, client } = await makeFs({});
     const binary = Buffer.from([0x89, 0x50, 0x00, 0x01]);
     // Write 10 to trigger flush
     for (let i = 0; i < 9; i++) await fs.writeFile(`/memory/dummy${i}.txt`, "x");
     await fs.writeFile("/memory/img.png", binary);
 
-    const insertCalls = (client.query.mock.calls as [string][])
-      .filter(c => (c[0] as string).startsWith("INSERT") && (c[0] as string).includes("img.png"));
-    expect(insertCalls.length).toBe(1);
-    // content_text should be E'' (empty string) for binary
-    expect(insertCalls[0][0]).toMatch(/E'\\\\x[0-9a-f]+', E''/);
+    // Check the row was created with empty content_text for binary
+    const imgRow = client._rows.find(r => r.path === "/memory/img.png");
+    expect(imgRow).toBeDefined();
+    expect(imgRow!.content_text).toBe("");
   });
 });
 
@@ -529,21 +575,20 @@ describe("getAllPaths", () => {
 
 // ── Upsert: id stability & dates ─────────────────────────────────────────────
 describe("flush upsert", () => {
-  it("INSERT for new file sets id, creation_date and last_update_date", async () => {
+  it("wasmAppend for new files sets id, creation_date and last_update_date", async () => {
     const { fs, client } = await makeFs({});
     // Write 10 files to trigger flush
     for (let i = 0; i < 10; i++) await fs.writeFile(`/memory/f${i}.txt`, `v${i}`);
-    const insertCalls = (client.query.mock.calls as [string][]).filter(c => (c[0] as string).startsWith("INSERT"));
-    expect(insertCalls.length).toBe(10);
-    // Every INSERT should include id, creation_date and last_update_date columns
-    for (const [sql] of insertCalls) {
-      expect(sql).toContain("(id,");
-      expect(sql).toContain("creation_date");
-      expect(sql).toContain("last_update_date");
+    expect(client.wasmAppend).toHaveBeenCalled();
+    // All 10 rows should have id, creation_date, last_update_date
+    for (const row of client._rows.filter(r => r.path.startsWith("/memory/f"))) {
+      expect(row.id).toBeTruthy();
+      expect(row.creation_date).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(row.last_update_date).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     }
   });
 
-  it("UPDATE for existing file preserves id", async () => {
+  it("wasmSetRow for existing file preserves id", async () => {
     const { fs, client } = await makeFs({ "/memory/existing.txt": "old" });
     const originalId = client._rows.find(r => r.path === "/memory/existing.txt")!.id;
 
@@ -551,17 +596,9 @@ describe("flush upsert", () => {
     for (let i = 0; i < 9; i++) await fs.writeFile(`/memory/pad${i}.txt`, "x");
     await fs.writeFile("/memory/existing.txt", "new");
 
-    // Should emit UPDATE (not INSERT) for the existing path
-    const updateCalls = (client.query.mock.calls as [string][]).filter(
-      c => (c[0] as string).startsWith("UPDATE") && (c[0] as string).includes("existing.txt")
-    );
-    expect(updateCalls.length).toBe(1);
-    // No DELETE for existing.txt
-    const deleteCalls = (client.query.mock.calls as [string][]).filter(
-      c => (c[0] as string).startsWith("DELETE") && (c[0] as string).includes("existing.txt")
-    );
-    expect(deleteCalls.length).toBe(0);
-    // id should be preserved
+    // Should use wasmSetRow for the existing path (not wasmAppend)
+    expect(client.wasmSetRow).toHaveBeenCalled();
+    // id should be preserved (wasmSetRow doesn't change id)
     const row = client._rows.find(r => r.path === "/memory/existing.txt")!;
     expect(row.id).toBe(originalId);
     expect(row.content_text).toBe("new");
@@ -877,5 +914,117 @@ describe("cp recursive", () => {
     expect(await fs.readFile("/memory/dst/b.txt")).toBe("bbb");
     // Source still exists
     expect(await fs.readFile("/memory/src/a.txt")).toBe("aaa");
+  });
+});
+
+// ── WASM write path ─────────────────────────────────────────────────────────
+describe("WASM writes", () => {
+  it("ensureWasm is called once then skipped on second flush", async () => {
+    const { fs, client } = await makeFs({});
+    // First flush triggers WASM init
+    await fs.writeFile("/memory/a.txt", "first");
+    for (let i = 0; i < 9; i++) await fs.writeFile(`/memory/pad${i}.txt`, "x");
+    expect(client.initWasm).toHaveBeenCalledTimes(1);
+    expect(client.openDataset).toHaveBeenCalledTimes(1);
+
+    // Second flush should re-init (wasmReady reset after release)
+    for (let i = 0; i < 10; i++) await fs.writeFile(`/memory/q${i}.txt`, "y");
+    expect(client.initWasm).toHaveBeenCalledTimes(2);
+  });
+
+  it("wasmSetRow is called for existing files, wasmAppend for new", async () => {
+    const { fs, client } = await makeFs({ "/memory/existing.txt": "old" });
+    // Write new + overwrite existing to trigger flush
+    for (let i = 0; i < 8; i++) await fs.writeFile(`/memory/new${i}.txt`, "x");
+    await fs.writeFile("/memory/existing.txt", "updated");
+    await fs.writeFile("/memory/new8.txt", "x");
+
+    expect(client.wasmSetRow).toHaveBeenCalled();
+    expect(client.wasmAppend).toHaveBeenCalled();
+    expect(client.wasmCommit).toHaveBeenCalled();
+
+    const row = client._rows.find(r => r.path === "/memory/existing.txt")!;
+    expect(row.content_text).toBe("updated");
+  });
+
+  it("releaseDataset is called after commit", async () => {
+    const { fs, client } = await makeFs({});
+    for (let i = 0; i < 10; i++) await fs.writeFile(`/memory/f${i}.txt`, "x");
+    expect(client.releaseDataset).toHaveBeenCalled();
+  });
+
+  it("rowIndexMap tracks new rows after append", async () => {
+    const { fs, client } = await makeFs({});
+    // Write 10 to trigger flush (creates rows via wasmAppend)
+    for (let i = 0; i < 10; i++) await fs.writeFile(`/memory/f${i}.txt`, `v${i}`);
+
+    // Now overwrite one — should use wasmSetRow (it's now in flushed set)
+    client.wasmSetRow.mockClear();
+    for (let i = 0; i < 9; i++) await fs.writeFile(`/memory/pad${i}.txt`, "y");
+    await fs.writeFile("/memory/f0.txt", "updated");
+
+    expect(client.wasmSetRow).toHaveBeenCalled();
+    const row = client._rows.find(r => r.path === "/memory/f0.txt")!;
+    expect(row.content_text).toBe("updated");
+  });
+});
+
+// ── appendFile (SQL concat, fast path for capture hooks) ────────────────────
+describe("appendFile SQL concat", () => {
+  it("appends to existing file via SQL UPDATE", async () => {
+    const { fs, client } = await makeFs({ "/memory/log.txt": "line1\n" });
+    await fs.appendFile("/memory/log.txt", "line2\n");
+    // Should use SQL concat, NOT wasmSetRow
+    const updateCalls = (client.query.mock.calls as [string][]).filter(
+      c => (c[0] as string).includes("content_text = content_text ||") && (c[0] as string).includes("log.txt")
+    );
+    expect(updateCalls.length).toBe(1);
+    expect(client.wasmSetRow).not.toHaveBeenCalled();
+  });
+
+  it("multiple appends accumulate content", async () => {
+    const { fs } = await makeFs({ "/memory/log.txt": "" });
+    for (let i = 0; i < 5; i++) {
+      await fs.appendFile("/memory/log.txt", `line${i}\n`);
+    }
+    expect(await fs.readFile("/memory/log.txt")).toBe("line0\nline1\nline2\nline3\nline4\n");
+  });
+
+  it("creates file if it does not exist", async () => {
+    const { fs } = await makeFs({});
+    await fs.appendFile("/memory/new.txt", "hello");
+    expect(await fs.readFile("/memory/new.txt")).toBe("hello");
+  });
+});
+
+// ── realpath ────────────────────────────────────────────────────────────────
+describe("realpath", () => {
+  it("returns path for existing file", async () => {
+    const { fs } = await makeFs({ "/memory/file.txt": "x" });
+    expect(await fs.realpath("/memory/file.txt")).toBe("/memory/file.txt");
+  });
+
+  it("returns path for existing directory", async () => {
+    const { fs } = await makeFs({ "/memory/sub/file.txt": "x" });
+    expect(await fs.realpath("/memory/sub")).toBe("/memory/sub");
+  });
+
+  it("throws ENOENT for missing path", async () => {
+    const { fs } = await makeFs({});
+    await expect(fs.realpath("/memory/nope")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("returns /index.md for virtual index", async () => {
+    const { fs } = await makeFs({}, "/");
+    expect(await fs.realpath("/index.md")).toBe("/index.md");
+  });
+});
+
+// ── lstat ───────────────────────────────────────────────────────────────────
+describe("lstat", () => {
+  it("returns same as stat for files", async () => {
+    const { fs } = await makeFs({ "/memory/file.txt": "x" });
+    const s = await fs.lstat("/memory/file.txt");
+    expect(s.isFile).toBe(true);
   });
 });

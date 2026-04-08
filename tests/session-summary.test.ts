@@ -141,6 +141,46 @@ function makeClient(seed: Record<string, Buffer> = {}) {
     }),
     listTables: vi.fn().mockResolvedValue(["test"]),
     ensureTable: vi.fn().mockResolvedValue(undefined),
+
+    // WASM mock methods
+    initWasm: vi.fn().mockResolvedValue(undefined),
+    openDataset: vi.fn().mockResolvedValue(undefined),
+    releaseDataset: vi.fn(),
+    get wasmDs() { return {}; },
+    wasmNumRows: vi.fn().mockImplementation(() => rows.length),
+    wasmGetColumnData: vi.fn().mockImplementation(async (column: string, start: number, end: number) => {
+      return rows.slice(start, end).map(r => (r as any)[column]);
+    }),
+    wasmSetRow: vi.fn().mockImplementation(async (rowIndex: number, data: Record<string, any>) => {
+      const row = rows[rowIndex];
+      if (!row) return;
+      for (const [key, val] of Object.entries(data)) {
+        if (key === "content") (row as any).content = Buffer.isBuffer(val) ? val : Buffer.from(val);
+        else if (key === "content_text") (row as any).content_text = val;
+        else (row as any)[key] = val;
+      }
+    }),
+    wasmAppend: vi.fn().mockImplementation(async (batch: Record<string, unknown[]>) => {
+      const paths = batch["path"] as string[];
+      for (let i = 0; i < paths.length; i++) {
+        const content = (batch["content"] as Buffer[])[i] ?? Buffer.alloc(0);
+        rows.push({
+          id: (batch["id"] as string[])[i] ?? "",
+          path: paths[i],
+          filename: (batch["filename"] as string[])[i] ?? paths[i].split("/").pop()!,
+          content,
+          content_text: (batch["content_text"] as string[])[i] ?? "",
+          mime_type: (batch["mime_type"] as string[])[i] ?? "text/plain",
+          size_bytes: content.length,
+          project: (batch["project"] as string[])[i] ?? "",
+          description: (batch["description"] as string[])[i] ?? "",
+          creation_date: (batch["creation_date"] as string[])[i] ?? "",
+          last_update_date: (batch["last_update_date"] as string[])[i] ?? "",
+        });
+      }
+    }),
+    wasmCommit: vi.fn().mockResolvedValue(undefined),
+
     _rows: rows,
   };
   return client;
