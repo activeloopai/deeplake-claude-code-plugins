@@ -131,13 +131,14 @@ export class DeeplakeApi {
     return (data.tables ?? []).map(t => t.table_name);
   }
 
-  /** Create the table if it doesn't already exist. Migrate columns on existing tables. */
-  async ensureTable(): Promise<void> {
+  /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
+  async ensureTable(name?: string): Promise<void> {
+    const tbl = name ?? this.tableName;
     const tables = await this.listTables();
-    if (!tables.includes(this.tableName)) {
-      log(`table "${this.tableName}" not found, creating`);
+    if (!tables.includes(tbl)) {
+      log(`table "${tbl}" not found, creating`);
       await this.query(
-        `CREATE TABLE IF NOT EXISTS "${this.tableName}" (` +
+        `CREATE TABLE IF NOT EXISTS "${tbl}" (` +
           `id TEXT NOT NULL DEFAULT '', ` +
           `path TEXT NOT NULL DEFAULT '', ` +
           `filename TEXT NOT NULL DEFAULT '', ` +
@@ -151,17 +152,40 @@ export class DeeplakeApi {
           `last_update_date TEXT NOT NULL DEFAULT ''` +
         `) USING deeplake`,
       );
-      log(`table "${this.tableName}" created`);
+      log(`table "${tbl}" created`);
     } else {
       // Migrate: add new columns if missing on existing tables
       for (const col of ["project", "description", "creation_date", "last_update_date"]) {
         try {
-          await this.query(`ALTER TABLE "${this.tableName}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
-          log(`added column "${col}" to "${this.tableName}"`);
+          await this.query(`ALTER TABLE "${tbl}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
+          log(`added column "${col}" to "${tbl}"`);
         } catch {
           // Column already exists — ignore
         }
       }
+    }
+  }
+
+  /** Create the sessions table (uses JSONB for content_text since every row is a JSON event). */
+  async ensureSessionsTable(name: string): Promise<void> {
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      log(`table "${name}" not found, creating`);
+      await this.query(
+        `CREATE TABLE IF NOT EXISTS "${name}" (` +
+          `id TEXT NOT NULL DEFAULT '', ` +
+          `path TEXT NOT NULL DEFAULT '', ` +
+          `filename TEXT NOT NULL DEFAULT '', ` +
+          `content_text JSONB, ` +
+          `mime_type TEXT NOT NULL DEFAULT 'application/json', ` +
+          `size_bytes BIGINT NOT NULL DEFAULT 0, ` +
+          `project TEXT NOT NULL DEFAULT '', ` +
+          `description TEXT NOT NULL DEFAULT '', ` +
+          `creation_date TEXT NOT NULL DEFAULT '', ` +
+          `last_update_date TEXT NOT NULL DEFAULT ''` +
+        `) USING deeplake`,
+      );
+      log(`table "${name}" created`);
     }
   }
 }

@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+/**
+ * Capture hook — writes each session event as a separate row in the sessions table.
+ * One INSERT per event, no concat, no race conditions.
+ *
+ * Used by: UserPromptSubmit, PostToolUse (async), Stop, SubagentStop
+ */
+
 import { homedir } from "node:os";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { DeeplakeFs } from "../shell/deeplake-fs.js";
+import { sqlStr } from "../utils/sql.js";
 import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("capture", msg);
 
@@ -33,29 +38,14 @@ interface HookInput {
 
 const CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
 
-/** Build the session JSONL path matching the CLI convention:
+/** Build the session path matching the CLI convention:
  *  /sessions/<username>/<username>_<org>_<workspace>_<slug>.jsonl */
 function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
   const userName = config.userName;
   const orgName = config.orgName;
   const workspace = config.workspaceId ?? "default";
 
-  // Try to extract slug from local Claude JSONL
-  let slug = sessionId;
-  try {
-    const projectsDir = join(homedir(), ".claude", "projects");
-    const dirs = readdirSync(projectsDir);
-    for (const dir of dirs) {
-      try {
-        const jsonlPath = join(projectsDir, dir, `${sessionId}.jsonl`);
-        const content = readFileSync(jsonlPath, "utf-8");
-        const match = content.match(/"slug":"([^"]*)"/);
-        if (match) { slug = match[1]; break; }
-      } catch { /* skip */ }
-    }
-  } catch { /* skip */ }
-
-  return `/sessions/${userName}/${userName}_${orgName}_${workspace}_${slug}.jsonl`;
+  return `/sessions/${userName}/${userName}_${orgName}_${workspace}_${sessionId}.jsonl`;
 }
 
 async function main(): Promise<void> {
@@ -64,11 +54,11 @@ async function main(): Promise<void> {
   const config = loadConfig();
   if (!config) { log("no config"); return; }
 
-  const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
-  const fs = await DeeplakeFs.create(api, table, "/");
+  const sessionsTable = config.sessionsTableName;
+  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
 
-  // Common metadata for all entries
+  // Build the event entry
+  const ts = new Date().toISOString();
   const meta = {
     session_id: input.session_id,
     transcript_path: input.transcript_path,
@@ -77,7 +67,7 @@ async function main(): Promise<void> {
     hook_event_name: input.hook_event_name,
     agent_id: input.agent_id,
     agent_type: input.agent_type,
-    timestamp: new Date().toISOString(),
+    timestamp: ts,
   };
 
   let entry: Record<string, unknown>;
@@ -108,7 +98,6 @@ async function main(): Promise<void> {
       ...meta,
       type: "assistant_message",
       content: input.last_assistant_message,
-      // SubagentStop fields
       ...(input.agent_transcript_path ? { agent_transcript_path: input.agent_transcript_path } : {}),
     };
   } else {
@@ -117,30 +106,23 @@ async function main(): Promise<void> {
   }
 
   const sessionPath = buildSessionPath(config, input.session_id);
+  const line = JSON.stringify(entry);
   log(`writing to ${sessionPath}`);
 
-  // Ensure sessions directory exists
-  const dir = sessionPath.substring(0, sessionPath.lastIndexOf("/"));
-  try { await fs.mkdir("/sessions"); } catch { /* exists */ }
-  try { await fs.mkdir(dir); } catch { /* exists */ }
+  // Simple INSERT — one row per event, no concat, no race conditions.
+  const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
+  const filename = sessionPath.split("/").pop() ?? "";
 
-  // First write: set project metadata on the session JSONL row
-  if (!(await fs.exists(sessionPath).catch(() => false))) {
-    const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-    const userName = sessionPath.split("/")[2] || "user";
-    const shortId = input.session_id.slice(0, 8);
-    const shortDate = new Date().toISOString().slice(0, 10);
-    await fs.writeFileWithMeta(sessionPath, JSON.stringify(entry) + "\n", {
-      project: projectName,
-      description: `${userName} - ${shortId} - ${shortDate}`,
-      creationDate: new Date().toISOString(),
-      lastUpdateDate: new Date().toISOString(),
-    });
-    await fs.flush();
-  } else {
-    await fs.appendFile(sessionPath, JSON.stringify(entry) + "\n");
-    await fs.flush();
-  }
+  // For JSONB: only escape single quotes for the SQL literal, keep JSON structure intact.
+  // sqlStr() would also escape backslashes and strip control chars, corrupting the JSON.
+  const jsonForSql = line.replace(/'/g, "''");
+
+  await api.query(
+    `INSERT INTO "${sessionsTable}" (id, path, filename, content_text, size_bytes, project, description, creation_date, last_update_date) ` +
+    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ` +
+    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', '${ts}', '${ts}')`
+  );
+
   log("capture ok → cloud");
 }
 

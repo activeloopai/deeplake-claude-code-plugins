@@ -5,8 +5,8 @@ const hooks = [
   { entry: "dist/src/hooks/session-start.js", out: "session-start" },
   { entry: "dist/src/hooks/capture.js", out: "capture" },
   { entry: "dist/src/hooks/pre-tool-use.js", out: "pre-tool-use" },
-  { entry: "dist/src/hooks/post-tool-use.js", out: "post-tool-use" },
   { entry: "dist/src/hooks/session-end.js", out: "session-end" },
+  { entry: "dist/src/hooks/wiki-worker.js", out: "wiki-worker" },
 ];
 
 const shell = [
