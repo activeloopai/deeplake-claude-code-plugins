@@ -212,8 +212,8 @@ function buildWikiProjectField(cwd: string): string {
 
 describe("session summary — no global paths", () => {
   const globalPaths = [
-    "/home/emanuele/39_claude_code_plugin/deeplake-claude-code-plugins",
-    "/Users/davit/Git/deeplake-claude-code-plugins",
+    "/home/testuser/projects/deeplake-claude-code-plugins",
+    "/Users/testuser/Git/deeplake-claude-code-plugins",
     "/home/ci/workspace/my-project",
     "/var/data/repos/my-project",
     "/tmp/workspace/my-project",
@@ -264,8 +264,8 @@ describe("session summary — Source field structure", () => {
 
 describe("session summary — wiki prompt uses project name not global path", () => {
   it("buildWikiProjectField returns last path segment", () => {
-    expect(buildWikiProjectField("/home/emanuele/39_claude_code_plugin/deeplake-claude-code-plugins")).toBe("deeplake-claude-code-plugins");
-    expect(buildWikiProjectField("/Users/davit/Git/my-project")).toBe("my-project");
+    expect(buildWikiProjectField("/home/testuser/projects/deeplake-claude-code-plugins")).toBe("deeplake-claude-code-plugins");
+    expect(buildWikiProjectField("/Users/testuser/Git/my-project")).toBe("my-project");
     expect(buildWikiProjectField("")).toBe("unknown");
     expect(buildWikiProjectField("/single")).toBe("single");
   });
