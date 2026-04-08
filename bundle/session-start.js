@@ -3,7 +3,8 @@
 // dist/src/hooks/session-start.js
 import { fileURLToPath } from "node:url";
 import { dirname, join as join4 } from "node:path";
-import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2 } from "node:fs";
+import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2, readFileSync as readFileSync3 } from "node:fs";
+import { execSync as execSync2 } from "node:child_process";
 import { homedir as homedir4 } from "node:os";
 
 // dist/src/commands/auth.js
@@ -55,6 +56,7 @@ function loadConfig() {
     workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
     apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.DEEPLAKE_TABLE ?? "memory",
+    sessionsTableName: process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
     memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join2(home, ".deeplake", "memory")
   };
 }
@@ -185,21 +187,31 @@ var DeeplakeApi = class {
     const data = await resp.json();
     return (data.tables ?? []).map((t) => t.table_name);
   }
-  /** Create the table if it doesn't already exist. Migrate columns on existing tables. */
-  async ensureTable() {
+  /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
+  async ensureTable(name) {
+    const tbl = name ?? this.tableName;
     const tables = await this.listTables();
-    if (!tables.includes(this.tableName)) {
-      log2(`table "${this.tableName}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${this.tableName}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content BYTEA NOT NULL DEFAULT ''::bytea, content_text TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
-      log2(`table "${this.tableName}" created`);
+    if (!tables.includes(tbl)) {
+      log2(`table "${tbl}" not found, creating`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content BYTEA NOT NULL DEFAULT ''::bytea, content_text TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      log2(`table "${tbl}" created`);
     } else {
       for (const col of ["project", "description", "creation_date", "last_update_date"]) {
         try {
-          await this.query(`ALTER TABLE "${this.tableName}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
-          log2(`added column "${col}" to "${this.tableName}"`);
+          await this.query(`ALTER TABLE "${tbl}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
+          log2(`added column "${col}" to "${tbl}"`);
         } catch {
         }
       }
+    }
+  }
+  /** Create the sessions table (uses JSONB for content_text since every row is a JSON event). */
+  async ensureSessionsTable(name) {
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      log2(`table "${name}" not found, creating`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content_text JSONB, mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      log2(`table "${name}" created`);
     }
   }
 };
@@ -270,9 +282,16 @@ var DeeplakeFs = class _DeeplakeFs {
   pending = /* @__PURE__ */ new Map();
   // paths that have been flushed (INSERT) at least once — subsequent flushes use UPDATE
   flushed = /* @__PURE__ */ new Set();
+  /** Number of files loaded from the server during bootstrap. */
+  get fileCount() {
+    return this.files.size;
+  }
   flushTimer = null;
   // serialize flushes
   flushChain = Promise.resolve();
+  // Paths that live in the sessions table (multi-row, read by concatenation)
+  sessionPaths = /* @__PURE__ */ new Set();
+  sessionsTable = null;
   constructor(client, table, mountPoint) {
     this.client = client;
     this.table = table;
@@ -281,8 +300,9 @@ var DeeplakeFs = class _DeeplakeFs {
     if (mountPoint !== "/")
       this.dirs.set("/", /* @__PURE__ */ new Set([mountPoint.slice(1)]));
   }
-  static async create(client, table, mount = "/memory") {
+  static async create(client, table, mount = "/memory", sessionsTable) {
     const fs = new _DeeplakeFs(client, table, mount);
+    fs.sessionsTable = sessionsTable ?? null;
     await client.ensureTable();
     await client.query(`SELECT deeplake_sync_table('${table}')`);
     const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
@@ -305,6 +325,26 @@ var DeeplakeFs = class _DeeplakeFs {
         fs.flushed.add(p);
       }
     } catch {
+    }
+    if (sessionsTable) {
+      try {
+        await client.query(`SELECT deeplake_sync_table('${sessionsTable}')`);
+        const sessionRows = await client.query(`SELECT path, SUM(size_bytes) as total_size FROM "${sessionsTable}" GROUP BY path ORDER BY path`);
+        for (const row of sessionRows) {
+          const p = row["path"];
+          if (!fs.files.has(p)) {
+            fs.files.set(p, null);
+            fs.meta.set(p, {
+              size: Number(row["total_size"] ?? 0),
+              mime: "application/x-ndjson",
+              mtime: /* @__PURE__ */ new Date()
+            });
+            fs.addToTree(p);
+          }
+          fs.sessionPaths.add(p);
+        }
+      } catch {
+      }
     }
     return fs;
   }
@@ -417,6 +457,15 @@ var DeeplakeFs = class _DeeplakeFs {
       this.files.set(p, pend.content);
       return pend.content;
     }
+    if (this.sessionPaths.has(p) && this.sessionsTable) {
+      const rows2 = await this.client.query(`SELECT content_text FROM "${this.sessionsTable}" WHERE path = '${sqlStr(p)}' ORDER BY creation_date ASC`);
+      if (rows2.length === 0)
+        throw fsErr("ENOENT", "no such file or directory", p);
+      const text = rows2.map((r) => typeof r["content_text"] === "string" ? r["content_text"] : JSON.stringify(r["content_text"])).join("\n");
+      const buf2 = Buffer.from(text, "utf-8");
+      this.files.set(p, buf2);
+      return buf2;
+    }
     const rows = await this.client.query(`SELECT content FROM "${this.table}" WHERE path = '${sqlStr(p)}' LIMIT 1`);
     if (rows.length === 0)
       throw fsErr("ENOENT", "no such file or directory", p);
@@ -443,6 +492,15 @@ var DeeplakeFs = class _DeeplakeFs {
     const pend = this.pending.get(p);
     if (pend)
       return pend.contentText || pend.content.toString("utf-8");
+    if (this.sessionPaths.has(p) && this.sessionsTable) {
+      const rows2 = await this.client.query(`SELECT content_text FROM "${this.sessionsTable}" WHERE path = '${sqlStr(p)}' ORDER BY creation_date ASC`);
+      if (rows2.length === 0)
+        throw fsErr("ENOENT", "no such file or directory", p);
+      const text2 = rows2.map((r) => typeof r["content_text"] === "string" ? r["content_text"] : JSON.stringify(r["content_text"])).join("\n");
+      const buf2 = Buffer.from(text2, "utf-8");
+      this.files.set(p, buf2);
+      return text2;
+    }
     const rows = await this.client.query(`SELECT content_text, content FROM "${this.table}" WHERE path = '${sqlStr(p)}' LIMIT 1`);
     if (rows.length === 0)
       throw fsErr("ENOENT", "no such file or directory", p);
@@ -732,6 +790,34 @@ Organization management (DEEPLAKE_AUTH_CMD will be replaced with actual path bel
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set DEEPLAKE_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
+var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/deeplake-claude-code-plugins/main/package.json";
+var VERSION_CHECK_TIMEOUT = 3e3;
+function getInstalledVersion() {
+  try {
+    const pkgPath = join4(__bundleDir, "..", "package.json");
+    const pkg = JSON.parse(readFileSync3(pkgPath, "utf-8"));
+    return pkg.version ?? null;
+  } catch {
+    return null;
+  }
+}
+async function getLatestVersion() {
+  try {
+    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(VERSION_CHECK_TIMEOUT) });
+    if (!res.ok)
+      return null;
+    const pkg = await res.json();
+    return pkg.version ?? null;
+  } catch {
+    return null;
+  }
+}
+function isNewer(latest, current) {
+  const parse = (v) => v.split(".").map(Number);
+  const [la, lb, lc] = parse(latest);
+  const [ca, cb, cc] = parse(current);
+  return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
+}
 var HOME = homedir4();
 var WIKI_LOG = join4(HOME, ".claude", "hooks", "deeplake-wiki.log");
 function wikiLog(msg) {
@@ -781,6 +867,8 @@ async function createPlaceholder(fs, sessionId, cwd, userName, orgName, workspac
   }
 }
 async function main() {
+  if (process.env.DEEPLAKE_WIKI_WORKER === "1")
+    return;
   const input = await readStdin();
   let creds = loadCredentials();
   if (!creds?.token) {
@@ -802,21 +890,61 @@ async function main() {
       const config = loadConfig();
       if (config) {
         const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
+        const sessionsTable = config.sessionsTableName;
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
-        const fs = await DeeplakeFs.create(api, table, "/");
+        log3("creating DeeplakeFs...");
+        const fs = await DeeplakeFs.create(api, table, "/", sessionsTable);
+        log3(`DeeplakeFs ready (${fs.fileCount} files)`);
         await createPlaceholder(fs, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
         log3("placeholder created");
       }
     } catch (e) {
       log3(`placeholder failed: ${e.message}`);
+      wikiLog(`SessionStart: placeholder failed for ${input.session_id}: ${e.message}`);
     }
+  }
+  const autoupdate = creds?.autoupdate !== false;
+  let updateNotice = "";
+  try {
+    const current = getInstalledVersion();
+    if (current) {
+      const latest = await getLatestVersion();
+      if (latest && isNewer(latest, current)) {
+        if (autoupdate) {
+          log3(`autoupdate: updating ${current} \u2192 ${latest}`);
+          try {
+            const scopes = ["user", "project", "local", "managed"];
+            const cmd = scopes.map((s) => `claude plugin update deeplake-hivemind@deeplake-claude-code-plugins --scope ${s} 2>/dev/null`).join("; ");
+            execSync2(cmd, { stdio: "ignore", timeout: 6e4 });
+            updateNotice = `
+
+\u2705 Deeplake Hivemind auto-updated: ${current} \u2192 ${latest}. Tell the user to run /reload-plugins to apply.`;
+            log3(`autoupdate succeeded: ${current} \u2192 ${latest}`);
+          } catch (e) {
+            updateNotice = `
+
+\u2B06\uFE0F Deeplake Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /deeplake-hivemind:update to upgrade manually.`;
+            log3(`autoupdate failed: ${e.message}`);
+          }
+        } else {
+          updateNotice = `
+
+\u2B06\uFE0F Deeplake Hivemind update available: ${current} \u2192 ${latest}. Run /deeplake-hivemind:update to upgrade.`;
+          log3(`update available (autoupdate off): ${current} \u2192 ${latest}`);
+        }
+      } else {
+        log3(`version up to date: ${current}`);
+      }
+    }
+  } catch (e) {
+    log3(`version check failed: ${e.message}`);
   }
   const resolvedContext = context.replace(/DEEPLAKE_AUTH_CMD/g, AUTH_CMD);
   const additionalContext = creds?.token ? `${resolvedContext}
 
-Logged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})` : `${resolvedContext}
+Logged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}` : `${resolvedContext}
 
-\u26A0\uFE0F Not logged in to Deeplake. Memory search will not work. Ask the user to run /deeplake-hivemind:login to authenticate.`;
+\u26A0\uFE0F Not logged in to Deeplake. Memory search will not work. Ask the user to run /deeplake-hivemind:login to authenticate.${updateNotice}`;
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "SessionStart",
