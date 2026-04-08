@@ -193,7 +193,7 @@ All capture hooks use a single unified `capture.js` bundle — one INSERT per ev
 |---------------------|------------------|-------------------------------------------------|-------|
 | `SessionStart`      | `session-start`  | Auth login, inject context, DATA NOTICE         |  No   |
 | `UserPromptSubmit`  | `capture`        | Capture user message                            |  No   |
-| `PreToolUse`        | `pre-tool-use`   | Intercept and rewrite memory-targeting commands  |  No   |
+| `PreToolUse`        | `pre-tool-use`   | Intercept and rewrite memory-targeting commands |  No   |
 | `PostToolUse`       | `capture`        | Capture tool call + response                    |  Yes  |
 | `Stop`              | `capture`        | Capture assistant response                      |  No   |
 | `SubagentStop`      | `capture`        | Capture subagent activity                       |  Yes  |
