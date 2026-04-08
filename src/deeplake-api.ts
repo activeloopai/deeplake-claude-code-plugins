@@ -1,10 +1,23 @@
+import {
+  ManagedClient,
+  initializeWasm,
+  deeplakeSetEndpointAndOpen,
+  deeplakeAppend,
+  deeplakeSetRow,
+  deeplakeCommit,
+  deeplakeRelease,
+  deeplakeNumRows,
+  deeplakeGetColumnData,
+} from "deeplake";
 import { randomUUID } from "node:crypto";
 import { log as _log } from "./utils/debug.js";
 import { sqlStr } from "./utils/sql.js";
 
 const log = (msg: string) => _log("sdk", msg);
 
-// ── SDK-backed client (ManagedClient for all reads/writes) ───────────────────
+let wasmInitialized = false;
+
+// ── SDK-backed client (ManagedClient for reads, WASM for writes) ─────────────
 
 export interface WriteRow {
   path: string;
@@ -20,6 +33,8 @@ export interface WriteRow {
 }
 
 export class DeeplakeApi {
+  private _client: ManagedClient;
+  private _wasmDs: any = null;
   private _pendingRows: WriteRow[] = [];
 
   constructor(
@@ -28,31 +43,83 @@ export class DeeplakeApi {
     private orgId: string,
     private workspaceId: string,
     readonly tableName: string,
-  ) {}
+  ) {
+    this._client = new ManagedClient({ token, workspaceId, apiUrl, orgId });
+  }
+
+  // ── WASM lifecycle ────────────────────────────────────────────────────────
+
+  /** Initialize WASM engine (once per process). */
+  async initWasm(): Promise<void> {
+    if (wasmInitialized) return;
+    await initializeWasm();
+    wasmInitialized = true;
+    log("WASM initialized");
+  }
+
+  /** Open the WASM dataset handle for direct S3 writes. */
+  async openDataset(timeoutMs = 30000): Promise<void> {
+    if (this._wasmDs) return;
+    const alPath = `al://${this.workspaceId}/${this.tableName}`;
+    log(`opening dataset: ${alPath}`);
+    const openPromise = deeplakeSetEndpointAndOpen(this.apiUrl, alPath, "", this.token);
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("dataset open timed out")), timeoutMs),
+    );
+    this._wasmDs = await Promise.race([openPromise, timeout]);
+    log("dataset opened");
+  }
+
+  /** Get the WASM dataset handle. Throws if not opened. */
+  get wasmDs(): any {
+    if (!this._wasmDs) throw new Error("WASM dataset not opened");
+    return this._wasmDs;
+  }
+
+  /** Release the WASM dataset handle. */
+  releaseDataset(): void {
+    if (this._wasmDs) {
+      deeplakeRelease(this._wasmDs);
+      this._wasmDs = null;
+      log("dataset released");
+    }
+  }
+
+  // ── WASM writes ───────────────────────────────────────────────────────────
+
+  /** Append new rows via WASM (does NOT commit). */
+  async wasmAppend(batch: Record<string, unknown[]>): Promise<void> {
+    await deeplakeAppend(this.wasmDs, batch);
+  }
+
+  /** Update a row in-place via WASM (does NOT commit). */
+  async wasmSetRow(rowIndex: number, data: Record<string, any>): Promise<void> {
+    await deeplakeSetRow(this.wasmDs, rowIndex, data);
+  }
+
+  /** Commit all pending WASM changes to S3. */
+  async wasmCommit(message?: string): Promise<void> {
+    await deeplakeCommit(this.wasmDs, message);
+  }
+
+  /** Get number of rows via WASM. */
+  wasmNumRows(): number {
+    return deeplakeNumRows(this.wasmDs);
+  }
+
+  /** Get a column's data for a range of rows via WASM. */
+  async wasmGetColumnData(column: string, start: number, end: number): Promise<any> {
+    return deeplakeGetColumnData(this.wasmDs, column, start, end);
+  }
+
+  // ── SQL reads via ManagedClient ───────────────────────────────────────────
 
   /** Execute SQL and return results as row-objects. */
   async query(sql: string): Promise<Record<string, unknown>[]> {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        "X-Activeloop-Org-Id": this.orgId,
-      },
-      body: JSON.stringify({ query: sql }),
-    });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
-    }
-    const raw = await resp.json() as { columns?: string[]; rows?: unknown[][]; row_count?: number } | null;
-    if (!raw?.rows || !raw?.columns) return [];
-    return raw.rows.map(row =>
-      Object.fromEntries(raw.columns!.map((col, i) => [col, row[i]]))
-    );
+    return this._client.query(sql);
   }
 
-  // ── Writes ──────────────────────────────────────────────────────────────────
+  // ── Writes (legacy SQL path, kept for appendFile / rm / ensureTable) ──────
 
   /** Queue rows for writing. Call commit() to flush. */
   appendRows(rows: WriteRow[]): void {
@@ -115,20 +182,12 @@ export class DeeplakeApi {
 
   /** Create a BM25 search index on a column. */
   async createIndex(column: string): Promise<void> {
-    await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
+    await this._client.createIndex(this.tableName, column);
   }
 
   /** List all tables in the workspace. */
   async listTables(): Promise<string[]> {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "X-Activeloop-Org-Id": this.orgId,
-      },
-    });
-    if (!resp.ok) return [];
-    const data = await resp.json() as { tables?: { table_name: string }[] };
-    return (data.tables ?? []).map(t => t.table_name);
+    return this._client.listTables();
   }
 
   /** Create the table if it doesn't already exist. Migrate columns on existing tables. */
