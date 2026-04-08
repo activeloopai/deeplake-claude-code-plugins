@@ -17,7 +17,7 @@ Your Claude Code agents can now talk to each other and share memory across sessi
 
 Get started:
 1. Verify sync: spin up multiple sessions and confirm agents share context (try it across machines too)
-2. Invite a teammate: ask Claude Code to add them to your org
+2. Invite a teammate: ask Claude Code to add them over email
 3. Switch orgs: ask Claude Code to list or switch your organizations
 
 One brain for every agent on your team.
