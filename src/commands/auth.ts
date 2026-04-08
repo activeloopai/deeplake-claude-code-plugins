@@ -27,6 +27,7 @@ export interface Credentials {
   userName?: string;
   workspaceId?: string;
   apiUrl?: string;
+  autoupdate?: boolean;
   savedAt: string;
 }
 
