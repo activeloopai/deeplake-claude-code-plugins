@@ -40,12 +40,21 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           # Also update plugin.json
           node -e "
-            const f = '.claude-plugin/plugin.json';
-            const d = JSON.parse(require('fs').readFileSync(f, 'utf-8'));
-            d.version = '$VERSION';
-            require('fs').writeFileSync(f, JSON.stringify(d, null, 2) + '\n');
+            const fs = require('fs');
+            const v = '$VERSION';
+            // Update plugin.json
+            const pf = '.claude-plugin/plugin.json';
+            const pd = JSON.parse(fs.readFileSync(pf, 'utf-8'));
+            pd.version = v;
+            fs.writeFileSync(pf, JSON.stringify(pd, null, 2) + '\n');
+            // Update marketplace.json
+            const mf = '.claude-plugin/marketplace.json';
+            const md = JSON.parse(fs.readFileSync(mf, 'utf-8'));
+            if (md.metadata) md.metadata.version = v;
+            if (md.plugins) md.plugins.forEach(p => p.version = v);
+            fs.writeFileSync(mf, JSON.stringify(md, null, 2) + '\n');
           "
-          git add package.json package-lock.json .claude-plugin/plugin.json
+          git add package.json package-lock.json .claude-plugin/plugin.json .claude-plugin/marketplace.json
           git commit -m "chore: bump version to $VERSION"
           git push
 
