@@ -27,6 +27,8 @@ function parentOf(p: string): string {
 }
 
 import { sqlStr as esc } from "../utils/sql.js";
+import { log as _log } from "../utils/debug.js";
+const log = (msg: string) => _log("fs", msg);
 
 export function isText(buf: Buffer): boolean {
   const end = Math.min(buf.length, TEXT_DETECT_BYTES);
@@ -80,10 +82,13 @@ export class DeeplakeFs implements IFileSystem {
   private meta  = new Map<string, FileMeta>();
   // dir path → Set of immediate child names
   private dirs  = new Map<string, Set<string>>();
-  // batched writes pending SQL flush
+  // batched writes pending flush
   private pending = new Map<string, PendingRow>();
-  // paths that have been flushed (INSERT) at least once — subsequent flushes use UPDATE
+  // paths that have been flushed (INSERT) at least once — subsequent flushes use UPDATE (WASM setRow)
   private flushed = new Set<string>();
+  // path → WASM row index (for setRow updates)
+  private rowIndexMap = new Map<string, number>();
+  private wasmReady = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   // serialize flushes
   private flushChain: Promise<void> = Promise.resolve();
@@ -130,6 +135,7 @@ export class DeeplakeFs implements IFileSystem {
     } catch {
       // Table may not exist yet — start empty
     }
+
     return fs;
   }
 
@@ -152,6 +158,23 @@ export class DeeplakeFs implements IFileSystem {
     this.dirs.get(parent)?.delete(basename(filePath));
   }
 
+  // ── WASM lazy init ────────────────────────────────────────────────────────
+  private async ensureWasm(): Promise<void> {
+    if (this.wasmReady) return;
+    await this.client.initWasm();
+    await this.client.openDataset();
+    // Build rowIndex map from WASM dataset
+    const numRows = this.client.wasmNumRows();
+    if (numRows > 0) {
+      const paths = await this.client.wasmGetColumnData("path", 0, numRows);
+      for (let i = 0; i < paths.length; i++) {
+        this.rowIndexMap.set(String(paths[i]), i);
+      }
+    }
+    this.wasmReady = true;
+    log(`WASM ready, ${this.rowIndexMap.size} rows indexed`);
+  }
+
   // ── flush / write batching ────────────────────────────────────────────────
   private scheduleFlush(): void {
     if (this.flushTimer !== null) return;
@@ -169,43 +192,68 @@ export class DeeplakeFs implements IFileSystem {
     if (this.pending.size === 0) return;
     if (this.flushTimer !== null) { clearTimeout(this.flushTimer); this.flushTimer = null; }
 
+    await this.ensureWasm();
+
     const rows = [...this.pending.values()];
     this.pending.clear();
 
-    // Upsert: UPDATE existing rows, INSERT new ones. Preserves stable id.
+    const updates: PendingRow[] = [];
+    const inserts: PendingRow[] = [];
     for (const r of rows) {
-      const hex   = r.content.toString("hex");
-      const text  = esc(r.contentText);
-      const p     = esc(r.path);
-      const fname = esc(r.filename);
-      const mime  = esc(r.mimeType);
-      const ts = new Date().toISOString();
-      const cd = r.creationDate ?? ts;
-      const lud = r.lastUpdateDate ?? ts;
-      if (this.flushed.has(r.path)) {
-        let setClauses = `filename = '${fname}', content = E'\\\\x${hex}', content_text = E'${text}', ` +
-          `mime_type = '${mime}', size_bytes = ${r.sizeBytes}, last_update_date = '${esc(lud)}'`;
-        if (r.project !== undefined) setClauses += `, project = '${esc(r.project)}'`;
-        if (r.description !== undefined) setClauses += `, description = '${esc(r.description)}'`;
-        await this.client.query(
-          `UPDATE "${this.table}" SET ${setClauses} WHERE path = '${p}'`
-        );
-      } else {
-        const id = randomUUID();
-        const cols = "id, path, filename, content, content_text, mime_type, size_bytes, creation_date, last_update_date" +
-          (r.project !== undefined ? ", project" : "") +
-          (r.description !== undefined ? ", description" : "");
-        const vals = `'${id}', '${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes}, '${esc(cd)}', '${esc(lud)}'` +
-          (r.project !== undefined ? `, '${esc(r.project)}'` : "") +
-          (r.description !== undefined ? `, '${esc(r.description)}'` : "");
-        await this.client.query(
-          `INSERT INTO "${this.table}" (${cols}) VALUES (${vals})`
-        );
-        this.flushed.add(r.path);
+      if (this.flushed.has(r.path)) updates.push(r);
+      else inserts.push(r);
+    }
+
+    const ts = new Date().toISOString();
+
+    // WASM: update existing rows in-place via setRow
+    for (const r of updates) {
+      const rowIdx = this.rowIndexMap.get(r.path);
+      if (rowIdx === undefined) continue;
+      const data: Record<string, any> = {
+        filename: r.filename,
+        content: r.content,
+        content_text: r.contentText,
+        mime_type: r.mimeType,
+        size_bytes: r.sizeBytes,
+        last_update_date: r.lastUpdateDate ?? ts,
+      };
+      if (r.project !== undefined) data.project = r.project;
+      if (r.description !== undefined) data.description = r.description;
+      await this.client.wasmSetRow(rowIdx, data);
+    }
+
+    // WASM: append new rows in a single batch
+    if (inserts.length > 0) {
+      const nextIdx = this.client.wasmNumRows();
+      const batch: Record<string, unknown[]> = {
+        id: inserts.map(() => randomUUID()),
+        path: inserts.map(r => r.path),
+        filename: inserts.map(r => r.filename),
+        content: inserts.map(r => r.content),
+        content_text: inserts.map(r => r.contentText),
+        mime_type: inserts.map(r => r.mimeType),
+        size_bytes: inserts.map(r => r.sizeBytes),
+        creation_date: inserts.map(r => r.creationDate ?? ts),
+        last_update_date: inserts.map(r => r.lastUpdateDate ?? ts),
+        project: inserts.map(r => r.project ?? ""),
+        description: inserts.map(r => r.description ?? ""),
+      };
+      await this.client.wasmAppend(batch);
+      // Track new row indexes
+      for (let i = 0; i < inserts.length; i++) {
+        this.rowIndexMap.set(inserts[i].path, nextIdx + i);
+        this.flushed.add(inserts[i].path);
       }
     }
-    // Sync so subsequent reads see the new data.
-    await this.client.query(`SELECT deeplake_sync_table('${this.table}')`);
+
+    // Single commit for all changes
+    if (updates.length > 0 || inserts.length > 0) {
+      await this.client.wasmCommit(`flush ${updates.length} updates, ${inserts.length} inserts`);
+      // Release dataset handle so the process can exit
+      this.client.releaseDataset();
+      this.wasmReady = false;
+    }
   }
 
   // ── Virtual index.md generation ────────────────────────────────────────────
@@ -363,7 +411,7 @@ export class DeeplakeFs implements IFileSystem {
     const p = normPath(path);
     const add = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
 
-    // Fast path: SQL-level concat — no read-back, O(1) per append
+    // SQL concat — O(1) per append, no WASM overhead. Used by capture hooks on every message.
     if (this.files.has(p) || await this.exists(p).catch(() => false)) {
       const addHex = Buffer.from(add, "utf-8").toString("hex");
       const ts = new Date().toISOString();
@@ -375,7 +423,6 @@ export class DeeplakeFs implements IFileSystem {
         `last_update_date = '${ts}' ` +
         `WHERE path = '${esc(p)}'`
       );
-      // Update local metadata
       const m = this.meta.get(p);
       if (m) { m.size += Buffer.byteLength(add, "utf-8"); m.mtime = new Date(ts); }
     } else {
