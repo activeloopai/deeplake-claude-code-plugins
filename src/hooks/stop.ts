@@ -43,6 +43,7 @@ async function main(): Promise<void> {
   await fs.appendFile(sessionPath, JSON.stringify(entry) + "\n");
   await fs.flush();
   log("capture ok → cloud");
+  process.exit(0);
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });

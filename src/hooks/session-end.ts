@@ -187,23 +187,22 @@ LENGTH LIMIT: Keep the total summary under 4000 characters. Be dense and concise
     tmpDir,
   }));
 
+  // Resolve deeplake package path for the upload script (runs from tmp dir)
+  let deeplakePath: string;
+  try {
+    deeplakePath = import.meta.resolve("deeplake");
+  } catch {
+    deeplakePath = "deeplake";
+  }
+
   // Write the upload script (runs after claude -p finishes)
   const uploadScript = join(tmpDir, "upload.mjs");
   writeFileSync(uploadScript, `import { readFileSync, existsSync } from "node:fs";
+import { ManagedClient } from "${deeplakePath}";
 const cfg = JSON.parse(readFileSync("${configFile}", "utf-8"));
+const client = new ManagedClient({ token: cfg.token, workspaceId: cfg.workspaceId, apiUrl: cfg.apiUrl, orgId: cfg.orgId });
 function esc(s) { return s.replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "''").replace(/[\\x01-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]/g, ""); }
-async function query(sql) {
-  const r = await fetch(cfg.apiUrl + "/workspaces/" + cfg.workspaceId + "/tables/query", {
-    method: "POST",
-    headers: { "Authorization": "Bearer " + cfg.token, "Content-Type": "application/json", "X-Activeloop-Org-Id": cfg.orgId },
-    body: JSON.stringify({ query: sql }),
-  });
-  if (!r.ok) throw new Error("API " + r.status + ": " + (await r.text()).slice(0, 200));
-  return r.json().then(j => {
-    if (!j.columns || !j.rows) return [];
-    return j.rows.map(row => Object.fromEntries(j.columns.map((col, i) => [col, row[i]])));
-  }).catch(() => []);
-}
+async function query(sql) { return client.query(sql); }
 async function upload(vpath, localPath) {
   if (!existsSync(localPath)) return;
   const text = readFileSync(localPath, "utf-8");
@@ -232,6 +231,7 @@ try {
   console.log("Updated description for " + cfg.sessionId);
 } catch(e) { console.log("Failed to update description: " + e.message); }
 console.log("Server upload complete for " + cfg.sessionId);
+process.exit(0);
 `);
 
   // Write the wrapper bash script — same nohup pattern as CLI's deeplake-wiki.sh
