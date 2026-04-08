@@ -190,20 +190,6 @@ Using: ${orgName}
     savedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
   saveCredentials(creds);
-  process.stderr.write(`
-\u{1F41D} Welcome to Deeplake Hivemind!
-
-Your Claude Code agents can now talk to each other and share memory across sessions, teammates, and machines.
-
-Get started:
-  1. Verify sync: spin up multiple sessions and confirm agents share context (try it across machines too)
-  2. Invite a teammate: ask Claude Code to add them to your org
-  3. Switch orgs: ask Claude Code to list or switch your organizations
-
-One brain for every agent on your team.
-
-Credentials saved to ${CREDS_PATH}
-`);
   return creds;
 }
 
