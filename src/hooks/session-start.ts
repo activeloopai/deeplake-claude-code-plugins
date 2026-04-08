@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { loadCredentials, saveCredentials, login } from "../commands/auth.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { DeeplakeFs } from "../shell/deeplake-fs.js";
+import { sqlStr } from "../utils/sql.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("session-start", msg);
@@ -88,38 +88,41 @@ function wikiLog(msg: string): void {
   } catch { /* ignore */ }
 }
 
-async function createPlaceholder(fs: DeeplakeFs, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
-  // Ensure directories
-  try { await fs.mkdir("/summaries"); } catch { /* exists */ }
-  try { await fs.mkdir(`/summaries/${userName}`); } catch { /* exists */ }
-  try { await fs.mkdir("/sessions"); } catch { /* exists */ }
-
+/** Create a placeholder summary via direct SQL INSERT (no DeeplakeFs bootstrap needed). */
+async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
-  const summaryExists = await fs.exists(summaryPath);
 
-  if (!summaryExists) {
-    const now = new Date().toISOString();
-    const projectName = cwd.split("/").pop() ?? "unknown";
-    const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
-    await fs.writeFileWithMeta(summaryPath, [
-      `# Session ${sessionId}`,
-      `- **Source**: ${sessionSource}`,
-      `- **Started**: ${now}`,
-      `- **Project**: ${projectName}`,
-      `- **Status**: in-progress`,
-      "",
-    ].join("\n"), {
-      project: projectName,
-      description: "in progress",
-      creationDate: now,
-      lastUpdateDate: now,
-    });
-    await fs.flush();
-
-    wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
-  } else {
+  // Check if summary already exists (resumed session)
+  await api.query(`SELECT deeplake_sync_table('${table}')`);
+  const existing = await api.query(
+    `SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`
+  );
+  if (existing.length > 0) {
     wikiLog(`SessionStart: summary exists for ${sessionId} (resumed)`);
+    return;
   }
+
+  const now = new Date().toISOString();
+  const projectName = cwd.split("/").pop() ?? "unknown";
+  const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
+  const content = [
+    `# Session ${sessionId}`,
+    `- **Source**: ${sessionSource}`,
+    `- **Started**: ${now}`,
+    `- **Project**: ${projectName}`,
+    `- **Status**: in-progress`,
+    "",
+  ].join("\n");
+  const hex = Buffer.from(content, "utf-8").toString("hex");
+  const filename = `${sessionId}.md`;
+
+  await api.query(
+    `INSERT INTO "${table}" (id, path, filename, content, content_text, mime_type, size_bytes, project, description, creation_date, last_update_date) ` +
+    `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'\\\\x${hex}', E'${sqlStr(content)}', 'text/markdown', ` +
+    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', '${now}', '${now}')`
+  );
+
+  wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
 }
 
 interface SessionStartInput {
@@ -150,20 +153,18 @@ async function main(): Promise<void> {
     }
   }
 
-  // Create placeholder summary + index entry via Deeplake API
+  // Create placeholder summary + ensure sessions table via direct SQL (no DeeplakeFs bootstrap)
   if (input.session_id && creds?.token) {
     try {
       const config = loadConfig();
       if (config) {
-        const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
+        const table = config.tableName;
         const sessionsTable = config.sessionsTableName;
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
-        // Ensure sessions table exists (once per session, so capture doesn't have to check every event)
+        // Ensure both tables exist (once per session)
+        await api.ensureTable();
         await api.ensureSessionsTable(sessionsTable);
-        log("creating DeeplakeFs...");
-        const fs = await DeeplakeFs.create(api, table, "/", sessionsTable);
-        log(`DeeplakeFs ready (${fs.fileCount} files)`);
-        await createPlaceholder(fs, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
+        await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
         log("placeholder created");
       }
     } catch (e: any) {
