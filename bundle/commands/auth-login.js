@@ -303,27 +303,8 @@ async function main() {
       console.log(`Removed user ${userId}`);
       break;
     }
-    case "autoupdate": {
-      if (!creds) {
-        console.log("Not logged in.");
-        process.exit(1);
-      }
-      const val = args[1]?.toLowerCase();
-      if (val === "on" || val === "true") {
-        saveCredentials({ ...creds, autoupdate: true });
-        console.log("Autoupdate enabled. Plugin will update automatically on session start.");
-      } else if (val === "off" || val === "false") {
-        saveCredentials({ ...creds, autoupdate: false });
-        console.log("Autoupdate disabled. You'll see a notice when updates are available.");
-      } else {
-        const current = creds.autoupdate !== false ? "on" : "off";
-        console.log(`Autoupdate is currently: ${current}`);
-        console.log("Usage: autoupdate [on|off]");
-      }
-      break;
-    }
     default:
-      console.log("Commands: login, whoami, org list, org switch, workspaces, workspace, invite, members, remove, autoupdate");
+      console.log("Commands: login, whoami, org list, org switch, workspaces, workspace, invite, members, remove");
   }
 }
 main().catch((e) => {
