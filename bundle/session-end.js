@@ -55,6 +55,7 @@ function loadConfig() {
 }
 
 // dist/src/deeplake-api.js
+import { ManagedClient, initializeWasm, deeplakeSetEndpointAndOpen, deeplakeAppend, deeplakeSetRow, deeplakeCommit, deeplakeRelease, deeplakeNumRows, deeplakeGetColumnData } from "deeplake";
 import { randomUUID } from "node:crypto";
 
 // dist/src/utils/debug.js
@@ -77,12 +78,15 @@ function sqlStr(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
+var wasmInitialized = false;
 var DeeplakeApi = class {
   token;
   apiUrl;
   orgId;
   workspaceId;
   tableName;
+  _client;
+  _wasmDs = null;
   _pendingRows = [];
   constructor(token, apiUrl, orgId, workspaceId, tableName) {
     this.token = token;
@@ -90,28 +94,69 @@ var DeeplakeApi = class {
     this.orgId = orgId;
     this.workspaceId = workspaceId;
     this.tableName = tableName;
+    this._client = new ManagedClient({ token, workspaceId, apiUrl, orgId });
   }
+  // ── WASM lifecycle ────────────────────────────────────────────────────────
+  /** Initialize WASM engine (once per process). */
+  async initWasm() {
+    if (wasmInitialized)
+      return;
+    await initializeWasm();
+    wasmInitialized = true;
+    log2("WASM initialized");
+  }
+  /** Open the WASM dataset handle for direct S3 writes. */
+  async openDataset(timeoutMs = 3e4) {
+    if (this._wasmDs)
+      return;
+    const alPath = `al://${this.workspaceId}/${this.tableName}`;
+    log2(`opening dataset: ${alPath}`);
+    const openPromise = deeplakeSetEndpointAndOpen(this.apiUrl, alPath, "", this.token);
+    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("dataset open timed out")), timeoutMs));
+    this._wasmDs = await Promise.race([openPromise, timeout]);
+    log2("dataset opened");
+  }
+  /** Get the WASM dataset handle. Throws if not opened. */
+  get wasmDs() {
+    if (!this._wasmDs)
+      throw new Error("WASM dataset not opened");
+    return this._wasmDs;
+  }
+  /** Release the WASM dataset handle. */
+  releaseDataset() {
+    if (this._wasmDs) {
+      deeplakeRelease(this._wasmDs);
+      this._wasmDs = null;
+      log2("dataset released");
+    }
+  }
+  // ── WASM writes ───────────────────────────────────────────────────────────
+  /** Append new rows via WASM (does NOT commit). */
+  async wasmAppend(batch) {
+    await deeplakeAppend(this.wasmDs, batch);
+  }
+  /** Update a row in-place via WASM (does NOT commit). */
+  async wasmSetRow(rowIndex, data) {
+    await deeplakeSetRow(this.wasmDs, rowIndex, data);
+  }
+  /** Commit all pending WASM changes to S3. */
+  async wasmCommit(message) {
+    await deeplakeCommit(this.wasmDs, message);
+  }
+  /** Get number of rows via WASM. */
+  wasmNumRows() {
+    return deeplakeNumRows(this.wasmDs);
+  }
+  /** Get a column's data for a range of rows via WASM. */
+  async wasmGetColumnData(column, start, end) {
+    return deeplakeGetColumnData(this.wasmDs, column, start, end);
+  }
+  // ── SQL reads via ManagedClient ───────────────────────────────────────────
   /** Execute SQL and return results as row-objects. */
   async query(sql) {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        "X-Activeloop-Org-Id": this.orgId
-      },
-      body: JSON.stringify({ query: sql })
-    });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
-    }
-    const raw = await resp.json();
-    if (!raw?.rows || !raw?.columns)
-      return [];
-    return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i) => [col, row[i]])));
+    return this._client.query(sql);
   }
-  // ── Writes ──────────────────────────────────────────────────────────────────
+  // ── Writes (legacy SQL path, kept for appendFile / rm / ensureTable) ──────
   /** Queue rows for writing. Call commit() to flush. */
   appendRows(rows) {
     this._pendingRows.push(...rows);
@@ -165,20 +210,11 @@ var DeeplakeApi = class {
   // ── Convenience ─────────────────────────────────────────────────────────────
   /** Create a BM25 search index on a column. */
   async createIndex(column) {
-    await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
+    await this._client.createIndex(this.tableName, column);
   }
   /** List all tables in the workspace. */
   async listTables() {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "X-Activeloop-Org-Id": this.orgId
-      }
-    });
-    if (!resp.ok)
-      return [];
-    const data = await resp.json();
-    return (data.tables ?? []).map((t) => t.table_name);
+    return this._client.listTables();
   }
   /** Create the table if it doesn't already exist. Migrate columns on existing tables. */
   async ensureTable() {
@@ -336,22 +372,19 @@ LENGTH LIMIT: Keep the total summary under 4000 characters. Be dense and concise
     project: cwd.split("/").pop() || "unknown",
     tmpDir
   }));
+  let deeplakePath;
+  try {
+    deeplakePath = import.meta.resolve("deeplake");
+  } catch {
+    deeplakePath = "deeplake";
+  }
   const uploadScript = join3(tmpDir, "upload.mjs");
   writeFileSync(uploadScript, `import { readFileSync, existsSync } from "node:fs";
+import { ManagedClient } from "${deeplakePath}";
 const cfg = JSON.parse(readFileSync("${configFile}", "utf-8"));
+const client = new ManagedClient({ token: cfg.token, workspaceId: cfg.workspaceId, apiUrl: cfg.apiUrl, orgId: cfg.orgId });
 function esc(s) { return s.replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "''").replace(/[\\x01-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]/g, ""); }
-async function query(sql) {
-  const r = await fetch(cfg.apiUrl + "/workspaces/" + cfg.workspaceId + "/tables/query", {
-    method: "POST",
-    headers: { "Authorization": "Bearer " + cfg.token, "Content-Type": "application/json", "X-Activeloop-Org-Id": cfg.orgId },
-    body: JSON.stringify({ query: sql }),
-  });
-  if (!r.ok) throw new Error("API " + r.status + ": " + (await r.text()).slice(0, 200));
-  return r.json().then(j => {
-    if (!j.columns || !j.rows) return [];
-    return j.rows.map(row => Object.fromEntries(j.columns.map((col, i) => [col, row[i]])));
-  }).catch(() => []);
-}
+async function query(sql) { return client.query(sql); }
 async function upload(vpath, localPath) {
   if (!existsSync(localPath)) return;
   const text = readFileSync(localPath, "utf-8");
@@ -380,6 +413,7 @@ try {
   console.log("Updated description for " + cfg.sessionId);
 } catch(e) { console.log("Failed to update description: " + e.message); }
 console.log("Server upload complete for " + cfg.sessionId);
+process.exit(0);
 `);
   const wrapperScript = join3(tmpDir, "wiki-worker.sh");
   writeFileSync(wrapperScript, `#!/bin/bash

@@ -66752,6 +66752,7 @@ function loadConfig() {
 }
 
 // dist/src/deeplake-api.js
+import { ManagedClient, initializeWasm, deeplakeSetEndpointAndOpen, deeplakeAppend, deeplakeSetRow, deeplakeCommit, deeplakeRelease, deeplakeNumRows, deeplakeGetColumnData } from "deeplake";
 import { randomUUID } from "node:crypto";
 
 // dist/src/utils/debug.js
@@ -66774,12 +66775,15 @@ function sqlStr(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
+var wasmInitialized = false;
 var DeeplakeApi = class {
   token;
   apiUrl;
   orgId;
   workspaceId;
   tableName;
+  _client;
+  _wasmDs = null;
   _pendingRows = [];
   constructor(token, apiUrl, orgId, workspaceId, tableName) {
     this.token = token;
@@ -66787,28 +66791,69 @@ var DeeplakeApi = class {
     this.orgId = orgId;
     this.workspaceId = workspaceId;
     this.tableName = tableName;
+    this._client = new ManagedClient({ token, workspaceId, apiUrl, orgId });
   }
+  // ── WASM lifecycle ────────────────────────────────────────────────────────
+  /** Initialize WASM engine (once per process). */
+  async initWasm() {
+    if (wasmInitialized)
+      return;
+    await initializeWasm();
+    wasmInitialized = true;
+    log2("WASM initialized");
+  }
+  /** Open the WASM dataset handle for direct S3 writes. */
+  async openDataset(timeoutMs = 3e4) {
+    if (this._wasmDs)
+      return;
+    const alPath = `al://${this.workspaceId}/${this.tableName}`;
+    log2(`opening dataset: ${alPath}`);
+    const openPromise = deeplakeSetEndpointAndOpen(this.apiUrl, alPath, "", this.token);
+    const timeout = new Promise((_16, reject) => setTimeout(() => reject(new Error("dataset open timed out")), timeoutMs));
+    this._wasmDs = await Promise.race([openPromise, timeout]);
+    log2("dataset opened");
+  }
+  /** Get the WASM dataset handle. Throws if not opened. */
+  get wasmDs() {
+    if (!this._wasmDs)
+      throw new Error("WASM dataset not opened");
+    return this._wasmDs;
+  }
+  /** Release the WASM dataset handle. */
+  releaseDataset() {
+    if (this._wasmDs) {
+      deeplakeRelease(this._wasmDs);
+      this._wasmDs = null;
+      log2("dataset released");
+    }
+  }
+  // ── WASM writes ───────────────────────────────────────────────────────────
+  /** Append new rows via WASM (does NOT commit). */
+  async wasmAppend(batch) {
+    await deeplakeAppend(this.wasmDs, batch);
+  }
+  /** Update a row in-place via WASM (does NOT commit). */
+  async wasmSetRow(rowIndex, data) {
+    await deeplakeSetRow(this.wasmDs, rowIndex, data);
+  }
+  /** Commit all pending WASM changes to S3. */
+  async wasmCommit(message) {
+    await deeplakeCommit(this.wasmDs, message);
+  }
+  /** Get number of rows via WASM. */
+  wasmNumRows() {
+    return deeplakeNumRows(this.wasmDs);
+  }
+  /** Get a column's data for a range of rows via WASM. */
+  async wasmGetColumnData(column, start, end) {
+    return deeplakeGetColumnData(this.wasmDs, column, start, end);
+  }
+  // ── SQL reads via ManagedClient ───────────────────────────────────────────
   /** Execute SQL and return results as row-objects. */
   async query(sql) {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        "X-Activeloop-Org-Id": this.orgId
-      },
-      body: JSON.stringify({ query: sql })
-    });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
-    }
-    const raw = await resp.json();
-    if (!raw?.rows || !raw?.columns)
-      return [];
-    return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i11) => [col, row[i11]])));
+    return this._client.query(sql);
   }
-  // ── Writes ──────────────────────────────────────────────────────────────────
+  // ── Writes (legacy SQL path, kept for appendFile / rm / ensureTable) ──────
   /** Queue rows for writing. Call commit() to flush. */
   appendRows(rows) {
     this._pendingRows.push(...rows);
@@ -66862,20 +66907,11 @@ var DeeplakeApi = class {
   // ── Convenience ─────────────────────────────────────────────────────────────
   /** Create a BM25 search index on a column. */
   async createIndex(column) {
-    await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
+    await this._client.createIndex(this.tableName, column);
   }
   /** List all tables in the workspace. */
   async listTables() {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "X-Activeloop-Org-Id": this.orgId
-      }
-    });
-    if (!resp.ok)
-      return [];
-    const data = await resp.json();
-    return (data.tables ?? []).map((t6) => t6.table_name);
+    return this._client.listTables();
   }
   /** Create the table if it doesn't already exist. Migrate columns on existing tables. */
   async ensureTable() {
@@ -66910,6 +66946,7 @@ function parentOf(p22) {
   const i11 = p22.lastIndexOf("/");
   return i11 <= 0 ? "/" : p22.slice(0, i11);
 }
+var log3 = (msg) => log("fs", msg);
 function isText(buf) {
   const end = Math.min(buf.length, TEXT_DETECT_BYTES);
   for (let i11 = 0; i11 < end; i11++)
@@ -66958,10 +66995,13 @@ var DeeplakeFs = class _DeeplakeFs {
   meta = /* @__PURE__ */ new Map();
   // dir path → Set of immediate child names
   dirs = /* @__PURE__ */ new Map();
-  // batched writes pending SQL flush
+  // batched writes pending flush
   pending = /* @__PURE__ */ new Map();
-  // paths that have been flushed (INSERT) at least once — subsequent flushes use UPDATE
+  // paths that have been flushed (INSERT) at least once — subsequent flushes use UPDATE (WASM setRow)
   flushed = /* @__PURE__ */ new Set();
+  // path → WASM row index (for setRow updates)
+  rowIndexMap = /* @__PURE__ */ new Map();
+  wasmReady = false;
   flushTimer = null;
   // serialize flushes
   flushChain = Promise.resolve();
@@ -67018,6 +67058,22 @@ var DeeplakeFs = class _DeeplakeFs {
     const parent = parentOf(filePath);
     this.dirs.get(parent)?.delete(basename4(filePath));
   }
+  // ── WASM lazy init ────────────────────────────────────────────────────────
+  async ensureWasm() {
+    if (this.wasmReady)
+      return;
+    await this.client.initWasm();
+    await this.client.openDataset();
+    const numRows = this.client.wasmNumRows();
+    if (numRows > 0) {
+      const paths = await this.client.wasmGetColumnData("path", 0, numRows);
+      for (let i11 = 0; i11 < paths.length; i11++) {
+        this.rowIndexMap.set(String(paths[i11]), i11);
+      }
+    }
+    this.wasmReady = true;
+    log3(`WASM ready, ${this.rowIndexMap.size} rows indexed`);
+  }
   // ── flush / write batching ────────────────────────────────────────────────
   scheduleFlush() {
     if (this.flushTimer !== null)
@@ -67038,33 +67094,62 @@ var DeeplakeFs = class _DeeplakeFs {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
+    await this.ensureWasm();
     const rows = [...this.pending.values()];
     this.pending.clear();
+    const updates = [];
+    const inserts = [];
     for (const r10 of rows) {
-      const hex = r10.content.toString("hex");
-      const text = sqlStr(r10.contentText);
-      const p22 = sqlStr(r10.path);
-      const fname = sqlStr(r10.filename);
-      const mime = sqlStr(r10.mimeType);
-      const ts3 = (/* @__PURE__ */ new Date()).toISOString();
-      const cd = r10.creationDate ?? ts3;
-      const lud = r10.lastUpdateDate ?? ts3;
-      if (this.flushed.has(r10.path)) {
-        let setClauses = `filename = '${fname}', content = E'\\\\x${hex}', content_text = E'${text}', mime_type = '${mime}', size_bytes = ${r10.sizeBytes}, last_update_date = '${sqlStr(lud)}'`;
-        if (r10.project !== void 0)
-          setClauses += `, project = '${sqlStr(r10.project)}'`;
-        if (r10.description !== void 0)
-          setClauses += `, description = '${sqlStr(r10.description)}'`;
-        await this.client.query(`UPDATE "${this.table}" SET ${setClauses} WHERE path = '${p22}'`);
-      } else {
-        const id = randomUUID2();
-        const cols = "id, path, filename, content, content_text, mime_type, size_bytes, creation_date, last_update_date" + (r10.project !== void 0 ? ", project" : "") + (r10.description !== void 0 ? ", description" : "");
-        const vals = `'${id}', '${p22}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r10.sizeBytes}, '${sqlStr(cd)}', '${sqlStr(lud)}'` + (r10.project !== void 0 ? `, '${sqlStr(r10.project)}'` : "") + (r10.description !== void 0 ? `, '${sqlStr(r10.description)}'` : "");
-        await this.client.query(`INSERT INTO "${this.table}" (${cols}) VALUES (${vals})`);
-        this.flushed.add(r10.path);
+      if (this.flushed.has(r10.path))
+        updates.push(r10);
+      else
+        inserts.push(r10);
+    }
+    const ts3 = (/* @__PURE__ */ new Date()).toISOString();
+    for (const r10 of updates) {
+      const rowIdx = this.rowIndexMap.get(r10.path);
+      if (rowIdx === void 0)
+        continue;
+      const data = {
+        filename: r10.filename,
+        content: r10.content,
+        content_text: r10.contentText,
+        mime_type: r10.mimeType,
+        size_bytes: r10.sizeBytes,
+        last_update_date: r10.lastUpdateDate ?? ts3
+      };
+      if (r10.project !== void 0)
+        data.project = r10.project;
+      if (r10.description !== void 0)
+        data.description = r10.description;
+      await this.client.wasmSetRow(rowIdx, data);
+    }
+    if (inserts.length > 0) {
+      const nextIdx = this.client.wasmNumRows();
+      const batch = {
+        id: inserts.map(() => randomUUID2()),
+        path: inserts.map((r10) => r10.path),
+        filename: inserts.map((r10) => r10.filename),
+        content: inserts.map((r10) => r10.content),
+        content_text: inserts.map((r10) => r10.contentText),
+        mime_type: inserts.map((r10) => r10.mimeType),
+        size_bytes: inserts.map((r10) => r10.sizeBytes),
+        creation_date: inserts.map((r10) => r10.creationDate ?? ts3),
+        last_update_date: inserts.map((r10) => r10.lastUpdateDate ?? ts3),
+        project: inserts.map((r10) => r10.project ?? ""),
+        description: inserts.map((r10) => r10.description ?? "")
+      };
+      await this.client.wasmAppend(batch);
+      for (let i11 = 0; i11 < inserts.length; i11++) {
+        this.rowIndexMap.set(inserts[i11].path, nextIdx + i11);
+        this.flushed.add(inserts[i11].path);
       }
     }
-    await this.client.query(`SELECT deeplake_sync_table('${this.table}')`);
+    if (updates.length > 0 || inserts.length > 0) {
+      await this.client.wasmCommit(`flush ${updates.length} updates, ${inserts.length} inserts`);
+      this.client.releaseDataset();
+      this.wasmReady = false;
+    }
   }
   // ── Virtual index.md generation ────────────────────────────────────────────
   async generateVirtualIndex() {
