@@ -63,7 +63,7 @@ try {
     `path TEXT NOT NULL DEFAULT '', ` +
     `filename TEXT NOT NULL DEFAULT '', ` +
     `content BYTEA NOT NULL DEFAULT ''::bytea, ` +
-    `content_text TEXT NOT NULL DEFAULT '', ` +
+    `summary TEXT NOT NULL DEFAULT '', ` +
     `mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', ` +
     `size_bytes BIGINT NOT NULL DEFAULT 0, ` +
     `timestamp TEXT NOT NULL DEFAULT ''` +
@@ -78,14 +78,14 @@ try {
   const text1 = "hello world";
   const hex1 = Buffer.from(text1).toString("hex");
   await query(
-    `INSERT INTO "${TABLE}" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) ` +
+    `INSERT INTO "${TABLE}" (id, path, filename, content, summary, mime_type, size_bytes, timestamp) ` +
     `VALUES ('${id1}', '/test/file1.txt', 'file1.txt', E'\\\\x${hex1}', E'${esc(text1)}', 'text/plain', ${Buffer.byteLength(text1)}, '${ts1}')`
   );
   await query(`SELECT deeplake_sync_table('${TABLE}')`);
-  const rows1 = await query(`SELECT id, path, content_text, timestamp FROM "${TABLE}" WHERE path = '/test/file1.txt'`);
+  const rows1 = await query(`SELECT id, path, summary, timestamp FROM "${TABLE}" WHERE path = '/test/file1.txt'`);
   assert(rows1.length === 1, "row inserted");
   assert(rows1[0].id === id1, `id matches (${rows1[0].id})`);
-  assert(rows1[0].content_text === text1, "content_text matches");
+  assert(rows1[0].summary === text1, "summary matches");
   assert(rows1[0].timestamp === ts1, "timestamp matches");
 
   // ── Test 2: UPDATE existing row (preserves id, updates timestamp) ──────────
@@ -95,15 +95,15 @@ try {
   const text2 = "updated content";
   const hex2 = Buffer.from(text2).toString("hex");
   await query(
-    `UPDATE "${TABLE}" SET content = E'\\\\x${hex2}', content_text = E'${esc(text2)}', ` +
+    `UPDATE "${TABLE}" SET content = E'\\\\x${hex2}', summary = E'${esc(text2)}', ` +
     `mime_type = 'text/plain', size_bytes = ${Buffer.byteLength(text2)}, timestamp = '${ts2}' ` +
     `WHERE path = '/test/file1.txt'`
   );
   await query(`SELECT deeplake_sync_table('${TABLE}')`);
-  const rows2 = await query(`SELECT id, content_text, timestamp FROM "${TABLE}" WHERE path = '/test/file1.txt'`);
+  const rows2 = await query(`SELECT id, summary, timestamp FROM "${TABLE}" WHERE path = '/test/file1.txt'`);
   assert(rows2.length === 1, "still one row");
   assert(rows2[0].id === id1, `id preserved after UPDATE (${rows2[0].id})`);
-  assert(rows2[0].content_text === text2, "content_text updated");
+  assert(rows2[0].summary === text2, "summary updated");
   assert(rows2[0].timestamp === ts2, `timestamp updated (${rows2[0].timestamp})`);
 
   // ── Test 3: appendFile UPDATE (concat content, update timestamp) ───────────
@@ -114,17 +114,17 @@ try {
   const appendHex = Buffer.from(append).toString("hex");
   await query(
     `UPDATE "${TABLE}" SET ` +
-    `content_text = content_text || E'${esc(append)}', ` +
+    `summary = summary || E'${esc(append)}', ` +
     `content = content || E'\\\\x${appendHex}', ` +
     `size_bytes = size_bytes + ${Buffer.byteLength(append)}, ` +
     `timestamp = '${ts3}' ` +
     `WHERE path = '/test/file1.txt'`
   );
   await query(`SELECT deeplake_sync_table('${TABLE}')`);
-  const rows3 = await query(`SELECT id, content_text, size_bytes, timestamp FROM "${TABLE}" WHERE path = '/test/file1.txt'`);
+  const rows3 = await query(`SELECT id, summary, size_bytes, timestamp FROM "${TABLE}" WHERE path = '/test/file1.txt'`);
   assert(rows3.length === 1, "still one row");
   assert(rows3[0].id === id1, `id preserved after append (${rows3[0].id})`);
-  assert(rows3[0].content_text === text2 + append, `content_text concatenated`);
+  assert(rows3[0].summary === text2 + append, `summary concatenated`);
   assert(rows3[0].timestamp === ts3, `timestamp updated (${rows3[0].timestamp})`);
 
   // ── Test 4: SELECT check before upsert (path exists) ──────────────────────
@@ -143,15 +143,15 @@ try {
   const check5 = await query(`SELECT path FROM "${TABLE}" WHERE path = '/test/file1.txt' LIMIT 1`);
   if (check5.length > 0) {
     await query(
-      `UPDATE "${TABLE}" SET content = E'\\\\x${hex5}', content_text = E'${esc(text5)}', ` +
+      `UPDATE "${TABLE}" SET content = E'\\\\x${hex5}', summary = E'${esc(text5)}', ` +
       `mime_type = 'text/plain', size_bytes = ${Buffer.byteLength(text5)}, timestamp = '${ts5}' ` +
       `WHERE path = '/test/file1.txt'`
     );
   }
   await query(`SELECT deeplake_sync_table('${TABLE}')`);
-  const rows5 = await query(`SELECT id, content_text, timestamp FROM "${TABLE}" WHERE path = '/test/file1.txt'`);
+  const rows5 = await query(`SELECT id, summary, timestamp FROM "${TABLE}" WHERE path = '/test/file1.txt'`);
   assert(rows5[0].id === id1, `id still preserved through upsert (${rows5[0].id})`);
-  assert(rows5[0].content_text === text5, "content replaced via upsert");
+  assert(rows5[0].summary === text5, "content replaced via upsert");
   assert(rows5[0].timestamp === ts5, "timestamp refreshed via upsert");
 
   // ── Test 6: Full upsert flow — SELECT then INSERT for new path ─────────────
@@ -163,15 +163,15 @@ try {
   const check6 = await query(`SELECT path FROM "${TABLE}" WHERE path = '/test/file2.txt' LIMIT 1`);
   if (check6.length === 0) {
     await query(
-      `INSERT INTO "${TABLE}" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) ` +
+      `INSERT INTO "${TABLE}" (id, path, filename, content, summary, mime_type, size_bytes, timestamp) ` +
       `VALUES ('${id6}', '/test/file2.txt', 'file2.txt', E'\\\\x${hex6}', E'${esc(text6)}', 'text/plain', ${Buffer.byteLength(text6)}, '${ts6}')`
     );
   }
   await query(`SELECT deeplake_sync_table('${TABLE}')`);
-  const rows6 = await query(`SELECT id, content_text, timestamp FROM "${TABLE}" WHERE path = '/test/file2.txt'`);
+  const rows6 = await query(`SELECT id, summary, timestamp FROM "${TABLE}" WHERE path = '/test/file2.txt'`);
   assert(rows6.length === 1, "new row inserted");
   assert(rows6[0].id === id6, `new id assigned (${rows6[0].id})`);
-  assert(rows6[0].content_text === text6, "content correct");
+  assert(rows6[0].summary === text6, "content correct");
 
   // ── Test 7: Multiple updates preserve same id ──────────────────────────────
   console.log("\nTest 7: Multiple sequential updates preserve same id");
@@ -180,15 +180,15 @@ try {
     const txt = `update-${i}`;
     const hx = Buffer.from(txt).toString("hex");
     await query(
-      `UPDATE "${TABLE}" SET content = E'\\\\x${hx}', content_text = E'${esc(txt)}', ` +
+      `UPDATE "${TABLE}" SET content = E'\\\\x${hx}', summary = E'${esc(txt)}', ` +
       `size_bytes = ${Buffer.byteLength(txt)}, timestamp = '${ts}' ` +
       `WHERE path = '/test/file1.txt'`
     );
   }
   await query(`SELECT deeplake_sync_table('${TABLE}')`);
-  const rows7 = await query(`SELECT id, content_text FROM "${TABLE}" WHERE path = '/test/file1.txt'`);
+  const rows7 = await query(`SELECT id, summary FROM "${TABLE}" WHERE path = '/test/file1.txt'`);
   assert(rows7[0].id === id1, `id still original after 3 updates (${rows7[0].id})`);
-  assert(rows7[0].content_text === "update-2", "content is from last update");
+  assert(rows7[0].summary === "update-2", "content is from last update");
 
   // ── Test 8: DELETE then re-INSERT gets new id ──────────────────────────────
   console.log("\nTest 8: After DELETE, re-INSERT gets a new id");
@@ -197,7 +197,7 @@ try {
   const id8 = randomUUID();
   const ts8 = new Date().toISOString();
   await query(
-    `INSERT INTO "${TABLE}" (id, path, filename, content, content_text, mime_type, size_bytes, timestamp) ` +
+    `INSERT INTO "${TABLE}" (id, path, filename, content, summary, mime_type, size_bytes, timestamp) ` +
     `VALUES ('${id8}', '/test/file2.txt', 'file2.txt', E'\\\\x${hex6}', E'${esc(text6)}', 'text/plain', ${Buffer.byteLength(text6)}, '${ts8}')`
   );
   await query(`SELECT deeplake_sync_table('${TABLE}')`);
@@ -207,7 +207,7 @@ try {
   // ── Test 9: UPDATE on non-existent path is a no-op ─────────────────────────
   console.log("\nTest 9: UPDATE on non-existent path is a no-op");
   await query(
-    `UPDATE "${TABLE}" SET content_text = E'ghost', timestamp = '${new Date().toISOString()}' ` +
+    `UPDATE "${TABLE}" SET summary = E'ghost', timestamp = '${new Date().toISOString()}' ` +
     `WHERE path = '/test/does-not-exist.txt'`
   );
   await query(`SELECT deeplake_sync_table('${TABLE}')`);

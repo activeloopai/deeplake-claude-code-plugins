@@ -139,7 +139,7 @@ var DeeplakeApi = class {
     const lud = row.lastUpdateDate ?? ts;
     const exists = await this.query(`SELECT path FROM "${this.tableName}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`);
     if (exists.length > 0) {
-      let setClauses = `content = E'\\\\x${hex}', content_text = E'${sqlStr(row.contentText)}', mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
+      let setClauses = `content = E'\\\\x${hex}', summary = E'${sqlStr(row.contentText)}', mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
       if (row.project !== void 0)
         setClauses += `, project = '${sqlStr(row.project)}'`;
       if (row.description !== void 0)
@@ -147,7 +147,7 @@ var DeeplakeApi = class {
       await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(row.path)}'`);
     } else {
       const id = randomUUID();
-      let cols = "id, path, filename, content, content_text, mime_type, size_bytes, creation_date, last_update_date";
+      let cols = "id, path, filename, content, summary, mime_type, size_bytes, creation_date, last_update_date";
       let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'\\\\x${hex}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
       if (row.project !== void 0) {
         cols += ", project";
@@ -189,10 +189,10 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content BYTEA NOT NULL DEFAULT ''::bytea, content_text TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content BYTEA NOT NULL DEFAULT ''::bytea, summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${tbl}" created`);
     } else {
-      for (const col of ["project", "description", "creation_date", "last_update_date"]) {
+      for (const col of ["project", "description", "creation_date", "last_update_date", "author"]) {
         try {
           await this.query(`ALTER TABLE "${tbl}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
           log2(`added column "${col}" to "${tbl}"`);
@@ -201,12 +201,12 @@ var DeeplakeApi = class {
       }
     }
   }
-  /** Create the sessions table (uses JSONB for content_text since every row is a JSON event). */
+  /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
   async ensureSessionsTable(name) {
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content_text JSONB, mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${name}" created`);
     }
   }
@@ -444,14 +444,14 @@ async function main() {
       if (input.tool_name === "Read") {
         const virtualPath = rewritePaths(input.tool_input.file_path ?? "");
         log3(`direct read: ${virtualPath}`);
-        const rows = await api.query(`SELECT content_text FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
-        if (rows.length > 0 && rows[0]["content_text"]) {
+        const rows = await api.query(`SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
+        if (rows.length > 0 && rows[0]["summary"]) {
           console.log(JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
               permissionDecision: "allow",
               updatedInput: {
-                command: `echo ${JSON.stringify(rows[0]["content_text"])}`,
+                command: `echo ${JSON.stringify(rows[0]["summary"])}`,
                 description: `[DeepLake direct] cat ${virtualPath}`
               }
             }
@@ -462,15 +462,15 @@ async function main() {
         const pattern = input.tool_input.pattern ?? "";
         const ignoreCase = !!input.tool_input["-i"];
         log3(`direct grep: ${pattern}`);
-        const pathRows = await api.query(`SELECT path FROM "${table}" WHERE content_text ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 10`);
+        const pathRows = await api.query(`SELECT path FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 10`);
         if (pathRows.length > 0) {
           const allResults = [];
           for (const pr of pathRows.slice(0, 5)) {
             const p = pr["path"];
-            const contentRows = await api.query(`SELECT content_text FROM "${table}" WHERE path = '${sqlStr(p)}' LIMIT 1`);
-            if (!contentRows[0]?.["content_text"])
+            const contentRows = await api.query(`SELECT summary FROM "${table}" WHERE path = '${sqlStr(p)}' LIMIT 1`);
+            if (!contentRows[0]?.["summary"])
               continue;
-            const text = contentRows[0]["content_text"];
+            const text = contentRows[0]["summary"];
             const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
             const matches = text.split("\n").filter((line) => re.test(line)).slice(0, 5).map((line) => `${p}:${line.slice(0, 300)}`);
             allResults.push(...matches);

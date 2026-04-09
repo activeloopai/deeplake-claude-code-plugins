@@ -5,7 +5,7 @@ import { DeeplakeFs, isText, guessMime } from "../src/shell/deeplake-fs.js";
 
 interface Row {
   path: string;
-  content_text: string;
+  text_content: string;
   size_bytes: number;
   mime_type: string;
   creation_date: string;
@@ -37,22 +37,22 @@ function makeClient(memoryRows: Row[] = [], sessionRows: Row[] = []) {
       }
 
       // Read session rows ordered by creation_date
-      if (sql.includes("SELECT content_text") && isSessionsQuery && sql.includes("ORDER BY creation_date")) {
+      if (sql.includes("SELECT message") && isSessionsQuery && sql.includes("ORDER BY creation_date")) {
         const pathMatch = sql.match(/path = '([^']+)'/);
         if (pathMatch) {
           return sessionRows
             .filter(r => r.path === pathMatch[1])
             .sort((a, b) => a.creation_date.localeCompare(b.creation_date))
-            .map(r => ({ content_text: r.content_text, creation_date: r.creation_date }));
+            .map(r => ({ message: r.text_content, creation_date: r.creation_date }));
         }
       }
 
       // Read from memory table
-      if (sql.includes("SELECT content_text, content") && !isSessionsQuery) {
+      if (sql.includes("SELECT summary, content") && !isSessionsQuery) {
         const pathMatch = sql.match(/path = '([^']+)'/);
         if (pathMatch) {
           const row = memoryRows.find(r => r.path === pathMatch[1]);
-          return row ? [{ content_text: row.content_text, content: "" }] : [];
+          return row ? [{ summary: row.text_content, content: "" }] : [];
         }
       }
 
@@ -61,7 +61,7 @@ function makeClient(memoryRows: Row[] = [], sessionRows: Row[] = []) {
         const pathMatch = sql.match(/path = '([^']+)'/);
         if (pathMatch) {
           const row = memoryRows.find(r => r.path === pathMatch[1]);
-          return row ? [{ content: `\\x${Buffer.from(row.content_text).toString("hex")}` }] : [];
+          return row ? [{ content: `\\x${Buffer.from(row.text_content).toString("hex")}` }] : [];
         }
       }
 
@@ -88,9 +88,9 @@ function makeClient(memoryRows: Row[] = [], sessionRows: Row[] = []) {
 describe("DeeplakeFs — sessions table multi-row read", () => {
   it("reads session file by concatenating rows ordered by creation_date", async () => {
     const sessionRows: Row[] = [
-      { path: "/sessions/alice/alice_org_default_s1.jsonl", content_text: '{"type":"user_message","content":"hello"}', size_bytes: 40, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
-      { path: "/sessions/alice/alice_org_default_s1.jsonl", content_text: '{"type":"tool_call","tool_name":"Read"}', size_bytes: 38, mime_type: "application/json", creation_date: "2026-01-01T00:00:02Z" },
-      { path: "/sessions/alice/alice_org_default_s1.jsonl", content_text: '{"type":"assistant_message","content":"done"}', size_bytes: 44, mime_type: "application/json", creation_date: "2026-01-01T00:00:03Z" },
+      { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"user_message","content":"hello"}', size_bytes: 40, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+      { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"tool_call","tool_name":"Read"}', size_bytes: 38, mime_type: "application/json", creation_date: "2026-01-01T00:00:02Z" },
+      { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"assistant_message","content":"done"}', size_bytes: 44, mime_type: "application/json", creation_date: "2026-01-01T00:00:03Z" },
     ];
 
     const client = makeClient([], sessionRows);
@@ -106,9 +106,9 @@ describe("DeeplakeFs — sessions table multi-row read", () => {
 
   it("preserves creation_date ordering even if inserted out of order", async () => {
     const sessionRows: Row[] = [
-      { path: "/sessions/u/s1.jsonl", content_text: '{"seq":3}', size_bytes: 9, mime_type: "application/json", creation_date: "2026-01-01T00:00:03Z" },
-      { path: "/sessions/u/s1.jsonl", content_text: '{"seq":1}', size_bytes: 9, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
-      { path: "/sessions/u/s1.jsonl", content_text: '{"seq":2}', size_bytes: 9, mime_type: "application/json", creation_date: "2026-01-01T00:00:02Z" },
+      { path: "/sessions/u/s1.jsonl", text_content: '{"seq":3}', size_bytes: 9, mime_type: "application/json", creation_date: "2026-01-01T00:00:03Z" },
+      { path: "/sessions/u/s1.jsonl", text_content: '{"seq":1}', size_bytes: 9, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+      { path: "/sessions/u/s1.jsonl", text_content: '{"seq":2}', size_bytes: 9, mime_type: "application/json", creation_date: "2026-01-01T00:00:02Z" },
     ];
 
     const client = makeClient([], sessionRows);
@@ -121,9 +121,9 @@ describe("DeeplakeFs — sessions table multi-row read", () => {
     expect(JSON.parse(lines[2]).seq).toBe(3);
   });
 
-  it("handles JSONB content_text (object instead of string)", async () => {
+  it("handles JSONB message (object instead of string)", async () => {
     const sessionRows: Row[] = [
-      { path: "/sessions/u/s1.jsonl", content_text: { type: "user_message", content: "hi" } as unknown as string, size_bytes: 30, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+      { path: "/sessions/u/s1.jsonl", text_content: { type: "user_message", content: "hi" } as unknown as string, size_bytes: 30, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
     ];
 
     const client = makeClient([], sessionRows);
@@ -137,8 +137,8 @@ describe("DeeplakeFs — sessions table multi-row read", () => {
 
   it("lists session files in directory listing", async () => {
     const sessionRows: Row[] = [
-      { path: "/sessions/alice/s1.jsonl", content_text: "{}", size_bytes: 2, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
-      { path: "/sessions/alice/s2.jsonl", content_text: "{}", size_bytes: 2, mime_type: "application/json", creation_date: "2026-01-01T00:00:02Z" },
+      { path: "/sessions/alice/s1.jsonl", text_content: "{}", size_bytes: 2, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+      { path: "/sessions/alice/s2.jsonl", text_content: "{}", size_bytes: 2, mime_type: "application/json", creation_date: "2026-01-01T00:00:02Z" },
     ];
 
     const client = makeClient([], sessionRows);
@@ -151,10 +151,10 @@ describe("DeeplakeFs — sessions table multi-row read", () => {
 
   it("session paths don't conflict with memory table paths", async () => {
     const memoryRows: Row[] = [
-      { path: "/summaries/alice/s1.md", content_text: "# Summary", size_bytes: 9, mime_type: "text/markdown", creation_date: "2026-01-01T00:00:01Z" },
+      { path: "/summaries/alice/s1.md", text_content: "# Summary", size_bytes: 9, mime_type: "text/markdown", creation_date: "2026-01-01T00:00:01Z" },
     ];
     const sessionRows: Row[] = [
-      { path: "/sessions/alice/s1.jsonl", content_text: '{"type":"user_message"}', size_bytes: 22, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+      { path: "/sessions/alice/s1.jsonl", text_content: '{"type":"user_message"}', size_bytes: 22, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
     ];
 
     const client = makeClient(memoryRows, sessionRows);
@@ -169,7 +169,7 @@ describe("DeeplakeFs — sessions table multi-row read", () => {
 
   it("works without sessions table (backwards compatible)", async () => {
     const memoryRows: Row[] = [
-      { path: "/test.txt", content_text: "hello", size_bytes: 5, mime_type: "text/plain", creation_date: "2026-01-01T00:00:01Z" },
+      { path: "/test.txt", text_content: "hello", size_bytes: 5, mime_type: "text/plain", creation_date: "2026-01-01T00:00:01Z" },
     ];
 
     const client = makeClient(memoryRows);
@@ -184,9 +184,9 @@ describe("DeeplakeFs — sessions table multi-row read", () => {
 describe("DeeplakeFs — multiple sessions in same table", () => {
   it("different sessions have independent content", async () => {
     const sessionRows: Row[] = [
-      { path: "/sessions/u/s1.jsonl", content_text: '{"session":"s1","msg":"hello"}', size_bytes: 30, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
-      { path: "/sessions/u/s1.jsonl", content_text: '{"session":"s1","msg":"world"}', size_bytes: 30, mime_type: "application/json", creation_date: "2026-01-01T00:00:02Z" },
-      { path: "/sessions/u/s2.jsonl", content_text: '{"session":"s2","msg":"foo"}', size_bytes: 28, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+      { path: "/sessions/u/s1.jsonl", text_content: '{"session":"s1","msg":"hello"}', size_bytes: 30, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+      { path: "/sessions/u/s1.jsonl", text_content: '{"session":"s1","msg":"world"}', size_bytes: 30, mime_type: "application/json", creation_date: "2026-01-01T00:00:02Z" },
+      { path: "/sessions/u/s2.jsonl", text_content: '{"session":"s2","msg":"foo"}', size_bytes: 28, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
     ];
 
     const client = makeClient([], sessionRows);
@@ -205,7 +205,7 @@ describe("DeeplakeFs — multiple sessions in same table", () => {
 });
 
 describe("ensureSessionsTable schema", () => {
-  it("creates table with JSONB content_text column", async () => {
+  it("creates table with JSONB message column", async () => {
     const client = {
       query: vi.fn().mockResolvedValue([]),
       listTables: vi.fn().mockResolvedValue([]),
@@ -231,9 +231,49 @@ describe("ensureSessionsTable schema", () => {
 
     const createSql = queryCalls.find(s => s.includes("CREATE TABLE"));
     expect(createSql).toBeDefined();
-    expect(createSql).toContain("content_text JSONB");
+    expect(createSql).toContain("message JSONB");
+    expect(createSql).toContain("author TEXT");
     expect(createSql).toContain("application/json");
     // Should NOT have content BYTEA column (sessions don't need binary)
     expect(createSql).not.toContain("BYTEA");
+    // Should NOT use old column name
+    expect(createSql).not.toContain("content_text");
+  });
+
+  it("memory table uses summary column (not content_text)", async () => {
+    const { DeeplakeApi } = await import("../src/deeplake-api.js");
+    const api = new DeeplakeApi("token", "https://api.test", "org", "ws", "memory");
+    const queryCalls: string[] = [];
+    api.query = vi.fn().mockImplementation(async (sql: string) => {
+      queryCalls.push(sql);
+      return [];
+    }) as typeof api.query;
+    api.listTables = vi.fn().mockResolvedValue([]) as typeof api.listTables;
+
+    await api.ensureTable();
+
+    const createSql = queryCalls.find(s => s.includes("CREATE TABLE"));
+    expect(createSql).toBeDefined();
+    expect(createSql).toContain("summary TEXT");
+    expect(createSql).toContain("author TEXT");
+    expect(createSql).not.toContain("content_text");
+  });
+
+  it("memory table migration adds author column", async () => {
+    const { DeeplakeApi } = await import("../src/deeplake-api.js");
+    const api = new DeeplakeApi("token", "https://api.test", "org", "ws", "memory");
+    const queryCalls: string[] = [];
+    api.query = vi.fn().mockImplementation(async (sql: string) => {
+      queryCalls.push(sql);
+      return [];
+    }) as typeof api.query;
+    // Table already exists
+    api.listTables = vi.fn().mockResolvedValue(["memory"]) as typeof api.listTables;
+
+    await api.ensureTable();
+
+    const alterCalls = queryCalls.filter(s => s.includes("ALTER TABLE"));
+    const authorAlter = alterCalls.find(s => s.includes("author"));
+    expect(authorAlter).toBeDefined();
   });
 });

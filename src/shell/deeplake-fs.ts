@@ -218,7 +218,7 @@ export class DeeplakeFs implements IFileSystem {
       const cd = r.creationDate ?? ts;
       const lud = r.lastUpdateDate ?? ts;
       if (this.flushed.has(r.path)) {
-        let setClauses = `filename = '${fname}', content = E'\\\\x${hex}', content_text = E'${text}', ` +
+        let setClauses = `filename = '${fname}', content = E'\\\\x${hex}', summary = E'${text}', ` +
           `mime_type = '${mime}', size_bytes = ${r.sizeBytes}, last_update_date = '${esc(lud)}'`;
         if (r.project !== undefined) setClauses += `, project = '${esc(r.project)}'`;
         if (r.description !== undefined) setClauses += `, description = '${esc(r.description)}'`;
@@ -227,7 +227,7 @@ export class DeeplakeFs implements IFileSystem {
         );
       } else {
         const id = randomUUID();
-        const cols = "id, path, filename, content, content_text, mime_type, size_bytes, creation_date, last_update_date" +
+        const cols = "id, path, filename, content, summary, mime_type, size_bytes, creation_date, last_update_date" +
           (r.project !== undefined ? ", project" : "") +
           (r.description !== undefined ? ", description" : "");
         const vals = `'${id}', '${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes}, '${esc(cd)}', '${esc(lud)}'` +
@@ -294,10 +294,10 @@ export class DeeplakeFs implements IFileSystem {
     // 3. Session files: concatenate rows from sessions table
     if (this.sessionPaths.has(p) && this.sessionsTable) {
       const rows = await this.client.query(
-        `SELECT content_text FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC`
+        `SELECT message FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC`
       );
       if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
-      const text = rows.map(r => typeof r["content_text"] === "string" ? r["content_text"] : JSON.stringify(r["content_text"])).join("\n");
+      const text = rows.map(r => typeof r["message"] === "string" ? r["message"] : JSON.stringify(r["message"])).join("\n");
       const buf = Buffer.from(text, "utf-8");
       this.files.set(p, buf);
       return buf;
@@ -321,10 +321,10 @@ export class DeeplakeFs implements IFileSystem {
     if (p === "/index.md" && !this.files.has(p)) {
       // Check if a real /index.md row exists in the table
       const realRows = await this.client.query(
-        `SELECT content_text FROM "${this.table}" WHERE path = '${esc("/index.md")}' LIMIT 1`
+        `SELECT summary FROM "${this.table}" WHERE path = '${esc("/index.md")}' LIMIT 1`
       );
-      if (realRows.length > 0 && realRows[0]["content_text"]) {
-        const text = realRows[0]["content_text"] as string;
+      if (realRows.length > 0 && realRows[0]["summary"]) {
+        const text = realRows[0]["summary"] as string;
         const buf = Buffer.from(text, "utf-8");
         this.files.set(p, buf);
         return text;
@@ -342,22 +342,22 @@ export class DeeplakeFs implements IFileSystem {
     // Session files: concatenate rows from sessions table, ordered by creation_date
     if (this.sessionPaths.has(p) && this.sessionsTable) {
       const rows = await this.client.query(
-        `SELECT content_text FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC`
+        `SELECT message FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC`
       );
       if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
-      const text = rows.map(r => typeof r["content_text"] === "string" ? r["content_text"] : JSON.stringify(r["content_text"])).join("\n");
+      const text = rows.map(r => typeof r["message"] === "string" ? r["message"] : JSON.stringify(r["message"])).join("\n");
       const buf = Buffer.from(text, "utf-8");
       this.files.set(p, buf);
       return text;
     }
 
-    // For text files prefer content_text (avoids decoding binary column)
+    // For text files prefer summary column (avoids decoding binary column)
     const rows = await this.client.query(
-      `SELECT content_text, content FROM "${this.table}" WHERE path = '${esc(p)}' LIMIT 1`
+      `SELECT summary, content FROM "${this.table}" WHERE path = '${esc(p)}' LIMIT 1`
     );
     if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
     const row = rows[0];
-    const text = row["content_text"] as string;
+    const text = row["summary"] as string;
     if (text && text.length > 0) {
       const buf = Buffer.from(text, "utf-8");
       this.files.set(p, buf);
@@ -428,7 +428,7 @@ export class DeeplakeFs implements IFileSystem {
       const ts = new Date().toISOString();
       await this.client.query(
         `UPDATE "${this.table}" SET ` +
-        `content_text = content_text || E'${esc(add)}', ` +
+        `summary = summary || E'${esc(add)}', ` +
         `content = content || E'\\\\x${addHex}', ` +
         `size_bytes = size_bytes + ${Buffer.byteLength(add, "utf-8")}, ` +
         `last_update_date = '${ts}' ` +

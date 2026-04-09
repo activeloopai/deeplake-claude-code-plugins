@@ -198,15 +198,15 @@ async function main(): Promise<void> {
         const virtualPath = rewritePaths((input.tool_input.file_path as string) ?? "");
         log(`direct read: ${virtualPath}`);
         const rows = await api.query(
-          `SELECT content_text FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
+          `SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
         );
-        if (rows.length > 0 && rows[0]["content_text"]) {
+        if (rows.length > 0 && rows[0]["summary"]) {
           console.log(JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
               permissionDecision: "allow",
               updatedInput: {
-                command: `echo ${JSON.stringify(rows[0]["content_text"])}`,
+                command: `echo ${JSON.stringify(rows[0]["summary"])}`,
                 description: `[DeepLake direct] cat ${virtualPath}`,
               },
             },
@@ -219,7 +219,7 @@ async function main(): Promise<void> {
         log(`direct grep: ${pattern}`);
         // Only fetch paths first (fast), then fetch content for matches
         const pathRows = await api.query(
-          `SELECT path FROM "${table}" WHERE content_text ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 10`
+          `SELECT path FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 10`
         );
         if (pathRows.length > 0) {
           // Fetch content for matched files and extract matching lines
@@ -227,10 +227,10 @@ async function main(): Promise<void> {
           for (const pr of pathRows.slice(0, 5)) {
             const p = pr["path"] as string;
             const contentRows = await api.query(
-              `SELECT content_text FROM "${table}" WHERE path = '${sqlStr(p)}' LIMIT 1`
+              `SELECT summary FROM "${table}" WHERE path = '${sqlStr(p)}' LIMIT 1`
             );
-            if (!contentRows[0]?.["content_text"]) continue;
-            const text = contentRows[0]["content_text"] as string;
+            if (!contentRows[0]?.["summary"]) continue;
+            const text = contentRows[0]["summary"] as string;
             const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
             const matches = text.split("\n")
               .filter(line => re.test(line))
