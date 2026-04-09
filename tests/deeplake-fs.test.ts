@@ -4,7 +4,7 @@ import { DeeplakeFs, isText, guessMime } from "../src/shell/deeplake-fs.js";
 // ── Mock ManagedClient ────────────────────────────────────────────────────────
 type Row = {
   id: string; path: string; filename: string; content: Buffer;
-  content_text: string; mime_type: string; size_bytes: number;
+  summary: string; mime_type: string; size_bytes: number;
   project: string; description: string; creation_date: string; last_update_date: string;
 };
 
@@ -14,7 +14,7 @@ function makeClient(seed: Record<string, Buffer> = {}) {
     path,
     filename: path.split("/").pop()!,
     content,
-    content_text: isText(content) ? content.toString("utf-8") : "",
+    summary: isText(content) ? content.toString("utf-8") : "",
     mime_type: guessMime(path.split("/").pop()!),
     size_bytes: content.length,
     project: "",
@@ -38,11 +38,11 @@ function makeClient(seed: Record<string, Buffer> = {}) {
         // Return hex-encoded content like PostgreSQL BYTEA
         return row ? [{ content: `\\x${row.content.toString("hex")}` }] : [];
       }
-      // Read: SELECT content_text, content FROM ... WHERE path = '...'
-      if (sql.includes("SELECT content_text, content")) {
+      // Read: SELECT summary, content FROM ... WHERE path = '...'
+      if (sql.includes("SELECT summary, content")) {
         const match = sql.match(/path = '([^']+)'/);
         const row = match ? rows.find(r => r.path === match[1]) : undefined;
-        return row ? [{ content_text: row.content_text, content: `\\x${row.content.toString("hex")}` }] : [];
+        return row ? [{ summary: row.summary, content: `\\x${row.content.toString("hex")}` }] : [];
       }
       // Virtual index: SELECT path, project, description, creation_date, last_update_date FROM ... WHERE path LIKE '/summaries/%'
       if (sql.includes("SELECT path, project, description, creation_date, last_update_date")) {
@@ -78,7 +78,7 @@ function makeClient(seed: Record<string, Buffer> = {}) {
         }
         return [];
       }
-      // UPDATE — distinguish append (content_text || ) from full overwrite (content_text = E'...')
+      // UPDATE — distinguish append (summary || ) from full overwrite (summary = E'...')
       if (sql.startsWith("UPDATE")) {
         const match = sql.match(/WHERE path = '([^']+)'/);
         if (match) {
@@ -90,25 +90,25 @@ function makeClient(seed: Record<string, Buffer> = {}) {
             const ludMatch2 = sql.match(/last_update_date = '([^']+)'/);
             if (ludMatch2) row.last_update_date = ludMatch2[1];
 
-            if (sql.includes("content_text = content_text ||")) {
+            if (sql.includes("summary = summary ||")) {
               // appendFile: SQL-level concat
               const hexMatch = sql.match(/content \|\| E'\\\\x([0-9a-f]*)'/);
               if (hexMatch) {
                 const appendBuf = Buffer.from(hexMatch[1], "hex");
                 row.content = Buffer.concat([row.content, appendBuf]);
-                row.content_text += appendBuf.toString("utf-8");
+                row.summary += appendBuf.toString("utf-8");
                 row.size_bytes = row.content.length;
               }
             } else {
               // Full overwrite UPDATE (_doFlush for existing paths)
               const hexMatch = sql.match(/content = E'\\\\x([0-9a-f]*)'/);
-              const textMatch = sql.match(/content_text = E'((?:[^']|'')*)'/);
+              const textMatch = sql.match(/summary = E'((?:[^']|'')*)'/);
               if (hexMatch) {
                 row.content = Buffer.from(hexMatch[1], "hex");
                 row.size_bytes = row.content.length;
               }
               if (textMatch) {
-                row.content_text = textMatch[1].replace(/''/g, "'");
+                row.summary = textMatch[1].replace(/''/g, "'");
               }
             }
             // Handle new metadata columns in any UPDATE
@@ -139,7 +139,7 @@ function makeClient(seed: Record<string, Buffer> = {}) {
             const path = pathMatch[1];
             const filename = path.split("/").pop()!;
             const content = hexMatch ? Buffer.from(hexMatch[1], "hex") : Buffer.alloc(0);
-            const content_text = textMatch?.[1]?.replace(/''/g, "'") ?? "";
+            const summary = textMatch?.[1]?.replace(/''/g, "'") ?? "";
             const id = idMatch?.[1] ?? "";
             // Parse columns and values positionally
             const colsPart = sql.match(/\(([^)]+)\)\s+VALUES/)?.[1] ?? "";
@@ -178,7 +178,7 @@ function makeClient(seed: Record<string, Buffer> = {}) {
             // Remove existing row if any (upsert)
             const idx = rows.findIndex(r => r.path === path);
             if (idx >= 0) rows.splice(idx, 1);
-            rows.push({ id, path, filename, content, content_text, mime_type: "text/plain", size_bytes: content.length, project, description, creation_date, last_update_date });
+            rows.push({ id, path, filename, content, summary, mime_type: "text/plain", size_bytes: content.length, project, description, creation_date, last_update_date });
           }
         }
         return [];
@@ -259,13 +259,13 @@ describe("DeeplakeFs bootstrap", () => {
 
 // ── Text reads ────────────────────────────────────────────────────────────────
 describe("readFile", () => {
-  it("reads text via content_text SQL column", async () => {
+  it("reads text via summary SQL column", async () => {
     const { fs, client } = await makeFs({ "/memory/hello.txt": "hello" });
     const content = await fs.readFile("/memory/hello.txt");
     expect(content).toBe("hello");
-    // Should use the content_text+content SELECT, not content-only SELECT
+    // Should use the summary+content SELECT, not content-only SELECT
     const calls = (client.query.mock.calls as [string][]);
-    expect(calls.some(c => (c[0] as string).includes("content_text, content"))).toBe(true);
+    expect(calls.some(c => (c[0] as string).includes("summary, content"))).toBe(true);
   });
 
   it("throws ENOENT for missing file", async () => {
@@ -338,7 +338,7 @@ describe("writeFile", () => {
     expect(await fs.readFile("/memory/a.txt")).toBe("new");
   });
 
-  it("stores contentText='' for binary files (INSERT has empty E'' for content_text)", async () => {
+  it("stores contentText='' for binary files (INSERT has empty E'' for summary)", async () => {
     const { fs, client } = await makeFs({});
     const binary = Buffer.from([0x89, 0x50, 0x00, 0x01]);
     // Write 10 to trigger flush
@@ -348,7 +348,7 @@ describe("writeFile", () => {
     const insertCalls = (client.query.mock.calls as [string][])
       .filter(c => (c[0] as string).startsWith("INSERT") && (c[0] as string).includes("img.png"));
     expect(insertCalls.length).toBe(1);
-    // content_text should be E'' (empty string) for binary
+    // summary should be E'' (empty string) for binary
     expect(insertCalls[0][0]).toMatch(/E'\\\\x[0-9a-f]+', E''/);
   });
 });
@@ -564,7 +564,7 @@ describe("flush upsert", () => {
     // id should be preserved
     const row = client._rows.find(r => r.path === "/memory/existing.txt")!;
     expect(row.id).toBe(originalId);
-    expect(row.content_text).toBe("new");
+    expect(row.summary).toBe("new");
   });
 
   it("UPDATE includes last_update_date", async () => {
@@ -590,7 +590,7 @@ describe("flush upsert", () => {
 
     const row = client._rows.find(r => r.path === "/memory/stable.txt")!;
     expect(row.id).toBe(originalId);
-    expect(row.content_text).toBe("v3");
+    expect(row.summary).toBe("v3");
   });
 
   it("new file after delete gets a new id", async () => {
@@ -604,7 +604,7 @@ describe("flush upsert", () => {
 
     const row = client._rows.find(r => r.path === "/memory/recycle.txt")!;
     expect(row.id).not.toBe(originalId);
-    expect(row.content_text).toBe("second");
+    expect(row.summary).toBe("second");
   });
 });
 
@@ -640,7 +640,7 @@ describe("appendFile upsert", () => {
 
     const row = client._rows.find(r => r.path === "/memory/log.txt")!;
     expect(row.id).toBe(originalId);
-    expect(row.content_text).toBe("line0\nline1\nline2\nline3\nline4\n");
+    expect(row.summary).toBe("line0\nline1\nline2\nline3\nline4\n");
   });
 });
 
@@ -776,7 +776,7 @@ describe("virtual index.md", () => {
     // Manually insert a legacy row (no username dir)
     client._rows.push({
       id: "legacy", path: "/summaries/old-sess.md", filename: "old-sess.md",
-      content: Buffer.from("# Old"), content_text: "# Old", mime_type: "text/markdown",
+      content: Buffer.from("# Old"), summary: "# Old", mime_type: "text/markdown",
       size_bytes: 5, project: "proj-a", description: "Legacy", creation_date: "2026-04-01", last_update_date: "2026-04-01",
     });
     const content = await fs.readFile("/index.md");

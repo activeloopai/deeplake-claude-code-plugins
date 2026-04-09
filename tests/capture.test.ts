@@ -237,6 +237,92 @@ describe("placeholder creation", () => {
   });
 });
 
+// ── INSERT SQL structure (mirrors capture.ts) ───────────────────────────────
+
+function buildInsertSql(
+  sessionsTable: string, sessionPath: string, filename: string,
+  jsonForSql: string, lineBytes: number, userName: string,
+  projectName: string, hookEvent: string, ts: string,
+): string {
+  return (
+    `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, creation_date, last_update_date) ` +
+    `VALUES ('test-id', '${sessionPath}', '${filename}', '${jsonForSql}'::jsonb, '${userName}', ` +
+    `${lineBytes}, '${projectName}', '${hookEvent}', '${ts}', '${ts}')`
+  );
+}
+
+describe("INSERT SQL structure", () => {
+  it("uses message column (not content_text) for sessions table", () => {
+    const sql = buildInsertSql("sessions", "/sessions/u/s.jsonl", "s.jsonl", "{}", 2, "alice", "proj", "UserPromptSubmit", "2026-01-01T00:00:00Z");
+    expect(sql).toContain("message");
+    expect(sql).not.toContain("content_text");
+  });
+
+  it("includes author column with username", () => {
+    const sql = buildInsertSql("sessions", "/sessions/u/s.jsonl", "s.jsonl", "{}", 2, "alice", "proj", "Stop", "2026-01-01T00:00:00Z");
+    expect(sql).toContain("author");
+    expect(sql).toContain("'alice'");
+  });
+
+  it("casts message value to jsonb", () => {
+    const sql = buildInsertSql("sessions", "/p", "f", '{"type":"user_message"}', 22, "u", "p", "UserPromptSubmit", "t");
+    expect(sql).toContain("::jsonb");
+  });
+
+  it("uses the correct table name", () => {
+    const sql = buildInsertSql("my_sessions", "/p", "f", "{}", 2, "u", "p", "Stop", "t");
+    expect(sql).toContain('"my_sessions"');
+  });
+});
+
+// ── Capture fallback logic ──────────────────────────────────────────────────
+
+describe("capture fallback", () => {
+  it("detects permission denied as retriable error", () => {
+    const msg = 'Query failed: 400: {"error":"SQL error: permission denied for table sessions"}';
+    expect(msg.includes("permission denied")).toBe(true);
+  });
+
+  it("detects table not found as retriable error", () => {
+    const msg = 'Query failed: 400: {"error":"table sessions does not exist"}';
+    expect(msg.includes("does not exist")).toBe(true);
+  });
+
+  it("does not retry on unrelated errors", () => {
+    const msg = 'Query failed: 400: {"error":"syntax error at or near SELECT"}';
+    expect(msg.includes("permission denied")).toBe(false);
+    expect(msg.includes("does not exist")).toBe(false);
+  });
+});
+
+// ── Placeholder SQL uses summary column and author ──────────────────────────
+
+function buildPlaceholderSql(
+  table: string, summaryPath: string, filename: string,
+  hex: string, content: string, userName: string,
+  projectName: string, now: string,
+): string {
+  return (
+    `INSERT INTO "${table}" (id, path, filename, content, summary, author, mime_type, size_bytes, project, description, creation_date, last_update_date) ` +
+    `VALUES ('test-id', '${summaryPath}', '${filename}', E'\\\\x${hex}', E'${content}', '${userName}', 'text/markdown', ` +
+    `${content.length}, '${projectName}', 'in progress', '${now}', '${now}')`
+  );
+}
+
+describe("placeholder SQL structure", () => {
+  it("uses summary column (not content_text) for memory table", () => {
+    const sql = buildPlaceholderSql("memory", "/summaries/u/s1.md", "s1.md", "abc", "# Session", "alice", "proj", "2026-01-01T00:00:00Z");
+    expect(sql).toContain("summary");
+    expect(sql).not.toContain("content_text");
+  });
+
+  it("includes author column with username", () => {
+    const sql = buildPlaceholderSql("memory", "/summaries/u/s1.md", "s1.md", "abc", "# Session", "bob", "proj", "2026-01-01T00:00:00Z");
+    expect(sql).toContain("author");
+    expect(sql).toContain("'bob'");
+  });
+});
+
 // ── Wiki worker prompt template substitution ──────────────────────────────────
 
 describe("prompt template substitution", () => {
