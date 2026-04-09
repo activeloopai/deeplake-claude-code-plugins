@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sqlStr } from "../src/utils/sql.js";
+import { sqlStr } from "../../src/utils/sql.js";
 
 // ── buildSessionPath (extracted logic from capture.ts) ─────────────────────────
 

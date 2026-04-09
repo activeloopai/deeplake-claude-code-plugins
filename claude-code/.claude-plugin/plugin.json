@@ -1,0 +1,19 @@
+{
+  "name": "hivemind",
+  "description": "Cloud-backed persistent memory powered by Deeplake — read, write, and share memory across Claude Code sessions and agents",
+  "version": "0.6.0",
+  "author": {
+    "name": "Activeloop",
+    "url": "https://deeplake.ai"
+  },
+  "homepage": "https://deeplake.ai",
+  "repository": "https://github.com/activeloopai/deeplake-hivemind",
+  "license": "Apache-2.0",
+  "keywords": [
+    "memory",
+    "deeplake",
+    "persistent-memory",
+    "shared-memory",
+    "agent-memory"
+  ]
+}

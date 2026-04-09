@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createGrepCommand } from "../src/shell/grep-interceptor.js";
-import { DeeplakeFs } from "../src/shell/deeplake-fs.js";
+import { createGrepCommand } from "../../src/shell/grep-interceptor.js";
+import { DeeplakeFs } from "../../src/shell/deeplake-fs.js";
 
 // ── Minimal mocks ─────────────────────────────────────────────────────────────
 function makeClient(queryResults: Record<string, string>[] = []) {

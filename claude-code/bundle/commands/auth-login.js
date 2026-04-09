@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// dist/src/commands/auth.js
+// ../dist/src/commands/auth.js
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -193,7 +193,7 @@ Using: ${orgName}
   return creds;
 }
 
-// dist/src/commands/auth-login.js
+// ../dist/src/commands/auth-login.js
 async function main() {
   const args = process.argv.slice(2);
   const cmd = args[0] ?? "whoami";

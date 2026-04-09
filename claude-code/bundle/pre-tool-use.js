@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// dist/src/hooks/pre-tool-use.js
+// ../dist/src/hooks/pre-tool-use.js
 import { existsSync as existsSync2 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join as join3 } from "node:path";
@@ -8,7 +8,7 @@ import { homedir as homedir3 } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 
-// dist/src/utils/stdin.js
+// ../dist/src/utils/stdin.js
 function readStdin() {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -25,7 +25,7 @@ function readStdin() {
   });
 }
 
-// dist/src/config.js
+// ../dist/src/config.js
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, userInfo } from "node:os";
@@ -57,10 +57,10 @@ function loadConfig() {
   };
 }
 
-// dist/src/deeplake-api.js
+// ../dist/src/deeplake-api.js
 import { randomUUID } from "node:crypto";
 
-// dist/src/utils/debug.js
+// ../dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
@@ -73,12 +73,12 @@ function log(tag, msg) {
 `);
 }
 
-// dist/src/utils/sql.js
+// ../dist/src/utils/sql.js
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 
-// dist/src/deeplake-api.js
+// ../dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
 var DeeplakeApi = class {
   token;
@@ -212,7 +212,7 @@ var DeeplakeApi = class {
   }
 };
 
-// dist/src/hooks/pre-tool-use.js
+// ../dist/src/hooks/pre-tool-use.js
 var log3 = (msg) => log("pre", msg);
 var MEMORY_PATH = join3(homedir3(), ".deeplake", "memory");
 var TILDE_PATH = "~/.deeplake/memory";

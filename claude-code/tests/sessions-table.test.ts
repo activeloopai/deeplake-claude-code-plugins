@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { DeeplakeFs, isText, guessMime } from "../src/shell/deeplake-fs.js";
+import { DeeplakeFs, isText, guessMime } from "../../src/shell/deeplake-fs.js";
 
 // ── Mock client that simulates both memory and sessions tables ──────────────
 

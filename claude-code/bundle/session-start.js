@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
-// dist/src/hooks/session-start.js
+// ../dist/src/hooks/session-start.js
 import { fileURLToPath } from "node:url";
 import { dirname, join as join4 } from "node:path";
 import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2, readFileSync as readFileSync3 } from "node:fs";
 import { execSync as execSync2 } from "node:child_process";
 import { homedir as homedir4 } from "node:os";
 
-// dist/src/commands/auth.js
+// ../dist/src/commands/auth.js
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -29,7 +29,7 @@ function saveCredentials(creds) {
   writeFileSync(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
 }
 
-// dist/src/config.js
+// ../dist/src/config.js
 import { readFileSync as readFileSync2, existsSync as existsSync2 } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir2, userInfo } from "node:os";
@@ -61,10 +61,10 @@ function loadConfig() {
   };
 }
 
-// dist/src/deeplake-api.js
+// ../dist/src/deeplake-api.js
 import { randomUUID } from "node:crypto";
 
-// dist/src/utils/debug.js
+// ../dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
 import { join as join3 } from "node:path";
 import { homedir as homedir3 } from "node:os";
@@ -77,12 +77,12 @@ function log(tag, msg) {
 `);
 }
 
-// dist/src/utils/sql.js
+// ../dist/src/utils/sql.js
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 
-// dist/src/deeplake-api.js
+// ../dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
 var DeeplakeApi = class {
   token;
@@ -216,7 +216,7 @@ var DeeplakeApi = class {
   }
 };
 
-// dist/src/utils/stdin.js
+// ../dist/src/utils/stdin.js
 function readStdin() {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -233,7 +233,7 @@ function readStdin() {
   });
 }
 
-// dist/src/hooks/session-start.js
+// ../dist/src/hooks/session-start.js
 var log3 = (msg) => log("session-start", msg);
 var __bundleDir = dirname(fileURLToPath(import.meta.url));
 var AUTH_CMD = join4(__bundleDir, "commands", "auth-login.js");
