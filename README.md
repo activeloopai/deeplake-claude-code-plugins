@@ -24,8 +24,20 @@ From within Claude Code, run:
 
 ### Updating
 
+The plugin auto-updates by default — it checks for new versions on each session start and installs them automatically. You'll see a notice when an update is applied; run `/reload-plugins` to activate it.
+
+To manually update:
+
 ```
 /deeplake-hivemind:update
+```
+
+To toggle auto-updates:
+
+```
+autoupdate off   # disable (via org management CLI)
+autoupdate on    # re-enable
+autoupdate       # check current status
 ```
 
 ### From source (development)
@@ -89,7 +101,8 @@ To opt out of capture: `export DEEPLAKE_CAPTURE=false`
 | `DEEPLAKE_ORG_ID`        | —                         | Organization ID (auto-set by device login)|
 | `DEEPLAKE_WORKSPACE_ID`  | `default`                 | Workspace name                            |
 | `DEEPLAKE_API_URL`       | `https://api.deeplake.ai` | API endpoint                              |
-| `DEEPLAKE_TABLE`         | `memory`                  | SQL table for virtual FS                  |
+| `DEEPLAKE_TABLE`         | `memory`                  | SQL table for summaries and virtual FS    |
+| `DEEPLAKE_SESSIONS_TABLE`| `sessions`                | SQL table for per-event session capture   |
 | `DEEPLAKE_MEMORY_PATH`   | `~/.deeplake/memory`      | Path that triggers interception           |
 | `DEEPLAKE_CAPTURE`       | `true`                    | Set to `false` to disable capture         |
 | `DEEPLAKE_DEBUG`         | —                         | Set to `1` for verbose hook debug logs    |
