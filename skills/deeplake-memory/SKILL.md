@@ -37,11 +37,15 @@ Do NOT jump straight to reading raw JSONL files. Always start with index.md and 
 ## Organization Management
 
 The auth command path is injected at session start. Use the exact path from the session context. Each argument is separate — do NOT quote subcommands together:
+- `node "<AUTH_CMD>" login` — SSO login
+- `node "<AUTH_CMD>" whoami` — show current user/org
 - `node "<AUTH_CMD>" org list` — list organizations
 - `node "<AUTH_CMD>" org switch <name-or-id>` — switch organization
+- `node "<AUTH_CMD>" workspaces` — list workspaces
+- `node "<AUTH_CMD>" workspace <id>` — switch workspace
 - `node "<AUTH_CMD>" invite <email> <ADMIN|WRITE|READ>` — invite member (ALWAYS ask user which role first)
 - `node "<AUTH_CMD>" members` — list members
-- `node "<AUTH_CMD>" login` — re-login
+- `node "<AUTH_CMD>" remove <user-id>` — remove member
 - `node "<AUTH_CMD>" --help` — show all commands
 
 ## Limits
