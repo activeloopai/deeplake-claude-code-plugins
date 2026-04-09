@@ -117,24 +117,11 @@ async function main(): Promise<void> {
   // sqlStr() would also escape backslashes and strip control chars, corrupting the JSON.
   const jsonForSql = line.replace(/'/g, "''");
 
-  const insertSql =
+  await api.query(
     `INSERT INTO "${sessionsTable}" (id, path, filename, content_text, size_bytes, project, description, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', '${ts}', '${ts}')`;
-
-  try {
-    await api.query(insertSql);
-  } catch (e: any) {
-    // Fallback: table might not exist (session-start failed or org switched mid-session).
-    // Create it and retry once.
-    if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
-      log("table missing, creating and retrying");
-      await api.ensureSessionsTable(sessionsTable);
-      await api.query(insertSql);
-    } else {
-      throw e;
-    }
-  }
+    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', '${ts}', '${ts}')`
+  );
 
   log("capture ok → cloud");
 }
