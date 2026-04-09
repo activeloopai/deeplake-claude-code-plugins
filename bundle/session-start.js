@@ -251,12 +251,16 @@ SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only 
 
 Search command: Grep pattern="keyword" path="~/.deeplake/memory"
 
-Organization management (DEEPLAKE_AUTH_CMD will be replaced with actual path below):
-- Switch org: node "DEEPLAKE_AUTH_CMD" org switch <name-or-id>
-- List orgs: node "DEEPLAKE_AUTH_CMD" org list
-- Invite member: node "DEEPLAKE_AUTH_CMD" invite <email> <ADMIN|WRITE|READ>
-- List members: node "DEEPLAKE_AUTH_CMD" members
-- Re-login: node "DEEPLAKE_AUTH_CMD" login
+Organization management \u2014 each argument is SEPARATE (do NOT quote subcommands together):
+- node "DEEPLAKE_AUTH_CMD" login                              \u2014 SSO login
+- node "DEEPLAKE_AUTH_CMD" whoami                             \u2014 show current user/org
+- node "DEEPLAKE_AUTH_CMD" org list                           \u2014 list organizations
+- node "DEEPLAKE_AUTH_CMD" org switch <name-or-id>            \u2014 switch organization
+- node "DEEPLAKE_AUTH_CMD" workspaces                         \u2014 list workspaces
+- node "DEEPLAKE_AUTH_CMD" workspace <id>                     \u2014 switch workspace
+- node "DEEPLAKE_AUTH_CMD" invite <email> <ADMIN|WRITE|READ>  \u2014 invite member (ALWAYS ask user which role before inviting)
+- node "DEEPLAKE_AUTH_CMD" members                            \u2014 list members
+- node "DEEPLAKE_AUTH_CMD" remove <user-id>                   \u2014 remove member
 
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
