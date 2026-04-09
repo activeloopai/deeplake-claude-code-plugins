@@ -1,14 +1,14 @@
 {
-  "name": "deeplake-claude-code-plugins",
-  "version": "0.5.10",
-  "description": "Claude Code plugin for Deeplake memory — captures file ops and syncs to Deeplake cloud",
+  "name": "deeplake-hivemind",
+  "version": "0.6.0",
+  "description": "Cloud-backed persistent shared memory for AI agents powered by Deeplake",
   "type": "module",
   "bin": {
     "deeplake-shell": "bundle/deeplake-shell.js"
   },
   "scripts": {
-    "build": "tsc && node esbuild.config.mjs",
-    "bundle": "node esbuild.config.mjs",
+    "build": "tsc && cd claude-code && node esbuild.config.mjs",
+    "bundle": "cd claude-code && node esbuild.config.mjs",
     "dev": "tsc --watch",
     "shell": "tsx src/shell/deeplake-shell.ts",
     "test": "vitest run",
