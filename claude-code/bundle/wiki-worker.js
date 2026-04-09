@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// ../dist/src/hooks/wiki-worker.js
+// dist/src/hooks/wiki-worker.js
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";

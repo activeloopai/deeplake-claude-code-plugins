@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// ../dist/src/utils/stdin.js
+// dist/src/utils/stdin.js
 function readStdin() {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -17,7 +17,7 @@ function readStdin() {
   });
 }
 
-// ../dist/src/config.js
+// dist/src/config.js
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, userInfo } from "node:os";
@@ -49,10 +49,10 @@ function loadConfig() {
   };
 }
 
-// ../dist/src/deeplake-api.js
+// dist/src/deeplake-api.js
 import { randomUUID } from "node:crypto";
 
-// ../dist/src/utils/debug.js
+// dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
@@ -65,12 +65,12 @@ function log(tag, msg) {
 `);
 }
 
-// ../dist/src/utils/sql.js
+// dist/src/utils/sql.js
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 
-// ../dist/src/deeplake-api.js
+// dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
 var DeeplakeApi = class {
   token;
@@ -204,7 +204,7 @@ var DeeplakeApi = class {
   }
 };
 
-// ../dist/src/hooks/capture.js
+// dist/src/hooks/capture.js
 var log3 = (msg) => log("capture", msg);
 var CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
 function buildSessionPath(config, sessionId) {

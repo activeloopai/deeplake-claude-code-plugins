@@ -7,8 +7,8 @@
     "deeplake-shell": "bundle/deeplake-shell.js"
   },
   "scripts": {
-    "build": "tsc && cd claude-code && node esbuild.config.mjs",
-    "bundle": "cd claude-code && node esbuild.config.mjs",
+    "build": "tsc && node esbuild.config.mjs",
+    "bundle": "node esbuild.config.mjs",
     "dev": "tsc --watch",
     "shell": "tsx src/shell/deeplake-shell.ts",
     "test": "vitest run",

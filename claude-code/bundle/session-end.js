@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
-// ../dist/src/hooks/session-end.js
+// dist/src/hooks/session-end.js
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join as join3 } from "node:path";
 import { writeFileSync, mkdirSync, appendFileSync as appendFileSync2 } from "node:fs";
 import { homedir as homedir3, tmpdir } from "node:os";
 
-// ../dist/src/utils/stdin.js
+// dist/src/utils/stdin.js
 function readStdin() {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -24,7 +24,7 @@ function readStdin() {
   });
 }
 
-// ../dist/src/config.js
+// dist/src/config.js
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, userInfo } from "node:os";
@@ -56,7 +56,7 @@ function loadConfig() {
   };
 }
 
-// ../dist/src/utils/debug.js
+// dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
@@ -69,7 +69,7 @@ function log(tag, msg) {
 `);
 }
 
-// ../dist/src/hooks/session-end.js
+// dist/src/hooks/session-end.js
 var log2 = (msg) => log("session-end", msg);
 var HOME = homedir3();
 var WIKI_LOG = join3(HOME, ".claude", "hooks", "deeplake-wiki.log");
