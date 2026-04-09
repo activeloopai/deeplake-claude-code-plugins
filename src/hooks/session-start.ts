@@ -189,14 +189,17 @@ async function main(): Promise<void> {
               .map(s => `claude plugin update deeplake-hivemind@deeplake-claude-code-plugins --scope ${s} 2>/dev/null`)
               .join("; ");
             execSync(cmd, { stdio: "ignore", timeout: 60_000 });
-            updateNotice = `\n\n✅ Deeplake Hivemind auto-updated: ${current} → ${latest}. Tell the user to run /reload-plugins to apply.`;
+            updateNotice = `\n\n✅ Deeplake Hivemind auto-updated: ${current} → ${latest}. Run /reload-plugins to apply.`;
+            process.stderr.write(`✅ Deeplake Hivemind auto-updated: ${current} → ${latest}. Run /reload-plugins to apply.\n`);
             log(`autoupdate succeeded: ${current} → ${latest}`);
           } catch (e: any) {
             updateNotice = `\n\n⬆️ Deeplake Hivemind update available: ${current} → ${latest}. Auto-update failed — run /deeplake-hivemind:update to upgrade manually.`;
+            process.stderr.write(`⬆️ Deeplake Hivemind update available: ${current} → ${latest}. Auto-update failed — run /deeplake-hivemind:update to upgrade manually.\n`);
             log(`autoupdate failed: ${e.message}`);
           }
         } else {
           updateNotice = `\n\n⬆️ Deeplake Hivemind update available: ${current} → ${latest}. Run /deeplake-hivemind:update to upgrade.`;
+          process.stderr.write(`⬆️ Deeplake Hivemind update available: ${current} → ${latest}. Run /deeplake-hivemind:update to upgrade.\n`);
           log(`update available (autoupdate off): ${current} → ${latest}`);
         }
       } else {

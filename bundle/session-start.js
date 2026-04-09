@@ -374,18 +374,24 @@ async function main() {
             execSync2(cmd, { stdio: "ignore", timeout: 6e4 });
             updateNotice = `
 
-\u2705 Deeplake Hivemind auto-updated: ${current} \u2192 ${latest}. Tell the user to run /reload-plugins to apply.`;
+\u2705 Deeplake Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.`;
+            process.stderr.write(`\u2705 Deeplake Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.
+`);
             log3(`autoupdate succeeded: ${current} \u2192 ${latest}`);
           } catch (e) {
             updateNotice = `
 
 \u2B06\uFE0F Deeplake Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /deeplake-hivemind:update to upgrade manually.`;
+            process.stderr.write(`\u2B06\uFE0F Deeplake Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /deeplake-hivemind:update to upgrade manually.
+`);
             log3(`autoupdate failed: ${e.message}`);
           }
         } else {
           updateNotice = `
 
 \u2B06\uFE0F Deeplake Hivemind update available: ${current} \u2192 ${latest}. Run /deeplake-hivemind:update to upgrade.`;
+          process.stderr.write(`\u2B06\uFE0F Deeplake Hivemind update available: ${current} \u2192 ${latest}. Run /deeplake-hivemind:update to upgrade.
+`);
           log3(`update available (autoupdate off): ${current} \u2192 ${latest}`);
         }
       } else {
