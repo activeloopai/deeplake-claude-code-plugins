@@ -55,7 +55,7 @@ export function createGrepCommand(
 
     try {
       const bm25 = await Promise.race([
-        client.query(`SELECT path FROM "${table}" WHERE content_text <#> '${esc(pattern)}' LIMIT 50`),
+        client.query(`SELECT path FROM "${table}" WHERE summary <#> '${esc(pattern)}' LIMIT 50`),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 3000)),
       ]);
       candidates = bm25.map(r => r["path"] as string).filter(Boolean);

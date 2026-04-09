@@ -118,8 +118,8 @@ async function main(): Promise<void> {
   const jsonForSql = line.replace(/'/g, "''");
 
   const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, content_text, size_bytes, project, description, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ` +
+    `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, creation_date, last_update_date) ` +
+    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ` +
     `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', '${ts}', '${ts}')`;
 
   try {

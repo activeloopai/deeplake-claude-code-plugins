@@ -66834,7 +66834,7 @@ var DeeplakeApi = class {
     const lud = row.lastUpdateDate ?? ts3;
     const exists = await this.query(`SELECT path FROM "${this.tableName}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`);
     if (exists.length > 0) {
-      let setClauses = `content = E'\\\\x${hex}', content_text = E'${sqlStr(row.contentText)}', mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
+      let setClauses = `content = E'\\\\x${hex}', summary = E'${sqlStr(row.contentText)}', mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
       if (row.project !== void 0)
         setClauses += `, project = '${sqlStr(row.project)}'`;
       if (row.description !== void 0)
@@ -66842,7 +66842,7 @@ var DeeplakeApi = class {
       await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(row.path)}'`);
     } else {
       const id = randomUUID();
-      let cols = "id, path, filename, content, content_text, mime_type, size_bytes, creation_date, last_update_date";
+      let cols = "id, path, filename, content, summary, mime_type, size_bytes, creation_date, last_update_date";
       let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'\\\\x${hex}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
       if (row.project !== void 0) {
         cols += ", project";
@@ -66884,10 +66884,10 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content BYTEA NOT NULL DEFAULT ''::bytea, content_text TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content BYTEA NOT NULL DEFAULT ''::bytea, summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${tbl}" created`);
     } else {
-      for (const col of ["project", "description", "creation_date", "last_update_date"]) {
+      for (const col of ["project", "description", "creation_date", "last_update_date", "author"]) {
         try {
           await this.query(`ALTER TABLE "${tbl}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
           log2(`added column "${col}" to "${tbl}"`);
@@ -66896,12 +66896,12 @@ var DeeplakeApi = class {
       }
     }
   }
-  /** Create the sessions table (uses JSONB for content_text since every row is a JSON event). */
+  /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
   async ensureSessionsTable(name) {
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content_text JSONB, mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${name}" created`);
     }
   }
@@ -67089,7 +67089,7 @@ var DeeplakeFs = class _DeeplakeFs {
       const cd = r10.creationDate ?? ts3;
       const lud = r10.lastUpdateDate ?? ts3;
       if (this.flushed.has(r10.path)) {
-        let setClauses = `filename = '${fname}', content = E'\\\\x${hex}', content_text = E'${text}', mime_type = '${mime}', size_bytes = ${r10.sizeBytes}, last_update_date = '${sqlStr(lud)}'`;
+        let setClauses = `filename = '${fname}', content = E'\\\\x${hex}', summary = E'${text}', mime_type = '${mime}', size_bytes = ${r10.sizeBytes}, last_update_date = '${sqlStr(lud)}'`;
         if (r10.project !== void 0)
           setClauses += `, project = '${sqlStr(r10.project)}'`;
         if (r10.description !== void 0)
@@ -67097,7 +67097,7 @@ var DeeplakeFs = class _DeeplakeFs {
         await this.client.query(`UPDATE "${this.table}" SET ${setClauses} WHERE path = '${p22}'`);
       } else {
         const id = randomUUID2();
-        const cols = "id, path, filename, content, content_text, mime_type, size_bytes, creation_date, last_update_date" + (r10.project !== void 0 ? ", project" : "") + (r10.description !== void 0 ? ", description" : "");
+        const cols = "id, path, filename, content, summary, mime_type, size_bytes, creation_date, last_update_date" + (r10.project !== void 0 ? ", project" : "") + (r10.description !== void 0 ? ", description" : "");
         const vals = `'${id}', '${p22}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r10.sizeBytes}, '${sqlStr(cd)}', '${sqlStr(lud)}'` + (r10.project !== void 0 ? `, '${sqlStr(r10.project)}'` : "") + (r10.description !== void 0 ? `, '${sqlStr(r10.description)}'` : "");
         await this.client.query(`INSERT INTO "${this.table}" (${cols}) VALUES (${vals})`);
         this.flushed.add(r10.path);
@@ -67149,10 +67149,10 @@ var DeeplakeFs = class _DeeplakeFs {
       return pend.content;
     }
     if (this.sessionPaths.has(p22) && this.sessionsTable) {
-      const rows2 = await this.client.query(`SELECT content_text FROM "${this.sessionsTable}" WHERE path = '${sqlStr(p22)}' ORDER BY creation_date ASC`);
+      const rows2 = await this.client.query(`SELECT message FROM "${this.sessionsTable}" WHERE path = '${sqlStr(p22)}' ORDER BY creation_date ASC`);
       if (rows2.length === 0)
         throw fsErr("ENOENT", "no such file or directory", p22);
-      const text = rows2.map((r10) => typeof r10["content_text"] === "string" ? r10["content_text"] : JSON.stringify(r10["content_text"])).join("\n");
+      const text = rows2.map((r10) => typeof r10["message"] === "string" ? r10["message"] : JSON.stringify(r10["message"])).join("\n");
       const buf2 = Buffer.from(text, "utf-8");
       this.files.set(p22, buf2);
       return buf2;
@@ -67169,9 +67169,9 @@ var DeeplakeFs = class _DeeplakeFs {
     if (this.dirs.has(p22) && !this.files.has(p22))
       throw fsErr("EISDIR", "illegal operation on a directory", p22);
     if (p22 === "/index.md" && !this.files.has(p22)) {
-      const realRows = await this.client.query(`SELECT content_text FROM "${this.table}" WHERE path = '${sqlStr("/index.md")}' LIMIT 1`);
-      if (realRows.length > 0 && realRows[0]["content_text"]) {
-        const text2 = realRows[0]["content_text"];
+      const realRows = await this.client.query(`SELECT summary FROM "${this.table}" WHERE path = '${sqlStr("/index.md")}' LIMIT 1`);
+      if (realRows.length > 0 && realRows[0]["summary"]) {
+        const text2 = realRows[0]["summary"];
         const buf2 = Buffer.from(text2, "utf-8");
         this.files.set(p22, buf2);
         return text2;
@@ -67184,19 +67184,19 @@ var DeeplakeFs = class _DeeplakeFs {
     if (pend)
       return pend.contentText || pend.content.toString("utf-8");
     if (this.sessionPaths.has(p22) && this.sessionsTable) {
-      const rows2 = await this.client.query(`SELECT content_text FROM "${this.sessionsTable}" WHERE path = '${sqlStr(p22)}' ORDER BY creation_date ASC`);
+      const rows2 = await this.client.query(`SELECT message FROM "${this.sessionsTable}" WHERE path = '${sqlStr(p22)}' ORDER BY creation_date ASC`);
       if (rows2.length === 0)
         throw fsErr("ENOENT", "no such file or directory", p22);
-      const text2 = rows2.map((r10) => typeof r10["content_text"] === "string" ? r10["content_text"] : JSON.stringify(r10["content_text"])).join("\n");
+      const text2 = rows2.map((r10) => typeof r10["message"] === "string" ? r10["message"] : JSON.stringify(r10["message"])).join("\n");
       const buf2 = Buffer.from(text2, "utf-8");
       this.files.set(p22, buf2);
       return text2;
     }
-    const rows = await this.client.query(`SELECT content_text, content FROM "${this.table}" WHERE path = '${sqlStr(p22)}' LIMIT 1`);
+    const rows = await this.client.query(`SELECT summary, content FROM "${this.table}" WHERE path = '${sqlStr(p22)}' LIMIT 1`);
     if (rows.length === 0)
       throw fsErr("ENOENT", "no such file or directory", p22);
     const row = rows[0];
-    const text = row["content_text"];
+    const text = row["summary"];
     if (text && text.length > 0) {
       const buf2 = Buffer.from(text, "utf-8");
       this.files.set(p22, buf2);
@@ -67261,7 +67261,7 @@ var DeeplakeFs = class _DeeplakeFs {
     if (this.files.has(p22) || await this.exists(p22).catch(() => false)) {
       const addHex = Buffer.from(add, "utf-8").toString("hex");
       const ts3 = (/* @__PURE__ */ new Date()).toISOString();
-      await this.client.query(`UPDATE "${this.table}" SET content_text = content_text || E'${sqlStr(add)}', content = content || E'\\\\x${addHex}', size_bytes = size_bytes + ${Buffer.byteLength(add, "utf-8")}, last_update_date = '${ts3}' WHERE path = '${sqlStr(p22)}'`);
+      await this.client.query(`UPDATE "${this.table}" SET summary = summary || E'${sqlStr(add)}', content = content || E'\\\\x${addHex}', size_bytes = size_bytes + ${Buffer.byteLength(add, "utf-8")}, last_update_date = '${ts3}' WHERE path = '${sqlStr(p22)}'`);
       const m26 = this.meta.get(p22);
       if (m26) {
         m26.size += Buffer.byteLength(add, "utf-8");
@@ -68445,7 +68445,7 @@ function createGrepCommand(client, fs3, table) {
     let candidates = [];
     try {
       const bm25 = await Promise.race([
-        client.query(`SELECT path FROM "${table}" WHERE content_text <#> '${sqlStr(pattern)}' LIMIT 50`),
+        client.query(`SELECT path FROM "${table}" WHERE summary <#> '${sqlStr(pattern)}' LIMIT 50`),
         new Promise((_16, reject) => setTimeout(() => reject(new Error("timeout")), 3e3))
       ]);
       candidates = bm25.map((r10) => r10["path"]).filter(Boolean);

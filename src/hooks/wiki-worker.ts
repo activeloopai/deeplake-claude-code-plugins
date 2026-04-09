@@ -86,7 +86,7 @@ async function main(): Promise<void> {
     wlog("fetching session events");
     await query(`SELECT deeplake_sync_table('${cfg.sessionsTable}')`);
     const rows = await query(
-      `SELECT content_text, creation_date FROM "${cfg.sessionsTable}" ` +
+      `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
       `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
     );
 
@@ -95,9 +95,9 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Reconstruct JSONL from individual rows (content_text is JSONB — may be object or string)
+    // Reconstruct JSONL from individual rows (message is JSONB — may be object or string)
     const jsonlContent = rows
-      .map(r => typeof r.content_text === "string" ? r.content_text : JSON.stringify(r.content_text))
+      .map(r => typeof r.message === "string" ? r.message : JSON.stringify(r.message))
       .join("\n");
     const jsonlLines = rows.length;
 
@@ -118,11 +118,11 @@ async function main(): Promise<void> {
     try {
       await query(`SELECT deeplake_sync_table('${cfg.memoryTable}')`);
       const sumRows = await query(
-        `SELECT content_text FROM "${cfg.memoryTable}" ` +
+        `SELECT summary FROM "${cfg.memoryTable}" ` +
         `WHERE path = '${esc(`/summaries/${cfg.userName}/${cfg.sessionId}.md`)}' LIMIT 1`
       );
-      if (sumRows.length > 0 && sumRows[0]["content_text"]) {
-        const existing = sumRows[0]["content_text"] as string;
+      if (sumRows.length > 0 && sumRows[0]["summary"]) {
+        const existing = sumRows[0]["summary"] as string;
         const match = existing.match(/\*\*JSONL offset\*\*:\s*(\d+)/);
         if (match) prevOffset = parseInt(match[1], 10);
         writeFileSync(tmpSummary, existing);
@@ -174,15 +174,15 @@ async function main(): Promise<void> {
         if (existing.length > 0) {
           await query(
             `UPDATE "${cfg.memoryTable}" SET ` +
-            `content = E'\\\\x${hex}', content_text = E'${esc(text)}', ` +
+            `content = E'\\\\x${hex}', summary = E'${esc(text)}', ` +
             `size_bytes = ${Buffer.byteLength(text)}, last_update_date = '${ts}' ` +
             `WHERE path = '${esc(vpath)}'`
           );
         } else {
           const id = crypto.randomUUID();
           await query(
-            `INSERT INTO "${cfg.memoryTable}" (id, path, filename, content, content_text, mime_type, size_bytes, project, creation_date, last_update_date) ` +
-            `VALUES ('${id}', '${esc(vpath)}', '${esc(fname)}', E'\\\\x${hex}', E'${esc(text)}', 'text/markdown', ` +
+            `INSERT INTO "${cfg.memoryTable}" (id, path, filename, content, summary, author, mime_type, size_bytes, project, creation_date, last_update_date) ` +
+            `VALUES ('${id}', '${esc(vpath)}', '${esc(fname)}', E'\\\\x${hex}', E'${esc(text)}', '${esc(cfg.userName)}', 'text/markdown', ` +
             `${Buffer.byteLength(text)}, '${esc(cfg.project)}', '${ts}', '${ts}')`
           );
         }

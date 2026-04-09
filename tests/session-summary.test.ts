@@ -4,7 +4,7 @@ import { DeeplakeFs, isText, guessMime } from "../src/shell/deeplake-fs.js";
 // ── Mock client (same pattern as deeplake-fs.test.ts) ────────────────────────
 type Row = {
   id: string; path: string; filename: string; content: Buffer;
-  content_text: string; mime_type: string; size_bytes: number;
+  summary: string; mime_type: string; size_bytes: number;
   project: string; description: string; creation_date: string; last_update_date: string;
 };
 
@@ -14,7 +14,7 @@ function makeClient(seed: Record<string, Buffer> = {}) {
     path,
     filename: path.split("/").pop()!,
     content,
-    content_text: isText(content) ? content.toString("utf-8") : "",
+    summary: isText(content) ? content.toString("utf-8") : "",
     mime_type: guessMime(path.split("/").pop()!),
     size_bytes: content.length,
     project: "",
@@ -34,10 +34,10 @@ function makeClient(seed: Record<string, Buffer> = {}) {
         const row = match ? rows.find(r => r.path === match[1]) : undefined;
         return row ? [{ content: `\\x${row.content.toString("hex")}` }] : [];
       }
-      if (sql.includes("SELECT content_text, content")) {
+      if (sql.includes("SELECT summary, content")) {
         const match = sql.match(/path = '([^']+)'/);
         const row = match ? rows.find(r => r.path === match[1]) : undefined;
-        return row ? [{ content_text: row.content_text, content: `\\x${row.content.toString("hex")}` }] : [];
+        return row ? [{ summary: row.summary, content: `\\x${row.content.toString("hex")}` }] : [];
       }
       if (sql.includes("SELECT path, project, description, creation_date, last_update_date")) {
         return rows
@@ -70,19 +70,19 @@ function makeClient(seed: Record<string, Buffer> = {}) {
             if (ludMatch) row.last_update_date = ludMatch[1];
             const cdMatch = sql.match(/creation_date = '([^']+)'/);
             if (cdMatch) row.creation_date = cdMatch[1];
-            if (sql.includes("content_text = content_text ||")) {
+            if (sql.includes("summary = summary ||")) {
               const hexMatch = sql.match(/content \|\| E'\\\\x([0-9a-f]*)'/);
               if (hexMatch) {
                 const appendBuf = Buffer.from(hexMatch[1], "hex");
                 row.content = Buffer.concat([row.content, appendBuf]);
-                row.content_text += appendBuf.toString("utf-8");
+                row.summary += appendBuf.toString("utf-8");
                 row.size_bytes = row.content.length;
               }
             } else {
               const hexMatch = sql.match(/content = E'\\\\x([0-9a-f]*)'/);
-              const textMatch = sql.match(/content_text = E'((?:[^']|'')*)'/);
+              const textMatch = sql.match(/summary = E'((?:[^']|'')*)'/);
               if (hexMatch) { row.content = Buffer.from(hexMatch[1], "hex"); row.size_bytes = row.content.length; }
-              if (textMatch) { row.content_text = textMatch[1].replace(/''/g, "'"); }
+              if (textMatch) { row.summary = textMatch[1].replace(/''/g, "'"); }
             }
             const projMatch = sql.match(/project = '([^']*)'/);
             if (projMatch) row.project = projMatch[1];
@@ -101,7 +101,7 @@ function makeClient(seed: Record<string, Buffer> = {}) {
           if (pathMatch) {
             const path = pathMatch[1];
             const content = hexMatch ? Buffer.from(hexMatch[1], "hex") : Buffer.alloc(0);
-            const content_text = textMatch?.[1]?.replace(/''/g, "'") ?? "";
+            const summary = textMatch?.[1]?.replace(/''/g, "'") ?? "";
             const colsPart = sql.match(/\(([^)]+)\)\s+VALUES/)?.[1] ?? "";
             const colsList = colsPart.split(",").map(c => c.trim());
             const valsStr = valuesMatch[1];
@@ -129,7 +129,7 @@ function makeClient(seed: Record<string, Buffer> = {}) {
             if (idx >= 0) rows.splice(idx, 1);
             rows.push({
               id: colMap["id"] ?? "", path, filename: path.split("/").pop()!,
-              content, content_text, mime_type: "text/plain", size_bytes: content.length,
+              content, summary, mime_type: "text/plain", size_bytes: content.length,
               project: colMap["project"] ?? "", description: colMap["description"] ?? "",
               creation_date: colMap["creation_date"] ?? "", last_update_date: colMap["last_update_date"] ?? "",
             });
@@ -231,7 +231,7 @@ describe("session summary — no global paths", () => {
 
       const row = client._rows.find(r => r.path.endsWith(`/${sessionId}.md`) && r.path.startsWith("/summaries/"));
       expect(row).toBeDefined();
-      const content = row!.content_text;
+      const content = row!.summary;
 
       // Must NOT contain the global path
       expect(content).not.toContain(globalPath);
@@ -257,7 +257,7 @@ describe("session summary — Source field structure", () => {
     const sessionId = "abc-123-def";
     await createPlaceholder(fs, sessionId, "/some/deep/path/my-repo", "alice", "acme-corp", "prod");
 
-    const content = client._rows.find(r => r.path.endsWith(`/${sessionId}.md`) && r.path.startsWith("/summaries/"))!.content_text;
+    const content = client._rows.find(r => r.path.endsWith(`/${sessionId}.md`) && r.path.startsWith("/summaries/"))!.summary;
     expect(content).toContain("- **Source**: /sessions/alice/alice_acme-corp_prod_abc-123-def.jsonl");
   });
 });
@@ -313,11 +313,11 @@ describe("session summary — resumed sessions update last_update_date", () => {
     // description must be extracted from What Happened section
     expect(rowAfterEnd.description).toBe("Fixed authentication bug in the login flow. Added retry logic for token refresh.");
     // content must be the full summary
-    expect(rowAfterEnd.content_text).toContain("## What Happened");
-    expect(rowAfterEnd.content_text).toContain("## Key Facts");
+    expect(rowAfterEnd.summary).toContain("## What Happened");
+    expect(rowAfterEnd.summary).toContain("## Key Facts");
     // No global path
-    expect(rowAfterEnd.content_text).not.toContain("/home/user/projects/my-app");
-    expect(rowAfterEnd.content_text).toContain("- **Project**: my-app");
+    expect(rowAfterEnd.summary).not.toContain("/home/user/projects/my-app");
+    expect(rowAfterEnd.summary).toContain("- **Project**: my-app");
   });
 
   it("resumed session (second follow-up) updates again", async () => {
@@ -361,7 +361,7 @@ describe("session summary — resumed sessions update last_update_date", () => {
     const rowFinal = client._rows.find(r => r.path.endsWith(`/${sessionId}.md`) && r.path.startsWith("/summaries/"))!;
     const date3 = rowFinal.last_update_date;
     expect(date3).not.toBe(date2);
-    expect(rowFinal.content_text).toContain("rate limiting");
+    expect(rowFinal.summary).toContain("rate limiting");
     expect(rowFinal.description).toContain("auth middleware");
   });
 });
