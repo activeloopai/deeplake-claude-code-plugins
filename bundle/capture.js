@@ -274,7 +274,18 @@ async function main() {
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
   const filename = sessionPath.split("/").pop() ?? "";
   const jsonForSql = line.replace(/'/g, "''");
-  await api.query(`INSERT INTO "${sessionsTable}" (id, path, filename, content_text, size_bytes, project, description, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', '${ts}', '${ts}')`);
+  const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, content_text, size_bytes, project, description, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', '${ts}', '${ts}')`;
+  try {
+    await api.query(insertSql);
+  } catch (e) {
+    if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
+      log3("table missing, creating and retrying");
+      await api.ensureSessionsTable(sessionsTable);
+      await api.query(insertSql);
+    } else {
+      throw e;
+    }
+  }
   log3("capture ok \u2192 cloud");
 }
 main().catch((e) => {
