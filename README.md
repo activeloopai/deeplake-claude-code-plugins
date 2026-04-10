@@ -1,5 +1,4 @@
-<<<<<<< HEAD
-# Deeplake Memory — Claude Code Plugin
+# Hivemind — Claude Code Plugin
 
 Persistent, shared memory for Claude Code backed by [Deeplake](https://deeplake.ai). Captures conversation history, tool calls, and responses across sessions and makes them searchable by any agent or user in the same workspace.
 
@@ -265,5 +264,3 @@ After making changes, run `npm run build` and send a new message in Claude Code 
 ## License
 
 Apache License 2.0 — © Activeloop, Inc. See [LICENSE](LICENSE) for details.
-=======
->>>>>>> origin/main
