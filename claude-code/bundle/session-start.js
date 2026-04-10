@@ -198,13 +198,12 @@ var DeeplakeApi = class {
     log2(`commit: ${rows.length} rows`);
   }
   async upsertRowSql(row) {
-    const hex = row.content.toString("hex");
     const ts = (/* @__PURE__ */ new Date()).toISOString();
     const cd = row.creationDate ?? ts;
     const lud = row.lastUpdateDate ?? ts;
     const exists = await this.query(`SELECT path FROM "${this.tableName}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`);
     if (exists.length > 0) {
-      let setClauses = `content = E'\\\\x${hex}', summary = E'${sqlStr(row.contentText)}', mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
+      let setClauses = `summary = E'${sqlStr(row.contentText)}', mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
       if (row.project !== void 0)
         setClauses += `, project = '${sqlStr(row.project)}'`;
       if (row.description !== void 0)
@@ -212,8 +211,8 @@ var DeeplakeApi = class {
       await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(row.path)}'`);
     } else {
       const id = randomUUID();
-      let cols = "id, path, filename, content, summary, mime_type, size_bytes, creation_date, last_update_date";
-      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'\\\\x${hex}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
+      let cols = "id, path, filename, summary, mime_type, size_bytes, creation_date, last_update_date";
+      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
       if (row.project !== void 0) {
         cols += ", project";
         vals += `, '${sqlStr(row.project)}'`;
@@ -270,7 +269,7 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', content BYTEA NOT NULL DEFAULT ''::bytea, summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/octet-stream', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${tbl}" created`);
     } else {
       for (const col of ["project", "description", "creation_date", "last_update_date", "author"]) {
@@ -399,9 +398,8 @@ async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, 
     `- **Status**: in-progress`,
     ""
   ].join("\n");
-  const hex = Buffer.from(content, "utf-8").toString("hex");
   const filename = `${sessionId}.md`;
-  await api.query(`INSERT INTO "${table}" (id, path, filename, content, summary, author, mime_type, size_bytes, project, description, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'\\\\x${hex}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', '${now}', '${now}')`);
+  await api.query(`INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', '${now}', '${now}')`);
   wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
 }
 async function main() {

@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { DeeplakeFs, isText, guessMime } from "../../src/shell/deeplake-fs.js";
+import { DeeplakeFs, guessMime } from "../../src/shell/deeplake-fs.js";
 
 // ── Mock ManagedClient ────────────────────────────────────────────────────────
 type Row = {
-  id: string; path: string; filename: string; content: Buffer;
+  id: string; path: string; filename: string;
   summary: string; mime_type: string; size_bytes: number;
   project: string; description: string; creation_date: string; last_update_date: string;
 };
@@ -13,8 +13,7 @@ function makeClient(seed: Record<string, Buffer> = {}) {
     id: `seed-${path}`,
     path,
     filename: path.split("/").pop()!,
-    content,
-    summary: isText(content) ? content.toString("utf-8") : "",
+    summary: content.toString("utf-8"),
     mime_type: guessMime(path.split("/").pop()!),
     size_bytes: content.length,
     project: "",
@@ -31,27 +30,20 @@ function makeClient(seed: Record<string, Buffer> = {}) {
       if (sql.includes("SELECT path, size_bytes, mime_type")) {
         return rows.map(r => ({ path: r.path, size_bytes: r.size_bytes, mime_type: r.mime_type }));
       }
-      // Read: SELECT content FROM ... WHERE path = '...'
-      if (sql.includes("SELECT content FROM")) {
+      // Read: SELECT summary FROM ... WHERE path = '...'
+      if (sql.includes("SELECT summary FROM")) {
         const match = sql.match(/path = '([^']+)'/);
         const row = match ? rows.find(r => r.path === match[1]) : undefined;
-        // Return hex-encoded content like PostgreSQL BYTEA
-        return row ? [{ content: `\\x${row.content.toString("hex")}` }] : [];
+        return row ? [{ summary: row.summary }] : [];
       }
-      // Read: SELECT summary, content FROM ... WHERE path = '...'
-      if (sql.includes("SELECT summary, content") && !sql.includes("IN (")) {
-        const match = sql.match(/path = '([^']+)'/);
-        const row = match ? rows.find(r => r.path === match[1]) : undefined;
-        return row ? [{ summary: row.summary, content: `\\x${row.content.toString("hex")}` }] : [];
-      }
-      // Prefetch: SELECT path, summary, content FROM ... WHERE path IN (...)
-      if (sql.includes("SELECT path, summary, content") && sql.includes("IN (")) {
+      // Prefetch: SELECT path, summary FROM ... WHERE path IN (...)
+      if (sql.includes("SELECT path, summary") && sql.includes("IN (")) {
         const inMatch = sql.match(/IN \(([^)]+)\)/);
         if (inMatch) {
           const paths = inMatch[1].split(",").map(s => s.trim().replace(/^'|'$/g, ""));
           return rows
             .filter(r => paths.includes(r.path))
-            .map(r => ({ path: r.path, summary: r.summary, content: `\\x${r.content.toString("hex")}` }));
+            .map(r => ({ path: r.path, summary: r.summary }));
         }
         return [];
       }
@@ -103,23 +95,18 @@ function makeClient(seed: Record<string, Buffer> = {}) {
 
             if (sql.includes("summary = summary ||")) {
               // appendFile: SQL-level concat
-              const hexMatch = sql.match(/content \|\| E'\\\\x([0-9a-f]*)'/);
-              if (hexMatch) {
-                const appendBuf = Buffer.from(hexMatch[1], "hex");
-                row.content = Buffer.concat([row.content, appendBuf]);
-                row.summary += appendBuf.toString("utf-8");
-                row.size_bytes = row.content.length;
+              const appendMatch = sql.match(/summary \|\| E'((?:[^']|'')*)'/);
+              if (appendMatch) {
+                const appendText = appendMatch[1].replace(/''/g, "'");
+                row.summary += appendText;
+                row.size_bytes = Buffer.byteLength(row.summary, "utf-8");
               }
             } else {
               // Full overwrite UPDATE (_doFlush for existing paths)
-              const hexMatch = sql.match(/content = E'\\\\x([0-9a-f]*)'/);
               const textMatch = sql.match(/summary = E'((?:[^']|'')*)'/);
-              if (hexMatch) {
-                row.content = Buffer.from(hexMatch[1], "hex");
-                row.size_bytes = row.content.length;
-              }
               if (textMatch) {
                 row.summary = textMatch[1].replace(/''/g, "'");
+                row.size_bytes = Buffer.byteLength(row.summary, "utf-8");
               }
             }
             // Handle new metadata columns in any UPDATE
@@ -144,13 +131,9 @@ function makeClient(seed: Record<string, Buffer> = {}) {
           const pathMatch = hasId
             ? sql.match(/VALUES \('[^']+', '([^']+)'/)   // skip id
             : sql.match(/VALUES \('([^']+)'/);
-          const hexMatch = sql.match(/E'\\\\x([0-9a-f]*)'/);
-          const textMatch = sql.match(/E'\\\\x[0-9a-f]*', E'((?:[^']|'')*)'/);
           if (pathMatch) {
             const path = pathMatch[1];
             const filename = path.split("/").pop()!;
-            const content = hexMatch ? Buffer.from(hexMatch[1], "hex") : Buffer.alloc(0);
-            const summary = textMatch?.[1]?.replace(/''/g, "'") ?? "";
             const id = idMatch?.[1] ?? "";
             // Parse columns and values positionally
             const colsPart = sql.match(/\(([^)]+)\)\s+VALUES/)?.[1] ?? "";
@@ -189,7 +172,8 @@ function makeClient(seed: Record<string, Buffer> = {}) {
             // Remove existing row if any (upsert)
             const idx = rows.findIndex(r => r.path === path);
             if (idx >= 0) rows.splice(idx, 1);
-            rows.push({ id, path, filename, content, summary, mime_type: "text/plain", size_bytes: content.length, project, description, creation_date, last_update_date });
+            const summary = colMap["summary"] ?? "";
+            rows.push({ id, path, filename, summary, mime_type: "text/plain", size_bytes: Buffer.byteLength(summary, "utf-8"), project, description, creation_date, last_update_date });
           }
         }
         return [];
@@ -218,25 +202,11 @@ async function makeFs(seed: Record<string, string | Buffer> = {}, mount = "/memo
   return { fs, client };
 }
 
-// ── Unit: helpers ─────────────────────────────────────────────────────────────
-describe("isText", () => {
-  it("returns true for plain UTF-8", () => {
-    expect(isText(Buffer.from("hello world"))).toBe(true);
-  });
-  it("returns false for buffer containing null byte", () => {
-    expect(isText(Buffer.from([0x68, 0x00, 0x6c]))).toBe(false);
-  });
-  it("returns false for buffer with null byte (binary marker)", () => {
-    // Real binary files (PNG body, PDFs, zips) contain null bytes
-    const binary = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0a, 0x1a, 0x0a]);
-    expect(isText(binary)).toBe(false);
-  });
-});
 
 describe("guessMime", () => {
   it("returns application/json for .json", () => expect(guessMime("foo.json")).toBe("application/json"));
-  it("returns image/png for .png",         () => expect(guessMime("image.png")).toBe("image/png"));
-  it("returns octet-stream for .bin",      () => expect(guessMime("file.bin")).toBe("application/octet-stream"));
+  it("returns text/markdown for .md",       () => expect(guessMime("notes.md")).toBe("text/markdown"));
+  it("returns text/plain for unknown ext", () => expect(guessMime("file.xyz")).toBe("text/plain"));
 });
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
@@ -274,9 +244,8 @@ describe("readFile", () => {
     const { fs, client } = await makeFs({ "/memory/hello.txt": "hello" });
     const content = await fs.readFile("/memory/hello.txt");
     expect(content).toBe("hello");
-    // Should use the summary+content SELECT, not content-only SELECT
     const calls = (client.query.mock.calls as [string][]);
-    expect(calls.some(c => (c[0] as string).includes("summary, content"))).toBe(true);
+    expect(calls.some(c => (c[0] as string).includes("SELECT summary FROM"))).toBe(true);
   });
 
   it("throws ENOENT for missing file", async () => {
@@ -290,22 +259,19 @@ describe("readFile", () => {
   });
 });
 
-// ── Binary reads ──────────────────────────────────────────────────────────────
+// ── Buffer reads ──────────────────────────────────────────────────────────────
 describe("readFileBuffer", () => {
-  it("roundtrips binary content exactly", async () => {
-    // PNG-like: has null bytes → binary
-    const binary = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02, 0x03]);
-    const { fs } = await makeFs({ "/memory/img.png": binary });
-
-    const result = await fs.readFileBuffer("/memory/img.png");
-    expect(Buffer.from(result)).toEqual(binary);
+  it("roundtrips text content as buffer", async () => {
+    const { fs } = await makeFs({ "/memory/notes.txt": "hello world" });
+    const result = await fs.readFileBuffer("/memory/notes.txt");
+    expect(Buffer.from(result).toString("utf-8")).toBe("hello world");
   });
 
-  it("reads via SQL SELECT content query", async () => {
-    const { fs, client } = await makeFs({ "/memory/data.bin": Buffer.from([1, 2, 3]) });
-    await fs.readFileBuffer("/memory/data.bin");
+  it("reads via SQL SELECT summary query", async () => {
+    const { fs, client } = await makeFs({ "/memory/data.txt": "test data" });
+    await fs.readFileBuffer("/memory/data.txt");
     const selectCalls = (client.query.mock.calls as [string][]).filter(c =>
-      (c[0] as string).includes("SELECT content FROM")
+      (c[0] as string).includes("SELECT summary FROM")
     );
     expect(selectCalls.length).toBeGreaterThan(0);
   });
@@ -349,18 +315,16 @@ describe("writeFile", () => {
     expect(await fs.readFile("/memory/a.txt")).toBe("new");
   });
 
-  it("stores contentText='' for binary files (INSERT has empty E'' for summary)", async () => {
+  it("stores text content in summary column on INSERT", async () => {
     const { fs, client } = await makeFs({});
-    const binary = Buffer.from([0x89, 0x50, 0x00, 0x01]);
     // Write 10 to trigger flush
     for (let i = 0; i < 9; i++) await fs.writeFile(`/memory/dummy${i}.txt`, "x");
-    await fs.writeFile("/memory/img.png", binary);
+    await fs.writeFile("/memory/notes.md", "# Hello");
 
     const insertCalls = (client.query.mock.calls as [string][])
-      .filter(c => (c[0] as string).startsWith("INSERT") && (c[0] as string).includes("img.png"));
+      .filter(c => (c[0] as string).startsWith("INSERT") && (c[0] as string).includes("notes.md"));
     expect(insertCalls.length).toBe(1);
-    // summary should be E'' (empty string) for binary
-    expect(insertCalls[0][0]).toMatch(/E'\\\\x[0-9a-f]+', E''/);
+    expect(insertCalls[0][0]).toContain("# Hello");
   });
 });
 
@@ -873,7 +837,7 @@ describe("virtual index.md", () => {
     // Manually insert a legacy row (no username dir)
     client._rows.push({
       id: "legacy", path: "/summaries/old-sess.md", filename: "old-sess.md",
-      content: Buffer.from("# Old"), summary: "# Old", mime_type: "text/markdown",
+      summary: "# Old", mime_type: "text/markdown",
       size_bytes: 5, project: "proj-a", description: "Legacy", creation_date: "2026-04-01", last_update_date: "2026-04-01",
     });
     const content = await fs.readFile("/index.md");

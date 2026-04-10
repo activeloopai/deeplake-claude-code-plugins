@@ -161,7 +161,6 @@ async function main(): Promise<void> {
     if (existsSync(tmpSummary)) {
       const text = readFileSync(tmpSummary, "utf-8");
       if (text.trim()) {
-        const hex = Buffer.from(text, "utf-8").toString("hex");
         const fname = `${cfg.sessionId}.md`;
         const vpath = `/summaries/${cfg.userName}/${fname}`;
         const ts = new Date().toISOString();
@@ -174,15 +173,15 @@ async function main(): Promise<void> {
         if (existing.length > 0) {
           await query(
             `UPDATE "${cfg.memoryTable}" SET ` +
-            `content = E'\\\\x${hex}', summary = E'${esc(text)}', ` +
+            `summary = E'${esc(text)}', ` +
             `size_bytes = ${Buffer.byteLength(text)}, last_update_date = '${ts}' ` +
             `WHERE path = '${esc(vpath)}'`
           );
         } else {
           const id = crypto.randomUUID();
           await query(
-            `INSERT INTO "${cfg.memoryTable}" (id, path, filename, content, summary, author, mime_type, size_bytes, project, creation_date, last_update_date) ` +
-            `VALUES ('${id}', '${esc(vpath)}', '${esc(fname)}', E'\\\\x${hex}', E'${esc(text)}', '${esc(cfg.userName)}', 'text/markdown', ` +
+            `INSERT INTO "${cfg.memoryTable}" (id, path, filename, summary, author, mime_type, size_bytes, project, creation_date, last_update_date) ` +
+            `VALUES ('${id}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', '${esc(cfg.userName)}', 'text/markdown', ` +
             `${Buffer.byteLength(text)}, '${esc(cfg.project)}', '${ts}', '${ts}')`
           );
         }

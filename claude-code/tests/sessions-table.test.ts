@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { DeeplakeFs, isText, guessMime } from "../../src/shell/deeplake-fs.js";
+import { DeeplakeFs, guessMime } from "../../src/shell/deeplake-fs.js";
 
 // ── Mock client that simulates both memory and sessions tables ──────────────
 
@@ -48,20 +48,11 @@ function makeClient(memoryRows: Row[] = [], sessionRows: Row[] = []) {
       }
 
       // Read from memory table
-      if (sql.includes("SELECT summary, content") && !isSessionsQuery) {
+      if (sql.includes("SELECT summary FROM") && !isSessionsQuery) {
         const pathMatch = sql.match(/path = '([^']+)'/);
         if (pathMatch) {
           const row = memoryRows.find(r => r.path === pathMatch[1]);
-          return row ? [{ summary: row.text_content, content: "" }] : [];
-        }
-      }
-
-      // SELECT content (binary) from memory
-      if (sql.includes("SELECT content FROM") && !isSessionsQuery) {
-        const pathMatch = sql.match(/path = '([^']+)'/);
-        if (pathMatch) {
-          const row = memoryRows.find(r => r.path === pathMatch[1]);
-          return row ? [{ content: `\\x${Buffer.from(row.text_content).toString("hex")}` }] : [];
+          return row ? [{ summary: row.text_content }] : [];
         }
       }
 
@@ -257,6 +248,7 @@ describe("ensureSessionsTable schema", () => {
     expect(createSql).toContain("summary TEXT");
     expect(createSql).toContain("author TEXT");
     expect(createSql).not.toContain("content_text");
+    expect(createSql).not.toContain("BYTEA");
   });
 
   it("memory table migration adds author column", async () => {
