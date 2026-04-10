@@ -12,6 +12,7 @@
  *   node auth-login.js invite <email> <mode> — invite member
  *   node auth-login.js members            — list members
  *   node auth-login.js whoami             — show current user/org
+ *   node auth-login.js sessions prune     — list/delete own sessions
  *   node auth-login.js update            — update plugin to latest version
  *   node auth-login.js autoupdate [on|off] — toggle automatic updates (default: on)
  */
@@ -21,6 +22,7 @@ import {
   listWorkspaces, switchWorkspace,
   inviteMember, listMembers, removeMember,
 } from "./auth.js";
+import { sessionPrune } from "./session-prune.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -105,6 +107,16 @@ async function main(): Promise<void> {
       break;
     }
 
+    case "sessions": {
+      const sub = args[1];
+      if (sub === "prune") {
+        await sessionPrune(args.slice(2));
+      } else {
+        console.log("Usage: sessions prune [--all | --before <date> | --session-id <id>] [--yes]");
+      }
+      break;
+    }
+
     case "autoupdate": {
       if (!creds) { console.log("Not logged in."); process.exit(1); }
       const val = args[1]?.toLowerCase();
@@ -123,7 +135,7 @@ async function main(): Promise<void> {
     }
 
     default:
-      console.log("Commands: login, whoami, org list, org switch, workspaces, workspace, invite, members, remove, autoupdate");
+      console.log("Commands: login, whoami, org list, org switch, workspaces, workspace, sessions prune, invite, members, remove, autoupdate");
   }
 }
 
