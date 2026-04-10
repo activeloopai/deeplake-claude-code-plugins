@@ -419,6 +419,7 @@ export class DeeplakeFs implements IFileSystem {
     meta: { project?: string; description?: string; creationDate?: string; lastUpdateDate?: string },
   ): Promise<void> {
     const p = normPath(path);
+    if (this.sessionPaths.has(p)) throw fsErr("EPERM", "session files are read-only", p);
     if (this.dirs.has(p) && !this.files.has(p)) throw fsErr("EISDIR", "illegal operation on a directory", p);
 
     const text = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
@@ -441,6 +442,7 @@ export class DeeplakeFs implements IFileSystem {
 
   async writeFile(path: string, content: FileContent, _opts?: WriteFileOptions | BufferEncoding): Promise<void> {
     const p = normPath(path);
+    if (this.sessionPaths.has(p)) throw fsErr("EPERM", "session files are read-only", p);
     if (this.dirs.has(p) && !this.files.has(p)) throw fsErr("EISDIR", "illegal operation on a directory", p);
 
     const text = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
@@ -581,6 +583,7 @@ export class DeeplakeFs implements IFileSystem {
 
   async rm(path: string, opts?: RmOptions): Promise<void> {
     const p = normPath(path);
+    if (this.sessionPaths.has(p)) throw fsErr("EPERM", "session files are read-only", p);
     if (!this.files.has(p) && !this.dirs.has(p)) {
       if (opts?.force) return;
       throw fsErr("ENOENT", "no such file or directory", p);
@@ -617,6 +620,7 @@ export class DeeplakeFs implements IFileSystem {
 
   async cp(src: string, dest: string, opts?: CpOptions): Promise<void> {
     const s = normPath(src), d = normPath(dest);
+    if (this.sessionPaths.has(d)) throw fsErr("EPERM", "session files are read-only", d);
     if (this.dirs.has(s) && !this.files.has(s)) {
       if (!opts?.recursive) throw fsErr("EISDIR", "is a directory", s);
       for (const fp of [...this.files.keys()].filter(k => k === s || k.startsWith(s + "/"))) {
@@ -628,6 +632,9 @@ export class DeeplakeFs implements IFileSystem {
   }
 
   async mv(src: string, dest: string): Promise<void> {
+    const s = normPath(src), d = normPath(dest);
+    if (this.sessionPaths.has(s)) throw fsErr("EPERM", "session files are read-only", s);
+    if (this.sessionPaths.has(d)) throw fsErr("EPERM", "session files are read-only", d);
     await this.cp(src, dest, { recursive: true });
     await this.rm(src, { recursive: true, force: true });
   }

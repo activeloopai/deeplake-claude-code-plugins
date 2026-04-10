@@ -195,6 +195,69 @@ describe("DeeplakeFs — multiple sessions in same table", () => {
   });
 });
 
+describe("session files are read-only", () => {
+  async function makeFsWithSession() {
+    const sessionRows: Row[] = [
+      { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"user_message"}', size_bytes: 22, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+    ];
+    const memoryRows: Row[] = [
+      { path: "/notes.md", text_content: "hello", size_bytes: 5, mime_type: "text/markdown", creation_date: "2026-01-01" },
+    ];
+    const client = makeClient(memoryRows, sessionRows);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+    return { fs, client };
+  }
+
+  it("writeFile rejects session paths with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.writeFile("/sessions/alice/alice_org_default_s1.jsonl", "overwrite"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("appendFile rejects session paths with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.appendFile("/sessions/alice/alice_org_default_s1.jsonl", "append"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("rm rejects session paths with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.rm("/sessions/alice/alice_org_default_s1.jsonl"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("cp rejects session path as destination with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.cp("/notes.md", "/sessions/alice/alice_org_default_s1.jsonl"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("mv rejects session path as source with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.mv("/sessions/alice/alice_org_default_s1.jsonl", "/moved.jsonl"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("mv rejects session path as destination with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.mv("/notes.md", "/sessions/alice/alice_org_default_s1.jsonl"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("readFile still works on session paths", async () => {
+    const { fs } = await makeFsWithSession();
+    const content = await fs.readFile("/sessions/alice/alice_org_default_s1.jsonl");
+    expect(content).toContain("user_message");
+  });
+
+  it("cp from session path as source works (read-only source is fine)", async () => {
+    const { fs } = await makeFsWithSession();
+    await fs.cp("/sessions/alice/alice_org_default_s1.jsonl", "/copy.jsonl");
+    const content = await fs.readFile("/copy.jsonl");
+    expect(content).toContain("user_message");
+  });
+});
+
 describe("ensureSessionsTable schema", () => {
   it("creates table with JSONB message column", async () => {
     const client = {
