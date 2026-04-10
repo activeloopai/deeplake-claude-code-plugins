@@ -1,7 +1,7 @@
 {
   "name": "hivemind",
-  "version": "0.6.1",
-  "description": "Cloud-backed persistent shared memory for AI agents powered by Activeloop",
+  "version": "0.6.0",
+  "description": "Cloud-backed persistent shared memory for AI agents powered by Deeplake",
   "type": "module",
   "bin": {
     "deeplake-shell": "bundle/deeplake-shell.js"
