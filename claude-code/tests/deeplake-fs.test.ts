@@ -516,7 +516,7 @@ describe("prefetch", () => {
 
     // Should issue exactly one SELECT ... WHERE path IN (...) query
     const prefetchCalls = (client.query.mock.calls as [string][]).filter(
-      c => c[0].includes("SELECT path, summary, content") && c[0].includes("IN (")
+      c => c[0].includes("SELECT path, summary") && c[0].includes("IN (")
     );
     expect(prefetchCalls.length).toBe(1);
     expect(prefetchCalls[0][0]).toContain("/memory/a.txt");
@@ -541,7 +541,7 @@ describe("prefetch", () => {
 
     // Only b.txt should be in the IN list
     const prefetchCalls = (client.query.mock.calls as [string][]).filter(
-      c => c[0].includes("SELECT path, summary, content") && c[0].includes("IN (")
+      c => c[0].includes("SELECT path, summary") && c[0].includes("IN (")
     );
     expect(prefetchCalls.length).toBe(1);
     expect(prefetchCalls[0][0]).not.toContain("/memory/a.txt");
@@ -557,7 +557,7 @@ describe("prefetch", () => {
 
     // No query should be issued — file is in pending batch
     const prefetchCalls = (client.query.mock.calls as [string][]).filter(
-      c => c[0].includes("SELECT path, summary, content")
+      c => c[0].includes("SELECT path, summary")
     );
     expect(prefetchCalls.length).toBe(0);
   });
@@ -570,7 +570,7 @@ describe("prefetch", () => {
 
     // Only a.txt should be queried, nonexistent is not in the tree
     const prefetchCalls = (client.query.mock.calls as [string][]).filter(
-      c => c[0].includes("SELECT path, summary, content") && c[0].includes("IN (")
+      c => c[0].includes("SELECT path, summary") && c[0].includes("IN (")
     );
     expect(prefetchCalls.length).toBe(1);
     expect(prefetchCalls[0][0]).toContain("/memory/a.txt");
@@ -752,7 +752,7 @@ describe("virtual index.md", () => {
     ]);
     const content = await fs.readFile("/index.md");
     expect(content).toContain("# Session Index");
-    expect(content).toContain("| Session | Created | Last Updated | Project | Description |");
+    expect(content).toContain("| Session | Conversation | Created | Last Updated | Project | Description |");
     expect(content).toContain("aaa-111");
     expect(content).toContain("bbb-222");
     expect(content).toContain("my-project");
@@ -807,7 +807,7 @@ describe("virtual index.md", () => {
     const { fs } = await makeFs({}, "/");
     const content = await fs.readFile("/index.md");
     expect(content).toContain("# Session Index");
-    expect(content).toContain("| Session | Created | Last Updated | Project | Description |");
+    expect(content).toContain("| Session | Conversation | Created | Last Updated | Project | Description |");
     // No data rows
     const lines = content.split("\n").filter(l => l.startsWith("| ["));
     expect(lines.length).toBe(0);
