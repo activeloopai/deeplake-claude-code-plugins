@@ -464,6 +464,9 @@ export class DeeplakeFs implements IFileSystem {
     const p = normPath(path);
     const add = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
 
+    // Session files are read-only (multi-row in sessions table, not memory table)
+    if (this.sessionPaths.has(p)) throw fsErr("EPERM", "session files are read-only", p);
+
     // Fast path: SQL-level concat — no read-back, O(1) per append
     if (this.files.has(p) || await this.exists(p).catch(() => false)) {
       const ts = new Date().toISOString();

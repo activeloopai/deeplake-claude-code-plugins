@@ -67362,6 +67362,8 @@ var DeeplakeFs = class _DeeplakeFs {
   async appendFile(path2, content, opts) {
     const p22 = normPath(path2);
     const add = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
+    if (this.sessionPaths.has(p22))
+      throw fsErr("EPERM", "session files are read-only", p22);
     if (this.files.has(p22) || await this.exists(p22).catch(() => false)) {
       const ts3 = (/* @__PURE__ */ new Date()).toISOString();
       await this.client.query(`UPDATE "${this.table}" SET summary = summary || E'${sqlStr(add)}', size_bytes = size_bytes + ${Buffer.byteLength(add, "utf-8")}, last_update_date = '${ts3}' WHERE path = '${sqlStr(p22)}'`);
