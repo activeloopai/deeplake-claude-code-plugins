@@ -1,7 +1,8 @@
 import { build } from "esbuild";
 import { chmodSync } from "node:fs";
 
-const hooks = [
+// Claude Code plugin
+const ccHooks = [
   { entry: "dist/src/hooks/session-start.js", out: "session-start" },
   { entry: "dist/src/hooks/capture.js", out: "capture" },
   { entry: "dist/src/hooks/pre-tool-use.js", out: "pre-tool-use" },
@@ -9,27 +10,37 @@ const hooks = [
   { entry: "dist/src/hooks/wiki-worker.js", out: "wiki-worker" },
 ];
 
-const shell = [
+const ccShell = [
   { entry: "dist/src/shell/deeplake-shell.js", out: "shell/deeplake-shell" },
 ];
 
-const commands = [
+const ccCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
 ];
 
-const all = [...hooks, ...shell, ...commands];
+const ccAll = [...ccHooks, ...ccShell, ...ccCommands];
 
 await build({
-  entryPoints: Object.fromEntries(all.map(h => [h.out, h.entry])),
+  entryPoints: Object.fromEntries(ccAll.map(h => [h.out, h.entry])),
   bundle: true,
   platform: "node",
   format: "esm",
-  outdir: "bundle",
+  outdir: "claude-code/bundle",
   external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
 });
 
-for (const h of all) {
-  chmodSync(`bundle/${h.out}.js`, 0o755);
+for (const h of ccAll) {
+  chmodSync(`claude-code/bundle/${h.out}.js`, 0o755);
 }
 
-console.log(`Bundled ${all.length} entries into bundle/`);
+// OpenClaw plugin
+await build({
+  entryPoints: { index: "openclaw/src/index.ts" },
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "openclaw/dist",
+  external: ["node:*"],
+});
+
+console.log(`Built: ${ccAll.length} CC bundles + 1 OpenClaw bundle`);

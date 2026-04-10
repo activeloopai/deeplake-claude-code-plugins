@@ -1,0 +1,4458 @@
+[
+  {
+    "experiment": "bench-v2-u5-s1",
+    "numUsers": 5,
+    "sessionsPerUser": 1,
+    "totalSessions": 5,
+    "durationMs": 31841.618273,
+    "totalQueries": 115,
+    "totalErrors": 8,
+    "errorRate": 0.06956521739130435,
+    "throughputQps": 3.6116254837937642,
+    "overall": {
+      "p50": 545.147739,
+      "p95": 1140.1219310000015,
+      "p99": 5388.096564999998,
+      "min": 108.2126700000008,
+      "max": 6218.201097999998,
+      "mean": 697.9117921028035
+    },
+    "byOperation": {
+      "alter_table": {
+        "count": 8,
+        "errors": 8,
+        "errorRate": 1,
+        "p50": 93.35346400000003,
+        "p95": 109.02415900000005,
+        "p99": 109.02415900000005,
+        "min": 88.47963800000002,
+        "max": 109.02415900000005,
+        "mean": 96.41789537500003
+      },
+      "sync_table": {
+        "count": 7,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 157.25174700000025,
+        "p95": 348.5469330000001,
+        "p99": 348.5469330000001,
+        "min": 150.12993700000015,
+        "max": 348.5469330000001,
+        "mean": 215.62147971428664
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 318.945385,
+        "p95": 318.945385,
+        "p99": 318.945385,
+        "min": 318.945385,
+        "max": 318.945385,
+        "mean": 318.945385
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 358.21223299999974,
+        "p95": 358.21223299999974,
+        "p99": 358.21223299999974,
+        "min": 358.21223299999974,
+        "max": 358.21223299999974,
+        "mean": 358.21223299999974
+      },
+      "memory_insert": {
+        "count": 5,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 455.26944300000014,
+        "p95": 658.3774179999996,
+        "p99": 658.3774179999996,
+        "min": 407.6516150000007,
+        "max": 658.3774179999996,
+        "mean": 493.8940774000001
+      },
+      "capture_insert": {
+        "count": 78,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 561.888688,
+        "p95": 1072.657996,
+        "p99": 1140.1219310000015,
+        "min": 388.79767100000026,
+        "max": 1140.1219310000015,
+        "mean": 614.3260554230769
+      },
+      "read_file_text": {
+        "count": 10,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 114.63628900000003,
+        "p95": 770.1405219999997,
+        "p99": 770.1405219999997,
+        "min": 108.2126700000008,
+        "max": 770.1405219999997,
+        "mean": 261.7962240000003
+      },
+      "memory_update": {
+        "count": 5,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 4275.258471000001,
+        "p95": 6218.201097999998,
+        "p99": 6218.201097999998,
+        "min": 1310.4141610000006,
+        "max": 6218.201097999998,
+        "mean": 3897.0377657999998
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 16,
+        "errors": 8,
+        "meanLatencyMs": 254.3308289375,
+        "p95LatencyMs": 810.4222990000003
+      },
+      {
+        "second": 1,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 509.5087145000002,
+        "p95LatencyMs": 524.3145290000002
+      },
+      {
+        "second": 2,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 476.2530728571429,
+        "p95LatencyMs": 674.1674089999997
+      },
+      {
+        "second": 3,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 606.7252971,
+        "p95LatencyMs": 856.3095350000003
+      },
+      {
+        "second": 4,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 586.8605757142857,
+        "p95LatencyMs": 881.5875459999997
+      },
+      {
+        "second": 5,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 528.8457721000001,
+        "p95LatencyMs": 677.401969999999
+      },
+      {
+        "second": 6,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 563.4495777499999,
+        "p95LatencyMs": 765.7427609999995
+      },
+      {
+        "second": 7,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 710.2201461249999,
+        "p95LatencyMs": 1132.2060199999996
+      },
+      {
+        "second": 8,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 645.9880760000002,
+        "p95LatencyMs": 1112.2730690000008
+      },
+      {
+        "second": 9,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 673.2657152500003,
+        "p95LatencyMs": 1140.1219310000015
+      },
+      {
+        "second": 10,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 609.0692877142855,
+        "p95LatencyMs": 863.6975220000004
+      },
+      {
+        "second": 11,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 1003.1926222000002,
+        "p95LatencyMs": 5388.096564999998
+      },
+      {
+        "second": 12,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 330.42667371428615,
+        "p95LatencyMs": 770.1405219999997
+      },
+      {
+        "second": 13,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 127.24819800000023,
+        "p95LatencyMs": 146.28372599999966
+      },
+      {
+        "second": 17,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 3187.7230229999986,
+        "p95LatencyMs": 6218.201097999998
+      },
+      {
+        "second": 23,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1310.4141610000006,
+        "p95LatencyMs": 1310.4141610000006
+      },
+      {
+        "second": 24,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 2293.2185339999996,
+        "p95LatencyMs": 2293.2185339999996
+      },
+      {
+        "second": 27,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 4275.258471000001,
+        "p95LatencyMs": 4275.258471000001
+      },
+      {
+        "second": 31,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 347.4563890000063,
+        "p95LatencyMs": 347.4563890000063
+      }
+    ]
+  },
+  {
+    "experiment": "bench-v2-u5-s3",
+    "numUsers": 5,
+    "sessionsPerUser": 3,
+    "totalSessions": 15,
+    "durationMs": 86247.247447,
+    "totalQueries": 305,
+    "totalErrors": 4,
+    "errorRate": 0.013114754098360656,
+    "throughputQps": 3.536344741754527,
+    "overall": {
+      "p50": 802.8040560000009,
+      "p95": 1843.656965999995,
+      "p99": 7458.818092000001,
+      "min": 109.08670299999358,
+      "max": 10386.580323000002,
+      "mean": 1023.8434058837206
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1285.7809669999988,
+        "p95": 1454.4258689999988,
+        "p99": 1454.4258689999988,
+        "min": 1285.7809669999988,
+        "max": 1454.4258689999988,
+        "mean": 1370.1034179999988
+      },
+      "alter_table": {
+        "count": 4,
+        "errors": 4,
+        "errorRate": 1,
+        "p50": 93.92493600000307,
+        "p95": 101.57257199999731,
+        "p99": 101.57257199999731,
+        "min": 88.29184600000008,
+        "max": 101.57257199999731,
+        "mean": 94.57286875000136
+      },
+      "sync_table": {
+        "count": 8,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 276.8159899999955,
+        "p95": 374.79387300000235,
+        "p99": 374.79387300000235,
+        "min": 151.84081700000388,
+        "max": 374.79387300000235,
+        "mean": 271.11550024999997
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 120.45011499999964,
+        "p95": 120.45011499999964,
+        "p99": 120.45011499999964,
+        "min": 120.45011499999964,
+        "max": 120.45011499999964,
+        "mean": 120.45011499999964
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 121.48486799999955,
+        "p95": 121.48486799999955,
+        "p99": 121.48486799999955,
+        "min": 121.48486799999955,
+        "max": 121.48486799999955,
+        "mean": 121.48486799999955
+      },
+      "memory_insert": {
+        "count": 15,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 521.7992000000013,
+        "p95": 759.3579079999981,
+        "p99": 759.3579079999981,
+        "min": 415.1185450000048,
+        "max": 759.3579079999981,
+        "mean": 530.9594700000001
+      },
+      "capture_insert": {
+        "count": 230,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 850.4408909999984,
+        "p95": 1444.6859459999978,
+        "p99": 1903.555631000003,
+        "min": 428.87963899999886,
+        "max": 2209.526337999996,
+        "mean": 915.1497583521738
+      },
+      "read_file_text": {
+        "count": 29,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 138.28807499999675,
+        "p95": 600.527344999995,
+        "p99": 664.8467010000022,
+        "min": 109.08670299999358,
+        "max": 664.8467010000022,
+        "mean": 291.5181266206903
+      },
+      "memory_update": {
+        "count": 15,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 4290.492381999997,
+        "p95": 10386.580323000002,
+        "p99": 10386.580323000002,
+        "min": 1105.7448729999887,
+        "max": 10386.580323000002,
+        "mean": 5074.862480466665
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 12,
+        "errors": 4,
+        "meanLatencyMs": 399.16058425,
+        "p95LatencyMs": 1454.4258689999988
+      },
+      {
+        "second": 1,
+        "count": 4,
+        "errors": 0,
+        "meanLatencyMs": 652.1522474999983,
+        "p95LatencyMs": 789.3641309999948
+      },
+      {
+        "second": 2,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 521.2976206666668,
+        "p95LatencyMs": 669.3473270000031
+      },
+      {
+        "second": 3,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 528.4209435000012,
+        "p95LatencyMs": 797.9849340000001
+      },
+      {
+        "second": 4,
+        "count": 5,
+        "errors": 0,
+        "meanLatencyMs": 564.3194665999981,
+        "p95LatencyMs": 759.3579079999981
+      },
+      {
+        "second": 5,
+        "count": 5,
+        "errors": 0,
+        "meanLatencyMs": 581.3222973999975,
+        "p95LatencyMs": 838.4675919999936
+      },
+      {
+        "second": 6,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 525.116616833333,
+        "p95LatencyMs": 650.302373999999
+      },
+      {
+        "second": 7,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 502.39876716666794,
+        "p95LatencyMs": 604.608146999999
+      },
+      {
+        "second": 8,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 498.5064805000002,
+        "p95LatencyMs": 849.699901
+      },
+      {
+        "second": 9,
+        "count": 20,
+        "errors": 0,
+        "meanLatencyMs": 1437.8541092999992,
+        "p95LatencyMs": 1783.0653729999976
+      },
+      {
+        "second": 10,
+        "count": 15,
+        "errors": 0,
+        "meanLatencyMs": 807.934062066665,
+        "p95LatencyMs": 1425.2373789999983
+      },
+      {
+        "second": 11,
+        "count": 15,
+        "errors": 0,
+        "meanLatencyMs": 895.5328094666659,
+        "p95LatencyMs": 1680.2825280000034
+      },
+      {
+        "second": 12,
+        "count": 15,
+        "errors": 0,
+        "meanLatencyMs": 939.1312362666664,
+        "p95LatencyMs": 1903.555631000003
+      },
+      {
+        "second": 13,
+        "count": 15,
+        "errors": 0,
+        "meanLatencyMs": 1102.2568231333328,
+        "p95LatencyMs": 1554.8887780000005
+      },
+      {
+        "second": 14,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 904.6248342999985,
+        "p95LatencyMs": 1147.0503959999987
+      },
+      {
+        "second": 15,
+        "count": 13,
+        "errors": 0,
+        "meanLatencyMs": 954.1363410769225,
+        "p95LatencyMs": 1352.2732199999955
+      },
+      {
+        "second": 16,
+        "count": 14,
+        "errors": 0,
+        "meanLatencyMs": 953.4574349285716,
+        "p95LatencyMs": 1843.656965999995
+      },
+      {
+        "second": 17,
+        "count": 15,
+        "errors": 0,
+        "meanLatencyMs": 1036.5413513333338,
+        "p95LatencyMs": 2209.526337999996
+      },
+      {
+        "second": 18,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 1010.4877152500006,
+        "p95LatencyMs": 1366.952409000005
+      },
+      {
+        "second": 19,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 1114.0979230000019,
+        "p95LatencyMs": 1919.5513169999977
+      },
+      {
+        "second": 20,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 1710.0566750833332,
+        "p95LatencyMs": 7654.121887999994
+      },
+      {
+        "second": 21,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 914.3828331666676,
+        "p95LatencyMs": 1691.9376049999992
+      },
+      {
+        "second": 22,
+        "count": 14,
+        "errors": 0,
+        "meanLatencyMs": 616.7498882142858,
+        "p95LatencyMs": 1292.328873999999
+      },
+      {
+        "second": 23,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 633.5914960000009,
+        "p95LatencyMs": 909.6904859999922
+      },
+      {
+        "second": 24,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 566.9794535454527,
+        "p95LatencyMs": 1218.0654510000022
+      },
+      {
+        "second": 25,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 596.4604905714265,
+        "p95LatencyMs": 683.7440210000059
+      },
+      {
+        "second": 26,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 348.3504401818209,
+        "p95LatencyMs": 673.6916490000003
+      },
+      {
+        "second": 27,
+        "count": 4,
+        "errors": 0,
+        "meanLatencyMs": 1960.9484959999972,
+        "p95LatencyMs": 7458.818092000001
+      },
+      {
+        "second": 35,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 6819.745928999997,
+        "p95LatencyMs": 6819.745928999997
+      },
+      {
+        "second": 42,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 9758.000790999999,
+        "p95LatencyMs": 9758.000790999999
+      },
+      {
+        "second": 51,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 6949.465264999992,
+        "p95LatencyMs": 6949.465264999992
+      },
+      {
+        "second": 58,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1884.8749840000091,
+        "p95LatencyMs": 1884.8749840000091
+      },
+      {
+        "second": 60,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 4290.492381999997,
+        "p95LatencyMs": 4290.492381999997
+      },
+      {
+        "second": 65,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 2617.7291849999892,
+        "p95LatencyMs": 2617.7291849999892
+      },
+      {
+        "second": 67,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1154.3483670000132,
+        "p95LatencyMs": 1154.3483670000132
+      },
+      {
+        "second": 68,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 3555.734706999996,
+        "p95LatencyMs": 3555.734706999996
+      },
+      {
+        "second": 72,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1242.0588850000058,
+        "p95LatencyMs": 1242.0588850000058
+      },
+      {
+        "second": 73,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 3915.1823799999984,
+        "p95LatencyMs": 3915.1823799999984
+      },
+      {
+        "second": 77,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1105.7448729999887,
+        "p95LatencyMs": 1105.7448729999887
+      },
+      {
+        "second": 78,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 7330.039155999999,
+        "p95LatencyMs": 7330.039155999999
+      },
+      {
+        "second": 85,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 324.44953100000566,
+        "p95LatencyMs": 324.44953100000566
+      }
+    ]
+  },
+  {
+    "experiment": "bench-v2-u5-s5",
+    "numUsers": 5,
+    "sessionsPerUser": 5,
+    "totalSessions": 25,
+    "durationMs": 218837.60575800002,
+    "totalQueries": 479,
+    "totalErrors": 4,
+    "errorRate": 0.008350730688935281,
+    "throughputQps": 2.1888376924105937,
+    "overall": {
+      "p50": 1420.3107369999925,
+      "p95": 2700.6042359999847,
+      "p99": 13893.144350999995,
+      "min": 105.11430100002326,
+      "max": 15146.461850000022,
+      "mean": 1532.4035057368424
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 2307.384269000002,
+        "p95": 2599.8507609999797,
+        "p99": 2599.8507609999797,
+        "min": 2307.384269000002,
+        "max": 2599.8507609999797,
+        "mean": 2453.617514999991
+      },
+      "alter_table": {
+        "count": 4,
+        "errors": 4,
+        "errorRate": 1,
+        "p50": 94.07285599998431,
+        "p95": 99.8958509999793,
+        "p99": 99.8958509999793,
+        "min": 89.88197399998899,
+        "max": 99.8958509999793,
+        "mean": 95.58990074999019
+      },
+      "sync_table": {
+        "count": 12,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 172.27236100001028,
+        "p95": 475.373174999957,
+        "p99": 475.373174999957,
+        "min": 143.45567699999083,
+        "max": 475.373174999957,
+        "mean": 253.52225349999694
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 105.11430100002326,
+        "p95": 105.11430100002326,
+        "p99": 105.11430100002326,
+        "min": 105.11430100002326,
+        "max": 105.11430100002326,
+        "mean": 105.11430100002326
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 122.95757299999241,
+        "p95": 122.95757299999241,
+        "p99": 122.95757299999241,
+        "min": 122.95757299999241,
+        "max": 122.95757299999241,
+        "mean": 122.95757299999241
+      },
+      "memory_insert": {
+        "count": 25,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 487.3292800000054,
+        "p95": 730.6774180000066,
+        "p99": 819.2423830000043,
+        "min": 380.5796350000019,
+        "max": 819.2423830000043,
+        "mean": 527.5758739200024
+      },
+      "capture_insert": {
+        "count": 362,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1507.1332859999966,
+        "p95": 2125.6859159999876,
+        "p99": 3691.6269890000112,
+        "min": 368.7758380000014,
+        "max": 4529.617395000008,
+        "mean": 1393.0599595469616
+      },
+      "read_file_text": {
+        "count": 47,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 270.56277099999716,
+        "p95": 614.7431429999997,
+        "p99": 645.1511570000148,
+        "min": 106.66279699999723,
+        "max": 645.1511570000148,
+        "mean": 298.00405895744854
+      },
+      "memory_update": {
+        "count": 25,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 4802.952813000011,
+        "p95": 14830.513249999989,
+        "p99": 15146.461850000022,
+        "min": 968.074357000005,
+        "max": 15146.461850000022,
+        "mean": 7529.231932160004
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 14,
+        "errors": 4,
+        "meanLatencyMs": 597.4211598571419,
+        "p95LatencyMs": 2599.8507609999797
+      },
+      {
+        "second": 1,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 568.8885106666615,
+        "p95LatencyMs": 706.7083510000084
+      },
+      {
+        "second": 2,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 469.7111126666714,
+        "p95LatencyMs": 636.3144800000009
+      },
+      {
+        "second": 3,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 502.7115065714294,
+        "p95LatencyMs": 869.4234120000037
+      },
+      {
+        "second": 4,
+        "count": 5,
+        "errors": 0,
+        "meanLatencyMs": 471.00777579999993,
+        "p95LatencyMs": 563.6503369999991
+      },
+      {
+        "second": 5,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 488.3497499999981,
+        "p95LatencyMs": 730.6774180000066
+      },
+      {
+        "second": 6,
+        "count": 5,
+        "errors": 0,
+        "meanLatencyMs": 626.7214304000081,
+        "p95LatencyMs": 834.673941999994
+      },
+      {
+        "second": 7,
+        "count": 5,
+        "errors": 0,
+        "meanLatencyMs": 459.4079312000016,
+        "p95LatencyMs": 526.1154889999889
+      },
+      {
+        "second": 8,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 478.8780798333367,
+        "p95LatencyMs": 646.7981330000039
+      },
+      {
+        "second": 9,
+        "count": 5,
+        "errors": 0,
+        "meanLatencyMs": 329.0020290000073,
+        "p95LatencyMs": 599.3988970000064
+      },
+      {
+        "second": 10,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 463.1298220000026,
+        "p95LatencyMs": 469.93820000000414
+      },
+      {
+        "second": 11,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 481.38965399998415,
+        "p95LatencyMs": 503.1809349999821
+      },
+      {
+        "second": 12,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 490.6567944999988,
+        "p95LatencyMs": 568.4702919999836
+      },
+      {
+        "second": 13,
+        "count": 4,
+        "errors": 0,
+        "meanLatencyMs": 3249.557833000006,
+        "p95LatencyMs": 11721.094848000008
+      },
+      {
+        "second": 14,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 529.8666745000082,
+        "p95LatencyMs": 535.7109330000239
+      },
+      {
+        "second": 15,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 412.49108900000283,
+        "p95LatencyMs": 431.91812099999515
+      },
+      {
+        "second": 16,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 419.33747550001135,
+        "p95LatencyMs": 421.27712400001474
+      },
+      {
+        "second": 17,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 446.3311035000079,
+        "p95LatencyMs": 460.4309170000197
+      },
+      {
+        "second": 18,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 473.79714733333094,
+        "p95LatencyMs": 546.9173059999885
+      },
+      {
+        "second": 19,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 434.85193000000436,
+        "p95LatencyMs": 469.45069699999294
+      },
+      {
+        "second": 20,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 406.8582705000008,
+        "p95LatencyMs": 417.55520299999625
+      },
+      {
+        "second": 25,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 12182.318834000005,
+        "p95LatencyMs": 12182.318834000005
+      },
+      {
+        "second": 37,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 379.95157199999085,
+        "p95LatencyMs": 379.95157199999085
+      },
+      {
+        "second": 38,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 7494.855362000002,
+        "p95LatencyMs": 13893.144350999995
+      },
+      {
+        "second": 39,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 729.3372730000119,
+        "p95LatencyMs": 746.4710560000094
+      },
+      {
+        "second": 40,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 596.2605909999984,
+        "p95LatencyMs": 596.2605909999984
+      },
+      {
+        "second": 41,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 464.2541590000037,
+        "p95LatencyMs": 528.9794260000053
+      },
+      {
+        "second": 42,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 538.8171115000005,
+        "p95LatencyMs": 667.3003029999963
+      },
+      {
+        "second": 43,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 462.4854054999887,
+        "p95LatencyMs": 544.027304999996
+      },
+      {
+        "second": 44,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 444.30066200000874,
+        "p95LatencyMs": 504.85468000001856
+      },
+      {
+        "second": 45,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 457.3353405000089,
+        "p95LatencyMs": 487.86342500001774
+      },
+      {
+        "second": 51,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 389.59608700001263,
+        "p95LatencyMs": 389.59608700001263
+      },
+      {
+        "second": 52,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 5675.203087000002,
+        "p95LatencyMs": 10420.213935000007
+      },
+      {
+        "second": 53,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 632.3211350000056,
+        "p95LatencyMs": 827.8482590000203
+      },
+      {
+        "second": 54,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 473.5388419999799,
+        "p95LatencyMs": 473.5388419999799
+      },
+      {
+        "second": 55,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 590.4795810000069,
+        "p95LatencyMs": 650.6294150000031
+      },
+      {
+        "second": 56,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 459.9768849999964,
+        "p95LatencyMs": 528.5016349999933
+      },
+      {
+        "second": 57,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 429.2503546666703,
+        "p95LatencyMs": 447.90169400000013
+      },
+      {
+        "second": 58,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 392.64721599999757,
+        "p95LatencyMs": 487.4574399999983
+      },
+      {
+        "second": 59,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 309.3935250000213,
+        "p95LatencyMs": 309.3935250000213
+      },
+      {
+        "second": 62,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 1123.2074730000022,
+        "p95LatencyMs": 2083.1938840000075
+      },
+      {
+        "second": 65,
+        "count": 22,
+        "errors": 0,
+        "meanLatencyMs": 1762.2202308636372,
+        "p95LatencyMs": 3934.05257900001
+      },
+      {
+        "second": 66,
+        "count": 15,
+        "errors": 0,
+        "meanLatencyMs": 1380.6124243999968,
+        "p95LatencyMs": 3366.8174899999867
+      },
+      {
+        "second": 67,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 1936.5536758181777,
+        "p95LatencyMs": 2628.7707419999933
+      },
+      {
+        "second": 68,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 1930.0439980000035,
+        "p95LatencyMs": 3691.6269890000112
+      },
+      {
+        "second": 69,
+        "count": 15,
+        "errors": 0,
+        "meanLatencyMs": 1431.6842907999992,
+        "p95LatencyMs": 2069.7721659999806
+      },
+      {
+        "second": 70,
+        "count": 13,
+        "errors": 0,
+        "meanLatencyMs": 1536.3834973846142,
+        "p95LatencyMs": 1738.9240409999911
+      },
+      {
+        "second": 71,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 1628.1678339090881,
+        "p95LatencyMs": 1918.826212999993
+      },
+      {
+        "second": 72,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 1698.5173965833358,
+        "p95LatencyMs": 2693.359314000001
+      },
+      {
+        "second": 73,
+        "count": 13,
+        "errors": 0,
+        "meanLatencyMs": 1627.3810616923058,
+        "p95LatencyMs": 1830.247040999995
+      },
+      {
+        "second": 74,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 1660.8926119090888,
+        "p95LatencyMs": 2177.6138780000038
+      },
+      {
+        "second": 75,
+        "count": 13,
+        "errors": 0,
+        "meanLatencyMs": 1590.2327632307647,
+        "p95LatencyMs": 1862.3007509999734
+      },
+      {
+        "second": 76,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 1612.4532440833282,
+        "p95LatencyMs": 2018.2117290000024
+      },
+      {
+        "second": 77,
+        "count": 14,
+        "errors": 0,
+        "meanLatencyMs": 1609.4297947142893,
+        "p95LatencyMs": 1988.9393790000177
+      },
+      {
+        "second": 78,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 1607.2521070000003,
+        "p95LatencyMs": 1968.6114339999913
+      },
+      {
+        "second": 79,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 1635.6584457499969,
+        "p95LatencyMs": 2125.6859159999876
+      },
+      {
+        "second": 80,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 2574.128588999995,
+        "p95LatencyMs": 10879.98070699998
+      },
+      {
+        "second": 81,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 1633.1309965833327,
+        "p95LatencyMs": 2235.0782210000034
+      },
+      {
+        "second": 82,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 1630.3557517499976,
+        "p95LatencyMs": 2008.7429079999856
+      },
+      {
+        "second": 83,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 1530.0698301666587,
+        "p95LatencyMs": 1911.7902119999926
+      },
+      {
+        "second": 84,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 1543.1268792727312,
+        "p95LatencyMs": 1963.794265000004
+      },
+      {
+        "second": 85,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 1465.1187252500022,
+        "p95LatencyMs": 2000.5185050000146
+      },
+      {
+        "second": 86,
+        "count": 13,
+        "errors": 0,
+        "meanLatencyMs": 1012.9868327692361,
+        "p95LatencyMs": 1538.7222279999987
+      },
+      {
+        "second": 87,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 1203.2876190000025,
+        "p95LatencyMs": 1511.2397029999993
+      },
+      {
+        "second": 88,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 1236.7968580909046,
+        "p95LatencyMs": 2186.676760000002
+      },
+      {
+        "second": 89,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 1004.3921887000033,
+        "p95LatencyMs": 1476.5314490000019
+      },
+      {
+        "second": 90,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 488.34535236363246,
+        "p95LatencyMs": 1115.4324139999808
+      },
+      {
+        "second": 91,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 1803.1800714000099,
+        "p95LatencyMs": 11929.671541999996
+      },
+      {
+        "second": 92,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 504.81412059999127,
+        "p95LatencyMs": 1131.2679399999906
+      },
+      {
+        "second": 93,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 188.3947114285755,
+        "p95LatencyMs": 474.93341900000814
+      },
+      {
+        "second": 103,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 14830.513249999989,
+        "p95LatencyMs": 14830.513249999989
+      },
+      {
+        "second": 117,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 11529.791435000021,
+        "p95LatencyMs": 11529.791435000021
+      },
+      {
+        "second": 129,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1431.6821170000476,
+        "p95LatencyMs": 1431.6821170000476
+      },
+      {
+        "second": 130,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 14454.652110999974,
+        "p95LatencyMs": 14454.652110999974
+      },
+      {
+        "second": 145,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 2092.2044979999773,
+        "p95LatencyMs": 2092.2044979999773
+      },
+      {
+        "second": 147,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 15146.461850000022,
+        "p95LatencyMs": 15146.461850000022
+      },
+      {
+        "second": 162,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 4516.034159000032,
+        "p95LatencyMs": 4516.034159000032
+      },
+      {
+        "second": 167,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1915.905252000026,
+        "p95LatencyMs": 1915.905252000026
+      },
+      {
+        "second": 168,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 12020.283692000026,
+        "p95LatencyMs": 12020.283692000026
+      },
+      {
+        "second": 180,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 14285.987342000008,
+        "p95LatencyMs": 14285.987342000008
+      },
+      {
+        "second": 195,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 2639.162993999984,
+        "p95LatencyMs": 4802.952813000011
+      },
+      {
+        "second": 200,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 4526.493050999998,
+        "p95LatencyMs": 4526.493050999998
+      },
+      {
+        "second": 205,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 2790.994898999983,
+        "p95LatencyMs": 2790.994898999983
+      },
+      {
+        "second": 207,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1196.587413000001,
+        "p95LatencyMs": 1196.587413000001
+      },
+      {
+        "second": 209,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 2700.6042359999847,
+        "p95LatencyMs": 2700.6042359999847
+      },
+      {
+        "second": 211,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 968.074357000005,
+        "p95LatencyMs": 968.074357000005
+      },
+      {
+        "second": 212,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 4142.458042000013,
+        "p95LatencyMs": 4142.458042000013
+      },
+      {
+        "second": 216,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1769.4996859999956,
+        "p95LatencyMs": 1769.4996859999956
+      },
+      {
+        "second": 218,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 208.1953349999967,
+        "p95LatencyMs": 208.1953349999967
+      }
+    ]
+  },
+  {
+    "experiment": "bench-v2-u5-s10",
+    "numUsers": 5,
+    "sessionsPerUser": 10,
+    "totalSessions": 50,
+    "durationMs": 405233.539358,
+    "totalQueries": 801,
+    "totalErrors": 14,
+    "errorRate": 0.017478152309612985,
+    "throughputQps": 1.9766379684884958,
+    "overall": {
+      "p50": 3168.407344999956,
+      "p95": 4956.236095,
+      "p99": 26337.49488299992,
+      "min": 110.12023800006136,
+      "max": 29367.120808999985,
+      "mean": 3036.365980966967
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1162.5226470000343,
+        "p95": 1510.732313000015,
+        "p99": 1510.732313000015,
+        "min": 1162.5226470000343,
+        "max": 1510.732313000015,
+        "mean": 1336.6274800000247
+      },
+      "alter_table": {
+        "count": 4,
+        "errors": 4,
+        "errorRate": 1,
+        "p50": 94.90474399999948,
+        "p95": 100.36308199999621,
+        "p99": 100.36308199999621,
+        "min": 84.45109200000297,
+        "max": 100.36308199999621,
+        "mean": 94.22379150000052
+      },
+      "sync_table": {
+        "count": 9,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 292.9934030000004,
+        "p95": 410.7863639999996,
+        "p99": 410.7863639999996,
+        "min": 150.4852949999622,
+        "max": 410.7863639999996,
+        "mean": 285.6714941111212
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 267.36718399997335,
+        "p95": 267.36718399997335,
+        "p99": 267.36718399997335,
+        "min": 267.36718399997335,
+        "max": 267.36718399997335,
+        "mean": 267.36718399997335
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 115.95828799996525,
+        "p95": 115.95828799996525,
+        "p99": 115.95828799996525,
+        "min": 115.95828799996525,
+        "max": 115.95828799996525,
+        "mean": 115.95828799996525
+      },
+      "memory_insert": {
+        "count": 50,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 462.35979300003964,
+        "p95": 736.1968050000141,
+        "p99": 854.9597189999768,
+        "min": 365.0437699999893,
+        "max": 854.9597189999768,
+        "mean": 514.1417798400007
+      },
+      "capture_insert": {
+        "count": 630,
+        "errors": 9,
+        "errorRate": 0.014285714285714285,
+        "p50": 3608.6823129999684,
+        "p95": 4912.006733999995,
+        "p99": 6119.965542999969,
+        "min": 91.61403899994912,
+        "max": 9521.55428099999,
+        "mean": 3184.524468836509
+      },
+      "read_file_text": {
+        "count": 75,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 263.29507100000046,
+        "p95": 662.0408700000262,
+        "p99": 698.3287410000339,
+        "min": 110.12023800006136,
+        "max": 698.3287410000339,
+        "mean": 333.3451900533424
+      },
+      "memory_update": {
+        "count": 29,
+        "errors": 1,
+        "errorRate": 0.034482758620689655,
+        "p50": 5170.892521000002,
+        "p95": 29182.512428999995,
+        "p99": 29367.120808999985,
+        "min": 1011.3189680000069,
+        "max": 29367.120808999985,
+        "mean": 12141.269786379298
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 14,
+        "errors": 4,
+        "meanLatencyMs": 429.34349300000133,
+        "p95LatencyMs": 1510.732313000015
+      },
+      {
+        "second": 1,
+        "count": 4,
+        "errors": 0,
+        "meanLatencyMs": 486.28121999998984,
+        "p95LatencyMs": 604.4255649999832
+      },
+      {
+        "second": 2,
+        "count": 4,
+        "errors": 0,
+        "meanLatencyMs": 406.4291787500115,
+        "p95LatencyMs": 431.52530100004515
+      },
+      {
+        "second": 3,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 509.4491253333399,
+        "p95LatencyMs": 709.230457000027
+      },
+      {
+        "second": 4,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 484.2615924999894,
+        "p95LatencyMs": 736.1968050000141
+      },
+      {
+        "second": 5,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 518.6655855000039,
+        "p95LatencyMs": 683.6982870000065
+      },
+      {
+        "second": 6,
+        "count": 4,
+        "errors": 0,
+        "meanLatencyMs": 667.0782679999975,
+        "p95LatencyMs": 911.4624779999722
+      },
+      {
+        "second": 7,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 527.1823461666645,
+        "p95LatencyMs": 725.3133919999818
+      },
+      {
+        "second": 8,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 453.98583614286537,
+        "p95LatencyMs": 542.8724199999706
+      },
+      {
+        "second": 9,
+        "count": 5,
+        "errors": 0,
+        "meanLatencyMs": 648.4600353999995,
+        "p95LatencyMs": 954.7830730000278
+      },
+      {
+        "second": 10,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 486.0052010000024,
+        "p95LatencyMs": 524.641260000004
+      },
+      {
+        "second": 11,
+        "count": 4,
+        "errors": 0,
+        "meanLatencyMs": 447.73784824999166,
+        "p95LatencyMs": 508.8307100000093
+      },
+      {
+        "second": 12,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 523.5031400000153,
+        "p95LatencyMs": 630.7125850000302
+      },
+      {
+        "second": 13,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 776.9001169999829,
+        "p95LatencyMs": 776.9001169999829
+      },
+      {
+        "second": 14,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 584.0262369999837,
+        "p95LatencyMs": 645.0603349999874
+      },
+      {
+        "second": 15,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 687.3123999999953,
+        "p95LatencyMs": 687.3123999999953
+      },
+      {
+        "second": 16,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 567.5723579999758,
+        "p95LatencyMs": 712.8340429999516
+      },
+      {
+        "second": 17,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 432.9897490000294,
+        "p95LatencyMs": 462.35979300003964
+      },
+      {
+        "second": 18,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 674.5933075000066,
+        "p95LatencyMs": 687.0637430000352
+      },
+      {
+        "second": 19,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 542.905700000003,
+        "p95LatencyMs": 599.9923800000106
+      },
+      {
+        "second": 20,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 564.2057884999958,
+        "p95LatencyMs": 728.2942730000359
+      },
+      {
+        "second": 21,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 425.90398699999787,
+        "p95LatencyMs": 425.90398699999787
+      },
+      {
+        "second": 22,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 468.1453239999828,
+        "p95LatencyMs": 520.3651139999856
+      },
+      {
+        "second": 23,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 568.1705904999981,
+        "p95LatencyMs": 682.2699179999763
+      },
+      {
+        "second": 24,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 453.10527800003183,
+        "p95LatencyMs": 484.8205550000421
+      },
+      {
+        "second": 25,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 505.06426049998845,
+        "p95LatencyMs": 509.0083899999736
+      },
+      {
+        "second": 26,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 10096.76418566665,
+        "p95LatencyMs": 29182.512428999995
+      },
+      {
+        "second": 27,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 646.0230474999698,
+        "p95LatencyMs": 660.7496219999739
+      },
+      {
+        "second": 28,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 421.082336499996,
+        "p95LatencyMs": 433.8414459999767
+      },
+      {
+        "second": 29,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 474.1966309999698,
+        "p95LatencyMs": 488.0325239999802
+      },
+      {
+        "second": 30,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 393.4938689999981,
+        "p95LatencyMs": 420.8180960000027
+      },
+      {
+        "second": 31,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 410.2502096666528,
+        "p95LatencyMs": 416.0489270000253
+      },
+      {
+        "second": 32,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 464.5848110000079,
+        "p95LatencyMs": 536.5756330000004
+      },
+      {
+        "second": 33,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 427.21037149996846,
+        "p95LatencyMs": 454.9236469999887
+      },
+      {
+        "second": 34,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 394.1354295000201,
+        "p95LatencyMs": 533.2699680000078
+      },
+      {
+        "second": 55,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 27874.344821000006,
+        "p95LatencyMs": 27874.344821000006
+      },
+      {
+        "second": 83,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 14882.920639999997,
+        "p95LatencyMs": 29367.120808999985
+      },
+      {
+        "second": 113,
+        "count": 48,
+        "errors": 0,
+        "meanLatencyMs": 3353.0590918541625,
+        "p95LatencyMs": 7421.65088999999
+      },
+      {
+        "second": 114,
+        "count": 6,
+        "errors": 1,
+        "meanLatencyMs": 2095.236735000013,
+        "p95LatencyMs": 5126.426054999989
+      },
+      {
+        "second": 115,
+        "count": 16,
+        "errors": 2,
+        "meanLatencyMs": 2918.320535937495,
+        "p95LatencyMs": 9521.55428099999
+      },
+      {
+        "second": 116,
+        "count": 17,
+        "errors": 0,
+        "meanLatencyMs": 2610.0496916470547,
+        "p95LatencyMs": 6705.7111809999915
+      },
+      {
+        "second": 117,
+        "count": 13,
+        "errors": 3,
+        "meanLatencyMs": 1743.8033652307709,
+        "p95LatencyMs": 4765.4877740000375
+      },
+      {
+        "second": 118,
+        "count": 14,
+        "errors": 1,
+        "meanLatencyMs": 2026.2399062142733,
+        "p95LatencyMs": 6119.965542999969
+      },
+      {
+        "second": 119,
+        "count": 16,
+        "errors": 2,
+        "meanLatencyMs": 2123.1309391875,
+        "p95LatencyMs": 4231.165341000014
+      },
+      {
+        "second": 120,
+        "count": 15,
+        "errors": 0,
+        "meanLatencyMs": 2782.7254554666733,
+        "p95LatencyMs": 3968.447902999993
+      },
+      {
+        "second": 121,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 2978.9376386363556,
+        "p95LatencyMs": 4054.660451999982
+      },
+      {
+        "second": 122,
+        "count": 14,
+        "errors": 0,
+        "meanLatencyMs": 3232.5029619999987,
+        "p95LatencyMs": 3698.3080140000093
+      },
+      {
+        "second": 123,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 3502.7146687272734,
+        "p95LatencyMs": 3800.8840419999906
+      },
+      {
+        "second": 124,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 4102.075251363636,
+        "p95LatencyMs": 4503.287088000041
+      },
+      {
+        "second": 125,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 4164.180571090917,
+        "p95LatencyMs": 4439.00067800004
+      },
+      {
+        "second": 126,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 4187.472714625008,
+        "p95LatencyMs": 4322.407493000035
+      },
+      {
+        "second": 127,
+        "count": 9,
+        "errors": 0,
+        "meanLatencyMs": 4039.9402160000045,
+        "p95LatencyMs": 4572.18324600003
+      },
+      {
+        "second": 128,
+        "count": 9,
+        "errors": 0,
+        "meanLatencyMs": 3521.072021777787,
+        "p95LatencyMs": 3714.972039000015
+      },
+      {
+        "second": 129,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 3552.8592244166744,
+        "p95LatencyMs": 4489.178970000008
+      },
+      {
+        "second": 130,
+        "count": 9,
+        "errors": 0,
+        "meanLatencyMs": 3787.434687777778,
+        "p95LatencyMs": 4667.605141000007
+      },
+      {
+        "second": 131,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 3922.7851855833433,
+        "p95LatencyMs": 4138.86232700001
+      },
+      {
+        "second": 132,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 3979.343821636385,
+        "p95LatencyMs": 4278.806050000014
+      },
+      {
+        "second": 133,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 3912.9724324285967,
+        "p95LatencyMs": 4226.554461000022
+      },
+      {
+        "second": 134,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 3997.5624572499873,
+        "p95LatencyMs": 4648.192125999951
+      },
+      {
+        "second": 135,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 3925.604360818186,
+        "p95LatencyMs": 4578.534160999989
+      },
+      {
+        "second": 136,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 4142.392506666666,
+        "p95LatencyMs": 4956.236095
+      },
+      {
+        "second": 137,
+        "count": 9,
+        "errors": 0,
+        "meanLatencyMs": 4193.882998111115,
+        "p95LatencyMs": 4408.146153000009
+      },
+      {
+        "second": 138,
+        "count": 9,
+        "errors": 0,
+        "meanLatencyMs": 5775.922139444447,
+        "p95LatencyMs": 27626.078463999962
+      },
+      {
+        "second": 139,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 4005.8138419000024,
+        "p95LatencyMs": 4439.9562620000215
+      },
+      {
+        "second": 140,
+        "count": 9,
+        "errors": 0,
+        "meanLatencyMs": 3678.8429476666624,
+        "p95LatencyMs": 4470.439459000016
+      },
+      {
+        "second": 141,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 3754.355141000013,
+        "p95LatencyMs": 4250.685510000039
+      },
+      {
+        "second": 142,
+        "count": 9,
+        "errors": 0,
+        "meanLatencyMs": 4060.8839269999944,
+        "p95LatencyMs": 4266.41492499999
+      },
+      {
+        "second": 143,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 4239.146149500011,
+        "p95LatencyMs": 4668.619652999914
+      },
+      {
+        "second": 144,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 4701.729415999995,
+        "p95LatencyMs": 5014.459701999964
+      },
+      {
+        "second": 145,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 4867.676710499992,
+        "p95LatencyMs": 5051.1895250000525
+      },
+      {
+        "second": 146,
+        "count": 9,
+        "errors": 0,
+        "meanLatencyMs": 3726.219312555564,
+        "p95LatencyMs": 5045.821970999998
+      },
+      {
+        "second": 147,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 4916.104526874966,
+        "p95LatencyMs": 5047.8945640000165
+      },
+      {
+        "second": 148,
+        "count": 4,
+        "errors": 0,
+        "meanLatencyMs": 4685.927052499988,
+        "p95LatencyMs": 4955.134605000028
+      },
+      {
+        "second": 149,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 4473.794609142867,
+        "p95LatencyMs": 4716.752474000095
+      },
+      {
+        "second": 150,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 3982.358921499981,
+        "p95LatencyMs": 4642.679177999962
+      },
+      {
+        "second": 151,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 3229.819932428571,
+        "p95LatencyMs": 4399.388963999925
+      },
+      {
+        "second": 152,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 4097.571561875011,
+        "p95LatencyMs": 4332.432744999998
+      },
+      {
+        "second": 153,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 4186.36101149999,
+        "p95LatencyMs": 4519.604119000025
+      },
+      {
+        "second": 154,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 2502.8036821999935,
+        "p95LatencyMs": 3967.715136999963
+      },
+      {
+        "second": 155,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 3977.804979199986,
+        "p95LatencyMs": 4300.3197570000775
+      },
+      {
+        "second": 156,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 3908.7876505000168,
+        "p95LatencyMs": 4082.0060650000814
+      },
+      {
+        "second": 157,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 3545.638083250029,
+        "p95LatencyMs": 5023.847851000028
+      },
+      {
+        "second": 158,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 2461.003042124983,
+        "p95LatencyMs": 3974.5902589999605
+      },
+      {
+        "second": 159,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 2202.4392889091027,
+        "p95LatencyMs": 3500.626653000014
+      },
+      {
+        "second": 160,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 3206.2369781250018,
+        "p95LatencyMs": 3438.4032019999577
+      },
+      {
+        "second": 161,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 2966.7224473333335,
+        "p95LatencyMs": 3171.9762580000097
+      },
+      {
+        "second": 162,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 3095.5958761818474,
+        "p95LatencyMs": 3275.1781259999843
+      },
+      {
+        "second": 163,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 1961.7048131250049,
+        "p95LatencyMs": 3142.3016859999625
+      },
+      {
+        "second": 164,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 2100.7233592999864,
+        "p95LatencyMs": 3016.4057449999964
+      },
+      {
+        "second": 165,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 2326.171693500027,
+        "p95LatencyMs": 2854.136460000067
+      },
+      {
+        "second": 166,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 1792.8821420000052,
+        "p95LatencyMs": 3234.522682999959
+      },
+      {
+        "second": 167,
+        "count": 13,
+        "errors": 0,
+        "meanLatencyMs": 1180.4220911538175,
+        "p95LatencyMs": 2409.8762100000167
+      },
+      {
+        "second": 168,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 1121.610653999995,
+        "p95LatencyMs": 2131.2080449999776
+      },
+      {
+        "second": 169,
+        "count": 11,
+        "errors": 0,
+        "meanLatencyMs": 1137.4796087272698,
+        "p95LatencyMs": 2182.78790799994
+      },
+      {
+        "second": 170,
+        "count": 9,
+        "errors": 0,
+        "meanLatencyMs": 1073.2178852222341,
+        "p95LatencyMs": 1856.7118669999763
+      },
+      {
+        "second": 171,
+        "count": 9,
+        "errors": 0,
+        "meanLatencyMs": 3578.0285742222204,
+        "p95LatencyMs": 21099.90825800004
+      },
+      {
+        "second": 172,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 1159.3216765000252,
+        "p95LatencyMs": 1761.7390270000324
+      },
+      {
+        "second": 173,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 987.3899984999831,
+        "p95LatencyMs": 1152.110803999938
+      },
+      {
+        "second": 174,
+        "count": 14,
+        "errors": 0,
+        "meanLatencyMs": 518.1857990714572,
+        "p95LatencyMs": 1050.113000000012
+      },
+      {
+        "second": 175,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 318.83375900004256,
+        "p95LatencyMs": 619.7305639999686
+      },
+      {
+        "second": 176,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 176.4660894999979,
+        "p95LatencyMs": 230.20596799999475
+      },
+      {
+        "second": 192,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 27838.348587999935,
+        "p95LatencyMs": 27838.348587999935
+      },
+      {
+        "second": 220,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 26841.206212999998,
+        "p95LatencyMs": 26841.206212999998
+      },
+      {
+        "second": 247,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 2543.5258029999677,
+        "p95LatencyMs": 2543.5258029999677
+      },
+      {
+        "second": 250,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 26337.49488299992,
+        "p95LatencyMs": 26337.49488299992
+      },
+      {
+        "second": 276,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 21407.436866999953,
+        "p95LatencyMs": 21407.436866999953
+      },
+      {
+        "second": 297,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1315.8463119999506,
+        "p95LatencyMs": 1315.8463119999506
+      },
+      {
+        "second": 299,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 3374.435239000013,
+        "p95LatencyMs": 3374.435239000013
+      },
+      {
+        "second": 302,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1099.336493000039,
+        "p95LatencyMs": 1099.336493000039
+      },
+      {
+        "second": 303,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 5170.892521000002,
+        "p95LatencyMs": 5170.892521000002
+      },
+      {
+        "second": 308,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1380.5620669999626,
+        "p95LatencyMs": 1380.5620669999626
+      },
+      {
+        "second": 310,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 3479.050532000023,
+        "p95LatencyMs": 3479.050532000023
+      },
+      {
+        "second": 313,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1112.8909149999963,
+        "p95LatencyMs": 1112.8909149999963
+      },
+      {
+        "second": 314,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 21635.70484599995,
+        "p95LatencyMs": 21635.70484599995
+      },
+      {
+        "second": 336,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 1589.3472265000455,
+        "p95LatencyMs": 2786.20392
+      },
+      {
+        "second": 339,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1011.3189680000069,
+        "p95LatencyMs": 1011.3189680000069
+      },
+      {
+        "second": 340,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 27676.003446999937,
+        "p95LatencyMs": 27676.003446999937
+      },
+      {
+        "second": 368,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1321.119033999974,
+        "p95LatencyMs": 1321.119033999974
+      },
+      {
+        "second": 369,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 6026.654686999973,
+        "p95LatencyMs": 6026.654686999973
+      },
+      {
+        "second": 375,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1398.1650499999523,
+        "p95LatencyMs": 1398.1650499999523
+      },
+      {
+        "second": 377,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 10251.11925800005,
+        "p95LatencyMs": 10251.11925800005
+      },
+      {
+        "second": 387,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1991.619156000088,
+        "p95LatencyMs": 1991.619156000088
+      },
+      {
+        "second": 389,
+        "count": 1,
+        "errors": 1,
+        "meanLatencyMs": 15856.68967500003,
+        "p95LatencyMs": 15856.68967500003
+      }
+    ]
+  },
+  {
+    "experiment": "bench-v2-u10-s1",
+    "numUsers": 10,
+    "sessionsPerUser": 1,
+    "totalSessions": 10,
+    "durationMs": 44086.863045000006,
+    "totalQueries": 220,
+    "totalErrors": 4,
+    "errorRate": 0.01818181818181818,
+    "throughputQps": 4.990148647578833,
+    "overall": {
+      "p50": 556.3360079999547,
+      "p95": 1403.175004000077,
+      "p99": 6045.401478999993,
+      "min": 106.46066900005098,
+      "max": 8184.808425000054,
+      "mean": 735.5198474768522
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1526.9477760000154,
+        "p95": 8184.808425000054,
+        "p99": 8184.808425000054,
+        "min": 1526.9477760000154,
+        "max": 8184.808425000054,
+        "mean": 4855.878100500035
+      },
+      "alter_table": {
+        "count": 4,
+        "errors": 4,
+        "errorRate": 1,
+        "p50": 94.03314299997874,
+        "p95": 99.14544899994507,
+        "p99": 99.14544899994507,
+        "min": 85.44843599991873,
+        "max": 99.14544899994507,
+        "mean": 94.12795524997637
+      },
+      "sync_table": {
+        "count": 9,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 157.12523400003556,
+        "p95": 324.6208559999941,
+        "p99": 324.6208559999941,
+        "min": 146.29820499999914,
+        "max": 324.6208559999941,
+        "mean": 213.90717577777752
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 119.34115400002338,
+        "p95": 119.34115400002338,
+        "p99": 119.34115400002338,
+        "min": 119.34115400002338,
+        "max": 119.34115400002338,
+        "mean": 119.34115400002338
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 117.35979300003964,
+        "p95": 117.35979300003964,
+        "p99": 117.35979300003964,
+        "min": 117.35979300003964,
+        "max": 117.35979300003964,
+        "mean": 117.35979300003964
+      },
+      "memory_insert": {
+        "count": 10,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 431.9187249999959,
+        "p95": 673.3100259999046,
+        "p99": 673.3100259999046,
+        "min": 382.34779300005175,
+        "max": 673.3100259999046,
+        "mean": 484.6950336000067
+      },
+      "capture_insert": {
+        "count": 166,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 589.8923429999268,
+        "p95": 1094.5189549999777,
+        "p99": 1484.5876620000927,
+        "min": 356.1471250000177,
+        "max": 1796.785664999974,
+        "mean": 646.5778621807203
+      },
+      "read_file_text": {
+        "count": 17,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 192.26742399996147,
+        "p95": 520.2038509999402,
+        "p99": 520.2038509999402,
+        "min": 106.46066900005098,
+        "max": 520.2038509999402,
+        "mean": 243.71501994118614
+      },
+      "memory_update": {
+        "count": 10,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 2232.242472000071,
+        "p95": 6336.730974999955,
+        "p99": 6336.730974999955,
+        "min": 971.1446480000159,
+        "max": 6336.730974999955,
+        "mean": 3067.663452800014
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 11,
+        "errors": 4,
+        "meanLatencyMs": 1057.9807447272628,
+        "p95LatencyMs": 8184.808425000054
+      },
+      {
+        "second": 1,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 380.0684688333228,
+        "p95LatencyMs": 674.1425709999166
+      },
+      {
+        "second": 2,
+        "count": 5,
+        "errors": 0,
+        "meanLatencyMs": 546.2631313999882,
+        "p95LatencyMs": 897.0421520000091
+      },
+      {
+        "second": 3,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 444.4942364285567,
+        "p95LatencyMs": 651.7122090000194
+      },
+      {
+        "second": 4,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 458.32786612500786,
+        "p95LatencyMs": 618.5579870000947
+      },
+      {
+        "second": 5,
+        "count": 14,
+        "errors": 0,
+        "meanLatencyMs": 806.3386395714479,
+        "p95LatencyMs": 1796.785664999974
+      },
+      {
+        "second": 6,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 824.2942398571342,
+        "p95LatencyMs": 1200.4301509999204
+      },
+      {
+        "second": 7,
+        "count": 14,
+        "errors": 0,
+        "meanLatencyMs": 636.9642650000003,
+        "p95LatencyMs": 853.3493180000223
+      },
+      {
+        "second": 8,
+        "count": 16,
+        "errors": 0,
+        "meanLatencyMs": 699.397362062482,
+        "p95LatencyMs": 1276.9350150000537
+      },
+      {
+        "second": 9,
+        "count": 14,
+        "errors": 0,
+        "meanLatencyMs": 698.869175499987,
+        "p95LatencyMs": 1016.2208590001101
+      },
+      {
+        "second": 10,
+        "count": 16,
+        "errors": 0,
+        "meanLatencyMs": 674.7466024375026,
+        "p95LatencyMs": 1225.1072029999923
+      },
+      {
+        "second": 11,
+        "count": 13,
+        "errors": 0,
+        "meanLatencyMs": 666.5788337692458,
+        "p95LatencyMs": 879.880577999982
+      },
+      {
+        "second": 12,
+        "count": 19,
+        "errors": 0,
+        "meanLatencyMs": 843.7672061578885,
+        "p95LatencyMs": 6045.401478999993
+      },
+      {
+        "second": 13,
+        "count": 15,
+        "errors": 0,
+        "meanLatencyMs": 518.5173456000009,
+        "p95LatencyMs": 964.2319390000775
+      },
+      {
+        "second": 14,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 510.20451350001383,
+        "p95LatencyMs": 699.3387740000617
+      },
+      {
+        "second": 15,
+        "count": 10,
+        "errors": 0,
+        "meanLatencyMs": 467.7918602000107,
+        "p95LatencyMs": 782.4315760000609
+      },
+      {
+        "second": 16,
+        "count": 8,
+        "errors": 0,
+        "meanLatencyMs": 490.38341324999055,
+        "p95LatencyMs": 746.8564729999052
+      },
+      {
+        "second": 17,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 482.99708016668836,
+        "p95LatencyMs": 945.3092290000059
+      },
+      {
+        "second": 18,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 475.84545199998786,
+        "p95LatencyMs": 796.9198699999833
+      },
+      {
+        "second": 19,
+        "count": 4,
+        "errors": 0,
+        "meanLatencyMs": 1756.5742439999885,
+        "p95LatencyMs": 6336.730974999955
+      },
+      {
+        "second": 25,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1126.2520560000557,
+        "p95LatencyMs": 1126.2520560000557
+      },
+      {
+        "second": 26,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 2232.242472000071,
+        "p95LatencyMs": 2232.242472000071
+      },
+      {
+        "second": 28,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1009.012854999979,
+        "p95LatencyMs": 1009.012854999979
+      },
+      {
+        "second": 29,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 4878.746256000013,
+        "p95LatencyMs": 4878.746256000013
+      },
+      {
+        "second": 34,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1228.9263229999924,
+        "p95LatencyMs": 1228.9263229999924
+      },
+      {
+        "second": 35,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 3991.9324250000063,
+        "p95LatencyMs": 3991.9324250000063
+      },
+      {
+        "second": 39,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 152.1546869999729,
+        "p95LatencyMs": 152.1546869999729
+      },
+      {
+        "second": 40,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 2856.2450390000595,
+        "p95LatencyMs": 2856.2450390000595
+      },
+      {
+        "second": 42,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 971.1446480000159,
+        "p95LatencyMs": 971.1446480000159
+      },
+      {
+        "second": 43,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 194.68203300004825,
+        "p95LatencyMs": 194.68203300004825
+      }
+    ]
+  },
+  {
+    "experiment": "bench-v2-u10-s3",
+    "numUsers": 10,
+    "sessionsPerUser": 3,
+    "totalSessions": 30,
+    "durationMs": 110559.922991,
+    "totalQueries": 300,
+    "totalErrors": 26,
+    "errorRate": 0.08666666666666667,
+    "throughputQps": 2.713460645449447,
+    "overall": {
+      "p50": 594.6069219999481,
+      "p95": 2521.911969000008,
+      "p99": 12353.738558999961,
+      "min": 110.06550199992489,
+      "max": 18277.42827299994,
+      "mean": 989.7274682737223
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1053.3555610000622,
+        "p95": 1072.2856349999784,
+        "p99": 1072.2856349999784,
+        "min": 1053.3555610000622,
+        "max": 1072.2856349999784,
+        "mean": 1062.8205980000203
+      },
+      "alter_table": {
+        "count": 4,
+        "errors": 4,
+        "errorRate": 1,
+        "p50": 96.01583199994639,
+        "p95": 106.3626360000344,
+        "p99": 106.3626360000344,
+        "min": 92.91320800001267,
+        "max": 106.3626360000344,
+        "mean": 98.48266925002099
+      },
+      "sync_table": {
+        "count": 9,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 308.2664489999879,
+        "p95": 389.4474750000518,
+        "p99": 389.4474750000518,
+        "min": 154.53955300000962,
+        "max": 389.4474750000518,
+        "mean": 267.6933764444354
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 266.9859680000227,
+        "p95": 266.9859680000227,
+        "p99": 266.9859680000227,
+        "min": 266.9859680000227,
+        "max": 266.9859680000227,
+        "mean": 266.9859680000227
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 268.85161700006574,
+        "p95": 268.85161700006574,
+        "p99": 268.85161700006574,
+        "min": 268.85161700006574,
+        "max": 268.85161700006574,
+        "mean": 268.85161700006574
+      },
+      "memory_insert": {
+        "count": 30,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 441.3841530000791,
+        "p95": 817.7291749999858,
+        "p99": 818.5438459999859,
+        "min": 360.63866399996914,
+        "max": 818.5438459999859,
+        "mean": 488.5291034999963
+      },
+      "capture_insert": {
+        "count": 223,
+        "errors": 20,
+        "errorRate": 0.08968609865470852,
+        "p50": 635.7774180000415,
+        "p95": 1675.2922529999632,
+        "p99": 3238.1149749999167,
+        "min": 83.46633900003508,
+        "max": 3837.8264569999883,
+        "mean": 753.9505076367709
+      },
+      "read_file_text": {
+        "count": 20,
+        "errors": 2,
+        "errorRate": 0.1,
+        "p50": 321.03810200002044,
+        "p95": 577.0468980000587,
+        "p99": 588.4527269999962,
+        "min": 93.69749500008766,
+        "max": 588.4527269999962,
+        "mean": 346.33297175001354
+      },
+      "memory_update": {
+        "count": 10,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 3796.6985369999893,
+        "p95": 18277.42827299994,
+        "p99": 18277.42827299994,
+        "min": 1324.5055789999897,
+        "max": 18277.42827299994,
+        "mean": 8417.270859800012
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 14,
+        "errors": 4,
+        "meanLatencyMs": 407.2206531428549,
+        "p95LatencyMs": 1072.2856349999784
+      },
+      {
+        "second": 1,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 516.3075606666583,
+        "p95LatencyMs": 659.1051720000105
+      },
+      {
+        "second": 2,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 496.8994080000169,
+        "p95LatencyMs": 633.5406649999786
+      },
+      {
+        "second": 3,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 517.6824918333247,
+        "p95LatencyMs": 713.062794999918
+      },
+      {
+        "second": 4,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 440.0784673333401,
+        "p95LatencyMs": 524.9470999999903
+      },
+      {
+        "second": 5,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 482.9879221666876,
+        "p95LatencyMs": 616.558018000098
+      },
+      {
+        "second": 6,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 512.420809142857,
+        "p95LatencyMs": 818.5438459999859
+      },
+      {
+        "second": 7,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 461.0346173333431,
+        "p95LatencyMs": 514.9913840000518
+      },
+      {
+        "second": 8,
+        "count": 6,
+        "errors": 0,
+        "meanLatencyMs": 412.273585999986,
+        "p95LatencyMs": 436.9887110000709
+      },
+      {
+        "second": 9,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 511.3173229999707,
+        "p95LatencyMs": 701.7387099999469
+      },
+      {
+        "second": 10,
+        "count": 7,
+        "errors": 0,
+        "meanLatencyMs": 410.2126500000013,
+        "p95LatencyMs": 494.2956959999865
+      },
+      {
+        "second": 11,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 502.3440449999568,
+        "p95LatencyMs": 749.9279459998943
+      },
+      {
+        "second": 12,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 382.91851299995324,
+        "p95LatencyMs": 405.19836199993733
+      },
+      {
+        "second": 13,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 547.3898935000761,
+        "p95LatencyMs": 604.0467010000721
+      },
+      {
+        "second": 14,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 628.1679674999905,
+        "p95LatencyMs": 817.7291749999858
+      },
+      {
+        "second": 15,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 5843.489484666653,
+        "p95LatencyMs": 16722.032692000037
+      },
+      {
+        "second": 16,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 462.01011350000044,
+        "p95LatencyMs": 463.61652999999933
+      },
+      {
+        "second": 17,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 740.754638500046,
+        "p95LatencyMs": 774.908996000071
+      },
+      {
+        "second": 18,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 402.6223460000474,
+        "p95LatencyMs": 402.6223460000474
+      },
+      {
+        "second": 19,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 385.8463753333005,
+        "p95LatencyMs": 406.78541899996344
+      },
+      {
+        "second": 20,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 572.0301199999521,
+        "p95LatencyMs": 611.2639519999502
+      },
+      {
+        "second": 21,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 681.261581000057,
+        "p95LatencyMs": 681.261581000057
+      },
+      {
+        "second": 22,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 411.4550686666432,
+        "p95LatencyMs": 433.84936699992977
+      },
+      {
+        "second": 23,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 423.80340149992844,
+        "p95LatencyMs": 453.182829999947
+      },
+      {
+        "second": 24,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 448.52076400001533,
+        "p95LatencyMs": 506.4993160000304
+      },
+      {
+        "second": 25,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 677.5151404999779,
+        "p95LatencyMs": 853.1289339999203
+      },
+      {
+        "second": 26,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 252.76252200000454,
+        "p95LatencyMs": 252.76252200000454
+      },
+      {
+        "second": 32,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 1324.5055789999897,
+        "p95LatencyMs": 1324.5055789999897
+      },
+      {
+        "second": 33,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 6267.939573500014,
+        "p95LatencyMs": 12353.738558999961
+      },
+      {
+        "second": 46,
+        "count": 28,
+        "errors": 6,
+        "meanLatencyMs": 1553.726747392868,
+        "p95LatencyMs": 3687.5898020000895
+      },
+      {
+        "second": 47,
+        "count": 11,
+        "errors": 2,
+        "meanLatencyMs": 880.0868564545367,
+        "p95LatencyMs": 3238.1149749999167
+      },
+      {
+        "second": 48,
+        "count": 17,
+        "errors": 3,
+        "meanLatencyMs": 612.976873411756,
+        "p95LatencyMs": 1104.0288949999958
+      },
+      {
+        "second": 49,
+        "count": 15,
+        "errors": 1,
+        "meanLatencyMs": 934.488746733327,
+        "p95LatencyMs": 1285.87772400002
+      },
+      {
+        "second": 50,
+        "count": 15,
+        "errors": 3,
+        "meanLatencyMs": 658.5770475333557,
+        "p95LatencyMs": 1498.1871570000658
+      },
+      {
+        "second": 51,
+        "count": 17,
+        "errors": 2,
+        "meanLatencyMs": 660.4107091176556,
+        "p95LatencyMs": 1625.4263790000696
+      },
+      {
+        "second": 52,
+        "count": 13,
+        "errors": 0,
+        "meanLatencyMs": 663.7959708461735,
+        "p95LatencyMs": 883.0992190000834
+      },
+      {
+        "second": 53,
+        "count": 15,
+        "errors": 0,
+        "meanLatencyMs": 799.5683406666542,
+        "p95LatencyMs": 2031.589954999974
+      },
+      {
+        "second": 54,
+        "count": 12,
+        "errors": 0,
+        "meanLatencyMs": 716.1967560000097,
+        "p95LatencyMs": 953.5247669999953
+      },
+      {
+        "second": 55,
+        "count": 17,
+        "errors": 2,
+        "meanLatencyMs": 491.6436114117695,
+        "p95LatencyMs": 684.4505280000158
+      },
+      {
+        "second": 56,
+        "count": 14,
+        "errors": 3,
+        "meanLatencyMs": 1215.6977020714382,
+        "p95LatencyMs": 11728.260936000035
+      },
+      {
+        "second": 57,
+        "count": 5,
+        "errors": 0,
+        "meanLatencyMs": 443.2556577999843,
+        "p95LatencyMs": 588.4527269999962
+      },
+      {
+        "second": 58,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 504.68127599998843,
+        "p95LatencyMs": 543.4738450000295
+      },
+      {
+        "second": 59,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 459.0506639999803,
+        "p95LatencyMs": 462.8431700000074
+      },
+      {
+        "second": 60,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 120.0243865000084,
+        "p95LatencyMs": 121.98840300005395
+      },
+      {
+        "second": 67,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 343.25684799999,
+        "p95LatencyMs": 343.25684799999
+      },
+      {
+        "second": 68,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 11867.380978000001,
+        "p95LatencyMs": 11867.380978000001
+      },
+      {
+        "second": 80,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 18277.42827299994,
+        "p95LatencyMs": 18277.42827299994
+      },
+      {
+        "second": 98,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 3129.596384000033,
+        "p95LatencyMs": 3129.596384000033
+      },
+      {
+        "second": 101,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 3796.6985369999893,
+        "p95LatencyMs": 3796.6985369999893
+      },
+      {
+        "second": 105,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 2668.3675020000665,
+        "p95LatencyMs": 2668.3675020000665
+      },
+      {
+        "second": 108,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 2304.6991580000613,
+        "p95LatencyMs": 2304.6991580000613
+      },
+      {
+        "second": 110,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 200.44714099995326,
+        "p95LatencyMs": 200.44714099995326
+      }
+    ]
+  },
+  {
+    "experiment": "bench-u10-s5",
+    "numUsers": 10,
+    "sessionsPerUser": 5,
+    "error": "Query failed: 500: {\"error\":\"Database error: pg_deeplake: table with OID 18074 is not a DeepLake table\",\"code\":\"QUERY_ERROR\",\"request_id\":\"c93c7d24-a915-41ec-9be7-3503f1943086\"}\n"
+  },
+  {
+    "experiment": "bench-v2-u10-s10",
+    "numUsers": 10,
+    "sessionsPerUser": 10,
+    "totalSessions": 100,
+    "durationMs": 2988.293539999984,
+    "totalQueries": 15,
+    "totalErrors": 6,
+    "errorRate": 0.4,
+    "throughputQps": 5.0195871989202505,
+    "overall": {
+      "p50": 335.17682900000364,
+      "p95": 1484.5316319999984,
+      "p99": 1484.5316319999984,
+      "min": 114.71998399996664,
+      "max": 1484.5316319999984,
+      "mean": 591.3772651111035
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1470.6235129999695,
+        "p95": 1484.5316319999984,
+        "p99": 1484.5316319999984,
+        "min": 1470.6235129999695,
+        "max": 1484.5316319999984,
+        "mean": 1477.577572499984
+      },
+      "alter_table": {
+        "count": 4,
+        "errors": 4,
+        "errorRate": 1,
+        "p50": 92.91117499989923,
+        "p95": 93.99611900001764,
+        "p99": 93.99611900001764,
+        "min": 90.97160599997733,
+        "max": 93.99611900001764,
+        "mean": 92.87275099998806
+      },
+      "sync_table": {
+        "count": 3,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 324.03706400003284,
+        "p95": 335.17682900000364,
+        "p99": 335.17682900000364,
+        "min": 307.51044899993576,
+        "max": 335.17682900000364,
+        "mean": 322.24144733332406
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 117.93451399996411,
+        "p95": 117.93451399996411,
+        "p99": 117.93451399996411,
+        "min": 117.93451399996411,
+        "max": 117.93451399996411,
+        "mean": 117.93451399996411
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 114.71998399996664,
+        "p95": 114.71998399996664,
+        "p99": 114.71998399996664,
+        "min": 114.71998399996664,
+        "max": 114.71998399996664,
+        "mean": 114.71998399996664
+      },
+      "memory_insert": {
+        "count": 2,
+        "errors": 1,
+        "errorRate": 0.5,
+        "p50": 90.48794200003613,
+        "p95": 519.7293850000715,
+        "p99": 519.7293850000715,
+        "min": 90.48794200003613,
+        "max": 519.7293850000715,
+        "mean": 305.1086635000538
+      },
+      "capture_insert": {
+        "count": 2,
+        "errors": 1,
+        "errorRate": 0.5,
+        "p50": 98.27616999996826,
+        "p95": 648.1320159999887,
+        "p99": 648.1320159999887,
+        "min": 98.27616999996826,
+        "max": 648.1320159999887,
+        "mean": 373.20409299997846
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 14,
+        "errors": 5,
+        "meanLatencyMs": 413.1695951428514,
+        "p95LatencyMs": 1484.5316319999984
+      },
+      {
+        "second": 1,
+        "count": 1,
+        "errors": 1,
+        "meanLatencyMs": 98.27616999996826,
+        "p95LatencyMs": 98.27616999996826
+      }
+    ]
+  },
+  {
+    "experiment": "bench-v2-u20-s1",
+    "numUsers": 20,
+    "sessionsPerUser": 1,
+    "totalSessions": 20,
+    "durationMs": 6791.793729000026,
+    "totalQueries": 27,
+    "totalErrors": 5,
+    "errorRate": 0.18518518518518517,
+    "throughputQps": 3.975385748939004,
+    "overall": {
+      "p50": 445.54621900001075,
+      "p95": 1718.41982499999,
+      "p99": 1821.7787790000439,
+      "min": 123.70760399999563,
+      "max": 1821.7787790000439,
+      "mean": 577.5529222272876
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1718.41982499999,
+        "p95": 1821.7787790000439,
+        "p99": 1821.7787790000439,
+        "min": 1718.41982499999,
+        "max": 1821.7787790000439,
+        "mean": 1770.099302000017
+      },
+      "alter_table": {
+        "count": 4,
+        "errors": 4,
+        "errorRate": 1,
+        "p50": 92.60309500002768,
+        "p95": 96.36888800002635,
+        "p99": 96.36888800002635,
+        "min": 90.86227800010238,
+        "max": 96.36888800002635,
+        "mean": 93.92875125003047
+      },
+      "sync_table": {
+        "count": 3,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 301.12313500000164,
+        "p95": 306.2616960000014,
+        "p99": 306.2616960000014,
+        "min": 168.88458299997728,
+        "max": 306.2616960000014,
+        "mean": 258.7564713333268
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 123.70760399999563,
+        "p95": 123.70760399999563,
+        "p99": 123.70760399999563,
+        "min": 123.70760399999563,
+        "max": 123.70760399999563,
+        "mean": 123.70760399999563
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 126.97122100007255,
+        "p95": 126.97122100007255,
+        "p99": 126.97122100007255,
+        "min": 126.97122100007255,
+        "max": 126.97122100007255,
+        "mean": 126.97122100007255
+      },
+      "memory_insert": {
+        "count": 5,
+        "errors": 1,
+        "errorRate": 0.2,
+        "p50": 542.0600350000896,
+        "p95": 761.3249590001069,
+        "p99": 761.3249590001069,
+        "min": 415.20124599989504,
+        "max": 761.3249590001069,
+        "mean": 563.7536283999914
+      },
+      "capture_insert": {
+        "count": 10,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 457.17760000005364,
+        "p95": 871.5286210000049,
+        "p99": 871.5286210000049,
+        "min": 383.8106090000365,
+        "max": 871.5286210000049,
+        "mean": 554.3147574000177
+      },
+      "read_file_text": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 219.12321200000588,
+        "p95": 219.12321200000588,
+        "p99": 219.12321200000588,
+        "min": 219.12321200000588,
+        "max": 219.12321200000588,
+        "mean": 219.12321200000588
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 12,
+        "errors": 4,
+        "meanLatencyMs": 457.0768235833578,
+        "p95LatencyMs": 1821.7787790000439
+      },
+      {
+        "second": 1,
+        "count": 4,
+        "errors": 0,
+        "meanLatencyMs": 626.3081065000151,
+        "p95LatencyMs": 871.5286210000049
+      },
+      {
+        "second": 2,
+        "count": 4,
+        "errors": 1,
+        "meanLatencyMs": 533.1648477499839,
+        "p95LatencyMs": 658.160419999971
+      },
+      {
+        "second": 3,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 430.711084999959,
+        "p95LatencyMs": 445.54621900001075
+      },
+      {
+        "second": 4,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 596.1148820000235,
+        "p95LatencyMs": 697.538739999989
+      },
+      {
+        "second": 5,
+        "count": 1,
+        "errors": 0,
+        "meanLatencyMs": 714.8651480000699,
+        "p95LatencyMs": 714.8651480000699
+      },
+      {
+        "second": 6,
+        "count": 2,
+        "errors": 0,
+        "meanLatencyMs": 316.28499700000975,
+        "p95LatencyMs": 413.4467820000136
+      }
+    ]
+  },
+  {
+    "experiment": "bench-v2-u20-s3",
+    "numUsers": 20,
+    "sessionsPerUser": 3,
+    "totalSessions": 60,
+    "durationMs": 7749.249282000004,
+    "totalQueries": 37,
+    "totalErrors": 6,
+    "errorRate": 0.16216216216216217,
+    "throughputQps": 4.774656054224993,
+    "overall": {
+      "p50": 500.1881460000295,
+      "p95": 985.7626690000761,
+      "p99": 1054.3935470000142,
+      "min": 158.6341620000312,
+      "max": 1054.3935470000142,
+      "mean": 522.2649064838638
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 985.7626690000761,
+        "p95": 1054.3935470000142,
+        "p99": 1054.3935470000142,
+        "min": 985.7626690000761,
+        "max": 1054.3935470000142,
+        "mean": 1020.0781080000452
+      },
+      "alter_table": {
+        "count": 4,
+        "errors": 4,
+        "errorRate": 1,
+        "p50": 93.8790310000768,
+        "p95": 98.2146500000963,
+        "p99": 98.2146500000963,
+        "min": 90.0665179999778,
+        "max": 98.2146500000963,
+        "mean": 94.17199950001668
+      },
+      "sync_table": {
+        "count": 3,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 314.0338439999614,
+        "p95": 316.4157960000448,
+        "p99": 316.4157960000448,
+        "min": 158.6341620000312,
+        "max": 316.4157960000448,
+        "mean": 263.02793400001246
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 284.78861499996856,
+        "p95": 284.78861499996856,
+        "p99": 284.78861499996856,
+        "min": 284.78861499996856,
+        "max": 284.78861499996856,
+        "mean": 284.78861499996856
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 271.07790599996224,
+        "p95": 271.07790599996224,
+        "p99": 271.07790599996224,
+        "min": 271.07790599996224,
+        "max": 271.07790599996224,
+        "mean": 271.07790599996224
+      },
+      "memory_insert": {
+        "count": 13,
+        "errors": 1,
+        "errorRate": 0.07692307692307693,
+        "p50": 519.2992419999791,
+        "p95": 769.5331070000539,
+        "p99": 769.5331070000539,
+        "min": 404.3106820000103,
+        "max": 769.5331070000539,
+        "mean": 529.4124312307596
+      },
+      "capture_insert": {
+        "count": 13,
+        "errors": 1,
+        "errorRate": 0.07692307692307693,
+        "p50": 503.3397320000222,
+        "p95": 857.9925839999923,
+        "p99": 857.9925839999923,
+        "min": 371.49385199998505,
+        "max": 857.9925839999923,
+        "mean": 533.8130939999828
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 14,
+        "errors": 4,
+        "meanLatencyMs": 391.34522235714496,
+        "p95LatencyMs": 1054.3935470000142
+      },
+      {
+        "second": 1,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 533.1031776667029,
+        "p95LatencyMs": 629.0536230000434
+      },
+      {
+        "second": 2,
+        "count": 5,
+        "errors": 0,
+        "meanLatencyMs": 482.75322939998006,
+        "p95LatencyMs": 636.9850990000414
+      },
+      {
+        "second": 3,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 640.7143006666641,
+        "p95LatencyMs": 769.5331070000539
+      },
+      {
+        "second": 4,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 453.42005733334616,
+        "p95LatencyMs": 503.3397320000222
+      },
+      {
+        "second": 5,
+        "count": 4,
+        "errors": 0,
+        "meanLatencyMs": 633.0759497499675,
+        "p95LatencyMs": 857.9925839999923
+      },
+      {
+        "second": 6,
+        "count": 4,
+        "errors": 1,
+        "meanLatencyMs": 452.94071399996756,
+        "p95LatencyMs": 551.4784229999641
+      },
+      {
+        "second": 7,
+        "count": 1,
+        "errors": 1,
+        "meanLatencyMs": 465.3478429999668,
+        "p95LatencyMs": 465.3478429999668
+      }
+    ]
+  },
+  {
+    "experiment": "bench-v2-u20-s5",
+    "numUsers": 20,
+    "sessionsPerUser": 5,
+    "totalSessions": 100,
+    "durationMs": 2940.308735999977,
+    "totalQueries": 8,
+    "totalErrors": 1,
+    "errorRate": 0.125,
+    "throughputQps": 2.7208027177728527,
+    "overall": {
+      "p50": 327.1026009999914,
+      "p95": 1100.3307010000572,
+      "p99": 1100.3307010000572,
+      "min": 123.1309960000217,
+      "max": 1100.3307010000572,
+      "mean": 499.4383078571409
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 3,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1082.1704219999956,
+        "p95": 1100.3307010000572,
+        "p99": 1100.3307010000572,
+        "min": 590.6392720000586,
+        "max": 1100.3307010000572,
+        "mean": 924.3801316667037
+      },
+      "sync_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 148.04282999993302,
+        "p95": 327.1026009999914,
+        "p99": 327.1026009999914,
+        "min": 148.04282999993302,
+        "max": 327.1026009999914,
+        "mean": 237.57271549996221
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 123.1309960000217,
+        "p95": 123.1309960000217,
+        "p99": 123.1309960000217,
+        "min": 123.1309960000217,
+        "max": 123.1309960000217,
+        "mean": 123.1309960000217
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 124.65133299992885,
+        "p95": 124.65133299992885,
+        "p99": 124.65133299992885,
+        "min": 124.65133299992885,
+        "max": 124.65133299992885,
+        "mean": 124.65133299992885
+      },
+      "memory_insert": {
+        "count": 1,
+        "errors": 1,
+        "errorRate": 1,
+        "p50": 85.74912399996538,
+        "p95": 85.74912399996538,
+        "p99": 85.74912399996538,
+        "min": 85.74912399996538,
+        "max": 85.74912399996538,
+        "mean": 85.74912399996538
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 8,
+        "errors": 1,
+        "meanLatencyMs": 447.72715987499396,
+        "p95LatencyMs": 1100.3307010000572
+      }
+    ]
+  },
+  {
+    "experiment": "bench-v2-u20-s10",
+    "numUsers": 20,
+    "sessionsPerUser": 10,
+    "totalSessions": 200,
+    "durationMs": 2984.2979230000637,
+    "totalQueries": 15,
+    "totalErrors": 6,
+    "errorRate": 0.4,
+    "throughputQps": 5.0263078241601145,
+    "overall": {
+      "p50": 356.41021399991587,
+      "p95": 2173.8499190000584,
+      "p99": 2173.8499190000584,
+      "min": 115.73684899997897,
+      "max": 2173.8499190000584,
+      "mean": 626.9320566666752
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1079.6804530001245,
+        "p95": 2173.8499190000584,
+        "p99": 2173.8499190000584,
+        "min": 1079.6804530001245,
+        "max": 2173.8499190000584,
+        "mean": 1626.7651860000915
+      },
+      "alter_table": {
+        "count": 4,
+        "errors": 4,
+        "errorRate": 1,
+        "p50": 91.51648600003682,
+        "p95": 101.37434599990956,
+        "p99": 101.37434599990956,
+        "min": 86.72329999995418,
+        "max": 101.37434599990956,
+        "mean": 93.79703924997011
+      },
+      "sync_table": {
+        "count": 3,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 333.1518349999096,
+        "p95": 356.41021399991587,
+        "p99": 356.41021399991587,
+        "min": 307.40499299997464,
+        "max": 356.41021399991587,
+        "mean": 332.3223473332667
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 115.73684899997897,
+        "p95": 115.73684899997897,
+        "p99": 115.73684899997897,
+        "min": 115.73684899997897,
+        "max": 115.73684899997897,
+        "mean": 115.73684899997897
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 129.94571799994446,
+        "p95": 129.94571799994446,
+        "p99": 129.94571799994446,
+        "min": 129.94571799994446,
+        "max": 129.94571799994446,
+        "mean": 129.94571799994446
+      },
+      "memory_insert": {
+        "count": 2,
+        "errors": 1,
+        "errorRate": 0.5,
+        "p50": 90.47786300000735,
+        "p95": 451.086765000131,
+        "p99": 451.086765000131,
+        "min": 90.47786300000735,
+        "max": 451.086765000131,
+        "mean": 270.78231400006916
+      },
+      "capture_insert": {
+        "count": 2,
+        "errors": 1,
+        "errorRate": 0.5,
+        "p50": 95.39490399998613,
+        "p95": 695.1217640000395,
+        "p99": 695.1217640000395,
+        "min": 95.39490399998613,
+        "max": 695.1217640000395,
+        "mean": 395.25833400001284
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 14,
+        "errors": 5,
+        "meanLatencyMs": 436.2896092857118,
+        "p95LatencyMs": 2173.8499190000584
+      },
+      {
+        "second": 1,
+        "count": 1,
+        "errors": 1,
+        "meanLatencyMs": 95.39490399998613,
+        "p95LatencyMs": 95.39490399998613
+      }
+    ]
+  },
+  {
+    "experiment": "bench-v2-u50-s1",
+    "numUsers": 50,
+    "sessionsPerUser": 1,
+    "totalSessions": 50,
+    "durationMs": 7172.493999999948,
+    "totalQueries": 38,
+    "totalErrors": 7,
+    "errorRate": 0.18421052631578946,
+    "throughputQps": 5.298017676975439,
+    "overall": {
+      "p50": 457.4644959999714,
+      "p95": 1069.2388319999445,
+      "p99": 1612.1330279998947,
+      "min": 117.64950500009581,
+      "max": 1612.1330279998947,
+      "mean": 513.8922965483995
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1069.2388319999445,
+        "p95": 1612.1330279998947,
+        "p99": 1612.1330279998947,
+        "min": 1069.2388319999445,
+        "max": 1612.1330279998947,
+        "mean": 1340.6859299999196
+      },
+      "alter_table": {
+        "count": 4,
+        "errors": 4,
+        "errorRate": 1,
+        "p50": 92.43759099999443,
+        "p95": 98.0044100000523,
+        "p99": 98.0044100000523,
+        "min": 91.22947799996473,
+        "max": 98.0044100000523,
+        "mean": 93.83770749997348
+      },
+      "sync_table": {
+        "count": 4,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 305.7887200000696,
+        "p95": 318.252150000073,
+        "p99": 318.252150000073,
+        "min": 167.5824380000122,
+        "max": 318.252150000073,
+        "mean": 274.4352632500231
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 126.95939700002782,
+        "p95": 126.95939700002782,
+        "p99": 126.95939700002782,
+        "min": 126.95939700002782,
+        "max": 126.95939700002782,
+        "mean": 126.95939700002782
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 117.64950500009581,
+        "p95": 117.64950500009581,
+        "p99": 117.64950500009581,
+        "min": 117.64950500009581,
+        "max": 117.64950500009581,
+        "mean": 117.64950500009581
+      },
+      "memory_insert": {
+        "count": 13,
+        "errors": 1,
+        "errorRate": 0.07692307692307693,
+        "p50": 445.97658700007014,
+        "p95": 610.4137120000087,
+        "p99": 610.4137120000087,
+        "min": 89.28536599990912,
+        "max": 610.4137120000087,
+        "mean": 438.54899746154507
+      },
+      "capture_insert": {
+        "count": 13,
+        "errors": 2,
+        "errorRate": 0.15384615384615385,
+        "p50": 575.6318739999551,
+        "p95": 856.4197029999923,
+        "p99": 856.4197029999923,
+        "min": 87.17886799992993,
+        "max": 856.4197029999923,
+        "mean": 556.8220267692366
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 14,
+        "errors": 4,
+        "meanLatencyMs": 427.03099378570914,
+        "p95LatencyMs": 1612.1330279998947
+      },
+      {
+        "second": 1,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 655.4287016666494,
+        "p95LatencyMs": 763.0530409999192
+      },
+      {
+        "second": 2,
+        "count": 4,
+        "errors": 0,
+        "meanLatencyMs": 537.080785750004,
+        "p95LatencyMs": 714.2148279999383
+      },
+      {
+        "second": 3,
+        "count": 3,
+        "errors": 0,
+        "meanLatencyMs": 479.662334666665,
+        "p95LatencyMs": 648.0991360000335
+      },
+      {
+        "second": 4,
+        "count": 4,
+        "errors": 0,
+        "meanLatencyMs": 494.43487925000954,
+        "p95LatencyMs": 621.2273960001767
+      },
+      {
+        "second": 5,
+        "count": 6,
+        "errors": 1,
+        "meanLatencyMs": 480.90022283338476,
+        "p95LatencyMs": 856.4197029999923
+      },
+      {
+        "second": 6,
+        "count": 3,
+        "errors": 1,
+        "meanLatencyMs": 285.5153576666489,
+        "p95LatencyMs": 390.1692520000506
+      },
+      {
+        "second": 7,
+        "count": 1,
+        "errors": 1,
+        "meanLatencyMs": 87.17886799992993,
+        "p95LatencyMs": 87.17886799992993
+      }
+    ]
+  },
+  {
+    "experiment": "bench-v2-u50-s3",
+    "numUsers": 50,
+    "sessionsPerUser": 3,
+    "totalSessions": 150,
+    "durationMs": 2995.3974639999215,
+    "totalQueries": 15,
+    "totalErrors": 6,
+    "errorRate": 0.4,
+    "throughputQps": 5.007682679937127,
+    "overall": {
+      "p50": 326.20050499984063,
+      "p95": 2826.949345999863,
+      "p99": 2826.949345999863,
+      "min": 111.80676599987783,
+      "max": 2826.949345999863,
+      "mean": 715.1872207777212
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1183.389935999876,
+        "p95": 2826.949345999863,
+        "p99": 2826.949345999863,
+        "min": 1183.389935999876,
+        "max": 2826.949345999863,
+        "mean": 2005.1696409998694
+      },
+      "alter_table": {
+        "count": 4,
+        "errors": 4,
+        "errorRate": 1,
+        "p50": 93.34651900012977,
+        "p95": 93.68859899998643,
+        "p99": 93.68859899998643,
+        "min": 86.82152500003576,
+        "max": 93.68859899998643,
+        "mean": 91.82501075003529
+      },
+      "sync_table": {
+        "count": 3,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 309.935026000021,
+        "p95": 326.20050499984063,
+        "p99": 326.20050499984063,
+        "min": 303.3026709998958,
+        "max": 326.20050499984063,
+        "mean": 313.14606733325246
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 111.80676599987783,
+        "p95": 111.80676599987783,
+        "p99": 111.80676599987783,
+        "min": 111.80676599987783,
+        "max": 111.80676599987783,
+        "mean": 111.80676599987783
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 120.54859500005841,
+        "p95": 120.54859500005841,
+        "p99": 120.54859500005841,
+        "min": 120.54859500005841,
+        "max": 120.54859500005841,
+        "mean": 120.54859500005841
+      },
+      "memory_insert": {
+        "count": 2,
+        "errors": 1,
+        "errorRate": 0.5,
+        "p50": 91.59898200002499,
+        "p95": 528.8517740000971,
+        "p99": 528.8517740000971,
+        "min": 91.59898200002499,
+        "max": 528.8517740000971,
+        "mean": 310.225378000061
+      },
+      "capture_insert": {
+        "count": 2,
+        "errors": 1,
+        "errorRate": 0.5,
+        "p50": 89.83571799984202,
+        "p95": 725.7003679999616,
+        "p99": 725.7003679999616,
+        "min": 89.83571799984202,
+        "max": 725.7003679999616,
+        "mean": 407.7680429999018
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 14,
+        "errors": 5,
+        "meanLatencyMs": 492.5417151428327,
+        "p95LatencyMs": 2826.949345999863
+      },
+      {
+        "second": 1,
+        "count": 1,
+        "errors": 1,
+        "meanLatencyMs": 89.83571799984202,
+        "p95LatencyMs": 89.83571799984202
+      }
+    ]
+  },
+  {
+    "experiment": "bench-v2-u50-s5",
+    "numUsers": 50,
+    "sessionsPerUser": 5,
+    "totalSessions": 250,
+    "durationMs": 2996.988473000005,
+    "totalQueries": 8,
+    "totalErrors": 1,
+    "errorRate": 0.125,
+    "throughputQps": 2.669346269454266,
+    "overall": {
+      "p50": 314.39757200004533,
+      "p95": 1412.811410000082,
+      "p99": 1412.811410000082,
+      "min": 123.58862800011411,
+      "max": 1412.811410000082,
+      "mean": 558.3642321428882
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 3,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1149.452322000172,
+        "p95": 1412.811410000082,
+        "p99": 1412.811410000082,
+        "min": 625.2370459998492,
+        "max": 1412.811410000082,
+        "mean": 1062.5002593333677
+      },
+      "sync_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 158.75387499993667,
+        "p95": 314.39757200004533,
+        "p99": 314.39757200004533,
+        "min": 158.75387499993667,
+        "max": 314.39757200004533,
+        "mean": 236.575723499991
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 123.58862800011411,
+        "p95": 123.58862800011411,
+        "p99": 123.58862800011411,
+        "min": 123.58862800011411,
+        "max": 123.58862800011411,
+        "mean": 123.58862800011411
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 124.30877200001851,
+        "p95": 124.30877200001851,
+        "p99": 124.30877200001851,
+        "min": 124.30877200001851,
+        "max": 124.30877200001851,
+        "mean": 124.30877200001851
+      },
+      "memory_insert": {
+        "count": 1,
+        "errors": 1,
+        "errorRate": 1,
+        "p50": 82.01067400001921,
+        "p95": 82.01067400001921,
+        "p99": 82.01067400001921,
+        "min": 82.01067400001921,
+        "max": 82.01067400001921,
+        "mean": 82.01067400001921
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 8,
+        "errors": 1,
+        "meanLatencyMs": 498.82003737502964,
+        "p95LatencyMs": 1412.811410000082
+      }
+    ]
+  },
+  {
+    "experiment": "bench-u50-s10",
+    "numUsers": 50,
+    "sessionsPerUser": 10,
+    "error": "Query failed: 500: {\"error\":\"Database error: pg_deeplake: table with OID 26604 is not a DeepLake table\",\"code\":\"QUERY_ERROR\",\"request_id\":\"fb1a1a2a-0a10-49be-b5f5-afe02331ba6f\"}\n"
+  },
+  {
+    "experiment": "bench-v2-u100-s1",
+    "numUsers": 100,
+    "sessionsPerUser": 1,
+    "totalSessions": 100,
+    "durationMs": 2987.6721479999833,
+    "totalQueries": 9,
+    "totalErrors": 3,
+    "errorRate": 0.3333333333333333,
+    "throughputQps": 3.0123787196747167,
+    "overall": {
+      "p50": 319.7830459999386,
+      "p95": 2054.6100150002167,
+      "p99": 2054.6100150002167,
+      "min": 158.34499500016682,
+      "max": 2054.6100150002167,
+      "mean": 750.915677500035
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 3,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1044.07957299985,
+        "p95": 2054.6100150002167,
+        "p99": 2054.6100150002167,
+        "min": 658.151523000095,
+        "max": 2054.6100150002167,
+        "mean": 1252.2803703333873
+      },
+      "sync_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 158.34499500016682,
+        "p95": 319.7830459999386,
+        "p99": 319.7830459999386,
+        "min": 158.34499500016682,
+        "max": 319.7830459999386,
+        "mean": 239.06402050005272
+      },
+      "bootstrap_metadata": {
+        "count": 2,
+        "errors": 2,
+        "errorRate": 1,
+        "p50": 91.45296599995345,
+        "p95": 259.1516929999925,
+        "p99": 259.1516929999925,
+        "min": 91.45296599995345,
+        "max": 259.1516929999925,
+        "mean": 175.30232949997298
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 270.5249129999429,
+        "p95": 270.5249129999429,
+        "p99": 270.5249129999429,
+        "min": 270.5249129999429,
+        "max": 270.5249129999429,
+        "mean": 270.5249129999429
+      },
+      "memory_insert": {
+        "count": 1,
+        "errors": 1,
+        "errorRate": 1,
+        "p50": 86.52061200002208,
+        "p95": 86.52061200002208,
+        "p99": 86.52061200002208,
+        "min": 86.52061200002208,
+        "max": 86.52061200002208,
+        "mean": 86.52061200002208
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 9,
+        "errors": 3,
+        "meanLatencyMs": 549.179926222242,
+        "p95LatencyMs": 2054.6100150002167
+      }
+    ]
+  },
+  {
+    "experiment": "bench-u100-s3",
+    "numUsers": 100,
+    "sessionsPerUser": 3,
+    "error": "Query failed: 502: <html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n</body>\r\n</html>\r\n"
+  },
+  {
+    "experiment": "bench-v2-u100-s5",
+    "numUsers": 100,
+    "sessionsPerUser": 5,
+    "totalSessions": 500,
+    "durationMs": 2996.626361000119,
+    "totalQueries": 9,
+    "totalErrors": 4,
+    "errorRate": 0.4444444444444444,
+    "throughputQps": 3.0033774370843704,
+    "overall": {
+      "p50": 1157.5802130000666,
+      "p95": 2441.4812809999567,
+      "p99": 2441.4812809999567,
+      "min": 142.12268400005996,
+      "max": 2441.4812809999567,
+      "mean": 1055.6670350000263
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 3,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1381.5907720001414,
+        "p95": 2441.4812809999567,
+        "p99": 2441.4812809999567,
+        "min": 1157.5802130000666,
+        "max": 2441.4812809999567,
+        "mean": 1660.217422000055
+      },
+      "sync_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 142.12268400005996,
+        "p95": 155.5602249999065,
+        "p99": 155.5602249999065,
+        "min": 142.12268400005996,
+        "max": 155.5602249999065,
+        "mean": 148.84145449998323
+      },
+      "bootstrap_metadata": {
+        "count": 2,
+        "errors": 2,
+        "errorRate": 1,
+        "p50": 245.47262999997474,
+        "p95": 249.89621699997224,
+        "p99": 249.89621699997224,
+        "min": 245.47262999997474,
+        "max": 249.89621699997224,
+        "mean": 247.6844234999735
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 1,
+        "errorRate": 1,
+        "p50": 95.8134330001194,
+        "p95": 95.8134330001194,
+        "p99": 95.8134330001194,
+        "min": 95.8134330001194,
+        "max": 95.8134330001194,
+        "mean": 95.8134330001194
+      },
+      "memory_insert": {
+        "count": 1,
+        "errors": 1,
+        "errorRate": 1,
+        "p50": 91.48310999991372,
+        "p95": 91.48310999991372,
+        "p99": 91.48310999991372,
+        "min": 91.48310999991372,
+        "max": 91.48310999991372,
+        "mean": 91.48310999991372
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 9,
+        "errors": 4,
+        "meanLatencyMs": 662.3333961111234,
+        "p95LatencyMs": 2441.4812809999567
+      }
+    ]
+  },
+  {
+    "experiment": "bench-v2-u100-s10",
+    "numUsers": 100,
+    "sessionsPerUser": 10,
+    "totalSessions": 1000,
+    "durationMs": 3000.501321999822,
+    "totalQueries": 8,
+    "totalErrors": 1,
+    "errorRate": 0.125,
+    "throughputQps": 2.6662211215651235,
+    "overall": {
+      "p50": 154.71470500016585,
+      "p95": 1238.310007999884,
+      "p99": 1238.310007999884,
+      "min": 108.32639800012112,
+      "max": 1238.310007999884,
+      "mean": 549.7109482857466
+    },
+    "byOperation": {
+      "create_table": {
+        "count": 3,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 1107.363311999943,
+        "p95": 1238.310007999884,
+        "p99": 1238.310007999884,
+        "min": 975.4659770000726,
+        "max": 1238.310007999884,
+        "mean": 1107.0464323333
+      },
+      "sync_table": {
+        "count": 2,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 150.54655899992213,
+        "p95": 154.71470500016585,
+        "p99": 154.71470500016585,
+        "min": 150.54655899992213,
+        "max": 154.71470500016585,
+        "mean": 152.630632000044
+      },
+      "bootstrap_metadata": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 108.32639800012112,
+        "p95": 108.32639800012112,
+        "p99": 108.32639800012112,
+        "min": 108.32639800012112,
+        "max": 108.32639800012112,
+        "mean": 108.32639800012112
+      },
+      "bootstrap_sessions": {
+        "count": 1,
+        "errors": 0,
+        "errorRate": 0,
+        "p50": 113.24967900011688,
+        "p95": 113.24967900011688,
+        "p99": 113.24967900011688,
+        "min": 113.24967900011688,
+        "max": 113.24967900011688,
+        "mean": 113.24967900011688
+      },
+      "memory_insert": {
+        "count": 1,
+        "errors": 1,
+        "errorRate": 1,
+        "p50": 92.78952699992806,
+        "p95": 92.78952699992806,
+        "p99": 92.78952699992806,
+        "min": 92.78952699992806,
+        "max": 92.78952699992806,
+        "mean": 92.78952699992806
+      }
+    },
+    "timeSeries": [
+      {
+        "second": 0,
+        "count": 8,
+        "errors": 1,
+        "meanLatencyMs": 492.5957706250192,
+        "p95LatencyMs": 1238.310007999884
+      }
+    ]
+  }
+]

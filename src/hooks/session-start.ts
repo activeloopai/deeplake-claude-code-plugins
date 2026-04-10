@@ -36,12 +36,16 @@ SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only 
 
 Search command: Grep pattern="keyword" path="~/.deeplake/memory"
 
-Organization management (DEEPLAKE_AUTH_CMD will be replaced with actual path below):
-- Switch org: node "DEEPLAKE_AUTH_CMD" org switch <name-or-id>
-- List orgs: node "DEEPLAKE_AUTH_CMD" org list
-- Invite member: node "DEEPLAKE_AUTH_CMD" invite <email> <ADMIN|WRITE|READ>
-- List members: node "DEEPLAKE_AUTH_CMD" members
-- Re-login: node "DEEPLAKE_AUTH_CMD" login
+Organization management — each argument is SEPARATE (do NOT quote subcommands together):
+- node "DEEPLAKE_AUTH_CMD" login                              — SSO login
+- node "DEEPLAKE_AUTH_CMD" whoami                             — show current user/org
+- node "DEEPLAKE_AUTH_CMD" org list                           — list organizations
+- node "DEEPLAKE_AUTH_CMD" org switch <name-or-id>            — switch organization
+- node "DEEPLAKE_AUTH_CMD" workspaces                         — list workspaces
+- node "DEEPLAKE_AUTH_CMD" workspace <id>                     — switch workspace
+- node "DEEPLAKE_AUTH_CMD" invite <email> <ADMIN|WRITE|READ>  — invite member (ALWAYS ask user which role before inviting)
+- node "DEEPLAKE_AUTH_CMD" members                            — list members
+- node "DEEPLAKE_AUTH_CMD" remove <user-id>                   — remove member
 
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
@@ -117,8 +121,8 @@ async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: str
   const filename = `${sessionId}.md`;
 
   await api.query(
-    `INSERT INTO "${table}" (id, path, filename, content, content_text, mime_type, size_bytes, project, description, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'\\\\x${hex}', E'${sqlStr(content)}', 'text/markdown', ` +
+    `INSERT INTO "${table}" (id, path, filename, content, summary, author, mime_type, size_bytes, project, description, creation_date, last_update_date) ` +
+    `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'\\\\x${hex}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
     `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', '${now}', '${now}')`
   );
 

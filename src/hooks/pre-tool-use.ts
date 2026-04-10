@@ -198,15 +198,15 @@ async function main(): Promise<void> {
         const virtualPath = rewritePaths((input.tool_input.file_path as string) ?? "");
         log(`direct read: ${virtualPath}`);
         const rows = await api.query(
-          `SELECT content_text FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
+          `SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
         );
-        if (rows.length > 0 && rows[0]["content_text"]) {
+        if (rows.length > 0 && rows[0]["summary"]) {
           console.log(JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
               permissionDecision: "allow",
               updatedInput: {
-                command: `echo ${JSON.stringify(rows[0]["content_text"])}`,
+                command: `echo ${JSON.stringify(rows[0]["summary"])}`,
                 description: `[DeepLake direct] cat ${virtualPath}`,
               },
             },
@@ -219,14 +219,14 @@ async function main(): Promise<void> {
         log(`direct grep: ${pattern}`);
         // Single query: fetch path + content together (avoids N+1 round-trips)
         const rows = await api.query(
-          `SELECT path, content_text FROM "${table}" WHERE content_text ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 5`
+          `SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 5`
         );
         if (rows.length > 0) {
           const allResults: string[] = [];
           const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
           for (const row of rows) {
             const p = row["path"] as string;
-            const text = row["content_text"] as string;
+            const text = row["summary"] as string;
             if (!text) continue;
             const matches = text.split("\n")
               .filter(line => re.test(line))

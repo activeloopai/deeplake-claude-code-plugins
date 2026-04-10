@@ -30,7 +30,7 @@ jobs:
 
       - name: Verify bundle/ directory is up to date
         run: |
-          git diff --exit-code bundle/ || {
+          git diff --exit-code claude-code/bundle/ || {
             echo "::error::bundle/ is out of date. Run 'npm run build' and commit the bundle/ directory."
             exit 1
           }

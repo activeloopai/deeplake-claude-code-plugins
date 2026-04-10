@@ -1,0 +1,24 @@
+{
+  "name": "hivemind",
+  "version": "0.6.0",
+  "type": "module",
+  "description": "Hivemind — cloud-backed persistent shared memory for AI agents, powered by DeepLake",
+  "license": "Apache-2.0",
+  "openclaw": {
+    "extensions": ["./dist/index.js"],
+    "install": {
+      "npmSpec": "hivemind",
+      "minHostVersion": ">=2026.3.22"
+    },
+    "compat": {
+      "pluginApi": ">=1.0.0"
+    },
+    "build": {
+      "openclawVersion": "2026.3.22"
+    }
+  },
+  "files": ["dist", "openclaw.plugin.json"],
+  "scripts": {
+    "build": "node esbuild.config.mjs"
+  }
+}
