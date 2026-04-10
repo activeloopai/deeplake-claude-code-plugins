@@ -1,265 +1,231 @@
-# Hivemind — Claude Code Plugin
+<h1 align="center">
+  <br>
+  <a href="https://github.com/activeloopai/hivemind">
+    <img src="https://raw.githubusercontent.com/activeloopai/hivemind/main/docs/public/hivemind-logo.svg" alt="Hivemind" width="120">
+  </a>
+  <br>
+  Hivemind
+  <br>
+</h1>
 
-Persistent, shared memory for Claude Code backed by [Deeplake](https://deeplake.ai). Captures conversation history, tool calls, and responses across sessions and makes them searchable by any agent or user in the same workspace.
+<h4 align="center">One brain for every agent on your team.</h4>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/node-%3E%3D22.0.0-brightgreen.svg" alt="Node"></a>
+  <a href="https://deeplake.ai"><img src="https://img.shields.io/badge/Powered%20by-Deeplake-orange.svg" alt="Deeplake"></a>
+</p>
+
+<p align="center">
+  Persistent, cloud-backed shared memory for AI agents.<br>
+  Captures everything. Recalls anything. Shares across sessions, teammates, and machines.
+</p>
+
+---
 
 ## What it does
 
-- **Captures** every session's prompts, tool calls, and responses into a shared Deeplake table
-- **Intercepts** file operations targeting `~/.deeplake/memory/` and routes them through a virtual filesystem backed by Deeplake cloud SQL
-- **Provides** full-text search across all captured memory via `Grep pattern="keyword" path="~/.deeplake/memory"`
-- **Upgrades** gracefully: basic mode (just-bash virtual FS) works out of the box; install the Deeplake CLI for full FUSE mount support
+- 🧠 **Captures** every session's prompts, tool calls, and responses into a shared cloud SQL table
+- 🔍 **Searches** across all memory with BM25 full-text search (falls back to ILIKE when index unavailable)
+- 🔗 **Shares** memory across sessions, agents, teammates, and machines in real-time
+- 📁 **Intercepts** file operations on `~/.deeplake/memory/` through a virtual filesystem backed by SQL
+- 📝 **Summarizes** sessions into AI-generated wiki pages via a background worker at session end
 
-## Installation
+## Platforms
 
-### As a Claude Code plugin
+| Platform        | Status         | Install                                                    |
+|-----------------|----------------|------------------------------------------------------------|
+| **Claude Code** | ✅ Stable      | See [Quick start](#quick-start-claude-code)                |
+| **OpenClaw**    | 🔧 Beta        | See [Quick start](#quick-start-openclaw)                   |
+| **Codex**       | 🔜 Coming soon | —                                                          |
 
-From within Claude Code, run:
+## Quick start (Claude Code)
+
+Add the marketplace:
 
 ```
 /plugin marketplace add activeloopai/hivemind
+```
+
+Install the plugin:
+
+```
 /plugin install hivemind
+```
+
+Reload plugins:
+
+```
 /reload-plugins
+```
+
+Log in:
+
+```
 /hivemind:login
 ```
 
+That's it. Your agents now share a brain.
+
 ### Updating
 
-The plugin auto-updates by default — it checks for new versions on each session start and installs them automatically. You'll see a notice when an update is applied; run `/reload-plugins` to activate it.
-
-To manually update:
+The plugin auto-updates on each session start. To manually update:
 
 ```
 /hivemind:update
 ```
 
-To toggle auto-updates:
+## Quick start (OpenClaw)
+
+Install from ClawHub (Telegram, TUI, WhatsApp):
 
 ```
-autoupdate off   # disable (via org management CLI)
-autoupdate on    # re-enable
-autoupdate       # check current status
+openclaw plugins install hivemind
 ```
 
-### From source (development)
+Send a message. The plugin sends you an auth link. Click, sign in, done.
 
-```bash
-npm install
-npm run build
-claude --plugin-dir /path/to/hivemind
-/hivemind:login
-```
-
-## Authentication
-
-After installing the plugin, run `/hivemind:login` to authenticate. This opens a browser for SSO login via the OAuth Device Authorization Flow (RFC 8628).
-
-1. Run `/hivemind:login` in Claude Code
-2. Browser opens — sign in at Deeplake
-3. Select your organization
-4. Credentials saved to `~/.deeplake/credentials.json` (permissions: 0600)
-
-On subsequent sessions, the plugin detects existing credentials and connects automatically.
-
-To re-login or switch organizations:
-
-```
-/hivemind:login
-```
-
-Alternatively, set environment variables directly:
-
-```bash
-export DEEPLAKE_TOKEN=your-token
-export DEEPLAKE_ORG_ID=your-org-id
-export DEEPLAKE_WORKSPACE_ID=default   # optional
-```
-```
-
-## ⚠️ Data Collection Notice
-
-This plugin captures the following data and stores it in your Deeplake workspace:
-
-| Data                  | What                               | Where                     |
-|-----------------------|------------------------------------|---------------------------|
-| User prompts          | Every message you send to Claude   | Shared Deeplake workspace |
-| Tool calls            | Tool name + full input             | Shared Deeplake workspace |
-| Tool responses        | Full tool output                   | Shared Deeplake workspace |
-| Assistant responses   | Claude's final response text       | Shared Deeplake workspace |
-| Subagent activity     | Subagent tool calls and responses  | Shared Deeplake workspace |
-
-**All users with access to your Deeplake workspace can read this data.**
-
-A DATA NOTICE is displayed at the start of every session when capture is enabled.
-
-To opt out of capture: `export DEEPLAKE_CAPTURE=false`
-
-## Configuration
-
-| Variable                 | Default                   | Description                               |
-|--------------------------|---------------------------|-------------------------------------------|
-| `DEEPLAKE_TOKEN`         | —                         | API token (auto-set by device login)      |
-| `DEEPLAKE_ORG_ID`        | —                         | Organization ID (auto-set by device login)|
-| `DEEPLAKE_WORKSPACE_ID`  | `default`                 | Workspace name                            |
-| `DEEPLAKE_API_URL`       | `https://api.deeplake.ai` | API endpoint                              |
-| `DEEPLAKE_TABLE`         | `memory`                  | SQL table for summaries and virtual FS    |
-| `DEEPLAKE_SESSIONS_TABLE`| `sessions`                | SQL table for per-event session capture   |
-| `DEEPLAKE_MEMORY_PATH`   | `~/.deeplake/memory`      | Path that triggers interception           |
-| `DEEPLAKE_CAPTURE`       | `true`                    | Set to `false` to disable capture         |
-| `DEEPLAKE_DEBUG`         | —                         | Set to `1` for verbose hook debug logs    |
-
-### Debug mode and capture control
-
-```bash
-# Enable debug logging (writes to ~/.deeplake/hook-debug.log)
-DEEPLAKE_DEBUG=1 claude
-
-# Disable session capture
-DEEPLAKE_CAPTURE=false claude
-```
-
-## Usage
-
-### Search memory
-
-In Claude Code, just ask:
-
-```
-"What was Emanuele working on?"
-"Search deeplake memory for authentication"
-"List files in ~/.deeplake/memory/"
-```
-
-Claude automatically checks both built-in memory and Deeplake memory when recalling information.
-
-### Interactive shell
-
-```bash
-npm run shell
-# ds:/$ ls /
-# ds:/$ cat /session_abc123.jsonl
-# ds:/$ echo "note" > /notes.txt
-```
-
-### One-shot commands
-
-```bash
-npm run shell -- -c "ls /"
-npm run shell -- -c "cat /CLAUDE.md"
-npm run shell -- -c "grep -r 'keyword' /"
-```
-
-## Architecture
+## How it works
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        Claude Code                          │
+│                     Your AI Agent                           │
 └──────────────────────────┬──────────────────────────────────┘
                            │
-┌──────────────────────────▼──────────────────────────────────┐
-│  SessionStart                                               │
-│  Auth login (device flow) + inject context + DATA NOTICE    │
-└──────────────────────────┬──────────────────────────────────┘
+        ┌──────────────────▼──────────────────┐
+        │  📥 Capture (every turn)            │
+        │  prompts · tool calls · responses   │
+        └──────────────────┬──────────────────┘
                            │
-┌──────────────────────────▼──────────────────────────────────┐
-│  UserPromptSubmit → capture.js → INSERT row into sessions   │
-└──────────────────────────┬──────────────────────────────────┘
+        ┌──────────────────▼──────────────────┐
+        │  🧠 Hivemind Cloud                  │
+        │  SQL tables · BM25 search           │
+        │  shared across all agents           │
+        └──────────────────┬──────────────────┘
                            │
-┌──────────────────────────▼──────────────────────────────────┐
-│  PreToolUse — intercept commands on ~/.deeplake/memory/     │
-│                                                             │
-│  ├─ Read/Grep (fast path)       → direct SQL query          │
-│  ├─ safe (cat, ls, jq...)       → just-bash + DeeplakeFS    │
-│  ├─ unsafe + CLI installed      → real bash + FUSE mount    │
-│  ├─ unsafe + no CLI             → deny + install prompt     │
-│  └─ deeplake mount/login        → pass through              │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│  PostToolUse (async) → capture.js → INSERT row into sessions│
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│  Stop → capture.js → INSERT row into sessions               │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-┌──────────────────────────▼───────────────────────────────────┐
-│  SubagentStop (async) → capture.js → INSERT row into sessions│
-└──────────────────────────┬───────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│  SessionEnd → spawns wiki-worker.js in background           │
-│  → fetches events, runs claude -p, uploads summary          │
-│  → /summaries/*.md + /index.md                              │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│                   Deeplake REST API                         │
-│       sessions table · memory table (summaries, index)      │
-└─────────────────────────────────────────────────────────────┘
+        ┌──────────────────▼──────────────────┐
+        │  🔍 Recall (before each turn)       │
+        │  search memory · inject context     │
+        └─────────────────────────────────────┘
 ```
 
-### Hook events
+Every session is captured. Every agent can recall. Teammates in the same org see the same memory.
 
-All capture hooks use a single unified `capture.js` bundle — one INSERT per event into the sessions SQL table.
+## Features
 
-| Hook                | Bundle           | Purpose                                         | Async |
-|---------------------|------------------|-------------------------------------------------|-------|
-| `SessionStart`      | `session-start`  | Auth login, inject context, DATA NOTICE         |  No   |
-| `UserPromptSubmit`  | `capture`        | Capture user message                            |  No   |
-| `PreToolUse`        | `pre-tool-use`   | Intercept and rewrite memory-targeting commands |  No   |
-| `PostToolUse`       | `capture`        | Capture tool call + response                    |  Yes  |
-| `Stop`              | `capture`        | Capture assistant response                      |  No   |
-| `SubagentStop`      | `capture`        | Capture subagent activity                       |  Yes  |
-| `SessionEnd`        | `session-end`    | Spawn wiki-worker for AI summary                |  No   |
+### 🔍 Natural search
+
+Just ask Claude naturally:
+
+```
+"What was Emanuele working on?"
+"Search memory for authentication bugs"
+"What did we decide about the API design?"
+```
+
+### 📝 AI-generated session summaries
+
+After each session, a background worker generates a wiki summary: key decisions, code changes, next steps. Browse them at `~/.deeplake/memory/summaries/`.
+
+### 👥 Team sharing
+
+Invite teammates to your Deeplake org. Their agents see your memory, your agents see theirs. No setup, no sync, no merge conflicts.
+
+### 🔒 Privacy controls
+
+Disable capture entirely:
+
+```bash
+DEEPLAKE_CAPTURE=false claude
+```
+
+Enable debug logging:
+
+```bash
+DEEPLAKE_DEBUG=1 claude
+```
+
+## ⚠️ Data collection notice
+
+This plugin captures session activity and stores it in your Deeplake workspace:
+
+| Data                  | What's captured                    |
+|-----------------------|------------------------------------|
+| User prompts          | Every message you send             |
+| Tool calls            | Tool name + full input             |
+| Tool responses        | Full tool output                   |
+| Assistant responses   | Claude's final response            |
+| Subagent activity     | Subagent tool calls and responses  |
+
+**All users in your Deeplake workspace can read this data.** A DATA NOTICE is displayed at the start of every session.
+
+## Configuration
+
+| Variable                  | Default                   | Description                                |
+|---------------------------|---------------------------|--------------------------------------------|
+| `DEEPLAKE_TOKEN`          | —                         | API token (auto-set by login)              |
+| `DEEPLAKE_ORG_ID`         | —                         | Organization ID (auto-set by login)        |
+| `DEEPLAKE_WORKSPACE_ID`   | `default`                 | Workspace name                             |
+| `DEEPLAKE_API_URL`        | `https://api.deeplake.ai` | API endpoint                               |
+| `DEEPLAKE_TABLE`          | `memory`                  | SQL table for summaries and virtual FS     |
+| `DEEPLAKE_SESSIONS_TABLE` | `sessions`                | SQL table for per-event session capture    |
+| `DEEPLAKE_MEMORY_PATH`    | `~/.deeplake/memory`      | Path that triggers interception            |
+| `DEEPLAKE_CAPTURE`        | `true`                    | Set to `false` to disable capture          |
+| `DEEPLAKE_DEBUG`          | —                         | Set to `1` for verbose hook debug logs     |
+
+## Architecture
+
+### Hook lifecycle (Claude Code)
+
+| Hook                | Purpose                                          | Async |
+|---------------------|--------------------------------------------------|-------|
+| `SessionStart`      | Auth login, inject context, DATA NOTICE          | No    |
+| `UserPromptSubmit`  | Capture user message                             | No    |
+| `PreToolUse`        | Intercept and rewrite memory-targeting commands  | No    |
+| `PostToolUse`       | Capture tool call + response                     | Yes   |
+| `Stop`              | Capture assistant response                       | No    |
+| `SubagentStop`      | Capture subagent activity                        | Yes   |
+| `SessionEnd`        | Spawn wiki-worker for AI summary                 | No    |
+
+### Monorepo structure
+
+```
+hivemind/
+├── src/                    ← shared core (API client, auth, config, SQL utils)
+├── claude-code/            ← Claude Code plugin (hooks, virtual FS, shell)
+├── openclaw/               ← OpenClaw plugin (auto-recall, auto-capture)
+└── codex/                  ← coming soon
+```
 
 ## Security
 
-- SQL values escaped with `sqlStr()`, `sqlLike()`, `sqlIdent()` (see `src/utils/sql.ts`)
-- Only 80+ allowlisted builtins run in the virtual FS; unsafe binaries pass through or are denied
+- SQL values escaped with `sqlStr()`, `sqlLike()`, `sqlIdent()`
+- ~70 allowlisted builtins run in the virtual FS; unrecognized commands are denied
 - Credentials stored with mode `0600`, config dir with mode `0700`
-- Device flow login — no tokens in environment or code
+- Device flow login: no tokens in environment or code
 - `DEEPLAKE_CAPTURE=false` fully disables data collection
 
-## Local development
-
-### Prerequisites
-
-- **Node.js >= 22** — install via [nodejs.org](https://nodejs.org) or a version manager:
-  ```bash
-  # nvm
-  nvm install 22
-
-  # brew
-  brew install node
-  ```
-
-### Setup
+## Development
 
 ```bash
 git clone https://github.com/activeloopai/hivemind.git
 cd hivemind
 npm install
-npm run build     # tsc + esbuild → bundle/
+npm run build     # tsc + esbuild → claude-code/bundle/ + openclaw/dist/
+npm test          # vitest
 ```
 
-### Commands
+Test locally with Claude Code:
 
 ```bash
-npm run build     # TypeScript compile + esbuild bundle
-npm run bundle    # esbuild bundle only (skip tsc)
-npm run dev       # TypeScript watch mode
-npm test          # vitest unit tests
-npm run shell     # interactive shell against real Deeplake
-DEEPLAKE_DEBUG=1 npm run shell  # with debug logging
+claude --plugin-dir claude-code
 ```
 
-### Test the plugin locally with Claude Code
+Interactive shell against Deeplake:
 
 ```bash
-claude --plugin-dir .
+npm run shell
 ```
-
-After making changes, run `npm run build` and send a new message in Claude Code to pick up the updated hooks.
 
 ## License
 
