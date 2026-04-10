@@ -67509,12 +67509,13 @@ var DeeplakeFs = class _DeeplakeFs {
             stack.push(childPath);
         }
       }
-      for (const fp of toDelete)
+      const safeToDelete = toDelete.filter((fp) => !this.sessionPaths.has(fp));
+      for (const fp of safeToDelete)
         this.removeFromTree(fp);
       this.dirs.delete(p22);
       this.dirs.get(parentOf(p22))?.delete(basename4(p22));
-      if (toDelete.length > 0) {
-        const inList = toDelete.map((fp) => `'${sqlStr(fp)}'`).join(", ");
+      if (safeToDelete.length > 0) {
+        const inList = safeToDelete.map((fp) => `'${sqlStr(fp)}'`).join(", ");
         await this.client.query(`DELETE FROM "${this.table}" WHERE path IN (${inList})`);
       }
     } else {

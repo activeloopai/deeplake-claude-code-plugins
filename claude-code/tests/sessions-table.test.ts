@@ -256,6 +256,15 @@ describe("session files are read-only", () => {
     const content = await fs.readFile("/copy.jsonl");
     expect(content).toContain("user_message");
   });
+
+  it("rm -rf on parent dir skips session files", async () => {
+    const { fs } = await makeFsWithSession();
+    // rm -rf /sessions should not remove session files from the tree
+    await fs.rm("/sessions", { recursive: true, force: true });
+    // Session file should still be readable
+    const content = await fs.readFile("/sessions/alice/alice_org_default_s1.jsonl");
+    expect(content).toContain("user_message");
+  });
 });
 
 describe("ensureSessionsTable schema", () => {

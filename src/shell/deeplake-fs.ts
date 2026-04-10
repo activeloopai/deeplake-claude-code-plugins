@@ -604,12 +604,14 @@ export class DeeplakeFs implements IFileSystem {
           if (this.dirs.has(childPath))  stack.push(childPath);
         }
       }
-      for (const fp of toDelete) this.removeFromTree(fp);
+      // Filter out session paths — they are read-only
+      const safeToDelete = toDelete.filter(fp => !this.sessionPaths.has(fp));
+      for (const fp of safeToDelete) this.removeFromTree(fp);
       this.dirs.delete(p);
       this.dirs.get(parentOf(p))?.delete(basename(p));
 
-      if (toDelete.length > 0) {
-        const inList = toDelete.map(fp => `'${esc(fp)}'`).join(", ");
+      if (safeToDelete.length > 0) {
+        const inList = safeToDelete.map(fp => `'${esc(fp)}'`).join(", ");
         await this.client.query(`DELETE FROM "${this.table}" WHERE path IN (${inList})`);
       }
     } else {
