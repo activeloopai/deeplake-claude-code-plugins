@@ -54,12 +54,12 @@ function buildUpdateNotice(current: string, latest: string, autoupdate: boolean,
 
   if (autoupdate) {
     if (updateSucceeded) {
-      return `\n\n✅ Deeplake Hivemind auto-updated: ${current} → ${latest}. Tell the user to run /reload-plugins to apply.`;
+      return `\n\n✅ Hivemind auto-updated: ${current} → ${latest}. Tell the user to run /reload-plugins to apply.`;
     } else {
-      return `\n\n⬆️ Deeplake Hivemind update available: ${current} → ${latest}. Auto-update failed — run /deeplake-hivemind:update to upgrade manually.`;
+      return `\n\n⬆️ Hivemind update available: ${current} → ${latest}. Auto-update failed — run /hivemind:update to upgrade manually.`;
     }
   }
-  return `\n\n⬆️ Deeplake Hivemind update available: ${current} → ${latest}. Run /deeplake-hivemind:update to upgrade.`;
+  return `\n\n⬆️ Hivemind update available: ${current} → ${latest}. Run /hivemind:update to upgrade.`;
 }
 
 describe("update notice generation", () => {
@@ -82,13 +82,13 @@ describe("update notice generation", () => {
     const notice = buildUpdateNotice("0.3.8", "0.4.0", true, false);
     expect(notice).toContain("⬆️");
     expect(notice).toContain("Auto-update failed");
-    expect(notice).toContain("/deeplake-hivemind:update");
+    expect(notice).toContain("/hivemind:update");
   });
 
   it("shows manual upgrade notice when autoupdate is off", () => {
     const notice = buildUpdateNotice("0.3.8", "0.4.0", false, null);
     expect(notice).toContain("⬆️");
-    expect(notice).toContain("/deeplake-hivemind:update");
+    expect(notice).toContain("/hivemind:update");
     expect(notice).not.toContain("Auto-update failed");
     expect(notice).not.toContain("✅");
   });

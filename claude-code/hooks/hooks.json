@@ -1,5 +1,5 @@
 {
-  "description": "Deeplake memory — captures all session activity and provides memory search via ~/.deeplake/memory",
+  "description": "Hivemind memory — captures all session activity and provides memory search via ~/.deeplake/memory",
   "hooks": {
     "SessionStart": [
       {

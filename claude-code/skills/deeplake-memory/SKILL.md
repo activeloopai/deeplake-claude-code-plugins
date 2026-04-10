@@ -1,15 +1,15 @@
 ---
-name: deeplake-memory
-description: Global team and org memory powered by Deeplake. ALWAYS check BOTH built-in memory AND Deeplake memory when recalling information.
+name: hivemind-memory
+description: Global team and org memory powered by Activeloop. ALWAYS check BOTH built-in memory AND Hivemind memory when recalling information.
 allowed-tools: Grep Read Bash
 ---
 
-# Deeplake Memory
+# Hivemind Memory
 
 You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
 
 1. **Your built-in memory** (`~/.claude/`) — personal per-project notes
-2. **Deeplake global memory** (`~/.deeplake/memory/`) — global memory shared across all sessions, users, and agents in the org
+2. **Hivemind global memory** (`~/.deeplake/memory/`) — global memory shared across all sessions, users, and agents in the org
 
 ## Memory Structure
 

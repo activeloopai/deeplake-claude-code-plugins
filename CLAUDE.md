@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A Claude Code plugin that provides persistent, cloud-backed memory for AI agents. It captures session activity (prompts, tool calls, responses) into a Deeplake SQL table and intercepts file operations targeting `~/.deeplake/memory/` through a virtual filesystem backed by Deeplake's API.
+A Claude Code plugin that provides persistent, cloud-backed memory for AI agents. It captures session activity (prompts, tool calls, responses) into a Hivemind SQL table and intercepts file operations targeting `~/.deeplake/memory/` through a virtual filesystem backed by Hivemind's API.
 
 ## Commands
 
@@ -14,7 +14,7 @@ npm run build         # TypeScript compile + esbuild bundle (5 ESM outputs into 
 npm run bundle        # esbuild bundle only (skip tsc)
 npm run dev           # TypeScript watch mode
 npm test              # Run vitest tests
-npm run shell         # Interactive virtual shell against Deeplake
+npm run shell         # Interactive virtual shell against Hivemind
 DEEPLAKE_DEBUG=1 npm run shell  # Shell with debug logging
 ```
 
@@ -26,7 +26,7 @@ The plugin operates through 5 Claude Code hooks defined in `hooks/hooks.json`. E
 
 1. **SessionStart** (`session-start.js`) — Loads credentials, bootstraps the virtual FS cache, injects memory context into Claude's system prompt
 2. **UserPromptSubmit** (`capture.js`) — Captures user prompts to session JSONL
-3. **PreToolUse** (`pre-tool-use.js`) — Intercepts Read/Write/Edit/Glob/Grep/Bash targeting `~/.deeplake/memory/`, rewrites them to run through the virtual shell. Unsafe commands either pass through to Deeplake CLI (if installed) or show an install prompt
+3. **PreToolUse** (`pre-tool-use.js`) — Intercepts Read/Write/Edit/Glob/Grep/Bash targeting `~/.deeplake/memory/`, rewrites them to run through the virtual shell. Unsafe commands either pass through to Hivemind CLI (if installed) or show an install prompt
 4. **PostToolUse** (`capture.js`, async) — Captures tool name + input + response to session JSONL
 5. **Stop** (`capture.js`) — Final capture before session ends
 
@@ -35,7 +35,7 @@ Hooks receive/return JSON via stdin/stdout.
 ### Key Modules
 
 - **`src/config.ts`** — Credentials from `~/.deeplake/credentials.json` or env vars
-- **`src/deeplake-api.ts`** — Two clients: local JSONL appender + HTTP SQL query client against Deeplake API
+- **`src/deeplake-api.ts`** — Two clients: local JSONL appender + HTTP SQL query client against Hivemind API
 - **`src/path-match.ts`** — Detects if a tool call targets the memory path
 - **`src/shell/deeplake-fs.ts`** — Virtual filesystem (~1000 LOC) implementing `just-bash` IFileSystem. Handles bootstrap from SQL, read/write via SELECT/INSERT+DELETE, BM25 search via `content_text <#> 'pattern'`, batched writes (coalesced every 200ms)
 - **`src/shell/grep-interceptor.ts`** — Custom grep using BM25 search instead of regex
@@ -56,7 +56,7 @@ Hooks receive/return JSON via stdin/stdout.
 
 ## Testing
 
-Tests are in `tests/` using vitest. They mock the Deeplake API client to verify filesystem behavior:
+Tests are in `tests/` using vitest. They mock the Hivemind API client to verify filesystem behavior:
 - `tests/deeplake-fs.test.ts` — Virtual filesystem operations (read/write/list/search)
 - `tests/grep-interceptor.test.ts` — BM25 search integration
 

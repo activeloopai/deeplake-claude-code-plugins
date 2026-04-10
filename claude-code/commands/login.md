@@ -1,5 +1,5 @@
 ---
-description: Log in to Deeplake and select your organization
+description: Log in to Hivemind and select your organization
 allowed-tools: Bash
 ---
 
@@ -11,7 +11,7 @@ node "${CLAUDE_PLUGIN_ROOT}/bundle/commands/auth-login.js" login
 
 If login succeeds, show this welcome message:
 
-🐝 Welcome to Deeplake Hivemind!
+🐝 Welcome to Hivemind!
 
 Your Claude Code agents can now talk to each other and share memory across sessions, teammates, and machines.
 
