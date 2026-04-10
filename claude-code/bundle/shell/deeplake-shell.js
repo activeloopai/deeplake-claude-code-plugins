@@ -67316,6 +67316,8 @@ var DeeplakeFs = class _DeeplakeFs {
   /** Write a file with optional row-level metadata (project, description, dates). */
   async writeFileWithMeta(path2, content, meta) {
     const p22 = normPath(path2);
+    if (this.sessionPaths.has(p22))
+      throw fsErr("EPERM", "session files are read-only", p22);
     if (this.dirs.has(p22) && !this.files.has(p22))
       throw fsErr("EISDIR", "illegal operation on a directory", p22);
     const text = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
@@ -67339,6 +67341,8 @@ var DeeplakeFs = class _DeeplakeFs {
   }
   async writeFile(path2, content, _opts) {
     const p22 = normPath(path2);
+    if (this.sessionPaths.has(p22))
+      throw fsErr("EPERM", "session files are read-only", p22);
     if (this.dirs.has(p22) && !this.files.has(p22))
       throw fsErr("EISDIR", "illegal operation on a directory", p22);
     const text = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
@@ -67482,6 +67486,8 @@ var DeeplakeFs = class _DeeplakeFs {
   // ── IFileSystem: structural mutations ─────────────────────────────────────
   async rm(path2, opts) {
     const p22 = normPath(path2);
+    if (this.sessionPaths.has(p22))
+      throw fsErr("EPERM", "session files are read-only", p22);
     if (!this.files.has(p22) && !this.dirs.has(p22)) {
       if (opts?.force)
         return;
@@ -67518,6 +67524,8 @@ var DeeplakeFs = class _DeeplakeFs {
   }
   async cp(src, dest, opts) {
     const s10 = normPath(src), d15 = normPath(dest);
+    if (this.sessionPaths.has(d15))
+      throw fsErr("EPERM", "session files are read-only", d15);
     if (this.dirs.has(s10) && !this.files.has(s10)) {
       if (!opts?.recursive)
         throw fsErr("EISDIR", "is a directory", s10);
@@ -67529,6 +67537,11 @@ var DeeplakeFs = class _DeeplakeFs {
     }
   }
   async mv(src, dest) {
+    const s10 = normPath(src), d15 = normPath(dest);
+    if (this.sessionPaths.has(s10))
+      throw fsErr("EPERM", "session files are read-only", s10);
+    if (this.sessionPaths.has(d15))
+      throw fsErr("EPERM", "session files are read-only", d15);
     await this.cp(src, dest, { recursive: true });
     await this.rm(src, { recursive: true, force: true });
   }
