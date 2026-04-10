@@ -217,21 +217,17 @@ async function main(): Promise<void> {
         const pattern = (input.tool_input.pattern as string) ?? "";
         const ignoreCase = !!input.tool_input["-i"];
         log(`direct grep: ${pattern}`);
-        // Only fetch paths first (fast), then fetch content for matches
-        const pathRows = await api.query(
-          `SELECT path FROM "${table}" WHERE content_text ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 10`
+        // Single query: fetch path + content together (avoids N+1 round-trips)
+        const rows = await api.query(
+          `SELECT path, content_text FROM "${table}" WHERE content_text ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 5`
         );
-        if (pathRows.length > 0) {
-          // Fetch content for matched files and extract matching lines
+        if (rows.length > 0) {
           const allResults: string[] = [];
-          for (const pr of pathRows.slice(0, 5)) {
-            const p = pr["path"] as string;
-            const contentRows = await api.query(
-              `SELECT content_text FROM "${table}" WHERE path = '${sqlStr(p)}' LIMIT 1`
-            );
-            if (!contentRows[0]?.["content_text"]) continue;
-            const text = contentRows[0]["content_text"] as string;
-            const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
+          const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
+          for (const row of rows) {
+            const p = row["path"] as string;
+            const text = row["content_text"] as string;
+            if (!text) continue;
             const matches = text.split("\n")
               .filter(line => re.test(line))
               .slice(0, 5)

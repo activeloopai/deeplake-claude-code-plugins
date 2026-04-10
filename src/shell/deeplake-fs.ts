@@ -114,36 +114,45 @@ export class DeeplakeFs implements IFileSystem {
     fs.sessionsTable = sessionsTable ?? null;
     // Ensure the table exists before bootstrapping.
     await client.ensureTable();
-    // Sync table to ensure query engine sees latest writes.
-    await client.query(`SELECT deeplake_sync_table('${table}')`);
-    // Bootstrap: load path metadata from memory table.
-    const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
-    try {
-      let rows: Record<string, unknown>[];
-      try {
-        rows = await client.query(sql);
-      } catch {
-        rows = await client.query(sql);
-      }
-      for (const row of rows) {
-        const p = row["path"] as string;
-        fs.files.set(p, null);
-        fs.meta.set(p, {
-          size: Number(row["size_bytes"] ?? 0),
-          mime: (row["mime_type"] as string) ?? "application/octet-stream",
-          mtime: new Date(),
-        });
-        fs.addToTree(p);
-        fs.flushed.add(p);
-      }
-    } catch {
-      // Table may not exist yet — start empty
-    }
 
-    // Bootstrap: load session paths from sessions table (distinct paths only).
+    // Sync both tables in parallel before bootstrap queries.
+    // Track whether session sync succeeded — skip session bootstrap if it failed.
+    let sessionSyncOk = false;
+    const syncPromises: Promise<unknown>[] = [
+      client.query(`SELECT deeplake_sync_table('${table}')`),
+    ];
     if (sessionsTable) {
+      syncPromises.push(
+        client.query(`SELECT deeplake_sync_table('${sessionsTable}')`)
+          .then(() => { sessionSyncOk = true; })
+          .catch(() => { /* sessions table may not exist yet */ })
+      );
+    }
+    await Promise.all(syncPromises);
+
+    // Bootstrap memory + sessions metadata in parallel.
+    const memoryBootstrap = (async () => {
+      const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
       try {
-        await client.query(`SELECT deeplake_sync_table('${sessionsTable}')`);
+        const rows = await client.query(sql);
+        for (const row of rows) {
+          const p = row["path"] as string;
+          fs.files.set(p, null);
+          fs.meta.set(p, {
+            size: Number(row["size_bytes"] ?? 0),
+            mime: (row["mime_type"] as string) ?? "application/octet-stream",
+            mtime: new Date(),
+          });
+          fs.addToTree(p);
+          fs.flushed.add(p);
+        }
+      } catch {
+        // Table may not exist yet — start empty
+      }
+    })();
+
+    const sessionsBootstrap = (sessionsTable && sessionSyncOk) ? (async () => {
+      try {
         const sessionRows = await client.query(
           `SELECT path, SUM(size_bytes) as total_size FROM "${sessionsTable}" GROUP BY path ORDER BY path`
         );
@@ -163,7 +172,9 @@ export class DeeplakeFs implements IFileSystem {
       } catch {
         // Sessions table may not exist yet
       }
-    }
+    })() : Promise.resolve();
+
+    await Promise.all([memoryBootstrap, sessionsBootstrap]);
 
     return fs;
   }
@@ -207,40 +218,56 @@ export class DeeplakeFs implements IFileSystem {
     const rows = [...this.pending.values()];
     this.pending.clear();
 
-    // Upsert: UPDATE existing rows, INSERT new ones. Preserves stable id.
-    for (const r of rows) {
-      const hex   = r.content.toString("hex");
-      const text  = esc(r.contentText);
-      const p     = esc(r.path);
-      const fname = esc(r.filename);
-      const mime  = esc(r.mimeType);
-      const ts = new Date().toISOString();
-      const cd = r.creationDate ?? ts;
-      const lud = r.lastUpdateDate ?? ts;
-      if (this.flushed.has(r.path)) {
-        let setClauses = `filename = '${fname}', content = E'\\\\x${hex}', content_text = E'${text}', ` +
-          `mime_type = '${mime}', size_bytes = ${r.sizeBytes}, last_update_date = '${esc(lud)}'`;
-        if (r.project !== undefined) setClauses += `, project = '${esc(r.project)}'`;
-        if (r.description !== undefined) setClauses += `, description = '${esc(r.description)}'`;
-        await this.client.query(
-          `UPDATE "${this.table}" SET ${setClauses} WHERE path = '${p}'`
-        );
-      } else {
-        const id = randomUUID();
-        const cols = "id, path, filename, content, content_text, mime_type, size_bytes, creation_date, last_update_date" +
-          (r.project !== undefined ? ", project" : "") +
-          (r.description !== undefined ? ", description" : "");
-        const vals = `'${id}', '${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes}, '${esc(cd)}', '${esc(lud)}'` +
-          (r.project !== undefined ? `, '${esc(r.project)}'` : "") +
-          (r.description !== undefined ? `, '${esc(r.description)}'` : "");
-        await this.client.query(
-          `INSERT INTO "${this.table}" (${cols}) VALUES (${vals})`
-        );
-        this.flushed.add(r.path);
+    // Upsert in parallel — the semaphore in DeeplakeApi.query() handles concurrency.
+    // Re-queue any rows that failed so they are retried on the next flush.
+    const results = await Promise.allSettled(rows.map(r => this.upsertRow(r)));
+    let failures = 0;
+    for (let i = 0; i < results.length; i++) {
+      if (results[i].status === "rejected") {
+        // Re-queue for next flush — don't overwrite if the caller wrote a newer version
+        if (!this.pending.has(rows[i].path)) {
+          this.pending.set(rows[i].path, rows[i]);
+        }
+        failures++;
       }
     }
-    // Sync so subsequent reads see the new data.
+    // Sync so subsequent reads see the successfully written data.
     await this.client.query(`SELECT deeplake_sync_table('${this.table}')`);
+    if (failures > 0) {
+      throw new Error(`flush: ${failures}/${rows.length} writes failed and were re-queued`);
+    }
+  }
+
+  private async upsertRow(r: PendingRow): Promise<void> {
+    const hex   = r.content.toString("hex");
+    const text  = esc(r.contentText);
+    const p     = esc(r.path);
+    const fname = esc(r.filename);
+    const mime  = esc(r.mimeType);
+    const ts = new Date().toISOString();
+    const cd = r.creationDate ?? ts;
+    const lud = r.lastUpdateDate ?? ts;
+    if (this.flushed.has(r.path)) {
+      let setClauses = `filename = '${fname}', content = E'\\\\x${hex}', content_text = E'${text}', ` +
+        `mime_type = '${mime}', size_bytes = ${r.sizeBytes}, last_update_date = '${esc(lud)}'`;
+      if (r.project !== undefined) setClauses += `, project = '${esc(r.project)}'`;
+      if (r.description !== undefined) setClauses += `, description = '${esc(r.description)}'`;
+      await this.client.query(
+        `UPDATE "${this.table}" SET ${setClauses} WHERE path = '${p}'`
+      );
+    } else {
+      const id = randomUUID();
+      const cols = "id, path, filename, content, content_text, mime_type, size_bytes, creation_date, last_update_date" +
+        (r.project !== undefined ? ", project" : "") +
+        (r.description !== undefined ? ", description" : "");
+      const vals = `'${id}', '${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes}, '${esc(cd)}', '${esc(lud)}'` +
+        (r.project !== undefined ? `, '${esc(r.project)}'` : "") +
+        (r.description !== undefined ? `, '${esc(r.description)}'` : "");
+      await this.client.query(
+        `INSERT INTO "${this.table}" (${cols}) VALUES (${vals})`
+      );
+      this.flushed.add(r.path);
+    }
   }
 
   // ── Virtual index.md generation ────────────────────────────────────────────
@@ -434,7 +461,8 @@ export class DeeplakeFs implements IFileSystem {
         `last_update_date = '${ts}' ` +
         `WHERE path = '${esc(p)}'`
       );
-      // Update local metadata
+      // Invalidate content cache so next read fetches fresh data from SQL
+      this.files.set(p, null);
       const m = this.meta.get(p);
       if (m) { m.size += Buffer.byteLength(add, "utf-8"); m.mtime = new Date(ts); }
     } else {
