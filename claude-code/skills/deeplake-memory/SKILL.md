@@ -55,7 +55,7 @@ If a file returns empty after 2 attempts, skip it and move on. Report what you f
 ## Getting Started
 
 After installing the plugin:
-1. Run `/deeplake-hivemind:login` to authenticate
+1. Run `/hivemind:login` to authenticate
 2. Start using memory — ask questions, Claude automatically captures and searches
 
 ## Configuration

@@ -1,5 +1,5 @@
 {
-  "name": "deeplake-hivemind",
+  "name": "hivemind",
   "owner": {
     "name": "Activeloop",
     "email": "support@activeloop.ai"
@@ -14,7 +14,7 @@
       "description": "Persistent shared memory powered by Deeplake — captures all session activity and provides cross-session, cross-agent memory search",
       "version": "0.6.0",
       "source": "./claude-code",
-      "homepage": "https://github.com/activeloopai/deeplake-hivemind"
+      "homepage": "https://github.com/activeloopai/hivemind"
     }
   ]
 }

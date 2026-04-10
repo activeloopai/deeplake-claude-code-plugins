@@ -16,10 +16,10 @@ Persistent, shared memory for Claude Code backed by [Deeplake](https://deeplake.
 From within Claude Code, run:
 
 ```
-/plugin marketplace add activeloopai/deeplake-claude-code-plugins
-/plugin install deeplake-hivemind@deeplake-claude-code-plugins
+/plugin marketplace add activeloopai/hivemind
+/plugin install hivemind
 /reload-plugins
-/deeplake-hivemind:login
+/hivemind:login
 ```
 
 ### Updating
@@ -29,7 +29,7 @@ The plugin auto-updates by default — it checks for new versions on each sessio
 To manually update:
 
 ```
-/deeplake-hivemind:update
+/hivemind:update
 ```
 
 To toggle auto-updates:
@@ -45,15 +45,15 @@ autoupdate       # check current status
 ```bash
 npm install
 npm run build
-claude --plugin-dir /path/to/deeplake-claude-code-plugins
-/deeplake-hivemind:login
+claude --plugin-dir /path/to/hivemind
+/hivemind:login
 ```
 
 ## Authentication
 
-After installing the plugin, run `/deeplake-hivemind:login` to authenticate. This opens a browser for SSO login via the OAuth Device Authorization Flow (RFC 8628).
+After installing the plugin, run `/hivemind:login` to authenticate. This opens a browser for SSO login via the OAuth Device Authorization Flow (RFC 8628).
 
-1. Run `/deeplake-hivemind:login` in Claude Code
+1. Run `/hivemind:login` in Claude Code
 2. Browser opens — sign in at Deeplake
 3. Select your organization
 4. Credentials saved to `~/.deeplake/credentials.json` (permissions: 0600)
@@ -63,7 +63,7 @@ On subsequent sessions, the plugin detects existing credentials and connects aut
 To re-login or switch organizations:
 
 ```
-/deeplake-hivemind:login
+/hivemind:login
 ```
 
 Alternatively, set environment variables directly:
@@ -236,8 +236,8 @@ All capture hooks use a single unified `capture.js` bundle — one INSERT per ev
 ### Setup
 
 ```bash
-git clone https://github.com/activeloopai/deeplake-claude-code-plugins.git
-cd deeplake-claude-code-plugins
+git clone https://github.com/activeloopai/hivemind.git
+cd hivemind
 npm install
 npm run build     # tsc + esbuild → bundle/
 ```

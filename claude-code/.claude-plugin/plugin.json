@@ -7,7 +7,7 @@
     "url": "https://deeplake.ai"
   },
   "homepage": "https://deeplake.ai",
-  "repository": "https://github.com/activeloopai/deeplake-hivemind",
+  "repository": "https://github.com/activeloopai/hivemind",
   "license": "Apache-2.0",
   "keywords": [
     "memory",
