@@ -487,10 +487,8 @@ function confirm(message) {
   });
 }
 function extractSessionId(path) {
-  const filename = path.split("/").pop() ?? "";
-  const base = filename.replace(/\.jsonl$/, "");
-  const parts = base.split("_");
-  return parts.length >= 4 ? parts.slice(3).join("_") : base;
+  const m = path.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
+  return m ? m[1] : path.split("/").pop()?.replace(/\.jsonl$/, "") ?? path;
 }
 async function listSessions(api, sessionsTable, author) {
   const rows = await api.query(`SELECT path, COUNT(*) as cnt, MIN(creation_date) as first_event, MAX(creation_date) as last_event, MAX(project) as project FROM "${sessionsTable}" WHERE author = '${sqlStr(author)}' GROUP BY path ORDER BY first_event DESC`);

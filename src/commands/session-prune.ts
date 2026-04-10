@@ -13,7 +13,7 @@
 
 import { loadConfig, type Config } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr, sqlLike } from "../utils/sql.js";
+import { sqlStr } from "../utils/sql.js";
 import { createInterface } from "node:readline";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -68,14 +68,11 @@ function confirm(message: string): Promise<boolean> {
 /**
  * Extract session ID from a session path.
  * Path format: /sessions/<user>/<user>_<org>_<workspace>_<sessionId>.jsonl
+ * Uses the same regex as deeplake-fs.ts to handle underscores in user/org/workspace.
  */
 function extractSessionId(path: string): string {
-  const filename = path.split("/").pop() ?? "";
-  // Remove .jsonl, then take the last segment after the third underscore
-  const base = filename.replace(/\.jsonl$/, "");
-  const parts = base.split("_");
-  // session ID is everything after <user>_<org>_<workspace>_
-  return parts.length >= 4 ? parts.slice(3).join("_") : base;
+  const m = path.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
+  return m ? m[1] : path.split("/").pop()?.replace(/\.jsonl$/, "") ?? path;
 }
 
 // ── Core ─────────────────────────────────────────────────────────────────────
