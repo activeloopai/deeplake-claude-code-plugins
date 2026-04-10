@@ -1,0 +1,18 @@
+{
+  "id": "hivemind",
+  "kind": "memory",
+  "name": "Hivemind Memory",
+  "description": "Cloud-backed shared memory powered by Hivemind — auto-capture and auto-recall via REST API",
+  "uiHints": {
+    "autoCapture": { "label": "Auto-Capture" },
+    "autoRecall": { "label": "Auto-Recall" }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "autoCapture": { "type": "boolean" },
+      "autoRecall": { "type": "boolean" }
+    }
+  }
+}

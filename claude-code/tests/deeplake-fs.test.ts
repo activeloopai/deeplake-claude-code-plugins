@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { DeeplakeFs, isText, guessMime } from "../src/shell/deeplake-fs.js";
+import { DeeplakeFs, isText, guessMime } from "../../src/shell/deeplake-fs.js";
 
 // ── Mock ManagedClient ────────────────────────────────────────────────────────
 type Row = {

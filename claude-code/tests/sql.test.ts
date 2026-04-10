@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sqlStr, sqlLike, sqlIdent } from "../src/utils/sql.js";
+import { sqlStr, sqlLike, sqlIdent } from "../../src/utils/sql.js";
 
 describe("sqlStr", () => {
   it("escapes single quotes", () => {

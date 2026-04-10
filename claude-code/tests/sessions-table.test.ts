@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { DeeplakeFs, isText, guessMime } from "../src/shell/deeplake-fs.js";
+import { DeeplakeFs, isText, guessMime } from "../../src/shell/deeplake-fs.js";
 
 // ── Mock client that simulates both memory and sessions tables ──────────────
 
@@ -215,7 +215,7 @@ describe("ensureSessionsTable schema", () => {
 
     // Import and call ensureSessionsTable
     // We test by checking the SQL passed to query
-    const { DeeplakeApi } = await import("../src/deeplake-api.js");
+    const { DeeplakeApi } = await import("../../src/deeplake-api.js");
     const api = new DeeplakeApi("token", "https://api.test", "org", "ws", "memory");
 
     // Mock listTables to return empty (table doesn't exist)
@@ -241,7 +241,7 @@ describe("ensureSessionsTable schema", () => {
   });
 
   it("memory table uses summary column (not content_text)", async () => {
-    const { DeeplakeApi } = await import("../src/deeplake-api.js");
+    const { DeeplakeApi } = await import("../../src/deeplake-api.js");
     const api = new DeeplakeApi("token", "https://api.test", "org", "ws", "memory");
     const queryCalls: string[] = [];
     api.query = vi.fn().mockImplementation(async (sql: string) => {
@@ -260,7 +260,7 @@ describe("ensureSessionsTable schema", () => {
   });
 
   it("memory table migration adds author column", async () => {
-    const { DeeplakeApi } = await import("../src/deeplake-api.js");
+    const { DeeplakeApi } = await import("../../src/deeplake-api.js");
     const api = new DeeplakeApi("token", "https://api.test", "org", "ws", "memory");
     const queryCalls: string[] = [];
     api.query = vi.fn().mockImplementation(async (sql: string) => {
