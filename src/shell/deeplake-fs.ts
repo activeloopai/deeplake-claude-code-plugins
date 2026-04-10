@@ -396,6 +396,10 @@ export class DeeplakeFs implements IFileSystem {
 
     if (!this.files.has(p)) throw fsErr("ENOENT", "no such file or directory", p);
 
+    // Content cache (populated by prefetch or prior reads)
+    const cached = this.files.get(p);
+    if (cached !== null && cached !== undefined) return cached.toString("utf-8");
+
     // Pending batch
     const pend = this.pending.get(p);
     if (pend) return pend.contentText || pend.content.toString("utf-8");

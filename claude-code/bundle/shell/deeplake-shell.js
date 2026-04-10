@@ -67311,6 +67311,9 @@ var DeeplakeFs = class _DeeplakeFs {
     }
     if (!this.files.has(p22))
       throw fsErr("ENOENT", "no such file or directory", p22);
+    const cached = this.files.get(p22);
+    if (cached !== null && cached !== void 0)
+      return cached.toString("utf-8");
     const pend = this.pending.get(p22);
     if (pend)
       return pend.contentText || pend.content.toString("utf-8");

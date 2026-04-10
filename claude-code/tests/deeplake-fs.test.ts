@@ -559,12 +559,11 @@ describe("prefetch", () => {
     expect(prefetchCalls[0][0]).toContain("/memory/b.txt");
     expect(prefetchCalls[0][0]).toContain("/memory/c.txt");
 
-    // Subsequent readFileBuffer calls should hit cache (no more queries)
+    // Subsequent readFile and readFileBuffer calls should hit cache (no more queries)
     client.query.mockClear();
-    const dec = (b: Uint8Array) => Buffer.from(b).toString("utf-8");
-    expect(dec(await fs.readFileBuffer("/memory/a.txt"))).toBe("alpha");
-    expect(dec(await fs.readFileBuffer("/memory/b.txt"))).toBe("bravo");
-    expect(dec(await fs.readFileBuffer("/memory/c.txt"))).toBe("charlie");
+    expect(await fs.readFile("/memory/a.txt")).toBe("alpha");
+    expect(await fs.readFile("/memory/b.txt")).toBe("bravo");
+    expect(await fs.readFile("/memory/c.txt")).toBe("charlie");
     expect(client.query).not.toHaveBeenCalled();
   });
 
