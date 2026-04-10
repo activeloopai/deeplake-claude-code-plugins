@@ -33,11 +33,11 @@
 
 ## Platforms
 
-| Platform       | Status        | Install                                                    |
-|----------------|---------------|-------------------------------------------------------------|
+| Platform        | Status         | Install                                                    |
+|-----------------|----------------|------------------------------------------------------------|
 | **Claude Code** | ✅ Stable      | See [Quick start](#quick-start-claude-code)                |
 | **OpenClaw**    | 🔧 Beta        | See [Quick start](#quick-start-openclaw)                   |
-| **Codex**       | 🔜 Coming soon | —                                                           |
+| **Codex**       | 🔜 Coming soon | —                                                          |
 
 ## Quick start (Claude Code)
 
@@ -181,7 +181,7 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 |---------------------|--------------------------------------------------|-------|
 | `SessionStart`      | Auth login, inject context, DATA NOTICE          | No    |
 | `UserPromptSubmit`  | Capture user message                             | No    |
-| `PreToolUse`        | Intercept and rewrite memory-targeting commands   | No    |
+| `PreToolUse`        | Intercept and rewrite memory-targeting commands  | No    |
 | `PostToolUse`       | Capture tool call + response                     | Yes   |
 | `Stop`              | Capture assistant response                       | No    |
 | `SubagentStop`      | Capture subagent activity                        | Yes   |
