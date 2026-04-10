@@ -342,7 +342,7 @@ Organization management \u2014 each argument is SEPARATE (do NOT quote subcomman
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set DEEPLAKE_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
-var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/deeplake-claude-code-plugins/main/package.json";
+var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 var VERSION_CHECK_TIMEOUT = 3e3;
 function getInstalledVersion() {
   try {
@@ -410,7 +410,7 @@ async function main() {
   const input = await readStdin();
   let creds = loadCredentials();
   if (!creds?.token) {
-    log3("no credentials found \u2014 run /deeplake-hivemind:login to authenticate");
+    log3("no credentials found \u2014 run /hivemind:login to authenticate");
   } else {
     log3(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
     if (creds.token && !creds.userName) {
@@ -451,32 +451,35 @@ async function main() {
           log3(`autoupdate: updating ${current} \u2192 ${latest}`);
           try {
             const scopes = ["user", "project", "local", "managed"];
-            const cmd = scopes.map((s) => `claude plugin update deeplake-hivemind@deeplake-claude-code-plugins --scope ${s} 2>/dev/null`).join("; ");
+            const cmd = scopes.map((s) => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null`).join("; ");
             execSync2(cmd, { stdio: "ignore", timeout: 6e4 });
             updateNotice = `
 
-\u2705 Deeplake Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.`;
-            process.stderr.write(`\u2705 Deeplake Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.
+\u2705 Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.`;
+            process.stderr.write(`\u2705 Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.
 `);
             log3(`autoupdate succeeded: ${current} \u2192 ${latest}`);
           } catch (e) {
             updateNotice = `
 
-\u2B06\uFE0F Deeplake Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /deeplake-hivemind:update to upgrade manually.`;
-            process.stderr.write(`\u2B06\uFE0F Deeplake Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /deeplake-hivemind:update to upgrade manually.
+\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /hivemind:update to upgrade manually.`;
+            process.stderr.write(`\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /hivemind:update to upgrade manually.
 `);
             log3(`autoupdate failed: ${e.message}`);
           }
         } else {
           updateNotice = `
 
-\u2B06\uFE0F Deeplake Hivemind update available: ${current} \u2192 ${latest}. Run /deeplake-hivemind:update to upgrade.`;
-          process.stderr.write(`\u2B06\uFE0F Deeplake Hivemind update available: ${current} \u2192 ${latest}. Run /deeplake-hivemind:update to upgrade.
+\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Run /hivemind:update to upgrade.`;
+          process.stderr.write(`\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Run /hivemind:update to upgrade.
 `);
           log3(`update available (autoupdate off): ${current} \u2192 ${latest}`);
         }
       } else {
         log3(`version up to date: ${current}`);
+        updateNotice = `
+
+\u2705 Hivemind v${current} (up to date)`;
       }
     }
   } catch (e) {
@@ -487,7 +490,7 @@ async function main() {
 
 Logged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}` : `${resolvedContext}
 
-\u26A0\uFE0F Not logged in to Deeplake. Memory search will not work. Ask the user to run /deeplake-hivemind:login to authenticate.${updateNotice}`;
+\u26A0\uFE0F Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${updateNotice}`;
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "SessionStart",
