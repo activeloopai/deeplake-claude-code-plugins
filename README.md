@@ -83,7 +83,7 @@ Install from ClawHub (Telegram, TUI, WhatsApp):
 openclaw plugins install hivemind
 ```
 
-Send a message — the plugin sends you an auth link. Click, sign in, done.
+Send a message. The plugin sends you an auth link. Click, sign in, done.
 
 ## How it works
 
@@ -125,7 +125,7 @@ Just ask Claude naturally:
 
 ### 📝 AI-generated session summaries
 
-After each session, a background worker generates a wiki summary — key decisions, code changes, next steps. Browse them at `~/.deeplake/memory/summaries/`.
+After each session, a background worker generates a wiki summary: key decisions, code changes, next steps. Browse them at `~/.deeplake/memory/summaries/`.
 
 ### 👥 Team sharing
 
@@ -202,7 +202,7 @@ hivemind/
 - SQL values escaped with `sqlStr()`, `sqlLike()`, `sqlIdent()`
 - ~70 allowlisted builtins run in the virtual FS; unrecognized commands are denied
 - Credentials stored with mode `0600`, config dir with mode `0700`
-- Device flow login — no tokens in environment or code
+- Device flow login: no tokens in environment or code
 - `DEEPLAKE_CAPTURE=false` fully disables data collection
 
 ## Development
