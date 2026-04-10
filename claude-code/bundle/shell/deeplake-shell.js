@@ -67230,6 +67230,40 @@ var DeeplakeFs = class _DeeplakeFs {
     lines.push("");
     return lines.join("\n");
   }
+  // ── batch prefetch ────────────────────────────────────────────────────────
+  /**
+   * Prefetch multiple files into the content cache with a single SQL query.
+   * Skips paths that are already cached, pending, or session-backed.
+   * After this call, subsequent readFile() calls for these paths hit cache.
+   */
+  async prefetch(paths) {
+    const uncached = [];
+    for (const raw of paths) {
+      const p22 = normPath(raw);
+      if (this.files.get(p22) !== null && this.files.get(p22) !== void 0)
+        continue;
+      if (this.pending.has(p22))
+        continue;
+      if (this.sessionPaths.has(p22))
+        continue;
+      if (!this.files.has(p22))
+        continue;
+      uncached.push(p22);
+    }
+    if (uncached.length === 0)
+      return;
+    const inList = uncached.map((p22) => `'${sqlStr(p22)}'`).join(", ");
+    const rows = await this.client.query(`SELECT path, summary, content FROM "${this.table}" WHERE path IN (${inList})`);
+    for (const row of rows) {
+      const p22 = row["path"];
+      const text = row["summary"];
+      if (text && text.length > 0) {
+        this.files.set(p22, Buffer.from(text, "utf-8"));
+      } else if (row["content"] != null) {
+        this.files.set(p22, decodeContent(row["content"]));
+      }
+    }
+  }
   // ── IFileSystem: reads ────────────────────────────────────────────────────
   async readFileBuffer(path2) {
     const p22 = normPath(path2);
@@ -68553,7 +68587,7 @@ function createGrepCommand(client, fs3, table) {
       candidates = fs3.getAllPaths().filter((p22) => !p22.endsWith("/"));
     }
     candidates = candidates.filter((c15) => targets.some((t6) => t6 === "/" || c15 === t6 || c15.startsWith(t6 + "/")));
-    await Promise.all(candidates.map((p22) => fs3.readFile(p22).catch(() => null)));
+    await fs3.prefetch(candidates);
     const fixedString = parsed.F || parsed["fixed-strings"];
     const ignoreCase = parsed.i || parsed["ignore-case"];
     const showLine = parsed.n || parsed["line-number"];

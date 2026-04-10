@@ -303,6 +303,40 @@ export class DeeplakeFs implements IFileSystem {
     return lines.join("\n");
   }
 
+  // ── batch prefetch ────────────────────────────────────────────────────────
+
+  /**
+   * Prefetch multiple files into the content cache with a single SQL query.
+   * Skips paths that are already cached, pending, or session-backed.
+   * After this call, subsequent readFile() calls for these paths hit cache.
+   */
+  async prefetch(paths: string[]): Promise<void> {
+    const uncached: string[] = [];
+    for (const raw of paths) {
+      const p = normPath(raw);
+      if (this.files.get(p) !== null && this.files.get(p) !== undefined) continue;
+      if (this.pending.has(p)) continue;
+      if (this.sessionPaths.has(p)) continue;
+      if (!this.files.has(p)) continue; // unknown path
+      uncached.push(p);
+    }
+    if (uncached.length === 0) return;
+
+    const inList = uncached.map(p => `'${esc(p)}'`).join(", ");
+    const rows = await this.client.query(
+      `SELECT path, summary, content FROM "${this.table}" WHERE path IN (${inList})`
+    );
+    for (const row of rows) {
+      const p = row["path"] as string;
+      const text = row["summary"] as string;
+      if (text && text.length > 0) {
+        this.files.set(p, Buffer.from(text, "utf-8"));
+      } else if (row["content"] != null) {
+        this.files.set(p, decodeContent(row["content"]));
+      }
+    }
+  }
+
   // ── IFileSystem: reads ────────────────────────────────────────────────────
 
   async readFileBuffer(path: string): Promise<Uint8Array> {
