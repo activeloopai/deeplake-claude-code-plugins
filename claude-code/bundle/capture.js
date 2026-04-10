@@ -72,6 +72,36 @@ function sqlStr(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
+var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
+var MAX_RETRIES = 3;
+var BASE_DELAY_MS = 500;
+var MAX_CONCURRENCY = 5;
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+var Semaphore = class {
+  max;
+  waiting = [];
+  active = 0;
+  constructor(max) {
+    this.max = max;
+  }
+  async acquire() {
+    if (this.active < this.max) {
+      this.active++;
+      return;
+    }
+    await new Promise((resolve) => this.waiting.push(resolve));
+  }
+  release() {
+    this.active--;
+    const next = this.waiting.shift();
+    if (next) {
+      this.active++;
+      next();
+    }
+  }
+};
 var DeeplakeApi = class {
   token;
   apiUrl;
@@ -79,6 +109,7 @@ var DeeplakeApi = class {
   workspaceId;
   tableName;
   _pendingRows = [];
+  _sem = new Semaphore(MAX_CONCURRENCY);
   constructor(token, apiUrl, orgId, workspaceId, tableName) {
     this.token = token;
     this.apiUrl = apiUrl;
@@ -86,25 +117,55 @@ var DeeplakeApi = class {
     this.workspaceId = workspaceId;
     this.tableName = tableName;
   }
-  /** Execute SQL and return results as row-objects. */
+  /** Execute SQL with retry on transient errors and bounded concurrency. */
   async query(sql) {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        "X-Activeloop-Org-Id": this.orgId
-      },
-      body: JSON.stringify({ query: sql })
-    });
-    if (!resp.ok) {
+    await this._sem.acquire();
+    try {
+      return await this._queryWithRetry(sql);
+    } finally {
+      this._sem.release();
+    }
+  }
+  async _queryWithRetry(sql) {
+    let lastError;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      let resp;
+      try {
+        resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            "Content-Type": "application/json",
+            "X-Activeloop-Org-Id": this.orgId
+          },
+          body: JSON.stringify({ query: sql })
+        });
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        if (attempt < MAX_RETRIES) {
+          const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
+          log2(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
+          await sleep(delay);
+          continue;
+        }
+        throw lastError;
+      }
+      if (resp.ok) {
+        const raw = await resp.json();
+        if (!raw?.rows || !raw?.columns)
+          return [];
+        return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i) => [col, row[i]])));
+      }
       const text = await resp.text().catch(() => "");
+      if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
+        const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
+        log2(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
+        await sleep(delay);
+        continue;
+      }
       throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
     }
-    const raw = await resp.json();
-    if (!raw?.rows || !raw?.columns)
-      return [];
-    return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i) => [col, row[i]])));
+    throw lastError ?? new Error("Query failed: max retries exceeded");
   }
   // ── Writes ──────────────────────────────────────────────────────────────────
   /** Queue rows for writing. Call commit() to flush. */
@@ -162,18 +223,34 @@ var DeeplakeApi = class {
   async createIndex(column) {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
-  /** List all tables in the workspace. */
+  /** List all tables in the workspace (with retry). */
   async listTables() {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "X-Activeloop-Org-Id": this.orgId
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            "X-Activeloop-Org-Id": this.orgId
+          }
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          return (data.tables ?? []).map((t) => t.table_name);
+        }
+        if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
+          await sleep(BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200);
+          continue;
+        }
+        return [];
+      } catch {
+        if (attempt < MAX_RETRIES) {
+          await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
+          continue;
+        }
+        return [];
       }
-    });
-    if (!resp.ok)
-      return [];
-    const data = await resp.json();
-    return (data.tables ?? []).map((t) => t.table_name);
+    }
+    return [];
   }
   /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
   async ensureTable(name) {

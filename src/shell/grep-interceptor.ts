@@ -73,8 +73,8 @@ export function createGrepCommand(
       targets.some(t => t === "/" || c === t || c.startsWith(t + "/"))
     );
 
-    // ── Phase 2: prefetch into content cache (parallel) ─────────────────────
-    await Promise.all(candidates.map(p => fs.readFile(p).catch(() => null)));
+    // ── Phase 2: prefetch into content cache (single batch query) ───────────
+    await fs.prefetch(candidates);
 
     // ── Phase 3: fine-grained in-memory match ────────────────────────────────
     const fixedString = parsed.F || parsed["fixed-strings"];

@@ -127,16 +127,23 @@ describe("grep interceptor", () => {
     expect(result.stdout).not.toContain("remove match");
   });
 
-  it("prefetches candidates into fs content cache before matching", async () => {
-    const client = makeClient([{ path: "/memory/a.txt" }]);
+  it("uses batch prefetch instead of per-file reads", async () => {
+    const client = makeClient([
+      { path: "/memory/a.txt" },
+      { path: "/memory/b.txt" },
+    ]);
     const fs = await DeeplakeFs.create(client as never, "test", "/memory");
-    await fs.writeFile("/memory/a.txt", "cached content");
+    await fs.writeFile("/memory/a.txt", "hello world");
+    await fs.writeFile("/memory/b.txt", "hello there");
 
-    const readFileSpy = vi.spyOn(fs, "readFile");
+    const prefetchSpy = vi.spyOn(fs, "prefetch");
     const cmd = createGrepCommand(client as never, fs, "test");
-    await cmd.execute(["cached", "/memory"], makeCtx(fs) as never);
+    await cmd.execute(["hello", "/memory"], makeCtx(fs) as never);
 
-    // readFile should have been called for the candidate (prefetch + match)
-    expect(readFileSpy).toHaveBeenCalledWith("/memory/a.txt");
+    // Should call prefetch once with all candidates, not individual readFile calls
+    expect(prefetchSpy).toHaveBeenCalledTimes(1);
+    expect(prefetchSpy).toHaveBeenCalledWith(
+      expect.arrayContaining(["/memory/a.txt", "/memory/b.txt"])
+    );
   });
 });

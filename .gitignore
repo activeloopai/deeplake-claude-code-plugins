@@ -6,3 +6,4 @@ tmp/
 .env
 .env.*
 coverage/
+bench/
