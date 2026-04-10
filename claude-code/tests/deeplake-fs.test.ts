@@ -39,10 +39,21 @@ function makeClient(seed: Record<string, Buffer> = {}) {
         return row ? [{ content: `\\x${row.content.toString("hex")}` }] : [];
       }
       // Read: SELECT summary, content FROM ... WHERE path = '...'
-      if (sql.includes("SELECT summary, content")) {
+      if (sql.includes("SELECT summary, content") && !sql.includes("IN (")) {
         const match = sql.match(/path = '([^']+)'/);
         const row = match ? rows.find(r => r.path === match[1]) : undefined;
         return row ? [{ summary: row.summary, content: `\\x${row.content.toString("hex")}` }] : [];
+      }
+      // Prefetch: SELECT path, summary, content FROM ... WHERE path IN (...)
+      if (sql.includes("SELECT path, summary, content") && sql.includes("IN (")) {
+        const inMatch = sql.match(/IN \(([^)]+)\)/);
+        if (inMatch) {
+          const paths = inMatch[1].split(",").map(s => s.trim().replace(/^'|'$/g, ""));
+          return rows
+            .filter(r => paths.includes(r.path))
+            .map(r => ({ path: r.path, summary: r.summary, content: `\\x${r.content.toString("hex")}` }));
+        }
+        return [];
       }
       // Virtual index: SELECT path, project, description, creation_date, last_update_date FROM ... WHERE path LIKE '/summaries/%'
       if (sql.includes("SELECT path, project, description, creation_date, last_update_date")) {
@@ -524,6 +535,92 @@ describe("getAllPaths", () => {
     expect(paths).toContain("/memory/sub/file.txt");
     expect(paths).toContain("/memory/sub");
     expect(paths).toContain("/memory");
+  });
+});
+
+// ── prefetch ────────────────────────────────────────────────────────────────
+describe("prefetch", () => {
+  it("loads multiple uncached files in a single query", async () => {
+    const { fs, client } = await makeFs({
+      "/memory/a.txt": "alpha",
+      "/memory/b.txt": "bravo",
+      "/memory/c.txt": "charlie",
+    });
+    client.query.mockClear();
+
+    await fs.prefetch(["/memory/a.txt", "/memory/b.txt", "/memory/c.txt"]);
+
+    // Should issue exactly one SELECT ... WHERE path IN (...) query
+    const prefetchCalls = (client.query.mock.calls as [string][]).filter(
+      c => c[0].includes("SELECT path, summary, content") && c[0].includes("IN (")
+    );
+    expect(prefetchCalls.length).toBe(1);
+    expect(prefetchCalls[0][0]).toContain("/memory/a.txt");
+    expect(prefetchCalls[0][0]).toContain("/memory/b.txt");
+    expect(prefetchCalls[0][0]).toContain("/memory/c.txt");
+
+    // Subsequent readFile and readFileBuffer calls should hit cache (no more queries)
+    client.query.mockClear();
+    expect(await fs.readFile("/memory/a.txt")).toBe("alpha");
+    expect(await fs.readFile("/memory/b.txt")).toBe("bravo");
+    expect(await fs.readFile("/memory/c.txt")).toBe("charlie");
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
+  it("skips already-cached files", async () => {
+    const { fs, client } = await makeFs({ "/memory/a.txt": "alpha", "/memory/b.txt": "bravo" });
+    // Read a.txt to cache it
+    await fs.readFile("/memory/a.txt");
+    client.query.mockClear();
+
+    await fs.prefetch(["/memory/a.txt", "/memory/b.txt"]);
+
+    // Only b.txt should be in the IN list
+    const prefetchCalls = (client.query.mock.calls as [string][]).filter(
+      c => c[0].includes("SELECT path, summary, content") && c[0].includes("IN (")
+    );
+    expect(prefetchCalls.length).toBe(1);
+    expect(prefetchCalls[0][0]).not.toContain("/memory/a.txt");
+    expect(prefetchCalls[0][0]).toContain("/memory/b.txt");
+  });
+
+  it("skips pending (unflushed) files", async () => {
+    const { fs, client } = await makeFs({});
+    await fs.writeFile("/memory/new.txt", "pending content");
+    client.query.mockClear();
+
+    await fs.prefetch(["/memory/new.txt"]);
+
+    // No query should be issued — file is in pending batch
+    const prefetchCalls = (client.query.mock.calls as [string][]).filter(
+      c => c[0].includes("SELECT path, summary, content")
+    );
+    expect(prefetchCalls.length).toBe(0);
+  });
+
+  it("skips unknown paths not in the file tree", async () => {
+    const { fs, client } = await makeFs({ "/memory/a.txt": "alpha" });
+    client.query.mockClear();
+
+    await fs.prefetch(["/memory/a.txt", "/memory/nonexistent.txt"]);
+
+    // Only a.txt should be queried, nonexistent is not in the tree
+    const prefetchCalls = (client.query.mock.calls as [string][]).filter(
+      c => c[0].includes("SELECT path, summary, content") && c[0].includes("IN (")
+    );
+    expect(prefetchCalls.length).toBe(1);
+    expect(prefetchCalls[0][0]).toContain("/memory/a.txt");
+    expect(prefetchCalls[0][0]).not.toContain("nonexistent");
+  });
+
+  it("is a no-op when all files are cached", async () => {
+    const { fs, client } = await makeFs({ "/memory/a.txt": "alpha" });
+    await fs.readFile("/memory/a.txt"); // cache it
+    client.query.mockClear();
+
+    await fs.prefetch(["/memory/a.txt"]);
+
+    expect(client.query).not.toHaveBeenCalled();
   });
 });
 

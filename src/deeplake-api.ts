@@ -4,6 +4,34 @@ import { sqlStr } from "./utils/sql.js";
 
 const log = (msg: string) => _log("sdk", msg);
 
+// ── Retry & concurrency primitives ──────────────────────────────────────────
+
+const RETRYABLE_CODES = new Set([429, 500, 502, 503, 504]);
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 500;
+const MAX_CONCURRENCY = 5;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+class Semaphore {
+  private waiting: (() => void)[] = [];
+  private active = 0;
+  constructor(private max: number) {}
+
+  async acquire(): Promise<void> {
+    if (this.active < this.max) { this.active++; return; }
+    await new Promise<void>(resolve => this.waiting.push(resolve));
+  }
+
+  release(): void {
+    this.active--;
+    const next = this.waiting.shift();
+    if (next) { this.active++; next(); }
+  }
+}
+
 // ── SDK-backed client (ManagedClient for all reads/writes) ───────────────────
 
 export interface WriteRow {
@@ -21,6 +49,7 @@ export interface WriteRow {
 
 export class DeeplakeApi {
   private _pendingRows: WriteRow[] = [];
+  private _sem = new Semaphore(MAX_CONCURRENCY);
 
   constructor(
     private token: string,
@@ -30,26 +59,58 @@ export class DeeplakeApi {
     readonly tableName: string,
   ) {}
 
-  /** Execute SQL and return results as row-objects. */
+  /** Execute SQL with retry on transient errors and bounded concurrency. */
   async query(sql: string): Promise<Record<string, unknown>[]> {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        "X-Activeloop-Org-Id": this.orgId,
-      },
-      body: JSON.stringify({ query: sql }),
-    });
-    if (!resp.ok) {
+    await this._sem.acquire();
+    try {
+      return await this._queryWithRetry(sql);
+    } finally {
+      this._sem.release();
+    }
+  }
+
+  private async _queryWithRetry(sql: string): Promise<Record<string, unknown>[]> {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      let resp: Response;
+      try {
+        resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            "Content-Type": "application/json",
+            "X-Activeloop-Org-Id": this.orgId,
+          },
+          body: JSON.stringify({ query: sql }),
+        });
+      } catch (e: unknown) {
+        // Network-level failure (DNS, TCP reset, timeout, etc.)
+        lastError = e instanceof Error ? e : new Error(String(e));
+        if (attempt < MAX_RETRIES) {
+          const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
+          log(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
+          await sleep(delay);
+          continue;
+        }
+        throw lastError;
+      }
+      if (resp.ok) {
+        const raw = await resp.json() as { columns?: string[]; rows?: unknown[][]; row_count?: number } | null;
+        if (!raw?.rows || !raw?.columns) return [];
+        return raw.rows.map(row =>
+          Object.fromEntries(raw.columns!.map((col, i) => [col, row[i]]))
+        );
+      }
       const text = await resp.text().catch(() => "");
+      if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
+        const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
+        log(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
+        await sleep(delay);
+        continue;
+      }
       throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
     }
-    const raw = await resp.json() as { columns?: string[]; rows?: unknown[][]; row_count?: number } | null;
-    if (!raw?.rows || !raw?.columns) return [];
-    return raw.rows.map(row =>
-      Object.fromEntries(raw.columns!.map((col, i) => [col, row[i]]))
-    );
+    throw lastError ?? new Error("Query failed: max retries exceeded");
   }
 
   // ── Writes ──────────────────────────────────────────────────────────────────
@@ -118,17 +179,34 @@ export class DeeplakeApi {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
 
-  /** List all tables in the workspace. */
+  /** List all tables in the workspace (with retry). */
   async listTables(): Promise<string[]> {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "X-Activeloop-Org-Id": this.orgId,
-      },
-    });
-    if (!resp.ok) return [];
-    const data = await resp.json() as { tables?: { table_name: string }[] };
-    return (data.tables ?? []).map(t => t.table_name);
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            "X-Activeloop-Org-Id": this.orgId,
+          },
+        });
+        if (resp.ok) {
+          const data = await resp.json() as { tables?: { table_name: string }[] };
+          return (data.tables ?? []).map(t => t.table_name);
+        }
+        if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
+          await sleep(BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200);
+          continue;
+        }
+        return [];
+      } catch {
+        if (attempt < MAX_RETRIES) {
+          await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
+          continue;
+        }
+        return [];
+      }
+    }
+    return [];
   }
 
   /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */

@@ -66775,6 +66775,36 @@ function sqlStr(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
+var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
+var MAX_RETRIES = 3;
+var BASE_DELAY_MS = 500;
+var MAX_CONCURRENCY = 5;
+function sleep(ms3) {
+  return new Promise((resolve5) => setTimeout(resolve5, ms3));
+}
+var Semaphore = class {
+  max;
+  waiting = [];
+  active = 0;
+  constructor(max) {
+    this.max = max;
+  }
+  async acquire() {
+    if (this.active < this.max) {
+      this.active++;
+      return;
+    }
+    await new Promise((resolve5) => this.waiting.push(resolve5));
+  }
+  release() {
+    this.active--;
+    const next = this.waiting.shift();
+    if (next) {
+      this.active++;
+      next();
+    }
+  }
+};
 var DeeplakeApi = class {
   token;
   apiUrl;
@@ -66782,6 +66812,7 @@ var DeeplakeApi = class {
   workspaceId;
   tableName;
   _pendingRows = [];
+  _sem = new Semaphore(MAX_CONCURRENCY);
   constructor(token, apiUrl, orgId, workspaceId, tableName) {
     this.token = token;
     this.apiUrl = apiUrl;
@@ -66789,25 +66820,55 @@ var DeeplakeApi = class {
     this.workspaceId = workspaceId;
     this.tableName = tableName;
   }
-  /** Execute SQL and return results as row-objects. */
+  /** Execute SQL with retry on transient errors and bounded concurrency. */
   async query(sql) {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        "X-Activeloop-Org-Id": this.orgId
-      },
-      body: JSON.stringify({ query: sql })
-    });
-    if (!resp.ok) {
+    await this._sem.acquire();
+    try {
+      return await this._queryWithRetry(sql);
+    } finally {
+      this._sem.release();
+    }
+  }
+  async _queryWithRetry(sql) {
+    let lastError;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      let resp;
+      try {
+        resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            "Content-Type": "application/json",
+            "X-Activeloop-Org-Id": this.orgId
+          },
+          body: JSON.stringify({ query: sql })
+        });
+      } catch (e6) {
+        lastError = e6 instanceof Error ? e6 : new Error(String(e6));
+        if (attempt < MAX_RETRIES) {
+          const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
+          log2(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
+          await sleep(delay);
+          continue;
+        }
+        throw lastError;
+      }
+      if (resp.ok) {
+        const raw = await resp.json();
+        if (!raw?.rows || !raw?.columns)
+          return [];
+        return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i11) => [col, row[i11]])));
+      }
       const text = await resp.text().catch(() => "");
+      if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
+        const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
+        log2(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
+        await sleep(delay);
+        continue;
+      }
       throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
     }
-    const raw = await resp.json();
-    if (!raw?.rows || !raw?.columns)
-      return [];
-    return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i11) => [col, row[i11]])));
+    throw lastError ?? new Error("Query failed: max retries exceeded");
   }
   // ── Writes ──────────────────────────────────────────────────────────────────
   /** Queue rows for writing. Call commit() to flush. */
@@ -66865,18 +66926,34 @@ var DeeplakeApi = class {
   async createIndex(column) {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
-  /** List all tables in the workspace. */
+  /** List all tables in the workspace (with retry). */
   async listTables() {
-    const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "X-Activeloop-Org-Id": this.orgId
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            "X-Activeloop-Org-Id": this.orgId
+          }
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          return (data.tables ?? []).map((t6) => t6.table_name);
+        }
+        if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
+          await sleep(BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200);
+          continue;
+        }
+        return [];
+      } catch {
+        if (attempt < MAX_RETRIES) {
+          await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
+          continue;
+        }
+        return [];
       }
-    });
-    if (!resp.ok)
-      return [];
-    const data = await resp.json();
-    return (data.tables ?? []).map((t6) => t6.table_name);
+    }
+    return [];
   }
   /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
   async ensureTable(name) {
@@ -66995,31 +67072,37 @@ var DeeplakeFs = class _DeeplakeFs {
     const fs3 = new _DeeplakeFs(client, table, mount);
     fs3.sessionsTable = sessionsTable ?? null;
     await client.ensureTable();
-    await client.query(`SELECT deeplake_sync_table('${table}')`);
-    const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
-    try {
-      let rows;
-      try {
-        rows = await client.query(sql);
-      } catch {
-        rows = await client.query(sql);
-      }
-      for (const row of rows) {
-        const p22 = row["path"];
-        fs3.files.set(p22, null);
-        fs3.meta.set(p22, {
-          size: Number(row["size_bytes"] ?? 0),
-          mime: row["mime_type"] ?? "application/octet-stream",
-          mtime: /* @__PURE__ */ new Date()
-        });
-        fs3.addToTree(p22);
-        fs3.flushed.add(p22);
-      }
-    } catch {
-    }
+    let sessionSyncOk = false;
+    const syncPromises = [
+      client.query(`SELECT deeplake_sync_table('${table}')`)
+    ];
     if (sessionsTable) {
+      syncPromises.push(client.query(`SELECT deeplake_sync_table('${sessionsTable}')`).then(() => {
+        sessionSyncOk = true;
+      }).catch(() => {
+      }));
+    }
+    await Promise.all(syncPromises);
+    const memoryBootstrap = (async () => {
+      const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
       try {
-        await client.query(`SELECT deeplake_sync_table('${sessionsTable}')`);
+        const rows = await client.query(sql);
+        for (const row of rows) {
+          const p22 = row["path"];
+          fs3.files.set(p22, null);
+          fs3.meta.set(p22, {
+            size: Number(row["size_bytes"] ?? 0),
+            mime: row["mime_type"] ?? "application/octet-stream",
+            mtime: /* @__PURE__ */ new Date()
+          });
+          fs3.addToTree(p22);
+          fs3.flushed.add(p22);
+        }
+      } catch {
+      }
+    })();
+    const sessionsBootstrap = sessionsTable && sessionSyncOk ? (async () => {
+      try {
         const sessionRows = await client.query(`SELECT path, SUM(size_bytes) as total_size FROM "${sessionsTable}" GROUP BY path ORDER BY path`);
         for (const row of sessionRows) {
           const p22 = row["path"];
@@ -67036,7 +67119,8 @@ var DeeplakeFs = class _DeeplakeFs {
         }
       } catch {
       }
-    }
+    })() : Promise.resolve();
+    await Promise.all([memoryBootstrap, sessionsBootstrap]);
     return fs3;
   }
   // ── tree management ───────────────────────────────────────────────────────
@@ -67079,31 +67163,44 @@ var DeeplakeFs = class _DeeplakeFs {
     }
     const rows = [...this.pending.values()];
     this.pending.clear();
-    for (const r10 of rows) {
-      const hex = r10.content.toString("hex");
-      const text = sqlStr(r10.contentText);
-      const p22 = sqlStr(r10.path);
-      const fname = sqlStr(r10.filename);
-      const mime = sqlStr(r10.mimeType);
-      const ts3 = (/* @__PURE__ */ new Date()).toISOString();
-      const cd = r10.creationDate ?? ts3;
-      const lud = r10.lastUpdateDate ?? ts3;
-      if (this.flushed.has(r10.path)) {
-        let setClauses = `filename = '${fname}', content = E'\\\\x${hex}', summary = E'${text}', mime_type = '${mime}', size_bytes = ${r10.sizeBytes}, last_update_date = '${sqlStr(lud)}'`;
-        if (r10.project !== void 0)
-          setClauses += `, project = '${sqlStr(r10.project)}'`;
-        if (r10.description !== void 0)
-          setClauses += `, description = '${sqlStr(r10.description)}'`;
-        await this.client.query(`UPDATE "${this.table}" SET ${setClauses} WHERE path = '${p22}'`);
-      } else {
-        const id = randomUUID2();
-        const cols = "id, path, filename, content, summary, mime_type, size_bytes, creation_date, last_update_date" + (r10.project !== void 0 ? ", project" : "") + (r10.description !== void 0 ? ", description" : "");
-        const vals = `'${id}', '${p22}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r10.sizeBytes}, '${sqlStr(cd)}', '${sqlStr(lud)}'` + (r10.project !== void 0 ? `, '${sqlStr(r10.project)}'` : "") + (r10.description !== void 0 ? `, '${sqlStr(r10.description)}'` : "");
-        await this.client.query(`INSERT INTO "${this.table}" (${cols}) VALUES (${vals})`);
-        this.flushed.add(r10.path);
+    const results = await Promise.allSettled(rows.map((r10) => this.upsertRow(r10)));
+    let failures = 0;
+    for (let i11 = 0; i11 < results.length; i11++) {
+      if (results[i11].status === "rejected") {
+        if (!this.pending.has(rows[i11].path)) {
+          this.pending.set(rows[i11].path, rows[i11]);
+        }
+        failures++;
       }
     }
     await this.client.query(`SELECT deeplake_sync_table('${this.table}')`);
+    if (failures > 0) {
+      throw new Error(`flush: ${failures}/${rows.length} writes failed and were re-queued`);
+    }
+  }
+  async upsertRow(r10) {
+    const hex = r10.content.toString("hex");
+    const text = sqlStr(r10.contentText);
+    const p22 = sqlStr(r10.path);
+    const fname = sqlStr(r10.filename);
+    const mime = sqlStr(r10.mimeType);
+    const ts3 = (/* @__PURE__ */ new Date()).toISOString();
+    const cd = r10.creationDate ?? ts3;
+    const lud = r10.lastUpdateDate ?? ts3;
+    if (this.flushed.has(r10.path)) {
+      let setClauses = `filename = '${fname}', content = E'\\\\x${hex}', summary = E'${text}', mime_type = '${mime}', size_bytes = ${r10.sizeBytes}, last_update_date = '${sqlStr(lud)}'`;
+      if (r10.project !== void 0)
+        setClauses += `, project = '${sqlStr(r10.project)}'`;
+      if (r10.description !== void 0)
+        setClauses += `, description = '${sqlStr(r10.description)}'`;
+      await this.client.query(`UPDATE "${this.table}" SET ${setClauses} WHERE path = '${p22}'`);
+    } else {
+      const id = randomUUID2();
+      const cols = "id, path, filename, content, summary, mime_type, size_bytes, creation_date, last_update_date" + (r10.project !== void 0 ? ", project" : "") + (r10.description !== void 0 ? ", description" : "");
+      const vals = `'${id}', '${p22}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r10.sizeBytes}, '${sqlStr(cd)}', '${sqlStr(lud)}'` + (r10.project !== void 0 ? `, '${sqlStr(r10.project)}'` : "") + (r10.description !== void 0 ? `, '${sqlStr(r10.description)}'` : "");
+      await this.client.query(`INSERT INTO "${this.table}" (${cols}) VALUES (${vals})`);
+      this.flushed.add(r10.path);
+    }
   }
   // ── Virtual index.md generation ────────────────────────────────────────────
   async generateVirtualIndex() {
@@ -67132,6 +67229,40 @@ var DeeplakeFs = class _DeeplakeFs {
     }
     lines.push("");
     return lines.join("\n");
+  }
+  // ── batch prefetch ────────────────────────────────────────────────────────
+  /**
+   * Prefetch multiple files into the content cache with a single SQL query.
+   * Skips paths that are already cached, pending, or session-backed.
+   * After this call, subsequent readFile() calls for these paths hit cache.
+   */
+  async prefetch(paths) {
+    const uncached = [];
+    for (const raw of paths) {
+      const p22 = normPath(raw);
+      if (this.files.get(p22) !== null && this.files.get(p22) !== void 0)
+        continue;
+      if (this.pending.has(p22))
+        continue;
+      if (this.sessionPaths.has(p22))
+        continue;
+      if (!this.files.has(p22))
+        continue;
+      uncached.push(p22);
+    }
+    if (uncached.length === 0)
+      return;
+    const inList = uncached.map((p22) => `'${sqlStr(p22)}'`).join(", ");
+    const rows = await this.client.query(`SELECT path, summary, content FROM "${this.table}" WHERE path IN (${inList})`);
+    for (const row of rows) {
+      const p22 = row["path"];
+      const text = row["summary"];
+      if (text && text.length > 0) {
+        this.files.set(p22, Buffer.from(text, "utf-8"));
+      } else if (row["content"] != null) {
+        this.files.set(p22, decodeContent(row["content"]));
+      }
+    }
   }
   // ── IFileSystem: reads ────────────────────────────────────────────────────
   async readFileBuffer(path2) {
@@ -67180,6 +67311,9 @@ var DeeplakeFs = class _DeeplakeFs {
     }
     if (!this.files.has(p22))
       throw fsErr("ENOENT", "no such file or directory", p22);
+    const cached = this.files.get(p22);
+    if (cached !== null && cached !== void 0)
+      return cached.toString("utf-8");
     const pend = this.pending.get(p22);
     if (pend)
       return pend.contentText || pend.content.toString("utf-8");
@@ -67262,6 +67396,7 @@ var DeeplakeFs = class _DeeplakeFs {
       const addHex = Buffer.from(add, "utf-8").toString("hex");
       const ts3 = (/* @__PURE__ */ new Date()).toISOString();
       await this.client.query(`UPDATE "${this.table}" SET summary = summary || E'${sqlStr(add)}', content = content || E'\\\\x${addHex}', size_bytes = size_bytes + ${Buffer.byteLength(add, "utf-8")}, last_update_date = '${ts3}' WHERE path = '${sqlStr(p22)}'`);
+      this.files.set(p22, null);
       const m26 = this.meta.get(p22);
       if (m26) {
         m26.size += Buffer.byteLength(add, "utf-8");
@@ -68455,7 +68590,7 @@ function createGrepCommand(client, fs3, table) {
       candidates = fs3.getAllPaths().filter((p22) => !p22.endsWith("/"));
     }
     candidates = candidates.filter((c15) => targets.some((t6) => t6 === "/" || c15 === t6 || c15.startsWith(t6 + "/")));
-    await Promise.all(candidates.map((p22) => fs3.readFile(p22).catch(() => null)));
+    await fs3.prefetch(candidates);
     const fixedString = parsed.F || parsed["fixed-strings"];
     const ignoreCase = parsed.i || parsed["ignore-case"];
     const showLine = parsed.n || parsed["line-number"];
