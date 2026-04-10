@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { DeeplakeFs, isText, guessMime } from "../../src/shell/deeplake-fs.js";
+import { DeeplakeFs, guessMime } from "../../src/shell/deeplake-fs.js";
 
 // ── Mock client that simulates both memory and sessions tables ──────────────
 
@@ -48,20 +48,11 @@ function makeClient(memoryRows: Row[] = [], sessionRows: Row[] = []) {
       }
 
       // Read from memory table
-      if (sql.includes("SELECT summary, content") && !isSessionsQuery) {
+      if (sql.includes("SELECT summary FROM") && !isSessionsQuery) {
         const pathMatch = sql.match(/path = '([^']+)'/);
         if (pathMatch) {
           const row = memoryRows.find(r => r.path === pathMatch[1]);
-          return row ? [{ summary: row.text_content, content: "" }] : [];
-        }
-      }
-
-      // SELECT content (binary) from memory
-      if (sql.includes("SELECT content FROM") && !isSessionsQuery) {
-        const pathMatch = sql.match(/path = '([^']+)'/);
-        if (pathMatch) {
-          const row = memoryRows.find(r => r.path === pathMatch[1]);
-          return row ? [{ content: `\\x${Buffer.from(row.text_content).toString("hex")}` }] : [];
+          return row ? [{ summary: row.text_content }] : [];
         }
       }
 
@@ -204,6 +195,78 @@ describe("DeeplakeFs — multiple sessions in same table", () => {
   });
 });
 
+describe("session files are read-only", () => {
+  async function makeFsWithSession() {
+    const sessionRows: Row[] = [
+      { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"user_message"}', size_bytes: 22, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+    ];
+    const memoryRows: Row[] = [
+      { path: "/notes.md", text_content: "hello", size_bytes: 5, mime_type: "text/markdown", creation_date: "2026-01-01" },
+    ];
+    const client = makeClient(memoryRows, sessionRows);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+    return { fs, client };
+  }
+
+  it("writeFile rejects session paths with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.writeFile("/sessions/alice/alice_org_default_s1.jsonl", "overwrite"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("appendFile rejects session paths with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.appendFile("/sessions/alice/alice_org_default_s1.jsonl", "append"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("rm rejects session paths with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.rm("/sessions/alice/alice_org_default_s1.jsonl"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("cp rejects session path as destination with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.cp("/notes.md", "/sessions/alice/alice_org_default_s1.jsonl"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("mv rejects session path as source with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.mv("/sessions/alice/alice_org_default_s1.jsonl", "/moved.jsonl"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("mv rejects session path as destination with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.mv("/notes.md", "/sessions/alice/alice_org_default_s1.jsonl"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("readFile still works on session paths", async () => {
+    const { fs } = await makeFsWithSession();
+    const content = await fs.readFile("/sessions/alice/alice_org_default_s1.jsonl");
+    expect(content).toContain("user_message");
+  });
+
+  it("cp from session path as source works (read-only source is fine)", async () => {
+    const { fs } = await makeFsWithSession();
+    await fs.cp("/sessions/alice/alice_org_default_s1.jsonl", "/copy.jsonl");
+    const content = await fs.readFile("/copy.jsonl");
+    expect(content).toContain("user_message");
+  });
+
+  it("rm -rf on parent dir skips session files", async () => {
+    const { fs } = await makeFsWithSession();
+    // rm -rf /sessions should not remove session files from the tree
+    await fs.rm("/sessions", { recursive: true, force: true });
+    // Session file should still be readable
+    const content = await fs.readFile("/sessions/alice/alice_org_default_s1.jsonl");
+    expect(content).toContain("user_message");
+  });
+});
+
 describe("ensureSessionsTable schema", () => {
   it("creates table with JSONB message column", async () => {
     const client = {
@@ -257,6 +320,7 @@ describe("ensureSessionsTable schema", () => {
     expect(createSql).toContain("summary TEXT");
     expect(createSql).toContain("author TEXT");
     expect(createSql).not.toContain("content_text");
+    expect(createSql).not.toContain("BYTEA");
   });
 
   it("memory table migration adds author column", async () => {

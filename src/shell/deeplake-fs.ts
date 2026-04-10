@@ -13,7 +13,6 @@ interface DirentEntry { name: string; isFile: boolean; isDirectory: boolean; isS
 // ── constants ─────────────────────────────────────────────────────────────────
 const BATCH_SIZE = 10;
 const FLUSH_DEBOUNCE_MS = 200;
-const TEXT_DETECT_BYTES = 4096;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 export function normPath(p: string): string {
@@ -28,22 +27,14 @@ function parentOf(p: string): string {
 
 import { sqlStr as esc } from "../utils/sql.js";
 
-export function isText(buf: Buffer): boolean {
-  const end = Math.min(buf.length, TEXT_DETECT_BYTES);
-  for (let i = 0; i < end; i++) if (buf[i] === 0) return false;
-  return true;
-}
-
 export function guessMime(filename: string): string {
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
   return (
     ({
       json: "application/json", md: "text/markdown", txt: "text/plain",
       js: "text/javascript", ts: "text/typescript", html: "text/html",
-      css: "text/css", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
-      pdf: "application/pdf", svg: "image/svg+xml", gz: "application/gzip",
-      zip: "application/zip",
-    } as Record<string, string>)[ext] ?? "application/octet-stream"
+      css: "text/css",
+    } as Record<string, string>)[ext] ?? "text/plain"
   );
 }
 
@@ -51,23 +42,11 @@ function fsErr(code: string, msg: string, path: string): Error {
   return Object.assign(new Error(`${code}: ${msg}, '${path}'`), { code });
 }
 
-// Decode content returned from SQL: PostgreSQL hex-encodes BYTEA as '\x...'
-function decodeContent(raw: unknown): Buffer {
-  if (raw instanceof Uint8Array) return Buffer.from(raw);
-  if (Buffer.isBuffer(raw)) return raw;
-  if (typeof raw === "string") {
-    return raw.startsWith("\\x")
-      ? Buffer.from(raw.slice(2), "hex")
-      : Buffer.from(raw, "base64");
-  }
-  throw new Error(`Unexpected content type: ${typeof raw}`);
-}
-
 // ── types ─────────────────────────────────────────────────────────────────────
 interface FileMeta { size: number; mime: string; mtime: Date; }
 
 interface PendingRow {
-  path: string; filename: string; content: Buffer;
+  path: string; filename: string;
   contentText: string; mimeType: string; sizeBytes: number;
   project?: string; description?: string;
   creationDate?: string; lastUpdateDate?: string;
@@ -239,7 +218,6 @@ export class DeeplakeFs implements IFileSystem {
   }
 
   private async upsertRow(r: PendingRow): Promise<void> {
-    const hex   = r.content.toString("hex");
     const text  = esc(r.contentText);
     const p     = esc(r.path);
     const fname = esc(r.filename);
@@ -248,7 +226,7 @@ export class DeeplakeFs implements IFileSystem {
     const cd = r.creationDate ?? ts;
     const lud = r.lastUpdateDate ?? ts;
     if (this.flushed.has(r.path)) {
-      let setClauses = `filename = '${fname}', content = E'\\\\x${hex}', summary = E'${text}', ` +
+      let setClauses = `filename = '${fname}', summary = E'${text}', ` +
         `mime_type = '${mime}', size_bytes = ${r.sizeBytes}, last_update_date = '${esc(lud)}'`;
       if (r.project !== undefined) setClauses += `, project = '${esc(r.project)}'`;
       if (r.description !== undefined) setClauses += `, description = '${esc(r.description)}'`;
@@ -257,10 +235,10 @@ export class DeeplakeFs implements IFileSystem {
       );
     } else {
       const id = randomUUID();
-      const cols = "id, path, filename, content, summary, mime_type, size_bytes, creation_date, last_update_date" +
+      const cols = "id, path, filename, summary, mime_type, size_bytes, creation_date, last_update_date" +
         (r.project !== undefined ? ", project" : "") +
         (r.description !== undefined ? ", description" : "");
-      const vals = `'${id}', '${p}', '${fname}', E'\\\\x${hex}', E'${text}', '${mime}', ${r.sizeBytes}, '${esc(cd)}', '${esc(lud)}'` +
+      const vals = `'${id}', '${p}', '${fname}', E'${text}', '${mime}', ${r.sizeBytes}, '${esc(cd)}', '${esc(lud)}'` +
         (r.project !== undefined ? `, '${esc(r.project)}'` : "") +
         (r.description !== undefined ? `, '${esc(r.description)}'` : "");
       await this.client.query(
@@ -277,13 +255,22 @@ export class DeeplakeFs implements IFileSystem {
       `SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" ` +
       `WHERE path LIKE '${esc("/summaries/")}%' ORDER BY last_update_date DESC`
     );
+
+    // Build a lookup: sessionId → JSONL path from sessionPaths
+    const sessionPathsByUser = new Map<string, string>();
+    for (const sp of this.sessionPaths) {
+      // Session path format: /sessions/<user>/<user>_<org>_<ws>_<sessionId>.jsonl
+      const m = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
+      if (m) sessionPathsByUser.set(m[1], sp.slice(1)); // strip leading /
+    }
+
     const lines: string[] = [
       "# Session Index",
       "",
       "List of all Claude Code sessions with summaries.",
       "",
-      "| Session | Created | Last Updated | Project | Description |",
-      "|---------|---------|--------------|---------|-------------|",
+      "| Session | Conversation | Created | Last Updated | Project | Description |",
+      "|---------|-------------|---------|--------------|---------|-------------|",
     ];
     for (const row of rows) {
       const p = row["path"] as string;
@@ -293,11 +280,13 @@ export class DeeplakeFs implements IFileSystem {
       const summaryUser = match[1];
       const sessionId = match[2];
       const relPath = `summaries/${summaryUser}/${sessionId}.md`;
+      const convPath = sessionPathsByUser.get(sessionId);
+      const convLink = convPath ? `[messages](${convPath})` : "";
       const project = (row["project"] as string) || "";
       const description = (row["description"] as string) || "";
       const creationDate = (row["creation_date"] as string) || "";
       const lastUpdateDate = (row["last_update_date"] as string) || "";
-      lines.push(`| [${sessionId}](${relPath}) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
+      lines.push(`| [${sessionId}](${relPath}) | ${convLink} | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
     }
     lines.push("");
     return lines.join("\n");
@@ -324,16 +313,12 @@ export class DeeplakeFs implements IFileSystem {
 
     const inList = uncached.map(p => `'${esc(p)}'`).join(", ");
     const rows = await this.client.query(
-      `SELECT path, summary, content FROM "${this.table}" WHERE path IN (${inList})`
+      `SELECT path, summary FROM "${this.table}" WHERE path IN (${inList})`
     );
     for (const row of rows) {
       const p = row["path"] as string;
-      const text = row["summary"] as string;
-      if (text && text.length > 0) {
-        this.files.set(p, Buffer.from(text, "utf-8"));
-      } else if (row["content"] != null) {
-        this.files.set(p, decodeContent(row["content"]));
-      }
+      const text = (row["summary"] as string) ?? "";
+      this.files.set(p, Buffer.from(text, "utf-8"));
     }
   }
 
@@ -350,7 +335,7 @@ export class DeeplakeFs implements IFileSystem {
 
     // 2. Pending batch (written but not yet flushed)
     const pend = this.pending.get(p);
-    if (pend) { this.files.set(p, pend.content); return pend.content; }
+    if (pend) { const buf = Buffer.from(pend.contentText, "utf-8"); this.files.set(p, buf); return buf; }
 
     // 3. Session files: concatenate rows from sessions table
     if (this.sessionPaths.has(p) && this.sessionsTable) {
@@ -364,12 +349,12 @@ export class DeeplakeFs implements IFileSystem {
       return buf;
     }
 
-    // 4. SQL query — content column (BYTEA returned as hex '\x...')
+    // 4. SQL query — summary column (text content)
     const rows = await this.client.query(
-      `SELECT content FROM "${this.table}" WHERE path = '${esc(p)}' LIMIT 1`
+      `SELECT summary FROM "${this.table}" WHERE path = '${esc(p)}' LIMIT 1`
     );
     if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
-    const buf = decodeContent(rows[0]["content"]);
+    const buf = Buffer.from((rows[0]["summary"] as string) ?? "", "utf-8");
     this.files.set(p, buf);
     return buf;
   }
@@ -402,7 +387,7 @@ export class DeeplakeFs implements IFileSystem {
 
     // Pending batch
     const pend = this.pending.get(p);
-    if (pend) return pend.contentText || pend.content.toString("utf-8");
+    if (pend) return pend.contentText;
 
     // Session files: concatenate rows from sessions table, ordered by creation_date
     if (this.sessionPaths.has(p) && this.sessionsTable) {
@@ -416,22 +401,14 @@ export class DeeplakeFs implements IFileSystem {
       return text;
     }
 
-    // For text files prefer summary column (avoids decoding binary column)
     const rows = await this.client.query(
-      `SELECT summary, content FROM "${this.table}" WHERE path = '${esc(p)}' LIMIT 1`
+      `SELECT summary FROM "${this.table}" WHERE path = '${esc(p)}' LIMIT 1`
     );
     if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
-    const row = rows[0];
-    const text = row["summary"] as string;
-    if (text && text.length > 0) {
-      const buf = Buffer.from(text, "utf-8");
-      this.files.set(p, buf);
-      return text;
-    }
-    // Binary file: decode content column
-    const buf = decodeContent(row["content"]);
+    const text = (rows[0]["summary"] as string) ?? "";
+    const buf = Buffer.from(text, "utf-8");
     this.files.set(p, buf);
-    return buf.toString("utf-8");
+    return text;
   }
 
   // ── IFileSystem: writes ───────────────────────────────────────────────────
@@ -442,19 +419,20 @@ export class DeeplakeFs implements IFileSystem {
     meta: { project?: string; description?: string; creationDate?: string; lastUpdateDate?: string },
   ): Promise<void> {
     const p = normPath(path);
+    if (this.sessionPaths.has(p)) throw fsErr("EPERM", "session files are read-only", p);
     if (this.dirs.has(p) && !this.files.has(p)) throw fsErr("EISDIR", "illegal operation on a directory", p);
 
-    const buf = typeof content === "string" ? Buffer.from(content, "utf-8") : Buffer.from(content);
+    const text = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
+    const buf = Buffer.from(text, "utf-8");
     const mime = guessMime(basename(p));
-    const contentText = isText(buf) ? buf.toString("utf-8") : "";
 
     this.files.set(p, buf);
     this.meta.set(p, { size: buf.length, mime, mtime: new Date() });
     this.addToTree(p);
 
     this.pending.set(p, {
-      path: p, filename: basename(p), content: buf,
-      contentText, mimeType: mime, sizeBytes: buf.length,
+      path: p, filename: basename(p),
+      contentText: text, mimeType: mime, sizeBytes: buf.length,
       ...meta,
     });
 
@@ -464,19 +442,20 @@ export class DeeplakeFs implements IFileSystem {
 
   async writeFile(path: string, content: FileContent, _opts?: WriteFileOptions | BufferEncoding): Promise<void> {
     const p = normPath(path);
+    if (this.sessionPaths.has(p)) throw fsErr("EPERM", "session files are read-only", p);
     if (this.dirs.has(p) && !this.files.has(p)) throw fsErr("EISDIR", "illegal operation on a directory", p);
 
-    const buf = typeof content === "string" ? Buffer.from(content, "utf-8") : Buffer.from(content);
+    const text = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
+    const buf = Buffer.from(text, "utf-8");
     const mime = guessMime(basename(p));
-    const contentText = isText(buf) ? buf.toString("utf-8") : "";
 
     this.files.set(p, buf);
     this.meta.set(p, { size: buf.length, mime, mtime: new Date() });
     this.addToTree(p);
 
     this.pending.set(p, {
-      path: p, filename: basename(p), content: buf,
-      contentText, mimeType: mime, sizeBytes: buf.length,
+      path: p, filename: basename(p),
+      contentText: text, mimeType: mime, sizeBytes: buf.length,
     });
 
     if (this.pending.size >= BATCH_SIZE) await this.flush();
@@ -487,14 +466,15 @@ export class DeeplakeFs implements IFileSystem {
     const p = normPath(path);
     const add = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
 
+    // Session files are read-only (multi-row in sessions table, not memory table)
+    if (this.sessionPaths.has(p)) throw fsErr("EPERM", "session files are read-only", p);
+
     // Fast path: SQL-level concat — no read-back, O(1) per append
     if (this.files.has(p) || await this.exists(p).catch(() => false)) {
-      const addHex = Buffer.from(add, "utf-8").toString("hex");
       const ts = new Date().toISOString();
       await this.client.query(
         `UPDATE "${this.table}" SET ` +
         `summary = summary || E'${esc(add)}', ` +
-        `content = content || E'\\\\x${addHex}', ` +
         `size_bytes = size_bytes + ${Buffer.byteLength(add, "utf-8")}, ` +
         `last_update_date = '${ts}' ` +
         `WHERE path = '${esc(p)}'`
@@ -505,7 +485,7 @@ export class DeeplakeFs implements IFileSystem {
       if (m) { m.size += Buffer.byteLength(add, "utf-8"); m.mtime = new Date(ts); }
     } else {
       // File doesn't exist yet — create it
-      await this.writeFile(p, typeof content === "string" ? Buffer.from(content, "utf-8") : Buffer.from(content), opts);
+      await this.writeFile(p, content, opts);
       await this.flush();
     }
   }
@@ -603,6 +583,7 @@ export class DeeplakeFs implements IFileSystem {
 
   async rm(path: string, opts?: RmOptions): Promise<void> {
     const p = normPath(path);
+    if (this.sessionPaths.has(p)) throw fsErr("EPERM", "session files are read-only", p);
     if (!this.files.has(p) && !this.dirs.has(p)) {
       if (opts?.force) return;
       throw fsErr("ENOENT", "no such file or directory", p);
@@ -623,12 +604,14 @@ export class DeeplakeFs implements IFileSystem {
           if (this.dirs.has(childPath))  stack.push(childPath);
         }
       }
-      for (const fp of toDelete) this.removeFromTree(fp);
+      // Filter out session paths — they are read-only
+      const safeToDelete = toDelete.filter(fp => !this.sessionPaths.has(fp));
+      for (const fp of safeToDelete) this.removeFromTree(fp);
       this.dirs.delete(p);
       this.dirs.get(parentOf(p))?.delete(basename(p));
 
-      if (toDelete.length > 0) {
-        const inList = toDelete.map(fp => `'${esc(fp)}'`).join(", ");
+      if (safeToDelete.length > 0) {
+        const inList = safeToDelete.map(fp => `'${esc(fp)}'`).join(", ");
         await this.client.query(`DELETE FROM "${this.table}" WHERE path IN (${inList})`);
       }
     } else {
@@ -639,6 +622,7 @@ export class DeeplakeFs implements IFileSystem {
 
   async cp(src: string, dest: string, opts?: CpOptions): Promise<void> {
     const s = normPath(src), d = normPath(dest);
+    if (this.sessionPaths.has(d)) throw fsErr("EPERM", "session files are read-only", d);
     if (this.dirs.has(s) && !this.files.has(s)) {
       if (!opts?.recursive) throw fsErr("EISDIR", "is a directory", s);
       for (const fp of [...this.files.keys()].filter(k => k === s || k.startsWith(s + "/"))) {
@@ -650,6 +634,9 @@ export class DeeplakeFs implements IFileSystem {
   }
 
   async mv(src: string, dest: string): Promise<void> {
+    const s = normPath(src), d = normPath(dest);
+    if (this.sessionPaths.has(s)) throw fsErr("EPERM", "session files are read-only", s);
+    if (this.sessionPaths.has(d)) throw fsErr("EPERM", "session files are read-only", d);
     await this.cp(src, dest, { recursive: true });
     await this.rm(src, { recursive: true, force: true });
   }
