@@ -9,9 +9,11 @@ Run:
 node "${CLAUDE_PLUGIN_ROOT}/bundle/commands/auth-login.js" login
 ```
 
-If login succeeds, show this welcome message:
+If login succeeds, show this welcome message. Include the organization name from the command output:
 
 🐝 Welcome to Hivemind!
+
+Current org: **{org name from output}**
 
 Your Claude Code agents can now talk to each other and share memory across sessions, teammates, and machines.
 

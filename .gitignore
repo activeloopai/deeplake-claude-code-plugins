@@ -7,3 +7,4 @@ tmp/
 .env.*
 coverage/
 bench/
+.claude/
