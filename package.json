@@ -1,6 +1,6 @@
 {
   "name": "hivemind",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Cloud-backed persistent shared memory for AI agents powered by Activeloop",
   "type": "module",
   "bin": {
