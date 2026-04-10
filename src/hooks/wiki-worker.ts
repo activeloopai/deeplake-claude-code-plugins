@@ -10,6 +10,7 @@
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { utcTimestamp } from "../utils/debug.js";
 
 interface WorkerConfig {
   apiUrl: string;
@@ -36,7 +37,7 @@ const tmpSummary = join(tmpDir, "summary.md");
 function wlog(msg: string): void {
   try {
     mkdirSync(cfg.hooksDir, { recursive: true });
-    appendFileSync(cfg.wikiLog, `[${new Date().toISOString().replace("T", " ").slice(0, 19)}] wiki-worker(${cfg.sessionId}): ${msg}\n`);
+    appendFileSync(cfg.wikiLog, `[${utcTimestamp()}] wiki-worker(${cfg.sessionId}): ${msg}\n`);
   } catch { /* ignore */ }
 }
 

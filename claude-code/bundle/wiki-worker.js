@@ -1,17 +1,29 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/wiki-worker.js
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, appendFileSync as appendFileSync2, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { join as join2 } from "node:path";
+
+// dist/src/utils/debug.js
+import { appendFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
+var DEBUG = process.env.DEEPLAKE_DEBUG === "1";
+var LOG = join(homedir(), ".deeplake", "hook-debug.log");
+function utcTimestamp(d = /* @__PURE__ */ new Date()) {
+  return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
+}
+
+// dist/src/hooks/wiki-worker.js
 var cfg = JSON.parse(readFileSync(process.argv[2], "utf-8"));
 var tmpDir = cfg.tmpDir;
-var tmpJsonl = join(tmpDir, "session.jsonl");
-var tmpSummary = join(tmpDir, "summary.md");
+var tmpJsonl = join2(tmpDir, "session.jsonl");
+var tmpSummary = join2(tmpDir, "summary.md");
 function wlog(msg) {
   try {
     mkdirSync(cfg.hooksDir, { recursive: true });
-    appendFileSync(cfg.wikiLog, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] wiki-worker(${cfg.sessionId}): ${msg}
+    appendFileSync2(cfg.wikiLog, `[${utcTimestamp()}] wiki-worker(${cfg.sessionId}): ${msg}
 `);
   } catch {
   }

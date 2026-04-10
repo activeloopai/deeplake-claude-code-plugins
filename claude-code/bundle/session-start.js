@@ -70,6 +70,9 @@ import { join as join3 } from "node:path";
 import { homedir as homedir3 } from "node:os";
 var DEBUG = process.env.DEEPLAKE_DEBUG === "1";
 var LOG = join3(homedir3(), ".deeplake", "hook-debug.log");
+function utcTimestamp(d = /* @__PURE__ */ new Date()) {
+  return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
+}
 function log(tag, msg) {
   if (!DEBUG)
     return;
@@ -374,7 +377,7 @@ var WIKI_LOG = join4(HOME, ".claude", "hooks", "deeplake-wiki.log");
 function wikiLog(msg) {
   try {
     mkdirSync2(join4(HOME, ".claude", "hooks"), { recursive: true });
-    appendFileSync2(WIKI_LOG, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] ${msg}
+    appendFileSync2(WIKI_LOG, `[${utcTimestamp()}] ${msg}
 `);
   } catch {
   }
