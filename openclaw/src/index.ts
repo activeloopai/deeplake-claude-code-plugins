@@ -15,10 +15,22 @@ interface PluginLogger {
   error(...args: unknown[]): void;
 }
 
+interface CommandContext {
+  args?: string;
+  channel?: string;
+  senderId?: string;
+}
+
 interface PluginAPI {
   pluginConfig?: Record<string, unknown>;
   logger: PluginLogger;
   on(event: string, handler: (event: Record<string, unknown>) => Promise<unknown>): void;
+  registerCommand?(command: {
+    name: string;
+    description: string;
+    acceptsArgs?: boolean;
+    handler: (ctx: CommandContext) => Promise<string | { text: string }>;
+  }): void;
 }
 
 const API_URL = "https://api.deeplake.ai";
@@ -96,6 +108,7 @@ async function requestAuth(): Promise<string> {
 
           authPending = false;
           authUrl = null;
+          justAuthenticated = true;
           return;
         }
       } catch {}
@@ -109,6 +122,7 @@ async function requestAuth(): Promise<string> {
 
 // --- API instance ---
 let api: DeepLakeAPI | null = null;
+let justAuthenticated = false;
 const capturedCounts = new Map<string, number>();
 const fallbackSessionId = crypto.randomUUID();
 
@@ -127,9 +141,9 @@ async function getApi(): Promise<DeepLakeAPI | null> {
 }
 
 export default definePluginEntry({
-  id: "deeplake-plugin",
-  name: "DeepLake Memory",
-  description: "Cloud-backed shared memory powered by DeepLake",
+  id: "hivemind",
+  name: "Hivemind",
+  description: "Cloud-backed shared memory powered by Deeplake",
   kind: "memory",
 
   register(pluginApi: PluginAPI) {
@@ -137,6 +151,22 @@ export default definePluginEntry({
     // Workaround: OpenClaw extensions/ plugins don't wire hooks to the global runner.
     // Adding ourselves to plugins.load.paths ensures hooks fire after next restart.
     addToLoadPaths();
+
+    // Login command — works immediately after install, no hook dependency
+    if (pluginApi.registerCommand) {
+      pluginApi.registerCommand({
+        name: "hivemind_login",
+        description: "Log in to Hivemind and activate shared memory",
+        handler: async () => {
+          if (hasCredentials()) {
+            const creds = loadCredentials();
+            return { text: `✅ Already logged in. Org: ${creds?.orgId ?? "unknown"}. To switch org, delete ~/.deeplake/credentials.json and run /hivemind_login again.` };
+          }
+          const url = await requestAuth();
+          return { text: `🔐 Sign in to activate Hivemind memory:\n\n${url}\n\nAfter signing in, send another message.` };
+        },
+      });
+    }
 
     const config = (pluginApi.pluginConfig ?? {}) as PluginConfig;
     const logger = pluginApi.logger;
@@ -158,6 +188,13 @@ export default definePluginEntry({
             };
           }
           if (!dl) return;
+
+          if (justAuthenticated) {
+            justAuthenticated = false;
+            const creds = loadCredentials();
+            const orgId = creds?.orgId ?? "unknown";
+            return { prependContext: `\n\n🐝 Welcome to Hivemind!\n\nCurrent org: ${orgId}\n\nYour agents now share memory across sessions, teammates, and machines.\n\nGet started:\n1. Verify sync: spin up multiple sessions and confirm agents share context\n2. Invite a teammate: ask the agent to add them over email\n3. Switch orgs: ask the agent to list or switch your organizations\n\nOne brain for every agent on your team.\n` };
+          }
 
           const stopWords = new Set(["the","and","for","are","but","not","you","all","can","had","her","was","one","our","out","has","have","what","does","like","with","this","that","from","they","been","will","more","when","who","how","its","into","some","than","them","these","then","your","just","about","would","could","should","where","which","there","their","being","each","other"]);
           const words = event.prompt.toLowerCase()

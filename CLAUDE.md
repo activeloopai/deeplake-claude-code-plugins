@@ -1,65 +1,98 @@
-le# CLAUDE.md
+# CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with code in this repository.
 
 ## What This Is
 
-A Claude Code plugin that provides persistent, cloud-backed memory for AI agents. It captures session activity (prompts, tool calls, responses) into a Hivemind SQL table and intercepts file operations targeting `~/.deeplake/memory/` through a virtual filesystem backed by Hivemind's API.
+Hivemind — a monorepo containing plugins for Claude Code and OpenClaw that provide persistent, cloud-backed shared memory for AI agents. Powered by Deeplake.
+
+## Monorepo Structure
+
+```
+├── src/                  ← shared TypeScript source (config, API client, virtual FS, auth)
+├── claude-code/          ← Claude Code plugin (hooks, skills, bundle)
+│   ├── .claude-plugin/
+│   ├── bundle/           ← checked into git (no build step for marketplace)
+│   ├── hooks/hooks.json
+│   └── skills/
+├── openclaw/             ← OpenClaw plugin
+│   ├── openclaw.plugin.json
+│   └── src/
+├── .claude-plugin/       ← root marketplace.json
+├── esbuild.config.mjs    ← builds both plugins
+└── package.json          ← single version for everything
+```
 
 ## Commands
 
 ```bash
 npm install           # Install dependencies
-npm run build         # TypeScript compile + esbuild bundle (5 ESM outputs into bundle/)
-npm run bundle        # esbuild bundle only (skip tsc)
-npm run dev           # TypeScript watch mode
+npm run build         # TypeScript compile + esbuild bundle
 npm test              # Run vitest tests
-npm run shell         # Interactive virtual shell against Hivemind
-DEEPLAKE_DEBUG=1 npm run shell  # Shell with debug logging
+npm run shell         # Interactive virtual shell against Deeplake
 ```
+
+## Versioning
+
+**Single version** across the entire monorepo. `package.json` version is the source of truth. The release workflow (`release.yml`) auto-syncs to:
+- `claude-code/.claude-plugin/plugin.json`
+- `.claude-plugin/marketplace.json`
+- `openclaw/openclaw.plugin.json`
+- `openclaw/package.json`
+
+Never manually bump versions — merge to main triggers auto-bump.
 
 ## Architecture
 
-### Hook Lifecycle
+### Table Schema
 
-The plugin operates through 5 Claude Code hooks defined in `hooks/hooks.json`. Each hook runs a bundled JS file from `bundle/` as a subprocess:
+The memory table uses these columns (shared between CLI and plugin):
+- `id`, `path`, `filename`, `summary` (TEXT), `author`, `mime_type`, `size_bytes`, `project`, `description`, `creation_date`, `last_update_date`
 
-1. **SessionStart** (`session-start.js`) — Loads credentials, bootstraps the virtual FS cache, injects memory context into Claude's system prompt
-2. **UserPromptSubmit** (`capture.js`) — Captures user prompts to session JSONL
-3. **PreToolUse** (`pre-tool-use.js`) — Intercepts Read/Write/Edit/Glob/Grep/Bash targeting `~/.deeplake/memory/`, rewrites them to run through the virtual shell. Unsafe commands either pass through to Hivemind CLI (if installed) or show an install prompt
-4. **PostToolUse** (`capture.js`, async) — Captures tool name + input + response to session JSONL
-5. **Stop** (`capture.js`) — Final capture before session ends
+**Important**: Column is `summary` not `content_text`. Column is `creation_date` not `created_at`. No BYTEA `content` column — text stored in `summary`.
 
-Hooks receive/return JSON via stdin/stdout.
+### Hook Lifecycle (Claude Code)
+
+7 hooks in `claude-code/hooks/hooks.json`:
+
+1. **SessionStart** — auth login, inject memory context, DATA NOTICE, check for updates
+2. **UserPromptSubmit** — capture user message to sessions table
+3. **PreToolUse** — intercept commands on `~/.deeplake/memory/`, route through virtual shell or pass through
+4. **PostToolUse** (async) — capture tool call + response
+5. **Stop** — capture assistant response
+6. **SubagentStop** (async) — capture subagent activity
+7. **SessionEnd** — generate Karpathy-style wiki summary via `claude -p`
 
 ### Key Modules
 
-- **`src/config.ts`** — Credentials from `~/.deeplake/credentials.json` or env vars
-- **`src/deeplake-api.ts`** — Two clients: local JSONL appender + HTTP SQL query client against Hivemind API
-- **`src/path-match.ts`** — Detects if a tool call targets the memory path
-- **`src/shell/deeplake-fs.ts`** — Virtual filesystem (~1000 LOC) implementing `just-bash` IFileSystem. Handles bootstrap from SQL, read/write via SELECT/INSERT+DELETE, BM25 search via `content_text <#> 'pattern'`, batched writes (coalesced every 200ms)
-- **`src/shell/grep-interceptor.ts`** — Custom grep using BM25 search instead of regex
-- **`src/commands/auth.ts`** — Device authorization flow, org/workspace management
+- **`src/config.ts`** — credentials from `~/.deeplake/credentials.json` or env vars
+- **`src/deeplake-api.ts`** — REST API client for Deeplake SQL queries (reads + writes)
+- **`src/shell/deeplake-fs.ts`** — virtual filesystem implementing just-bash IFileSystem
+- **`src/shell/grep-interceptor.ts`** — BM25 search with in-memory fallback
+- **`src/commands/auth.ts`** — device auth flow, org/workspace management
 
-### Build Output
+### Memory Structure on Deeplake
 
-`esbuild.config.mjs` produces 5 ESM bundles in `bundle/`:
-- `session-start.js`, `capture.js`, `pre-tool-use.js` (hooks)
-- `shell/deeplake-shell.js` (interactive shell)
-- `commands/auth-login.js` (auth CLI)
+```
+/sessions/<username>/<user>_<org>_<ws>_<slug>.jsonl   ← raw session data
+/summaries/<username>/<sessionId>.md                  ← AI wiki summaries
+/index.md                                             ← session index table
+```
 
-### Security
+### PreToolUse Command Routing
 
-- SQL injection prevention via `sqlStr()`, `sqlLike()`, `sqlIdent()` in `src/utils/sql.ts`
-- Shell commands are checked against an allowlist of ~50 safe builtins before execution
-- Shell arguments use POSIX single-quote escaping before `execSync()`
+- Safe commands (cat, ls, grep, jq, 80+ builtins) → just-bash + DeeplakeFS
+- Unsafe + CLI installed → pass through to real bash + FUSE
+- Unsafe + no CLI → deny with install prompt
+- Deeplake CLI commands (mount, login) → always pass through
 
-## Testing
+## Rules
 
-Tests are in `tests/` using vitest. They mock the Hivemind API client to verify filesystem behavior:
-- `tests/deeplake-fs.test.ts` — Virtual filesystem operations (read/write/list/search)
-- `tests/grep-interceptor.test.ts` — BM25 search integration
-
-## Environment Variables
-
-Key config: `DEEPLAKE_TOKEN`, `DEEPLAKE_ORG_ID`, `DEEPLAKE_WORKSPACE_ID` (default: `"default"`), `DEEPLAKE_API_URL`, `DEEPLAKE_TABLE`, `DEEPLAKE_CAPTURE` (set `false` to disable capture), `DEEPLAKE_DEBUG`.
+- `bundle/` is checked into git — marketplace has no build step
+- All hooks exit 0 on error — never crash Claude Code
+- `async: true` on PostToolUse and SubagentStop — non-blocking
+- SQL values escaped via `sqlStr()`, `sqlLike()`, `sqlIdent()` in `src/utils/sql.ts`
+- `DEEPLAKE_CAPTURE=false` disables all session capture
+- `DEEPLAKE_DEBUG=1` enables verbose logging to `~/.deeplake/hook-debug.log`
+- Auth command args must be SEPARATE — `node auth-login.js org switch <name>` not `"org switch"`
+- Always ask user which role before inviting members
