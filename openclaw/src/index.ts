@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { loadConfig } from "../../src/config.js";
 import { loadCredentials, saveCredentials, requestDeviceCode, pollForToken, listOrgs } from "../../src/commands/auth.js";
 import { DeeplakeApi } from "../../src/deeplake-api.js";
-import { sqlStr } from "../../src/utils/sql.js";
+import { sqlStr, sqlLike } from "../../src/utils/sql.js";
 
 interface PluginConfig {
   autoCapture?: boolean;
@@ -213,7 +213,7 @@ export default definePluginEntry({
 
           // Search sessions table — cast JSONB message to text for keyword search
           const results = await dl.query(
-            `SELECT path, message FROM "${sessionsTable}" WHERE message::text ILIKE '%${sqlStr(words[0])}%' ORDER BY creation_date DESC LIMIT 5`
+            `SELECT path, message FROM "${sessionsTable}" WHERE message::text ILIKE '%${sqlLike(words[0])}%' ORDER BY creation_date DESC LIMIT 5`
           );
 
           if (!results.length) return;
