@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-// dist/src/hooks/pre-tool-use.js
-import { existsSync as existsSync2 } from "node:fs";
-import { join as join3 } from "node:path";
-import { homedir as homedir3 } from "node:os";
+// dist/src/hooks/codex/stop.js
+import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname } from "node:path";
+import { dirname, join as join3 } from "node:path";
+import { writeFileSync, readFileSync as readFileSync2, mkdirSync, appendFileSync as appendFileSync2, existsSync as existsSync2 } from "node:fs";
+import { homedir as homedir3, tmpdir } from "node:os";
 
 // dist/src/utils/stdin.js
 function readStdin() {
@@ -75,9 +75,6 @@ function log(tag, msg) {
 // dist/src/utils/sql.js
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
-}
-function sqlLike(value) {
-  return sqlStr(value).replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 
 // dist/src/deeplake-api.js
@@ -282,270 +279,178 @@ var DeeplakeApi = class {
   }
 };
 
-// dist/src/hooks/pre-tool-use.js
-var log3 = (msg) => log("pre", msg);
-var MEMORY_PATH = join3(homedir3(), ".deeplake", "memory");
-var TILDE_PATH = "~/.deeplake/memory";
-var HOME_VAR_PATH = "$HOME/.deeplake/memory";
+// dist/src/hooks/codex/stop.js
+var log3 = (msg) => log("codex-stop", msg);
+var HOME = homedir3();
+var WIKI_LOG = join3(HOME, ".codex", "hooks", "deeplake-wiki.log");
 var __bundleDir = dirname(fileURLToPath(import.meta.url));
-var SHELL_BUNDLE = existsSync2(join3(__bundleDir, "shell", "deeplake-shell.js")) ? join3(__bundleDir, "shell", "deeplake-shell.js") : join3(__bundleDir, "..", "shell", "deeplake-shell.js");
-var SAFE_BUILTINS = /* @__PURE__ */ new Set([
-  // filesystem
-  "cat",
-  "ls",
-  "cp",
-  "mv",
-  "rm",
-  "rmdir",
-  "mkdir",
-  "touch",
-  "ln",
-  "chmod",
-  "stat",
-  "readlink",
-  "du",
-  "tree",
-  "file",
-  // text processing
-  "grep",
-  "egrep",
-  "fgrep",
-  "rg",
-  "sed",
-  "awk",
-  "cut",
-  "tr",
-  "sort",
-  "uniq",
-  "wc",
-  "head",
-  "tail",
-  "tac",
-  "rev",
-  "nl",
-  "fold",
-  "expand",
-  "unexpand",
-  "paste",
-  "join",
-  "comm",
-  "column",
-  "diff",
-  "strings",
-  "split",
-  // search
-  "find",
-  "xargs",
-  "which",
-  // data formats
-  "jq",
-  "yq",
-  "xan",
-  "base64",
-  "od",
-  // archives
-  "tar",
-  "gzip",
-  "gunzip",
-  "zcat",
-  // hashing
-  "md5sum",
-  "sha1sum",
-  "sha256sum",
-  // output/io
-  "echo",
-  "printf",
-  "tee",
-  "cat",
-  // path/env
-  "pwd",
-  "cd",
-  "basename",
-  "dirname",
-  "env",
-  "printenv",
-  "hostname",
-  "whoami",
-  // misc
-  "date",
-  "seq",
-  "expr",
-  "sleep",
-  "timeout",
-  "time",
-  "true",
-  "false",
-  "test",
-  "alias",
-  "unalias",
-  "history",
-  "help",
-  "clear",
-  // shell control flow
-  "for",
-  "while",
-  "do",
-  "done",
-  "if",
-  "then",
-  "else",
-  "fi",
-  "case",
-  "esac"
-]);
-function isSafe(cmd) {
-  if (/\$\(|`|<\(/.test(cmd))
-    return false;
-  const stripped = cmd.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
-  const stages = stripped.split(/\||;|&&|\|\||\n/);
-  for (const stage of stages) {
-    const firstToken = stage.trim().split(/\s+/)[0] ?? "";
-    if (firstToken && !SAFE_BUILTINS.has(firstToken))
-      return false;
+function wikiLog(msg) {
+  try {
+    mkdirSync(join3(HOME, ".codex", "hooks"), { recursive: true });
+    appendFileSync2(WIKI_LOG, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] ${msg}
+`);
+  } catch {
   }
-  return true;
 }
-function touchesMemory(p) {
-  return p.includes(MEMORY_PATH) || p.includes(TILDE_PATH) || p.includes(HOME_VAR_PATH);
-}
-function rewritePaths(cmd) {
-  return cmd.replace(new RegExp(MEMORY_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?", "g"), "/").replace(/~\/.deeplake\/memory\/?/g, "/").replace(/\$HOME\/.deeplake\/memory\/?/g, "/").replace(/"\$HOME\/.deeplake\/memory\/?"/g, '"/"');
-}
-function getShellCommand(toolName, toolInput) {
-  switch (toolName) {
-    case "Grep": {
-      const p = toolInput.path;
-      if (p && touchesMemory(p)) {
-        const pattern = toolInput.pattern ?? "";
-        const flags = ["-r"];
-        if (toolInput["-i"])
-          flags.push("-i");
-        if (toolInput["-n"])
-          flags.push("-n");
-        return `grep ${flags.join(" ")} '${pattern}' /`;
-      }
-      break;
-    }
-    case "Read": {
-      const fp = toolInput.file_path;
-      if (fp && touchesMemory(fp)) {
-        const virtualPath = rewritePaths(fp) || "/";
-        return `cat ${virtualPath}`;
-      }
-      break;
-    }
-    case "Bash": {
-      const cmd = toolInput.command;
-      if (!cmd || !touchesMemory(cmd))
-        break;
-      {
-        const rewritten = rewritePaths(cmd);
-        if (!isSafe(rewritten)) {
-          log3(`unsafe command blocked: ${rewritten}`);
-          return null;
-        }
-        return rewritten;
-      }
-      break;
-    }
-    case "Glob": {
-      const p = toolInput.path;
-      if (p && touchesMemory(p)) {
-        return `ls /`;
-      }
-      break;
-    }
+function findSummaryBin() {
+  try {
+    return execSync("which codex 2>/dev/null", { encoding: "utf-8" }).trim();
+  } catch {
+    return "codex";
   }
-  return null;
+}
+var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry.
+
+SESSION JSONL path: __JSONL__
+SUMMARY FILE to write: __SUMMARY__
+SESSION ID: __SESSION_ID__
+PROJECT: __PROJECT__
+PREVIOUS JSONL OFFSET (lines already processed): __PREV_OFFSET__
+CURRENT JSONL LINES: __JSONL_LINES__
+
+Steps:
+1. Read the session JSONL at the path above.
+   - If PREVIOUS JSONL OFFSET > 0, this is a resumed session. Read the existing summary file first,
+     then focus on lines AFTER the offset for new content. Merge new facts into the existing summary.
+   - If offset is 0, generate from scratch.
+
+2. Write the summary file at the path above with this EXACT format:
+
+# Session __SESSION_ID__
+- **Source**: __JSONL_SERVER_PATH__
+- **Started**: <extract from JSONL>
+- **Ended**: <now>
+- **Project**: __PROJECT__
+- **JSONL offset**: __JSONL_LINES__
+
+## What Happened
+<2-3 dense sentences. What was the goal, what was accomplished, what's left.>
+
+## People
+<For each person mentioned: name, role, what they did/said. Format: **Name** \u2014 role \u2014 action>
+
+## Entities
+<Every named thing: repos, branches, files, APIs, tools, services, tables, features, bugs.
+Format: **entity** (type) \u2014 what was done with it, its current state>
+
+## Decisions & Reasoning
+<Every decision made and WHY.>
+
+## Key Facts
+<Bullet list of atomic facts that could answer future questions.>
+
+## Files Modified
+<bullet list: path (new/modified/deleted) \u2014 what changed>
+
+## Open Questions / TODO
+<Anything unresolved, blocked, or explicitly deferred>
+
+IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact.
+PRIVACY: Never include absolute filesystem paths in the summary.
+LENGTH LIMIT: Keep the total summary under 4000 characters.`;
+var CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
+function buildSessionPath(config, sessionId) {
+  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
 }
 async function main() {
-  const input = await readStdin();
-  log3(`hook fired: tool=${input.tool_name} input=${JSON.stringify(input.tool_input)}`);
-  const cmd = input.tool_input.command ?? "";
-  const shellCmd = getShellCommand(input.tool_name, input.tool_input);
-  if (!shellCmd && touchesMemory(cmd)) {
-    log3(`unsafe command blocked: ${cmd}`);
-    console.log(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: "This command is not supported for memory operations. Use standard commands like cat, ls, grep, echo instead."
-      }
-    }));
+  if (process.env.DEEPLAKE_WIKI_WORKER === "1")
     return;
-  }
-  if (!shellCmd)
+  const input = await readStdin();
+  const sessionId = input.session_id;
+  if (!sessionId)
     return;
   const config = loadConfig();
-  if (config && (input.tool_name === "Read" || input.tool_name === "Grep")) {
-    const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
-    const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
+  if (!config) {
+    log3("no config");
+    return;
+  }
+  if (CAPTURE) {
     try {
-      if (input.tool_name === "Read") {
-        const virtualPath = rewritePaths(input.tool_input.file_path ?? "");
-        log3(`direct read: ${virtualPath}`);
-        const rows = await api.query(`SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
-        if (rows.length > 0 && rows[0]["summary"]) {
-          console.log(JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "allow",
-              updatedInput: {
-                command: `echo ${JSON.stringify(rows[0]["summary"])}`,
-                description: `[DeepLake direct] cat ${virtualPath}`
+      const sessionsTable2 = config.sessionsTableName;
+      const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable2);
+      const ts = (/* @__PURE__ */ new Date()).toISOString();
+      let lastAssistantMessage = "";
+      if (input.transcript_path) {
+        try {
+          const transcriptPath = input.transcript_path;
+          if (existsSync2(transcriptPath)) {
+            const transcript = readFileSync2(transcriptPath, "utf-8");
+            const lines = transcript.trim().split("\n").reverse();
+            for (const line2 of lines) {
+              try {
+                const entry2 = JSON.parse(line2);
+                const msg = entry2.payload ?? entry2;
+                if (msg.role === "assistant" && msg.content) {
+                  const content = typeof msg.content === "string" ? msg.content : Array.isArray(msg.content) ? msg.content.filter((b) => b.type === "output_text" || b.type === "text").map((b) => b.text).join("\n") : "";
+                  if (content) {
+                    lastAssistantMessage = content.slice(0, 4e3);
+                    break;
+                  }
+                }
+              } catch {
               }
             }
-          }));
-          return;
-        }
-      } else if (input.tool_name === "Grep") {
-        const pattern = input.tool_input.pattern ?? "";
-        const ignoreCase = !!input.tool_input["-i"];
-        log3(`direct grep: ${pattern}`);
-        const rows = await api.query(`SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlLike(pattern)}%' LIMIT 5`);
-        if (rows.length > 0) {
-          const allResults = [];
-          const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
-          for (const row of rows) {
-            const p = row["path"];
-            const text = row["summary"];
-            if (!text)
-              continue;
-            const matches = text.split("\n").filter((line) => re.test(line)).slice(0, 5).map((line) => `${p}:${line.slice(0, 300)}`);
-            allResults.push(...matches);
+            if (lastAssistantMessage)
+              log3(`extracted assistant message from transcript (${lastAssistantMessage.length} chars)`);
           }
-          const results = allResults.join("\n");
-          console.log(JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "allow",
-              updatedInput: {
-                command: `echo ${JSON.stringify(results || "(no matches)")}`,
-                description: `[DeepLake direct] grep ${pattern}`
-              }
-            }
-          }));
-          return;
+        } catch (e) {
+          log3(`transcript read failed: ${e.message}`);
         }
       }
+      const entry = {
+        id: crypto.randomUUID(),
+        session_id: sessionId,
+        transcript_path: input.transcript_path,
+        cwd: input.cwd,
+        hook_event_name: input.hook_event_name,
+        model: input.model,
+        timestamp: ts,
+        type: lastAssistantMessage ? "assistant_message" : "assistant_stop",
+        content: lastAssistantMessage
+      };
+      const line = JSON.stringify(entry);
+      const sessionPath = buildSessionPath(config, sessionId);
+      const projectName2 = (input.cwd ?? "").split("/").pop() || "unknown";
+      const filename = sessionPath.split("/").pop() ?? "";
+      const jsonForSql = sqlStr(line);
+      const insertSql = `INSERT INTO "${sessionsTable2}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName2)}', 'Stop', 'codex', '${ts}', '${ts}')`;
+      await api.query(insertSql);
+      log3("stop event captured");
     } catch (e) {
-      log3(`direct query failed, falling back to shell: ${e.message}`);
+      log3(`capture failed: ${e.message}`);
     }
   }
-  log3(`intercepted \u2192 rewriting to shell: ${shellCmd}`);
-  const rewrittenCommand = `node "${SHELL_BUNDLE}" -c "${shellCmd.replace(/"/g, '\\"')}"`;
-  const output = {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "allow",
-      updatedInput: {
-        command: rewrittenCommand,
-        description: `[DeepLake] ${shellCmd}`
-      }
-    }
-  };
-  log3(`rewritten: ${rewrittenCommand}`);
-  console.log(JSON.stringify(output));
+  const cwd = input.cwd ?? "";
+  const memoryTable = config.tableName;
+  const sessionsTable = config.sessionsTableName;
+  const agentBin = findSummaryBin();
+  const projectName = cwd.split("/").pop() || "unknown";
+  const tmpDir = join3(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  mkdirSync(tmpDir, { recursive: true });
+  const configFile = join3(tmpDir, "config.json");
+  writeFileSync(configFile, JSON.stringify({
+    apiUrl: config.apiUrl,
+    token: config.token,
+    orgId: config.orgId,
+    workspaceId: config.workspaceId,
+    memoryTable,
+    sessionsTable,
+    sessionId,
+    userName: config.userName,
+    project: projectName,
+    tmpDir,
+    codexBin: agentBin,
+    wikiLog: WIKI_LOG,
+    hooksDir: join3(HOME, ".codex", "hooks"),
+    promptTemplate: WIKI_PROMPT_TEMPLATE
+  }));
+  wikiLog(`Stop: spawning summary worker for ${sessionId}`);
+  const workerPath = join3(__bundleDir, "wiki-worker.js");
+  spawn("nohup", ["node", workerPath, configFile], {
+    detached: true,
+    stdio: ["ignore", "ignore", "ignore"]
+  }).unref();
+  wikiLog(`Stop: spawned summary worker for ${sessionId}`);
 }
 main().catch((e) => {
   log3(`fatal: ${e.message}`);

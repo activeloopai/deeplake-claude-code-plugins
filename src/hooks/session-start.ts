@@ -120,9 +120,9 @@ async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: str
   const filename = `${sessionId}.md`;
 
   await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, creation_date, last_update_date) ` +
+    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', '${now}', '${now}')`
+    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${now}', '${now}')`
   );
 
   wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
