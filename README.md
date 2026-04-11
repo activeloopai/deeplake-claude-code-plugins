@@ -25,8 +25,8 @@
 
 ## What it does
 
-- 🧠 **Captures** every session's prompts, tool calls, and responses into a shared cloud SQL table
-- 🔍 **Searches** across all memory with BM25 full-text search (falls back to ILIKE when index unavailable)
+- 🧠 **Captures** every session's prompts, tool calls, and responses into a shared SQL table on Deeplake Cloud
+- 🔍 **Searches** across all memory with lexical search (falls back to grep when index unavailable)
 - 🔗 **Shares** memory across sessions, agents, teammates, and machines in real-time
 - 📁 **Intercepts** file operations on `~/.deeplake/memory/` through a virtual filesystem backed by SQL
 - 📝 **Summarizes** sessions into AI-generated wiki pages via a background worker at session end
@@ -39,7 +39,7 @@
 | **OpenClaw**    | 🔧 Beta        | See [Quick start](#quick-start-openclaw)                   |
 | **Codex**       | 🔧 Beta        | See [Quick start](#quick-start-codex)                      |
 
-## Quick start (Claude Code)
+## Claude Code Setup
 
 Add the marketplace:
 
@@ -74,8 +74,9 @@ The plugin auto-updates on each session start. To manually update:
 ```
 /hivemind:update
 ```
+<details>
+  <summary><b> OpenClaw Setup </b></summary>
 
-## Quick start (OpenClaw)
 
 Install from ClawHub (Telegram, TUI, WhatsApp):
 
@@ -84,8 +85,9 @@ openclaw plugins install hivemind
 ```
 
 Send a message. The plugin sends you an auth link. Click, sign in, done.
-
-## Quick start (Codex)
+</details>
+<details>
+  <summary><b> Codex Setup </b></summary>
 
 Tell Codex to fetch and follow the install instructions:
 
@@ -108,11 +110,13 @@ Log in when prompted, or run manually:
 node ~/.codex/hivemind/codex/bundle/commands/auth-login.js login
 ```
 
+
 ### Updating
 
 ```bash
 cd ~/.codex/hivemind && git pull
 ```
+
 
 Hooks and skills update instantly — restart Codex to apply.
 
@@ -123,12 +127,14 @@ rm -f ~/.codex/hooks.json ~/.agents/skills/hivemind-memory
 rm -rf ~/.codex/hivemind
 ```
 
+</details>
+
 ## How it works
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Your AI Agent                           │
-└──────────────────────────┬──────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│                   Your Coding Agent                 │
+└──────────────────────────┬──────────────────────────┘
                            │
         ┌──────────────────▼──────────────────┐
         │  📥 Capture (every turn)            │
@@ -136,14 +142,15 @@ rm -rf ~/.codex/hivemind
         └──────────────────┬──────────────────┘
                            │
         ┌──────────────────▼──────────────────┐
-        │  🧠 Hivemind Cloud                  │
-        │  SQL tables · BM25 search           │
-        │  shared across all agents           │
+        │  🧠 Hivemind                        │
+        │  SQL tables · Virtual File System   │
+        │  Search Memory · inject context     │
         └──────────────────┬──────────────────┘
                            │
         ┌──────────────────▼──────────────────┐
-        │  🔍 Recall (before each turn)       │
-        │  search memory · inject context     │
+        │  🌊 Deeplake                        │
+        │   Shared across all agents          │
+        │   Postgres · S3                     │
         └─────────────────────────────────────┘
 ```
 
