@@ -15,7 +15,7 @@
  *   DEEPLAKE_WORKSPACE_ID                  — default: "default"
  *   DEEPLAKE_API_URL                       — default: https://api.deeplake.ai
  *   DEEPLAKE_TABLE                         — default: "memory"
- *   DEEPLAKE_MOUNT                         — virtual mount point, default: "/memory"
+ *   DEEPLAKE_MOUNT                         — virtual root path, default: "/memory"
  *
  * Or create ~/.deeplake/credentials.json:
  *   { "token": "...", "orgId": "...", "workspaceId": "default" }
@@ -42,15 +42,22 @@ async function main(): Promise<void> {
   const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
   const mount = process.env["DEEPLAKE_MOUNT"] ?? "/";
 
+  const isOneShot = process.argv.includes("-c");
+
   const client = new DeeplakeApi(
     config.token, config.apiUrl, config.orgId, config.workspaceId, table
   );
 
-  process.stderr.write(`Mounting deeplake://${config.workspaceId}/${table} at ${mount} ...\n`);
+  if (!isOneShot) {
+    process.stderr.write(`Connecting to deeplake://${config.workspaceId}/${table} ...\n`);
+  }
 
   const fs = await DeeplakeFs.create(client, table, mount, sessionsTable);
-  const fileCount = fs.getAllPaths().filter(p => !!p).length;
-  process.stderr.write(`Ready. ${fileCount} files loaded.\n`);
+
+  if (!isOneShot) {
+    const fileCount = fs.getAllPaths().filter(p => !!p).length;
+    process.stderr.write(`Ready. ${fileCount} files loaded.\n`);
+  }
 
   const bash = new Bash({
     fs,
