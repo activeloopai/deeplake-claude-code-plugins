@@ -83,7 +83,13 @@ Install from ClawHub (Telegram, TUI, WhatsApp):
 openclaw plugins install hivemind
 ```
 
-Send a message. The plugin sends you an auth link. Click, sign in, done.
+Log in by typing `/hivemind_login` in chat. Click the auth link, sign in, and send another message to activate.
+
+The plugin automatically:
+- **Recalls** relevant memories before each agent turn
+- **Captures** every conversation to the shared sessions table
+
+Data is stored in the same `sessions` table as Claude Code and Codex — all agents share one brain.
 
 ## Quick start (Codex)
 
