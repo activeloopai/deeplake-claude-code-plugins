@@ -1,8 +1,8 @@
 {
   "id": "hivemind",
   "kind": "memory",
-  "name": "Hivemind Memory",
-  "description": "Cloud-backed shared memory powered by DeepLake — auto-capture and auto-recall via REST API",
+  "name": "Hivemind",
+  "description": "Cloud-backed shared memory powered by Deeplake — auto-capture and auto-recall across sessions, agents, and teammates",
   "uiHints": {
     "autoCapture": {
       "label": "Auto-Capture"
