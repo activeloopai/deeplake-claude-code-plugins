@@ -224,21 +224,12 @@ export class DeeplakeApi {
           `size_bytes BIGINT NOT NULL DEFAULT 0, ` +
           `project TEXT NOT NULL DEFAULT '', ` +
           `description TEXT NOT NULL DEFAULT '', ` +
+          `agent TEXT NOT NULL DEFAULT '', ` +
           `creation_date TEXT NOT NULL DEFAULT '', ` +
           `last_update_date TEXT NOT NULL DEFAULT ''` +
         `) USING deeplake`,
       );
       log(`table "${tbl}" created`);
-    } else {
-      // Migrate: add new columns if missing on existing tables
-      for (const col of ["project", "description", "creation_date", "last_update_date", "author"]) {
-        try {
-          await this.query(`ALTER TABLE "${tbl}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
-          log(`added column "${col}" to "${tbl}"`);
-        } catch {
-          // Column already exists — ignore
-        }
-      }
     }
   }
 
@@ -258,6 +249,7 @@ export class DeeplakeApi {
           `size_bytes BIGINT NOT NULL DEFAULT 0, ` +
           `project TEXT NOT NULL DEFAULT '', ` +
           `description TEXT NOT NULL DEFAULT '', ` +
+          `agent TEXT NOT NULL DEFAULT '', ` +
           `creation_date TEXT NOT NULL DEFAULT '', ` +
           `last_update_date TEXT NOT NULL DEFAULT ''` +
         `) USING deeplake`,

@@ -112,7 +112,7 @@ async function main() {
           await query(`UPDATE "${cfg.memoryTable}" SET summary = E'${esc(text)}', size_bytes = ${Buffer.byteLength(text)}, last_update_date = '${ts}' WHERE path = '${esc(vpath)}'`);
         } else {
           const id = crypto.randomUUID();
-          await query(`INSERT INTO "${cfg.memoryTable}" (id, path, filename, summary, author, mime_type, size_bytes, project, creation_date, last_update_date) VALUES ('${id}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', '${esc(cfg.userName)}', 'text/markdown', ${Buffer.byteLength(text)}, '${esc(cfg.project)}', '${ts}', '${ts}')`);
+          await query(`INSERT INTO "${cfg.memoryTable}" (id, path, filename, summary, author, mime_type, size_bytes, project, agent, creation_date, last_update_date) VALUES ('${id}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', '${esc(cfg.userName)}', 'text/markdown', ${Buffer.byteLength(text)}, '${esc(cfg.project)}', 'claude_code', '${ts}', '${ts}')`);
         }
         wlog(`uploaded ${vpath}`);
         try {
