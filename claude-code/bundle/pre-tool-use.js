@@ -2,7 +2,6 @@
 
 // dist/src/hooks/pre-tool-use.js
 import { existsSync as existsSync2 } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { join as join3 } from "node:path";
 import { homedir as homedir3 } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -265,16 +264,8 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${tbl}" created`);
-    } else {
-      for (const col of ["project", "description", "creation_date", "last_update_date", "author"]) {
-        try {
-          await this.query(`ALTER TABLE "${tbl}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
-          log2(`added column "${col}" to "${tbl}"`);
-        } catch {
-        }
-      }
     }
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
@@ -282,7 +273,7 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${name}" created`);
     }
   }
@@ -442,8 +433,6 @@ function getShellCommand(toolName, toolInput) {
       const cmd = toolInput.command;
       if (!cmd || !touchesMemory(cmd))
         break;
-      if (/\bdeeplake\s+(mount|login|unmount|status)\b/.test(cmd) || cmd.includes("deeplake.ai/install"))
-        break;
       {
         const rewritten = rewritePaths(cmd);
         if (!isSafe(rewritten)) {
@@ -469,43 +458,13 @@ async function main() {
   log3(`hook fired: tool=${input.tool_name} input=${JSON.stringify(input.tool_input)}`);
   const cmd = input.tool_input.command ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
-  if (!shellCmd && touchesMemory(cmd) && (/\bdeeplake\s+(mount|login|unmount|status)\b/.test(cmd) || cmd.includes("deeplake.ai/install"))) {
-    log3(`deeplake CLI command \u2014 passing through to real bash`);
-    return;
-  }
   if (!shellCmd && touchesMemory(cmd)) {
-    let cliInstalled = false;
-    try {
-      execFileSync("which", ["deeplake"], { stdio: "ignore", timeout: 2e3 });
-      cliInstalled = true;
-    } catch {
-      const paths = ["/usr/local/bin/deeplake", join3(homedir3(), ".local", "bin", "deeplake"), join3(homedir3(), ".deeplake", "bin", "deeplake")];
-      cliInstalled = paths.some((p) => existsSync2(p));
-    }
-    if (cliInstalled) {
-      const mountActive = existsSync2(join3(MEMORY_PATH, ".deeplake"));
-      if (mountActive) {
-        log3(`unsafe, CLI installed + mounted \u2014 passing through to real bash`);
-        return;
-      }
-      log3(`unsafe, CLI installed but not mounted \u2192 suggesting mount`);
-      console.log(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: "deny",
-          permissionDecisionReason: "The Deeplake CLI is installed but the memory filesystem is not mounted.",
-          additionalContext: "Ask the user: 'The Deeplake memory filesystem needs to be mounted. Shall I mount it?' If they agree, run: deeplake mount ~/.deeplake/memory \u2014 then retry the original command. If mount fails, report the error and stop."
-        }
-      }));
-      return;
-    }
-    log3(`unsafe, CLI not installed \u2192 suggesting install`);
+    log3(`unsafe command blocked: ${cmd}`);
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: "This command requires the Deeplake CLI with FUSE mount support.",
-        additionalContext: "Ask the user: 'This command needs the Deeplake CLI. Shall I install it?' If they agree, run: curl -fsSL https://deeplake.ai/install.sh | bash && deeplake mount ~/.deeplake/memory \u2014 then retry the original command. If they decline, rewrite using safe builtins (cat, grep, jq, head, tail). If install fails (FUSE not supported, Windows, permission error), report the error and stop."
+        permissionDecisionReason: "This command is not supported for memory operations. Use standard commands like cat, ls, grep, echo instead."
       }
     }));
     return;
@@ -576,7 +535,7 @@ async function main() {
       permissionDecision: "allow",
       updatedInput: {
         command: rewrittenCommand,
-        description: `[DeepLake virtual FS] ${shellCmd}`
+        description: `[DeepLake] ${shellCmd}`
       }
     }
   };
