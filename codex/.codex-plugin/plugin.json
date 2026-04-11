@@ -1,0 +1,17 @@
+{
+  "name": "hivemind",
+  "version": "0.6.7",
+  "description": "Cloud-backed persistent memory powered by Deeplake — read, write, and share memory across Codex sessions and agents",
+  "skills": [],
+  "mcpServers": [],
+  "apps": [],
+  "interface": {
+    "displayName": "Hivemind Memory",
+    "shortDescription": "Persistent shared memory for AI agents powered by Deeplake",
+    "longDescription": "Captures all session activity and provides cross-session, cross-agent memory search via ~/.deeplake/memory/. Memory is stored in Deeplake managed tables and shared across sessions, users, and agents in your organization.",
+    "developerName": "Activeloop",
+    "category": "productivity",
+    "capabilities": ["memory", "session-capture", "search"],
+    "websiteURL": "https://deeplake.ai"
+  }
+}
