@@ -8,7 +8,7 @@ import { dirname } from "node:path";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr } from "../utils/sql.js";
+import { sqlStr, sqlLike } from "../utils/sql.js";
 
 import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("pre", msg);
@@ -51,6 +51,8 @@ const SAFE_BUILTINS = new Set([
 ]);
 
 function isSafe(cmd: string): boolean {
+  // Reject command/process substitution before checking tokens
+  if (/\$\(|`|<\(/.test(cmd)) return false;
   // Strip quoted strings before splitting on pipes — prevents splitting
   // inside jq expressions like 'select(.type) | .content'
   const stripped = cmd.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
@@ -179,7 +181,7 @@ async function main(): Promise<void> {
         log(`direct grep: ${pattern}`);
         // Single query: fetch path + content together (avoids N+1 round-trips)
         const rows = await api.query(
-          `SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 5`
+          `SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlLike(pattern)}%' LIMIT 5`
         );
         if (rows.length > 0) {
           const allResults: string[] = [];

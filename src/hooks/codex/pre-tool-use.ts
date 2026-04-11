@@ -26,7 +26,7 @@ import { dirname } from "node:path";
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
-import { sqlStr } from "../../utils/sql.js";
+import { sqlStr, sqlLike } from "../../utils/sql.js";
 
 import { log as _log } from "../../utils/debug.js";
 const log = (msg: string) => _log("codex-pre", msg);
@@ -59,6 +59,8 @@ const SAFE_BUILTINS = new Set([
 ]);
 
 function isSafe(cmd: string): boolean {
+  // Reject command/process substitution before checking tokens
+  if (/\$\(|`|<\(/.test(cmd)) return false;
   const stripped = cmd.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
   const stages = stripped.split(/\||;|&&|\|\|/);
   for (const stage of stages) {
@@ -202,7 +204,7 @@ async function main(): Promise<void> {
         const ignoreCase = /\s-[a-zA-Z]*i/.test(rewritten);
         log(`direct grep: ${pattern}`);
         const rows = await api.query(
-          `SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 5`
+          `SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlLike(pattern)}%' LIMIT 5`
         );
         if (rows.length > 0) {
           const allResults: string[] = [];
