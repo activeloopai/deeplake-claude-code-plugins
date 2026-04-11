@@ -2,7 +2,6 @@
 
 // dist/src/hooks/pre-tool-use.js
 import { existsSync as existsSync2 } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { join as join3 } from "node:path";
 import { homedir as homedir3 } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -442,17 +441,12 @@ function getShellCommand(toolName, toolInput) {
       const cmd = toolInput.command;
       if (!cmd || !touchesMemory(cmd))
         break;
-      if (/\bdeeplake\s+(mount|login|unmount|status)\b/.test(cmd) || cmd.includes("deeplake.ai/install"))
-        break;
-      {
-        const rewritten = rewritePaths(cmd);
-        if (!isSafe(rewritten)) {
-          log3(`unsafe command blocked: ${rewritten}`);
-          return null;
-        }
-        return rewritten;
+      const rewritten = rewritePaths(cmd);
+      if (!isSafe(rewritten)) {
+        log3(`unsafe command blocked: ${rewritten}`);
+        return null;
       }
-      break;
+      return rewritten;
     }
     case "Glob": {
       const p = toolInput.path;
@@ -469,43 +463,14 @@ async function main() {
   log3(`hook fired: tool=${input.tool_name} input=${JSON.stringify(input.tool_input)}`);
   const cmd = input.tool_input.command ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
-  if (!shellCmd && touchesMemory(cmd) && (/\bdeeplake\s+(mount|login|unmount|status)\b/.test(cmd) || cmd.includes("deeplake.ai/install"))) {
-    log3(`deeplake CLI command \u2014 passing through to real bash`);
-    return;
-  }
   if (!shellCmd && touchesMemory(cmd)) {
-    let cliInstalled = false;
-    try {
-      execFileSync("which", ["deeplake"], { stdio: "ignore", timeout: 2e3 });
-      cliInstalled = true;
-    } catch {
-      const paths = ["/usr/local/bin/deeplake", join3(homedir3(), ".local", "bin", "deeplake"), join3(homedir3(), ".deeplake", "bin", "deeplake")];
-      cliInstalled = paths.some((p) => existsSync2(p));
-    }
-    if (cliInstalled) {
-      const mountActive = existsSync2(join3(MEMORY_PATH, ".deeplake"));
-      if (mountActive) {
-        log3(`unsafe, CLI installed + mounted \u2014 passing through to real bash`);
-        return;
-      }
-      log3(`unsafe, CLI installed but not mounted \u2192 suggesting mount`);
-      console.log(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: "deny",
-          permissionDecisionReason: "The Deeplake CLI is installed but the memory filesystem is not mounted.",
-          additionalContext: "Ask the user: 'The Deeplake memory filesystem needs to be mounted. Shall I mount it?' If they agree, run: deeplake mount ~/.deeplake/memory \u2014 then retry the original command. If mount fails, report the error and stop."
-        }
-      }));
-      return;
-    }
-    log3(`unsafe, CLI not installed \u2192 suggesting install`);
+    log3(`unsafe command denied: ${cmd.slice(0, 100)}`);
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: "This command requires the Deeplake CLI with FUSE mount support.",
-        additionalContext: "Ask the user: 'This command needs the Deeplake CLI. Shall I install it?' If they agree, run: curl -fsSL https://deeplake.ai/install.sh | bash && deeplake mount ~/.deeplake/memory \u2014 then retry the original command. If they decline, rewrite using safe builtins (cat, grep, jq, head, tail). If install fails (FUSE not supported, Windows, permission error), report the error and stop."
+        permissionDecisionReason: "This command uses tools not supported by the virtual filesystem.",
+        additionalContext: "Rewrite using safe builtins: cat, ls, grep, jq, head, tail, sort, wc, find, sed, awk. These work natively with Hivemind memory."
       }
     }));
     return;
