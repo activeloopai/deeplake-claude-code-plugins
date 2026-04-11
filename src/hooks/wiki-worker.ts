@@ -180,9 +180,9 @@ async function main(): Promise<void> {
         } else {
           const id = crypto.randomUUID();
           await query(
-            `INSERT INTO "${cfg.memoryTable}" (id, path, filename, summary, author, mime_type, size_bytes, project, creation_date, last_update_date) ` +
+            `INSERT INTO "${cfg.memoryTable}" (id, path, filename, summary, author, mime_type, size_bytes, project, agent, creation_date, last_update_date) ` +
             `VALUES ('${id}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', '${esc(cfg.userName)}', 'text/markdown', ` +
-            `${Buffer.byteLength(text)}, '${esc(cfg.project)}', '${ts}', '${ts}')`
+            `${Buffer.byteLength(text)}, '${esc(cfg.project)}', 'claude_code', '${ts}', '${ts}')`
           );
         }
         wlog(`uploaded ${vpath}`);
