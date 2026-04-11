@@ -62,6 +62,9 @@ import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 var DEBUG = process.env.DEEPLAKE_DEBUG === "1";
 var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
+function utcTimestamp(d = /* @__PURE__ */ new Date()) {
+  return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
+}
 function log(tag, msg) {
   if (!DEBUG)
     return;
@@ -77,7 +80,7 @@ var __bundleDir = dirname(fileURLToPath(import.meta.url));
 function wikiLog(msg) {
   try {
     mkdirSync(join3(HOME, ".claude", "hooks"), { recursive: true });
-    appendFileSync2(WIKI_LOG, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] ${msg}
+    appendFileSync2(WIKI_LOG, `[${utcTimestamp()}] ${msg}
 `);
   } catch {
   }

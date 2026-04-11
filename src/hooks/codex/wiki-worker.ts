@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 
 /**
- * Background wiki worker — reads session events from the sessions table,
- * runs claude -p to generate a wiki summary, and uploads it to the memory table.
+ * Codex wiki worker — reads session events from the sessions table,
+ * runs codex exec to generate a wiki summary, and uploads it to the memory table.
  *
- * Invoked by session-end.ts as: node wiki-worker.js <config.json>
+ * Invoked by stop.ts as: node wiki-worker.js <config.json>
  */
 
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { utcTimestamp } from "../utils/debug.js";
 
 interface WorkerConfig {
   apiUrl: string;
@@ -23,7 +22,7 @@ interface WorkerConfig {
   userName: string;
   project: string;
   tmpDir: string;
-  claudeBin: string;
+  codexBin: string;
   wikiLog: string;
   hooksDir: string;
   promptTemplate: string;
@@ -37,11 +36,10 @@ const tmpSummary = join(tmpDir, "summary.md");
 function wlog(msg: string): void {
   try {
     mkdirSync(cfg.hooksDir, { recursive: true });
-    appendFileSync(cfg.wikiLog, `[${utcTimestamp()}] wiki-worker(${cfg.sessionId}): ${msg}\n`);
+    appendFileSync(cfg.wikiLog, `[${new Date().toISOString().replace("T", " ").slice(0, 19)}] wiki-worker(${cfg.sessionId}): ${msg}\n`);
   } catch { /* ignore */ }
 }
 
-/** Escape a string for use inside a SQL single-quoted literal. */
 function esc(s: string): string {
   return s
     .replace(/\\/g, "\\\\")
@@ -83,12 +81,12 @@ function cleanup(): void {
 
 async function main(): Promise<void> {
   try {
-    // 1. Fetch session events from sessions table, reconstruct JSONL
+    // 1. Fetch session events from sessions table
     wlog("fetching session events");
     await query(`SELECT deeplake_sync_table('${cfg.sessionsTable}')`);
     const rows = await query(
       `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
-      `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
+      `WHERE path LIKE E'${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
     );
 
     if (rows.length === 0) {
@@ -96,13 +94,11 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Reconstruct JSONL from individual rows (message is JSONB — may be object or string)
     const jsonlContent = rows
       .map(r => typeof r.message === "string" ? r.message : JSON.stringify(r.message))
       .join("\n");
     const jsonlLines = rows.length;
 
-    // Derive the server path
     const pathRows = await query(
       `SELECT DISTINCT path FROM "${cfg.sessionsTable}" ` +
       `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`
@@ -114,7 +110,7 @@ async function main(): Promise<void> {
     writeFileSync(tmpJsonl, jsonlContent);
     wlog(`found ${jsonlLines} events at ${jsonlServerPath}`);
 
-    // 2. Check for existing summary in memory table (resumed session)
+    // 2. Check for existing summary (resumed session)
     let prevOffset = 0;
     try {
       await query(`SELECT deeplake_sync_table('${cfg.memoryTable}')`);
@@ -131,7 +127,7 @@ async function main(): Promise<void> {
       }
     } catch { /* no existing summary */ }
 
-    // 3. Build prompt and run claude -p
+    // 3. Build prompt and run codex exec
     const prompt = cfg.promptTemplate
       .replace(/__JSONL__/g, tmpJsonl)
       .replace(/__SUMMARY__/g, tmpSummary)
@@ -141,21 +137,20 @@ async function main(): Promise<void> {
       .replace(/__JSONL_LINES__/g, String(jsonlLines))
       .replace(/__JSONL_SERVER_PATH__/g, jsonlServerPath);
 
-    wlog("running claude -p");
+    wlog("running codex exec");
     try {
-      execFileSync(cfg.claudeBin, [
-        "-p", prompt,
-        "--no-session-persistence",
-        "--model", "haiku",
-        "--permission-mode", "bypassPermissions",
+      execFileSync(cfg.codexBin, [
+        "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        prompt,
       ], {
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 120_000,
         env: { ...process.env, DEEPLAKE_WIKI_WORKER: "1", DEEPLAKE_CAPTURE: "false" },
       });
-      wlog("claude -p exited (code 0)");
+      wlog("codex exec exited (code 0)");
     } catch (e: any) {
-      wlog(`claude -p failed: ${e.status ?? e.message}`);
+      wlog(`codex exec failed: ${e.status ?? e.message}`);
     }
 
     // 4. Upload summary to memory table
@@ -183,12 +178,11 @@ async function main(): Promise<void> {
           await query(
             `INSERT INTO "${cfg.memoryTable}" (id, path, filename, summary, author, mime_type, size_bytes, project, agent, creation_date, last_update_date) ` +
             `VALUES ('${id}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', '${esc(cfg.userName)}', 'text/markdown', ` +
-            `${Buffer.byteLength(text)}, '${esc(cfg.project)}', 'claude_code', '${ts}', '${ts}')`
+            `${Buffer.byteLength(text)}, '${esc(cfg.project)}', 'codex', '${ts}', '${ts}')`
           );
         }
         wlog(`uploaded ${vpath}`);
 
-        // Update description from "What Happened" section
         try {
           const whatHappened = text.match(/## What Happened\n([\s\S]*?)(?=\n##|$)/);
           const desc = whatHappened ? whatHappened[1].trim().slice(0, 300) : "completed";

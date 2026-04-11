@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-import { appendFileSync, existsSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -9,7 +8,7 @@ import { dirname } from "node:path";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr } from "../utils/sql.js";
+import { sqlStr, sqlLike } from "../utils/sql.js";
 
 import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("pre", msg);
@@ -52,10 +51,12 @@ const SAFE_BUILTINS = new Set([
 ]);
 
 function isSafe(cmd: string): boolean {
+  // Reject command/process substitution before checking tokens
+  if (/\$\(|`|<\(/.test(cmd)) return false;
   // Strip quoted strings before splitting on pipes — prevents splitting
   // inside jq expressions like 'select(.type) | .content'
   const stripped = cmd.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
-  const stages = stripped.split(/\||;|&&|\|\|/);
+  const stages = stripped.split(/\||;|&&|\|\||\n/);
   for (const stage of stages) {
     const firstToken = stage.trim().split(/\s+/)[0] ?? "";
     if (firstToken && !SAFE_BUILTINS.has(firstToken)) return false;
@@ -106,8 +107,6 @@ function getShellCommand(toolName: string, toolInput: Record<string, unknown>): 
     case "Bash": {
       const cmd = toolInput.command as string | undefined;
       if (!cmd || !touchesMemory(cmd)) break;
-      // Let deeplake CLI commands pass through to real bash (install, mount, login, etc.)
-      if (/\bdeeplake\s+(mount|login|unmount|status)\b/.test(cmd) || cmd.includes("deeplake.ai/install")) break;
       {
         const rewritten = rewritePaths(cmd);
         if (!isSafe(rewritten)) {
@@ -136,50 +135,13 @@ async function main(): Promise<void> {
   const cmd = (input.tool_input.command as string) ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
 
-  // Let deeplake CLI commands (install, mount, login) pass through to real bash
-  if (!shellCmd && touchesMemory(cmd) && (/\bdeeplake\s+(mount|login|unmount|status)\b/.test(cmd) || cmd.includes("deeplake.ai/install"))) {
-    log(`deeplake CLI command — passing through to real bash`);
-    return;
-  }
-
   if (!shellCmd && touchesMemory(cmd)) {
-    // Check if deeplake CLI is installed — if yes, let it run on real FUSE mount
-    let cliInstalled = false;
-    try {
-      execFileSync("which", ["deeplake"], { stdio: "ignore", timeout: 2000 });
-      cliInstalled = true;
-    } catch {
-      // Also check common install paths
-      const paths = ["/usr/local/bin/deeplake", join(homedir(), ".local", "bin", "deeplake"), join(homedir(), ".deeplake", "bin", "deeplake")];
-      cliInstalled = paths.some(p => existsSync(p));
-    }
-
-    if (cliInstalled) {
-      // Check if FUSE mount is active
-      const mountActive = existsSync(join(MEMORY_PATH, ".deeplake"));
-      if (mountActive) {
-        log(`unsafe, CLI installed + mounted — passing through to real bash`);
-        return;
-      }
-      log(`unsafe, CLI installed but not mounted → suggesting mount`);
-      console.log(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: "deny",
-          permissionDecisionReason: "The Deeplake CLI is installed but the memory filesystem is not mounted.",
-          additionalContext: "Ask the user: 'The Deeplake memory filesystem needs to be mounted. Shall I mount it?' If they agree, run: deeplake mount ~/.deeplake/memory — then retry the original command. If mount fails, report the error and stop.",
-        },
-      }));
-      return;
-    }
-
-    log(`unsafe, CLI not installed → suggesting install`);
+    log(`unsafe command blocked: ${cmd}`);
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: "This command requires the Deeplake CLI with FUSE mount support.",
-        additionalContext: "Ask the user: 'This command needs the Deeplake CLI. Shall I install it?' If they agree, run: curl -fsSL https://deeplake.ai/install.sh | bash && deeplake mount ~/.deeplake/memory — then retry the original command. If they decline, rewrite using safe builtins (cat, grep, jq, head, tail). If install fails (FUSE not supported, Windows, permission error), report the error and stop.",
+        permissionDecisionReason: "This command is not supported for memory operations. Use standard commands like cat, ls, grep, echo instead.",
       },
     }));
     return;
@@ -219,7 +181,7 @@ async function main(): Promise<void> {
         log(`direct grep: ${pattern}`);
         // Single query: fetch path + content together (avoids N+1 round-trips)
         const rows = await api.query(
-          `SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 5`
+          `SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlLike(pattern)}%' LIMIT 5`
         );
         if (rows.length > 0) {
           const allResults: string[] = [];
@@ -264,7 +226,7 @@ async function main(): Promise<void> {
       permissionDecision: "allow",
       updatedInput: {
         command: rewrittenCommand,
-        description: `[DeepLake virtual FS] ${shellCmd}`,
+        description: `[DeepLake] ${shellCmd}`,
       },
     },
   };

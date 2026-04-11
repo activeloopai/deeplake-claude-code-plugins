@@ -66,6 +66,13 @@ jobs:
                 fs.writeFileSync(ocf, JSON.stringify(od, null, 2) + '\n');
               }
             }
+            // Update codex package.json if exists
+            const cpf = 'codex/package.json';
+            if (fs.existsSync(cpf)) {
+              const cd = JSON.parse(fs.readFileSync(cpf, 'utf-8'));
+              cd.version = v;
+              fs.writeFileSync(cpf, JSON.stringify(cd, null, 2) + '\n');
+            }
           "
           git add -A
           git commit -m "chore: bump version to $VERSION"

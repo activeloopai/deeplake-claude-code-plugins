@@ -1,40 +1,45 @@
 #!/usr/bin/env node
 
-// dist/src/hooks/pre-tool-use.js
-import { existsSync as existsSync2 } from "node:fs";
-import { join as join3 } from "node:path";
-import { homedir as homedir3 } from "node:os";
+// dist/src/hooks/codex/session-start.js
 import { fileURLToPath } from "node:url";
-import { dirname } from "node:path";
+import { dirname, join as join4 } from "node:path";
+import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2, readFileSync as readFileSync3 } from "node:fs";
+import { execSync as execSync2 } from "node:child_process";
+import { homedir as homedir4 } from "node:os";
 
-// dist/src/utils/stdin.js
-function readStdin() {
-  return new Promise((resolve, reject) => {
-    let data = "";
-    process.stdin.setEncoding("utf-8");
-    process.stdin.on("data", (chunk) => data += chunk);
-    process.stdin.on("end", () => {
-      try {
-        resolve(JSON.parse(data));
-      } catch (err) {
-        reject(new Error(`Failed to parse hook input: ${err}`));
-      }
-    });
-    process.stdin.on("error", reject);
-  });
+// dist/src/commands/auth.js
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { execSync } from "node:child_process";
+var CONFIG_DIR = join(homedir(), ".deeplake");
+var CREDS_PATH = join(CONFIG_DIR, "credentials.json");
+function loadCredentials() {
+  if (!existsSync(CREDS_PATH))
+    return null;
+  try {
+    return JSON.parse(readFileSync(CREDS_PATH, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+function saveCredentials(creds) {
+  if (!existsSync(CONFIG_DIR))
+    mkdirSync(CONFIG_DIR, { recursive: true, mode: 448 });
+  writeFileSync(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
 }
 
 // dist/src/config.js
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir, userInfo } from "node:os";
+import { readFileSync as readFileSync2, existsSync as existsSync2 } from "node:fs";
+import { join as join2 } from "node:path";
+import { homedir as homedir2, userInfo } from "node:os";
 function loadConfig() {
-  const home = homedir();
-  const credPath = join(home, ".deeplake", "credentials.json");
+  const home = homedir2();
+  const credPath = join2(home, ".deeplake", "credentials.json");
   let creds = null;
-  if (existsSync(credPath)) {
+  if (existsSync2(credPath)) {
     try {
-      creds = JSON.parse(readFileSync(credPath, "utf-8"));
+      creds = JSON.parse(readFileSync2(credPath, "utf-8"));
     } catch {
       return null;
     }
@@ -52,7 +57,7 @@ function loadConfig() {
     apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.DEEPLAKE_TABLE ?? "memory",
     sessionsTableName: process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
-    memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory")
+    memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join2(home, ".deeplake", "memory")
   };
 }
 
@@ -61,10 +66,10 @@ import { randomUUID } from "node:crypto";
 
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
-import { join as join2 } from "node:path";
-import { homedir as homedir2 } from "node:os";
+import { join as join3 } from "node:path";
+import { homedir as homedir3 } from "node:os";
 var DEBUG = process.env.DEEPLAKE_DEBUG === "1";
-var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
+var LOG = join3(homedir3(), ".deeplake", "hook-debug.log");
 function log(tag, msg) {
   if (!DEBUG)
     return;
@@ -75,9 +80,6 @@ function log(tag, msg) {
 // dist/src/utils/sql.js
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
-}
-function sqlLike(value) {
-  return sqlStr(value).replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 
 // dist/src/deeplake-api.js
@@ -282,270 +284,182 @@ var DeeplakeApi = class {
   }
 };
 
-// dist/src/hooks/pre-tool-use.js
-var log3 = (msg) => log("pre", msg);
-var MEMORY_PATH = join3(homedir3(), ".deeplake", "memory");
-var TILDE_PATH = "~/.deeplake/memory";
-var HOME_VAR_PATH = "$HOME/.deeplake/memory";
+// dist/src/utils/stdin.js
+function readStdin() {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    process.stdin.setEncoding("utf-8");
+    process.stdin.on("data", (chunk) => data += chunk);
+    process.stdin.on("end", () => {
+      try {
+        resolve(JSON.parse(data));
+      } catch (err) {
+        reject(new Error(`Failed to parse hook input: ${err}`));
+      }
+    });
+    process.stdin.on("error", reject);
+  });
+}
+
+// dist/src/hooks/codex/session-start.js
+var log3 = (msg) => log("codex-session-start", msg);
 var __bundleDir = dirname(fileURLToPath(import.meta.url));
-var SHELL_BUNDLE = existsSync2(join3(__bundleDir, "shell", "deeplake-shell.js")) ? join3(__bundleDir, "shell", "deeplake-shell.js") : join3(__bundleDir, "..", "shell", "deeplake-shell.js");
-var SAFE_BUILTINS = /* @__PURE__ */ new Set([
-  // filesystem
-  "cat",
-  "ls",
-  "cp",
-  "mv",
-  "rm",
-  "rmdir",
-  "mkdir",
-  "touch",
-  "ln",
-  "chmod",
-  "stat",
-  "readlink",
-  "du",
-  "tree",
-  "file",
-  // text processing
-  "grep",
-  "egrep",
-  "fgrep",
-  "rg",
-  "sed",
-  "awk",
-  "cut",
-  "tr",
-  "sort",
-  "uniq",
-  "wc",
-  "head",
-  "tail",
-  "tac",
-  "rev",
-  "nl",
-  "fold",
-  "expand",
-  "unexpand",
-  "paste",
-  "join",
-  "comm",
-  "column",
-  "diff",
-  "strings",
-  "split",
-  // search
-  "find",
-  "xargs",
-  "which",
-  // data formats
-  "jq",
-  "yq",
-  "xan",
-  "base64",
-  "od",
-  // archives
-  "tar",
-  "gzip",
-  "gunzip",
-  "zcat",
-  // hashing
-  "md5sum",
-  "sha1sum",
-  "sha256sum",
-  // output/io
-  "echo",
-  "printf",
-  "tee",
-  "cat",
-  // path/env
-  "pwd",
-  "cd",
-  "basename",
-  "dirname",
-  "env",
-  "printenv",
-  "hostname",
-  "whoami",
-  // misc
-  "date",
-  "seq",
-  "expr",
-  "sleep",
-  "timeout",
-  "time",
-  "true",
-  "false",
-  "test",
-  "alias",
-  "unalias",
-  "history",
-  "help",
-  "clear",
-  // shell control flow
-  "for",
-  "while",
-  "do",
-  "done",
-  "if",
-  "then",
-  "else",
-  "fi",
-  "case",
-  "esac"
-]);
-function isSafe(cmd) {
-  if (/\$\(|`|<\(/.test(cmd))
-    return false;
-  const stripped = cmd.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
-  const stages = stripped.split(/\||;|&&|\|\||\n/);
-  for (const stage of stages) {
-    const firstToken = stage.trim().split(/\s+/)[0] ?? "";
-    if (firstToken && !SAFE_BUILTINS.has(firstToken))
-      return false;
+var AUTH_CMD = join4(__bundleDir, "commands", "auth-login.js");
+var context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
+
+Structure: index.md (start here) \u2192 summaries/*.md \u2192 sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
+Search: grep -r "keyword" ~/.deeplake/memory/
+Do NOT spawn subagents to read deeplake memory.`;
+var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
+var VERSION_CHECK_TIMEOUT = 3e3;
+function getInstalledVersion() {
+  try {
+    const pluginJson = join4(__bundleDir, "..", ".codex-plugin", "plugin.json");
+    const plugin = JSON.parse(readFileSync3(pluginJson, "utf-8"));
+    if (plugin.version)
+      return plugin.version;
+  } catch {
   }
-  return true;
-}
-function touchesMemory(p) {
-  return p.includes(MEMORY_PATH) || p.includes(TILDE_PATH) || p.includes(HOME_VAR_PATH);
-}
-function rewritePaths(cmd) {
-  return cmd.replace(new RegExp(MEMORY_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?", "g"), "/").replace(/~\/.deeplake\/memory\/?/g, "/").replace(/\$HOME\/.deeplake\/memory\/?/g, "/").replace(/"\$HOME\/.deeplake\/memory\/?"/g, '"/"');
-}
-function getShellCommand(toolName, toolInput) {
-  switch (toolName) {
-    case "Grep": {
-      const p = toolInput.path;
-      if (p && touchesMemory(p)) {
-        const pattern = toolInput.pattern ?? "";
-        const flags = ["-r"];
-        if (toolInput["-i"])
-          flags.push("-i");
-        if (toolInput["-n"])
-          flags.push("-n");
-        return `grep ${flags.join(" ")} '${pattern}' /`;
-      }
-      break;
-    }
-    case "Read": {
-      const fp = toolInput.file_path;
-      if (fp && touchesMemory(fp)) {
-        const virtualPath = rewritePaths(fp) || "/";
-        return `cat ${virtualPath}`;
-      }
-      break;
-    }
-    case "Bash": {
-      const cmd = toolInput.command;
-      if (!cmd || !touchesMemory(cmd))
-        break;
-      {
-        const rewritten = rewritePaths(cmd);
-        if (!isSafe(rewritten)) {
-          log3(`unsafe command blocked: ${rewritten}`);
-          return null;
-        }
-        return rewritten;
-      }
-      break;
-    }
-    case "Glob": {
-      const p = toolInput.path;
-      if (p && touchesMemory(p)) {
-        return `ls /`;
-      }
-      break;
-    }
+  try {
+    const pkgPath = join4(__bundleDir, "..", "package.json");
+    const pkg = JSON.parse(readFileSync3(pkgPath, "utf-8"));
+    return pkg.version ?? null;
+  } catch {
+    return null;
   }
-  return null;
+}
+async function getLatestVersion() {
+  try {
+    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(VERSION_CHECK_TIMEOUT) });
+    if (!res.ok)
+      return null;
+    const pkg = await res.json();
+    return pkg.version ?? null;
+  } catch {
+    return null;
+  }
+}
+function isNewer(latest, current) {
+  const parse = (v) => v.split(".").map(Number);
+  const [la, lb, lc] = parse(latest);
+  const [ca, cb, cc] = parse(current);
+  return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
+}
+var HOME = homedir4();
+var WIKI_LOG = join4(HOME, ".codex", "hooks", "deeplake-wiki.log");
+function wikiLog(msg) {
+  try {
+    mkdirSync2(join4(HOME, ".codex", "hooks"), { recursive: true });
+    appendFileSync2(WIKI_LOG, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] ${msg}
+`);
+  } catch {
+  }
+}
+async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, workspaceId) {
+  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
+  await api.query(`SELECT deeplake_sync_table('${table}')`);
+  const existing = await api.query(`SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`);
+  if (existing.length > 0) {
+    wikiLog(`SessionStart: summary exists for ${sessionId} (resumed)`);
+    return;
+  }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const projectName = cwd.split("/").pop() ?? "unknown";
+  const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
+  const content = [
+    `# Session ${sessionId}`,
+    `- **Source**: ${sessionSource}`,
+    `- **Started**: ${now}`,
+    `- **Project**: ${projectName}`,
+    `- **Status**: in-progress`,
+    ""
+  ].join("\n");
+  const filename = `${sessionId}.md`;
+  await api.query(`INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'codex', '${now}', '${now}')`);
+  wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
 }
 async function main() {
+  if (process.env.DEEPLAKE_WIKI_WORKER === "1")
+    return;
   const input = await readStdin();
-  log3(`hook fired: tool=${input.tool_name} input=${JSON.stringify(input.tool_input)}`);
-  const cmd = input.tool_input.command ?? "";
-  const shellCmd = getShellCommand(input.tool_name, input.tool_input);
-  if (!shellCmd && touchesMemory(cmd)) {
-    log3(`unsafe command blocked: ${cmd}`);
-    console.log(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: "This command is not supported for memory operations. Use standard commands like cat, ls, grep, echo instead."
+  let creds = loadCredentials();
+  if (!creds?.token) {
+    log3("no credentials found \u2014 run auth login to authenticate");
+  } else {
+    log3(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
+    if (creds.token && !creds.userName) {
+      try {
+        const { userInfo: userInfo2 } = await import("node:os");
+        creds.userName = userInfo2().username ?? "unknown";
+        saveCredentials(creds);
+        log3(`backfilled userName: ${creds.userName}`);
+      } catch {
       }
-    }));
-    return;
+    }
   }
-  if (!shellCmd)
-    return;
-  const config = loadConfig();
-  if (config && (input.tool_name === "Read" || input.tool_name === "Grep")) {
-    const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
-    const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
+  if (input.session_id && creds?.token) {
     try {
-      if (input.tool_name === "Read") {
-        const virtualPath = rewritePaths(input.tool_input.file_path ?? "");
-        log3(`direct read: ${virtualPath}`);
-        const rows = await api.query(`SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
-        if (rows.length > 0 && rows[0]["summary"]) {
-          console.log(JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "allow",
-              updatedInput: {
-                command: `echo ${JSON.stringify(rows[0]["summary"])}`,
-                description: `[DeepLake direct] cat ${virtualPath}`
-              }
-            }
-          }));
-          return;
-        }
-      } else if (input.tool_name === "Grep") {
-        const pattern = input.tool_input.pattern ?? "";
-        const ignoreCase = !!input.tool_input["-i"];
-        log3(`direct grep: ${pattern}`);
-        const rows = await api.query(`SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlLike(pattern)}%' LIMIT 5`);
-        if (rows.length > 0) {
-          const allResults = [];
-          const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
-          for (const row of rows) {
-            const p = row["path"];
-            const text = row["summary"];
-            if (!text)
-              continue;
-            const matches = text.split("\n").filter((line) => re.test(line)).slice(0, 5).map((line) => `${p}:${line.slice(0, 300)}`);
-            allResults.push(...matches);
-          }
-          const results = allResults.join("\n");
-          console.log(JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "allow",
-              updatedInput: {
-                command: `echo ${JSON.stringify(results || "(no matches)")}`,
-                description: `[DeepLake direct] grep ${pattern}`
-              }
-            }
-          }));
-          return;
-        }
+      const config = loadConfig();
+      if (config) {
+        const table = config.tableName;
+        const sessionsTable = config.sessionsTableName;
+        const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
+        await api.ensureTable();
+        await api.ensureSessionsTable(sessionsTable);
+        await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
+        log3("placeholder created");
       }
     } catch (e) {
-      log3(`direct query failed, falling back to shell: ${e.message}`);
+      log3(`placeholder failed: ${e.message}`);
+      wikiLog(`SessionStart: placeholder failed for ${input.session_id}: ${e.message}`);
     }
   }
-  log3(`intercepted \u2192 rewriting to shell: ${shellCmd}`);
-  const rewrittenCommand = `node "${SHELL_BUNDLE}" -c "${shellCmd.replace(/"/g, '\\"')}"`;
-  const output = {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "allow",
-      updatedInput: {
-        command: rewrittenCommand,
-        description: `[DeepLake] ${shellCmd}`
+  const autoupdate = creds?.autoupdate !== false;
+  let updateNotice = "";
+  try {
+    const current = getInstalledVersion();
+    if (current) {
+      const latest = await getLatestVersion();
+      if (latest && isNewer(latest, current)) {
+        if (autoupdate) {
+          log3(`autoupdate: updating ${current} \u2192 ${latest}`);
+          try {
+            const tag = `v${latest}`;
+            const findCmd = `PLUGIN_DIR=$(find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1); if [ -n "$PLUGIN_DIR" ]; then VERSION_DIR=$(ls -1d "$PLUGIN_DIR"/*/ 2>/dev/null | tail -1); TMPDIR=$(mktemp -d); git clone --depth 1 --branch ${tag} -q https://github.com/activeloopai/hivemind.git "$TMPDIR/hivemind" 2>/dev/null && cp -r "$TMPDIR/hivemind/codex/"* "$VERSION_DIR/" 2>/dev/null; rm -rf "$TMPDIR"; fi`;
+            execSync2(findCmd, { stdio: "ignore", timeout: 6e4 });
+            updateNotice = `
+
+Hivemind auto-updated: ${current} \u2192 ${latest}. Restart Codex to apply.`;
+            process.stderr.write(`Hivemind auto-updated: ${current} \u2192 ${latest}. Restart Codex to apply.
+`);
+            log3(`autoupdate succeeded: ${current} \u2192 ${latest} (tag: ${tag})`);
+          } catch (e) {
+            updateNotice = `
+
+Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed.`;
+            process.stderr.write(`Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed.
+`);
+            log3(`autoupdate failed: ${e.message}`);
+          }
+        } else {
+          updateNotice = `
+
+Hivemind update available: ${current} \u2192 ${latest}.`;
+          process.stderr.write(`Hivemind update available: ${current} \u2192 ${latest}.
+`);
+          log3(`update available (autoupdate off): ${current} \u2192 ${latest}`);
+        }
+      } else {
+        log3(`version up to date: ${current}`);
       }
     }
-  };
-  log3(`rewritten: ${rewrittenCommand}`);
-  console.log(JSON.stringify(output));
+  } catch (e) {
+    log3(`version check failed: ${e.message}`);
+  }
+  const additionalContext = creds?.token ? `${context}
+Logged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}` : `${context}
+Not logged in to Deeplake. Run: node "${AUTH_CMD}" login${updateNotice}`;
+  console.log(additionalContext);
 }
 main().catch((e) => {
   log3(`fatal: ${e.message}`);

@@ -1,12 +1,5 @@
 #!/usr/bin/env node
 
-// dist/src/hooks/pre-tool-use.js
-import { existsSync as existsSync2 } from "node:fs";
-import { join as join3 } from "node:path";
-import { homedir as homedir3 } from "node:os";
-import { fileURLToPath } from "node:url";
-import { dirname } from "node:path";
-
 // dist/src/utils/stdin.js
 function readStdin() {
   return new Promise((resolve, reject) => {
@@ -75,9 +68,6 @@ function log(tag, msg) {
 // dist/src/utils/sql.js
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
-}
-function sqlLike(value) {
-  return sqlStr(value).replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 
 // dist/src/deeplake-api.js
@@ -282,270 +272,76 @@ var DeeplakeApi = class {
   }
 };
 
-// dist/src/hooks/pre-tool-use.js
-var log3 = (msg) => log("pre", msg);
-var MEMORY_PATH = join3(homedir3(), ".deeplake", "memory");
-var TILDE_PATH = "~/.deeplake/memory";
-var HOME_VAR_PATH = "$HOME/.deeplake/memory";
-var __bundleDir = dirname(fileURLToPath(import.meta.url));
-var SHELL_BUNDLE = existsSync2(join3(__bundleDir, "shell", "deeplake-shell.js")) ? join3(__bundleDir, "shell", "deeplake-shell.js") : join3(__bundleDir, "..", "shell", "deeplake-shell.js");
-var SAFE_BUILTINS = /* @__PURE__ */ new Set([
-  // filesystem
-  "cat",
-  "ls",
-  "cp",
-  "mv",
-  "rm",
-  "rmdir",
-  "mkdir",
-  "touch",
-  "ln",
-  "chmod",
-  "stat",
-  "readlink",
-  "du",
-  "tree",
-  "file",
-  // text processing
-  "grep",
-  "egrep",
-  "fgrep",
-  "rg",
-  "sed",
-  "awk",
-  "cut",
-  "tr",
-  "sort",
-  "uniq",
-  "wc",
-  "head",
-  "tail",
-  "tac",
-  "rev",
-  "nl",
-  "fold",
-  "expand",
-  "unexpand",
-  "paste",
-  "join",
-  "comm",
-  "column",
-  "diff",
-  "strings",
-  "split",
-  // search
-  "find",
-  "xargs",
-  "which",
-  // data formats
-  "jq",
-  "yq",
-  "xan",
-  "base64",
-  "od",
-  // archives
-  "tar",
-  "gzip",
-  "gunzip",
-  "zcat",
-  // hashing
-  "md5sum",
-  "sha1sum",
-  "sha256sum",
-  // output/io
-  "echo",
-  "printf",
-  "tee",
-  "cat",
-  // path/env
-  "pwd",
-  "cd",
-  "basename",
-  "dirname",
-  "env",
-  "printenv",
-  "hostname",
-  "whoami",
-  // misc
-  "date",
-  "seq",
-  "expr",
-  "sleep",
-  "timeout",
-  "time",
-  "true",
-  "false",
-  "test",
-  "alias",
-  "unalias",
-  "history",
-  "help",
-  "clear",
-  // shell control flow
-  "for",
-  "while",
-  "do",
-  "done",
-  "if",
-  "then",
-  "else",
-  "fi",
-  "case",
-  "esac"
-]);
-function isSafe(cmd) {
-  if (/\$\(|`|<\(/.test(cmd))
-    return false;
-  const stripped = cmd.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
-  const stages = stripped.split(/\||;|&&|\|\||\n/);
-  for (const stage of stages) {
-    const firstToken = stage.trim().split(/\s+/)[0] ?? "";
-    if (firstToken && !SAFE_BUILTINS.has(firstToken))
-      return false;
-  }
-  return true;
-}
-function touchesMemory(p) {
-  return p.includes(MEMORY_PATH) || p.includes(TILDE_PATH) || p.includes(HOME_VAR_PATH);
-}
-function rewritePaths(cmd) {
-  return cmd.replace(new RegExp(MEMORY_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?", "g"), "/").replace(/~\/.deeplake\/memory\/?/g, "/").replace(/\$HOME\/.deeplake\/memory\/?/g, "/").replace(/"\$HOME\/.deeplake\/memory\/?"/g, '"/"');
-}
-function getShellCommand(toolName, toolInput) {
-  switch (toolName) {
-    case "Grep": {
-      const p = toolInput.path;
-      if (p && touchesMemory(p)) {
-        const pattern = toolInput.pattern ?? "";
-        const flags = ["-r"];
-        if (toolInput["-i"])
-          flags.push("-i");
-        if (toolInput["-n"])
-          flags.push("-n");
-        return `grep ${flags.join(" ")} '${pattern}' /`;
-      }
-      break;
-    }
-    case "Read": {
-      const fp = toolInput.file_path;
-      if (fp && touchesMemory(fp)) {
-        const virtualPath = rewritePaths(fp) || "/";
-        return `cat ${virtualPath}`;
-      }
-      break;
-    }
-    case "Bash": {
-      const cmd = toolInput.command;
-      if (!cmd || !touchesMemory(cmd))
-        break;
-      {
-        const rewritten = rewritePaths(cmd);
-        if (!isSafe(rewritten)) {
-          log3(`unsafe command blocked: ${rewritten}`);
-          return null;
-        }
-        return rewritten;
-      }
-      break;
-    }
-    case "Glob": {
-      const p = toolInput.path;
-      if (p && touchesMemory(p)) {
-        return `ls /`;
-      }
-      break;
-    }
-  }
-  return null;
+// dist/src/hooks/codex/capture.js
+var log3 = (msg) => log("codex-capture", msg);
+var CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
+function buildSessionPath(config, sessionId) {
+  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
 }
 async function main() {
+  if (!CAPTURE)
+    return;
   const input = await readStdin();
-  log3(`hook fired: tool=${input.tool_name} input=${JSON.stringify(input.tool_input)}`);
-  const cmd = input.tool_input.command ?? "";
-  const shellCmd = getShellCommand(input.tool_name, input.tool_input);
-  if (!shellCmd && touchesMemory(cmd)) {
-    log3(`unsafe command blocked: ${cmd}`);
-    console.log(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: "This command is not supported for memory operations. Use standard commands like cat, ls, grep, echo instead."
-      }
-    }));
-    return;
-  }
-  if (!shellCmd)
-    return;
   const config = loadConfig();
-  if (config && (input.tool_name === "Read" || input.tool_name === "Grep")) {
-    const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
-    const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
-    try {
-      if (input.tool_name === "Read") {
-        const virtualPath = rewritePaths(input.tool_input.file_path ?? "");
-        log3(`direct read: ${virtualPath}`);
-        const rows = await api.query(`SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
-        if (rows.length > 0 && rows[0]["summary"]) {
-          console.log(JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "allow",
-              updatedInput: {
-                command: `echo ${JSON.stringify(rows[0]["summary"])}`,
-                description: `[DeepLake direct] cat ${virtualPath}`
-              }
-            }
-          }));
-          return;
-        }
-      } else if (input.tool_name === "Grep") {
-        const pattern = input.tool_input.pattern ?? "";
-        const ignoreCase = !!input.tool_input["-i"];
-        log3(`direct grep: ${pattern}`);
-        const rows = await api.query(`SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlLike(pattern)}%' LIMIT 5`);
-        if (rows.length > 0) {
-          const allResults = [];
-          const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
-          for (const row of rows) {
-            const p = row["path"];
-            const text = row["summary"];
-            if (!text)
-              continue;
-            const matches = text.split("\n").filter((line) => re.test(line)).slice(0, 5).map((line) => `${p}:${line.slice(0, 300)}`);
-            allResults.push(...matches);
-          }
-          const results = allResults.join("\n");
-          console.log(JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "allow",
-              updatedInput: {
-                command: `echo ${JSON.stringify(results || "(no matches)")}`,
-                description: `[DeepLake direct] grep ${pattern}`
-              }
-            }
-          }));
-          return;
-        }
-      }
-    } catch (e) {
-      log3(`direct query failed, falling back to shell: ${e.message}`);
+  if (!config) {
+    log3("no config");
+    return;
+  }
+  const sessionsTable = config.sessionsTableName;
+  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
+  const ts = (/* @__PURE__ */ new Date()).toISOString();
+  const meta = {
+    session_id: input.session_id,
+    transcript_path: input.transcript_path,
+    cwd: input.cwd,
+    hook_event_name: input.hook_event_name,
+    model: input.model,
+    turn_id: input.turn_id,
+    timestamp: ts
+  };
+  let entry;
+  if (input.hook_event_name === "UserPromptSubmit" && input.prompt !== void 0) {
+    log3(`user session=${input.session_id}`);
+    entry = {
+      id: crypto.randomUUID(),
+      ...meta,
+      type: "user_message",
+      content: input.prompt
+    };
+  } else if (input.hook_event_name === "PostToolUse" && input.tool_name !== void 0) {
+    log3(`tool=${input.tool_name} session=${input.session_id}`);
+    entry = {
+      id: crypto.randomUUID(),
+      ...meta,
+      type: "tool_call",
+      tool_name: input.tool_name,
+      tool_use_id: input.tool_use_id,
+      tool_input: JSON.stringify(input.tool_input),
+      tool_response: JSON.stringify(input.tool_response)
+    };
+  } else {
+    log3(`unknown event: ${input.hook_event_name}, skipping`);
+    return;
+  }
+  const sessionPath = buildSessionPath(config, input.session_id);
+  const line = JSON.stringify(entry);
+  log3(`writing to ${sessionPath}`);
+  const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
+  const filename = sessionPath.split("/").pop() ?? "";
+  const jsonForSql = sqlStr(line);
+  const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'codex', '${ts}', '${ts}')`;
+  try {
+    await api.query(insertSql);
+  } catch (e) {
+    if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
+      log3("table missing, creating and retrying");
+      await api.ensureSessionsTable(sessionsTable);
+      await api.query(insertSql);
+    } else {
+      throw e;
     }
   }
-  log3(`intercepted \u2192 rewriting to shell: ${shellCmd}`);
-  const rewrittenCommand = `node "${SHELL_BUNDLE}" -c "${shellCmd.replace(/"/g, '\\"')}"`;
-  const output = {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "allow",
-      updatedInput: {
-        command: rewrittenCommand,
-        description: `[DeepLake] ${shellCmd}`
-      }
-    }
-  };
-  log3(`rewritten: ${rewrittenCommand}`);
-  console.log(JSON.stringify(output));
+  log3("capture ok");
 }
 main().catch((e) => {
   log3(`fatal: ${e.message}`);
