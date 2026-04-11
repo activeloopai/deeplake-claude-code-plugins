@@ -453,7 +453,7 @@ async function main() {
         const dir = (lsMatch[1] ?? "/").replace(/\/+$/, "") || "/";
         const isLong = /\s-[a-zA-Z]*l/.test(rewritten);
         log3(`direct ls: ${dir}`);
-        const rows = await api.query(`SELECT path, size_bytes FROM "${table}" WHERE path LIKE '${sqlStr(dir === "/" ? "" : dir)}/%' ORDER BY path`);
+        const rows = await api.query(`SELECT path, size_bytes FROM "${table}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`);
         const entries = /* @__PURE__ */ new Map();
         const prefix = dir === "/" ? "/" : dir + "/";
         for (const row of rows) {

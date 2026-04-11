@@ -424,14 +424,15 @@ async function main() {
         if (autoupdate) {
           log3(`autoupdate: updating ${current} \u2192 ${latest}`);
           try {
-            const findCmd = `PLUGIN_DIR=$(find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1); if [ -n "$PLUGIN_DIR" ]; then VERSION_DIR=$(ls -1d "$PLUGIN_DIR"/*/ 2>/dev/null | tail -1); TMPDIR=$(mktemp -d); git clone --depth 1 -q https://github.com/activeloopai/hivemind.git "$TMPDIR/hivemind" 2>/dev/null && cp -r "$TMPDIR/hivemind/codex/"* "$VERSION_DIR/" 2>/dev/null; rm -rf "$TMPDIR"; fi`;
+            const tag = `v${latest}`;
+            const findCmd = `PLUGIN_DIR=$(find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1); if [ -n "$PLUGIN_DIR" ]; then VERSION_DIR=$(ls -1d "$PLUGIN_DIR"/*/ 2>/dev/null | tail -1); TMPDIR=$(mktemp -d); git clone --depth 1 --branch ${tag} -q https://github.com/activeloopai/hivemind.git "$TMPDIR/hivemind" 2>/dev/null && cp -r "$TMPDIR/hivemind/codex/"* "$VERSION_DIR/" 2>/dev/null; rm -rf "$TMPDIR"; fi`;
             execSync2(findCmd, { stdio: "ignore", timeout: 6e4 });
             updateNotice = `
 
 Hivemind auto-updated: ${current} \u2192 ${latest}. Restart Codex to apply.`;
             process.stderr.write(`Hivemind auto-updated: ${current} \u2192 ${latest}. Restart Codex to apply.
 `);
-            log3(`autoupdate succeeded: ${current} \u2192 ${latest}`);
+            log3(`autoupdate succeeded: ${current} \u2192 ${latest} (tag: ${tag})`);
           } catch (e) {
             updateNotice = `
 

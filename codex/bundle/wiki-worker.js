@@ -55,7 +55,7 @@ async function main() {
   try {
     wlog("fetching session events");
     await query(`SELECT deeplake_sync_table('${cfg.sessionsTable}')`);
-    const rows = await query(`SELECT message, creation_date FROM "${cfg.sessionsTable}" WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`);
+    const rows = await query(`SELECT message, creation_date FROM "${cfg.sessionsTable}" WHERE path LIKE E'${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`);
     if (rows.length === 0) {
       wlog("no session events found \u2014 exiting");
       return;
