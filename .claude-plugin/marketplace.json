@@ -15,6 +15,13 @@
       "version": "0.6.8",
       "source": "./claude-code",
       "homepage": "https://github.com/activeloopai/hivemind"
+    },
+    {
+      "name": "hivemind-codex",
+      "description": "Persistent shared memory powered by Deeplake for OpenAI Codex CLI — captures session activity and provides memory search",
+      "version": "0.6.8",
+      "source": "./codex",
+      "homepage": "https://github.com/activeloopai/hivemind"
     }
   ]
 }
