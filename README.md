@@ -41,55 +41,21 @@
 
 ## Quick start (Claude Code)
 
-Add the marketplace:
-
 ```
-/plugin marketplace add activeloopai/hivemind
+/plugin marketplace add activeloopai/hivemind && /plugin install hivemind && /hivemind:login
 ```
 
-Install the plugin:
-
-```
-/plugin install hivemind
-```
-
-Reload plugins:
-
-```
-/reload-plugins
-```
-
-Log in:
-
-```
-/hivemind:login
-```
-
-That's it. Your agents now share a brain.
-
-### Updating
-
-The plugin auto-updates on each session start. To manually update:
-
-```
-/hivemind:update
-```
+Auto-updates on each session start. Manual update: `/hivemind:update`
 
 ## Quick start (OpenClaw)
-
-Install from ClawHub (Telegram, TUI, WhatsApp):
 
 ```
 openclaw plugins install hivemind
 ```
 
-Log in by typing `/hivemind_login` in chat. Click the auth link, sign in, and send another message to activate.
+Then type `/hivemind_login` in chat, click the auth link, sign in, and send another message to activate.
 
-The plugin automatically:
-- **Recalls** relevant memories before each agent turn
-- **Captures** every conversation to the shared sessions table
-
-Data is stored in the same `sessions` table as Claude Code and Codex — all agents share one brain.
+Auto-recall and auto-capture are enabled by default. Data is stored in the same `sessions` table as Claude Code and Codex — all agents share one brain.
 
 ## Quick start (Codex)
 
