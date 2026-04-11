@@ -43,8 +43,8 @@ function loadConfig() {
     userName: creds?.userName || userInfo().username || "unknown",
     workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
     apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: process.env.DEEPLAKE_TABLE ?? "memory_test",
-    sessionsTableName: process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions_test",
+    tableName: process.env.DEEPLAKE_TABLE ?? "memory",
+    sessionsTableName: process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
     memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory")
   };
 }

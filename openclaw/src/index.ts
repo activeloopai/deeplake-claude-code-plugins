@@ -1,11 +1,15 @@
 function definePluginEntry<T>(entry: T): T { return entry; }
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { DeepLakeAPI, type SearchResult } from "./memory.js";
-import { loadCredentials, saveCredentials, hasCredentials, addToLoadPaths } from "./credentials.js";
+
+// Shared core imports
+import { loadConfig } from "../../src/config.js";
+import { loadCredentials, saveCredentials, requestDeviceCode, pollForToken, listOrgs } from "../../src/commands/auth.js";
+import { DeeplakeApi } from "../../src/deeplake-api.js";
+import { sqlStr } from "../../src/utils/sql.js";
 
 interface PluginConfig {
-  mountPath?: string;
   autoCapture?: boolean;
   autoRecall?: boolean;
 }
@@ -33,110 +37,115 @@ interface PluginAPI {
   }): void;
 }
 
-const API_URL = "https://api.deeplake.ai";
+const DEFAULT_API_URL = "https://api.deeplake.ai";
 
 // --- Auth state ---
 let authPending = false;
 let authUrl: string | null = null;
+let justAuthenticated = false;
 
 async function requestAuth(): Promise<string> {
   if (authPending) return authUrl ?? "";
   authPending = true;
-  const resp = await fetch(`${API_URL}/auth/device/code`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-  });
-  if (!resp.ok) {
-    authPending = false;
-    throw new Error("DeepLake auth service unavailable");
-  }
-  const data = await resp.json() as {
-    verification_uri_complete: string;
-    device_code: string;
-    interval: number;
-    expires_in: number;
-  };
 
-  authUrl = data.verification_uri_complete;
+  try {
+    const code = await requestDeviceCode();
+    authUrl = code.verification_uri_complete;
 
-  // Poll in background
-  const pollMs = Math.max(data.interval || 5, 5) * 1000;
-  const deadline = Date.now() + data.expires_in * 1000;
-  (async () => {
-    while (Date.now() < deadline && authPending) {
-      await new Promise(r => setTimeout(r, pollMs));
-      try {
-        const tokenResp = await fetch(`${API_URL}/auth/device/token`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ device_code: data.device_code }),
-        });
-        if (tokenResp.ok) {
-          const tokenData = await tokenResp.json() as { access_token: string };
-          const token = tokenData.access_token;
-
-          const orgsResp = await fetch(`${API_URL}/organizations`, {
-            headers: { Authorization: `Bearer ${token}`, "X-Deeplake-Client": "cli" },
-          });
-          let orgId = "";
-          if (orgsResp.ok) {
-            const orgs = await orgsResp.json() as Array<{ id: string; name: string }>;
+    // Poll in background
+    const pollMs = Math.max(code.interval || 5, 5) * 1000;
+    const deadline = Date.now() + code.expires_in * 1000;
+    (async () => {
+      while (Date.now() < deadline && authPending) {
+        await new Promise(r => setTimeout(r, pollMs));
+        try {
+          const result = await pollForToken(code.device_code);
+          if (result) {
+            const token = result.access_token;
+            const orgs = await listOrgs(token);
             const personal = orgs.find(o => o.name.endsWith("'s Organization"));
-            orgId = personal?.id ?? orgs[0]?.id ?? "";
+            const org = personal ?? orgs[0];
+            const orgId = org?.id ?? "";
+            const orgName = org?.name ?? orgId;
+
+            // Create long-lived API token
+            let savedToken = token;
+            if (orgId) {
+              try {
+                const resp = await fetch(`${DEFAULT_API_URL}/users/me/tokens`, {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json",
+                    "X-Activeloop-Org-Id": orgId,
+                  },
+                  body: JSON.stringify({ name: `hivemind-${new Date().toISOString().split("T")[0]}`, duration: 365 * 24 * 60 * 60, organization_id: orgId }),
+                });
+                if (resp.ok) {
+                  const data = await resp.json() as { token: string | { token: string } };
+                  savedToken = typeof data.token === "string" ? data.token : data.token.token;
+                }
+              } catch {}
+            }
+
+            saveCredentials({ token: savedToken, orgId, orgName, apiUrl: DEFAULT_API_URL, savedAt: new Date().toISOString() });
+            authPending = false;
+            authUrl = null;
+            justAuthenticated = true;
+            return;
           }
+        } catch {}
+      }
+      authPending = false;
+      authUrl = null;
+    })();
 
-          let savedToken = token;
-          if (orgId) {
-            try {
-              const apiTokenResp = await fetch(`${API_URL}/users/me/tokens`, {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                  "Content-Type": "application/json",
-                  "X-Activeloop-Org-Id": orgId,
-                },
-                body: JSON.stringify({ name: `deeplake-plugin-${new Date().toISOString().split("T")[0]}`, duration: 365 * 24 * 60 * 60, organization_id: orgId }),
-              });
-              if (apiTokenResp.ok) {
-                const respData = await apiTokenResp.json() as { token: string | { token: string } };
-                savedToken = typeof respData.token === "string" ? respData.token : respData.token.token;
-              }
-            } catch {}
-          }
-
-          saveCredentials({ token: savedToken, orgId, apiUrl: API_URL, savedAt: new Date().toISOString() });
-
-          authPending = false;
-          authUrl = null;
-          justAuthenticated = true;
-          return;
-        }
-      } catch {}
-    }
+    return code.verification_uri_complete;
+  } catch (err) {
     authPending = false;
-    authUrl = null;
-  })();
+    throw err;
+  }
+}
 
-  return data.verification_uri_complete;
+// --- OpenClaw-specific: ensure plugin is in load.paths for hook wiring ---
+function addToLoadPaths(): void {
+  const ocConfigPath = join(homedir(), ".openclaw", "openclaw.json");
+  if (!existsSync(ocConfigPath)) return;
+  try {
+    const ocConfig = JSON.parse(readFileSync(ocConfigPath, "utf-8"));
+    const installPath = ocConfig?.plugins?.installs?.["hivemind"]?.installPath;
+    if (!installPath) return;
+    const loadPaths: string[] = ocConfig?.plugins?.load?.paths ?? [];
+    if (loadPaths.includes(installPath)) return;
+    if (!ocConfig.plugins.load) ocConfig.plugins.load = {};
+    ocConfig.plugins.load.paths = [...loadPaths, installPath];
+    writeFileSync(ocConfigPath, JSON.stringify(ocConfig, null, 2));
+  } catch {}
 }
 
 // --- API instance ---
-let api: DeepLakeAPI | null = null;
-let justAuthenticated = false;
+let api: DeeplakeApi | null = null;
+let sessionsTable = "sessions";
 const capturedCounts = new Map<string, number>();
 const fallbackSessionId = crypto.randomUUID();
 
-async function getApi(): Promise<DeepLakeAPI | null> {
+/** Build session path matching CC convention: /sessions/<user>/<user>_<org>_<workspace>_<sessionId>.jsonl */
+function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
+  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
+}
+
+async function getApi(): Promise<DeeplakeApi | null> {
   if (api) return api;
 
-  const creds = loadCredentials();
-  if (!creds) {
+  const config = loadConfig();
+  if (!config) {
     if (!authPending) await requestAuth();
     return null;
   }
 
-  api = new DeepLakeAPI(creds.token, creds.orgId, creds.apiUrl || API_URL);
-  await api.ensureTable();
+  sessionsTable = config.sessionsTableName;
+  api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+  await api.ensureSessionsTable(sessionsTable);
   return api;
 }
 
@@ -148,8 +157,6 @@ export default definePluginEntry({
 
   register(pluginApi: PluginAPI) {
     try {
-    // Workaround: OpenClaw extensions/ plugins don't wire hooks to the global runner.
-    // Adding ourselves to plugins.load.paths ensures hooks fire after next restart.
     addToLoadPaths();
 
     // Login command — works immediately after install, no hook dependency
@@ -158,9 +165,9 @@ export default definePluginEntry({
         name: "hivemind_login",
         description: "Log in to Hivemind and activate shared memory",
         handler: async () => {
-          if (hasCredentials()) {
-            const creds = loadCredentials();
-            return { text: `✅ Already logged in. Org: ${creds?.orgId ?? "unknown"}. To switch org, delete ~/.deeplake/credentials.json and run /hivemind_login again.` };
+          const creds = loadCredentials();
+          if (creds?.token) {
+            return { text: `✅ Already logged in. Org: ${creds.orgName ?? creds.orgId}` };
           }
           const url = await requestAuth();
           return { text: `🔐 Sign in to activate Hivemind memory:\n\n${url}\n\nAfter signing in, send another message.` };
@@ -184,7 +191,7 @@ export default definePluginEntry({
 
           if (!dl && authUrl) {
             return {
-              prependContext: `\n\nIMPORTANT: The user needs to authenticate with DeepLake to activate shared memory. Include this clickable link in your reply: ${authUrl}\nTell them to click it and sign in, then send another message.\n`,
+              prependContext: `\n\nIMPORTANT: The user needs to authenticate with Hivemind. Include this link in your reply: ${authUrl}\nTell them to click it and sign in, then send another message.\n`,
             };
           }
           if (!dl) return;
@@ -192,8 +199,8 @@ export default definePluginEntry({
           if (justAuthenticated) {
             justAuthenticated = false;
             const creds = loadCredentials();
-            const orgId = creds?.orgId ?? "unknown";
-            return { prependContext: `\n\n🐝 Welcome to Hivemind!\n\nCurrent org: ${orgId}\n\nYour agents now share memory across sessions, teammates, and machines.\n\nGet started:\n1. Verify sync: spin up multiple sessions and confirm agents share context\n2. Invite a teammate: ask the agent to add them over email\n3. Switch orgs: ask the agent to list or switch your organizations\n\nOne brain for every agent on your team.\n` };
+            const orgName = creds?.orgName ?? creds?.orgId ?? "unknown";
+            return { prependContext: `\n\n🐝 Welcome to Hivemind!\n\nCurrent org: ${orgName}\n\nYour agents now share memory across sessions, teammates, and machines.\n\nGet started:\n1. Verify sync: spin up multiple sessions and confirm agents share context\n2. Invite a teammate: ask the agent to add them over email\n3. Switch orgs: ask the agent to list or switch your organizations\n\nOne brain for every agent on your team.\n` };
           }
 
           const stopWords = new Set(["the","and","for","are","but","not","you","all","can","had","her","was","one","our","out","has","have","what","does","like","with","this","that","from","they","been","will","more","when","who","how","its","into","some","than","them","these","then","your","just","about","would","could","should","where","which","there","their","being","each","other"]);
@@ -204,21 +211,18 @@ export default definePluginEntry({
 
           if (!words.length) return;
 
-          const allResults: SearchResult[] = [];
-          const seen = new Set<string>();
-          for (const word of words.slice(0, 3)) {
-            for (const r of await dl.search(word, 3)) {
-              if (!seen.has(r.snippet)) {
-                seen.add(r.snippet);
-                allResults.push(r);
-              }
-            }
-          }
-          const results = allResults.slice(0, 5);
+          // Search sessions table — cast JSONB message to text for keyword search
+          const results = await dl.query(
+            `SELECT path, message FROM "${sessionsTable}" WHERE message::text ILIKE '%${sqlStr(words[0])}%' ORDER BY creation_date DESC LIMIT 5`
+          );
+
           if (!results.length) return;
 
           const recalled = results
-            .map(r => `[${r.path}] ${r.snippet.slice(0, 300)}`)
+            .map(r => {
+              const msg = typeof r.message === "string" ? r.message : JSON.stringify(r.message);
+              return `[${r.path}] ${msg.slice(0, 300)}`;
+            })
             .join("\n\n");
 
           logger.info?.(`Auto-recalled ${results.length} memories`);
@@ -231,20 +235,27 @@ export default definePluginEntry({
       });
     }
 
-    // Auto-capture: store new messages via API
+    // Auto-capture: store new messages in sessions table (same format as CC capture.ts)
     if (config.autoCapture !== false) {
       hook("agent_end", async (event) => {
-        const ev = event as { success?: boolean; session_id?: string; messages?: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }> };
+        const ev = event as { success?: boolean; session_id?: string; channel?: string; messages?: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }> };
         if (!ev.success || !ev.messages?.length) return;
         try {
           const dl = await getApi();
           if (!dl) return;
+
+          const cfg = loadConfig();
+          if (!cfg) return;
 
           const sid = ev.session_id || fallbackSessionId;
           const lastCount = capturedCounts.get(sid) ?? 0;
           const newMessages = ev.messages.slice(lastCount);
           capturedCounts.set(sid, ev.messages.length);
           if (!newMessages.length) return;
+
+          const sessionPath = buildSessionPath(cfg, sid);
+          const filename = sessionPath.split("/").pop() ?? "";
+          const projectName = ev.channel || "openclaw";
 
           for (const msg of newMessages) {
             if (msg.role !== "user" && msg.role !== "assistant") continue;
@@ -258,7 +269,34 @@ export default definePluginEntry({
                 .join("\n");
             }
             if (!text.trim()) continue;
-            await dl.write(sid, msg.role, text);
+
+            const ts = new Date().toISOString();
+            const entry = {
+              id: crypto.randomUUID(),
+              type: msg.role === "user" ? "user_message" : "assistant_message",
+              session_id: sid,
+              content: text,
+              timestamp: ts,
+            };
+            const line = JSON.stringify(entry);
+            // For JSONB: only escape single quotes, keep JSON structure intact
+            const jsonForSql = line.replace(/'/g, "''");
+
+            const insertSql =
+              `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+              `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(cfg.userName)}', ` +
+              `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(msg.role)}', 'openclaw', '${ts}', '${ts}')`;
+
+            try {
+              await dl.query(insertSql);
+            } catch (e: any) {
+              if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
+                await dl.ensureSessionsTable(sessionsTable);
+                await dl.query(insertSql);
+              } else {
+                throw e;
+              }
+            }
           }
 
           logger.info?.(`Auto-captured ${newMessages.length} messages`);
@@ -269,15 +307,16 @@ export default definePluginEntry({
     }
 
     // Pre-fetch auth URL during registration
-    if (!hasCredentials() && !authPending) {
+    const creds = loadCredentials();
+    if (!creds?.token && !authPending) {
       requestAuth().catch(err => {
         logger.error(`Pre-auth failed: ${err instanceof Error ? err.message : String(err)}`);
       });
     }
 
-    logger.info?.("DeepLake Memory plugin registered");
+    logger.info?.("Hivemind plugin registered");
     } catch (err) {
-      pluginApi.logger?.error?.(`DeepLake Memory register failed: ${err instanceof Error ? err.message : String(err)}`);
+      pluginApi.logger?.error?.(`Hivemind register failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   },
 });
