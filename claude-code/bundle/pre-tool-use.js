@@ -397,7 +397,7 @@ function isSafe(cmd) {
   if (/\$\(|`|<\(/.test(cmd))
     return false;
   const stripped = cmd.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
-  const stages = stripped.split(/\||;|&&|\|\|/);
+  const stages = stripped.split(/\||;|&&|\|\||\n/);
   for (const stage of stages) {
     const firstToken = stage.trim().split(/\s+/)[0] ?? "";
     if (firstToken && !SAFE_BUILTINS.has(firstToken))
