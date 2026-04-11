@@ -176,18 +176,18 @@ async function main(): Promise<void> {
         if (autoupdate) {
           log(`autoupdate: updating ${current} → ${latest}`);
           try {
-            // Find the plugin cache directory and update from GitHub
+            const tag = `v${latest}`;
             const findCmd = `PLUGIN_DIR=$(find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1); ` +
               `if [ -n "$PLUGIN_DIR" ]; then ` +
               `VERSION_DIR=$(ls -1d "$PLUGIN_DIR"/*/ 2>/dev/null | tail -1); ` +
               `TMPDIR=$(mktemp -d); ` +
-              `git clone --depth 1 -q https://github.com/activeloopai/hivemind.git "$TMPDIR/hivemind" 2>/dev/null && ` +
+              `git clone --depth 1 --branch ${tag} -q https://github.com/activeloopai/hivemind.git "$TMPDIR/hivemind" 2>/dev/null && ` +
               `cp -r "$TMPDIR/hivemind/codex/"* "$VERSION_DIR/" 2>/dev/null; ` +
               `rm -rf "$TMPDIR"; fi`;
             execSync(findCmd, { stdio: "ignore", timeout: 60_000 });
             updateNotice = `\n\nHivemind auto-updated: ${current} → ${latest}. Restart Codex to apply.`;
             process.stderr.write(`Hivemind auto-updated: ${current} → ${latest}. Restart Codex to apply.\n`);
-            log(`autoupdate succeeded: ${current} → ${latest}`);
+            log(`autoupdate succeeded: ${current} → ${latest} (tag: ${tag})`);
           } catch (e: any) {
             updateNotice = `\n\nHivemind update available: ${current} → ${latest}. Auto-update failed.`;
             process.stderr.write(`Hivemind update available: ${current} → ${latest}. Auto-update failed.\n`);

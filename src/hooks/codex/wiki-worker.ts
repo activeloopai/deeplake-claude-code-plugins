@@ -86,7 +86,7 @@ async function main(): Promise<void> {
     await query(`SELECT deeplake_sync_table('${cfg.sessionsTable}')`);
     const rows = await query(
       `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
-      `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
+      `WHERE path LIKE E'${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
     );
 
     if (rows.length === 0) {

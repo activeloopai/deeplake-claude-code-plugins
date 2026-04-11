@@ -161,7 +161,7 @@ async function main(): Promise<void> {
         const isLong = /\s-[a-zA-Z]*l/.test(rewritten);
         log(`direct ls: ${dir}`);
         const rows = await api.query(
-          `SELECT path, size_bytes FROM "${table}" WHERE path LIKE '${sqlStr(dir === "/" ? "" : dir)}/%' ORDER BY path`
+          `SELECT path, size_bytes FROM "${table}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`
         );
         // Build directory listing from paths
         const entries = new Map<string, { isDir: boolean; size: number }>();
