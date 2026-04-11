@@ -1,8 +1,6 @@
 /**
  * Deeplake authentication — Device Authorization Flow (RFC 8628)
  * and org/workspace management.
- *
- * Ported from deeplake-cli/src/deeplake-auth.ts
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
