@@ -77,6 +77,9 @@ function log(tag, msg) {
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
+function sqlLike(value) {
+  return sqlStr(value).replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
@@ -381,6 +384,8 @@ var SAFE_BUILTINS = /* @__PURE__ */ new Set([
   "esac"
 ]);
 function isSafe(cmd) {
+  if (/\$\(|`|<\(/.test(cmd))
+    return false;
   const stripped = cmd.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
   const stages = stripped.split(/\||;|&&|\|\|/);
   for (const stage of stages) {
@@ -489,7 +494,7 @@ async function main() {
         const pattern = grepMatch[1] ?? grepMatch[2] ?? grepMatch[3];
         const ignoreCase = /\s-[a-zA-Z]*i/.test(rewritten);
         log3(`direct grep: ${pattern}`);
-        const rows = await api.query(`SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 5`);
+        const rows = await api.query(`SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlLike(pattern)}%' LIMIT 5`);
         if (rows.length > 0) {
           const allResults = [];
           const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
