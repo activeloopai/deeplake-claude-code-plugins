@@ -175,7 +175,7 @@ async function main(): Promise<void> {
       const sessionPath = buildSessionPath(config, sessionId);
       const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
       const filename = sessionPath.split("/").pop() ?? "";
-      const jsonForSql = line.replace(/'/g, "''");
+      const jsonForSql = sqlStr(line);
 
       const insertSql =
         `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
