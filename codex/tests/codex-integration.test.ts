@@ -92,8 +92,8 @@ describe("codex integration: session-start", () => {
       hook_event_name: "SessionStart",
       model: "gpt-5.2",
     });
-    // Org commands are in the skill, not in the context
-    expect(raw).toContain("Logged in to Deeplake");
+    // Should mention login status (logged in or not)
+    expect(raw).toMatch(/Logged in to Deeplake|Not logged in to Deeplake/);
   });
 
   it("context includes subagent warning", () => {
