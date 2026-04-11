@@ -16,7 +16,7 @@ import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { sqlStr } from "../utils/sql.js";
 import { readStdin } from "../utils/stdin.js";
-import { log as _log } from "../utils/debug.js";
+import { log as _log, utcTimestamp } from "../utils/debug.js";
 const log = (msg: string) => _log("session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -88,7 +88,7 @@ const WIKI_LOG = join(HOME, ".claude", "hooks", "deeplake-wiki.log");
 function wikiLog(msg: string): void {
   try {
     mkdirSync(join(HOME, ".claude", "hooks"), { recursive: true });
-    appendFileSync(WIKI_LOG, `[${new Date().toISOString().replace("T", " ").slice(0, 19)}] ${msg}\n`);
+    appendFileSync(WIKI_LOG, `[${utcTimestamp()}] ${msg}\n`);
   } catch { /* ignore */ }
 }
 

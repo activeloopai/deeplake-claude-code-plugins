@@ -15,7 +15,7 @@ import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
-import { log as _log } from "../utils/debug.js";
+import { log as _log, utcTimestamp } from "../utils/debug.js";
 
 const log = (msg: string) => _log("session-end", msg);
 
@@ -32,7 +32,7 @@ interface StopInput {
 function wikiLog(msg: string): void {
   try {
     mkdirSync(join(HOME, ".claude", "hooks"), { recursive: true });
-    appendFileSync(WIKI_LOG, `[${new Date().toISOString().replace("T", " ").slice(0, 19)}] ${msg}\n`);
+    appendFileSync(WIKI_LOG, `[${utcTimestamp()}] ${msg}\n`);
   } catch { /* ignore */ }
 }
 

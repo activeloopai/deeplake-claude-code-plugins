@@ -42,19 +42,31 @@ jobs:
           node -e "
             const fs = require('fs');
             const v = '$VERSION';
-            // Update plugin.json
-            const pf = '.claude-plugin/plugin.json';
-            const pd = JSON.parse(fs.readFileSync(pf, 'utf-8'));
-            pd.version = v;
-            fs.writeFileSync(pf, JSON.stringify(pd, null, 2) + '\n');
+            // Update ALL plugin.json files (root + monorepo subdirs)
+            for (const pf of ['.claude-plugin/plugin.json', 'claude-code/.claude-plugin/plugin.json']) {
+              if (fs.existsSync(pf)) {
+                const pd = JSON.parse(fs.readFileSync(pf, 'utf-8'));
+                pd.version = v;
+                fs.writeFileSync(pf, JSON.stringify(pd, null, 2) + '\n');
+              }
+            }
             // Update marketplace.json
             const mf = '.claude-plugin/marketplace.json';
-            const md = JSON.parse(fs.readFileSync(mf, 'utf-8'));
-            if (md.metadata) md.metadata.version = v;
-            if (md.plugins) md.plugins.forEach(p => p.version = v);
-            fs.writeFileSync(mf, JSON.stringify(md, null, 2) + '\n');
+            if (fs.existsSync(mf)) {
+              const md = JSON.parse(fs.readFileSync(mf, 'utf-8'));
+              if (md.metadata) md.metadata.version = v;
+              if (md.plugins) md.plugins.forEach(p => p.version = v);
+              fs.writeFileSync(mf, JSON.stringify(md, null, 2) + '\n');
+            }
+            // Update openclaw plugin if exists
+            const ocf = 'openclaw/openclaw.plugin.json';
+            if (fs.existsSync(ocf)) {
+              const od = JSON.parse(fs.readFileSync(ocf, 'utf-8'));
+              od.version = v;
+              fs.writeFileSync(ocf, JSON.stringify(od, null, 2) + '\n');
+            }
           "
-          git add package.json package-lock.json .claude-plugin/plugin.json .claude-plugin/marketplace.json
+          git add -A
           git commit -m "chore: bump version to $VERSION"
           git push
 
