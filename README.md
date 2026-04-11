@@ -87,7 +87,13 @@ Send a message. The plugin sends you an auth link. Click, sign in, done.
 
 ## Quick start (Codex)
 
-Clone and install:
+Tell Codex to fetch and follow the install instructions:
+
+```
+Fetch and follow instructions from https://raw.githubusercontent.com/activeloopai/hivemind/main/codex/INSTALL.md
+```
+
+Or install manually:
 
 ```bash
 git clone https://github.com/activeloopai/hivemind.git ~/.codex/hivemind
