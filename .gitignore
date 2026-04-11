@@ -8,3 +8,4 @@ tmp/
 coverage/
 bench/
 .claude/
+CLAUDE.md
