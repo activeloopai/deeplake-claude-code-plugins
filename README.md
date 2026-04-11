@@ -37,7 +37,7 @@
 |-----------------|----------------|------------------------------------------------------------|
 | **Claude Code** | ✅ Stable      | See [Quick start](#quick-start-claude-code)                |
 | **OpenClaw**    | 🔧 Beta        | See [Quick start](#quick-start-openclaw)                   |
-| **Codex**       | 🔜 Coming soon | —                                                          |
+| **Codex**       | 🔧 Beta        | See [Quick start](#quick-start-codex)                      |
 
 ## Quick start (Claude Code)
 
@@ -84,6 +84,38 @@ openclaw plugins install hivemind
 ```
 
 Send a message. The plugin sends you an auth link. Click, sign in, done.
+
+## Quick start (Codex)
+
+Clone and install:
+
+```bash
+git clone https://github.com/activeloopai/hivemind.git ~/.codex/hivemind
+~/.codex/hivemind/codex/install.sh
+```
+
+Restart Codex (quit and relaunch the CLI) to activate.
+
+Log in when prompted, or run manually:
+
+```bash
+node ~/.codex/hivemind/codex/bundle/commands/auth-login.js login
+```
+
+### Updating
+
+```bash
+cd ~/.codex/hivemind && git pull
+```
+
+Hooks and skills update instantly — restart Codex to apply.
+
+### Uninstalling
+
+```bash
+rm -f ~/.codex/hooks.json ~/.agents/skills/hivemind-memory
+rm -rf ~/.codex/hivemind
+```
 
 ## How it works
 
@@ -194,7 +226,7 @@ hivemind/
 ├── src/                    ← shared core (API client, auth, config, SQL utils)
 ├── claude-code/            ← Claude Code plugin (hooks, virtual FS, shell)
 ├── openclaw/               ← OpenClaw plugin (auto-recall, auto-capture)
-└── codex/                  ← coming soon
+└── codex/                  ← Codex CLI plugin (hooks, block+inject interception)
 ```
 
 ## Security
@@ -211,7 +243,7 @@ hivemind/
 git clone https://github.com/activeloopai/hivemind.git
 cd hivemind
 npm install
-npm run build     # tsc + esbuild → claude-code/bundle/ + openclaw/dist/
+npm run build     # tsc + esbuild → claude-code/bundle/ + codex/bundle/ + openclaw/dist/
 npm test          # vitest
 ```
 
