@@ -265,7 +265,7 @@ describe("codex integration: pre-tool-use", () => {
     expect(output).toContain("not supported");
   });
 
-  it("passes through deeplake mount command", () => {
+  it("blocks deeplake mount command with guidance", () => {
     const { blocked, output } = runBlockHook("pre-tool-use.js", {
       session_id: "test-session-029",
       tool_name: "Bash",
@@ -275,9 +275,9 @@ describe("codex integration: pre-tool-use", () => {
       hook_event_name: "PreToolUse",
       model: "gpt-5.2",
     });
-    // Deeplake CLI commands pass through (no block, no output)
+    // Deeplake CLI commands are no longer supported — should return guidance
     expect(blocked).toBe(false);
-    expect(output).toBe("");
+    expect(output).toContain("not supported");
   });
 
   it("returns guidance for command substitution $() targeting memory", () => {

