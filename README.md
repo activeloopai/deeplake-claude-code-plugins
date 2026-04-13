@@ -21,9 +21,10 @@
 </p>
 
 > One session ends, everything important disappears. 
+>
 > Hivemind finally fixes the "agent amnesia" problem. 
 
-It automatically captures every prompt, tool call, decision, and file operation. Then turns them into searchable memory that is instantly available to every agent and teammate across sessions, machines, and time.
+Hivemind automatically captures every prompt, tool call, decision, and file operation. Then turns them into searchable memory that is instantly available to every agent and teammate across sessions, machines, and time.
 
 - 🧠 **Captures** every session's prompts, tool calls, and responses into a shared SQL table on Deeplake Cloud
 - 🔍 **Searches** across all memory with lexical search (falls back to grep when index unavailable)
