@@ -5,6 +5,7 @@
  *
  * Usage:
  *   node auth-login.js login              — device flow login
+ *   node auth-login.js logout             — remove credentials
  *   node auth-login.js org list           — list orgs
  *   node auth-login.js org switch <id>    — switch org
  *   node auth-login.js workspaces         — list workspaces
@@ -134,8 +135,22 @@ async function main(): Promise<void> {
       break;
     }
 
+    case "logout": {
+      const { existsSync, unlinkSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const { homedir } = await import("node:os");
+      const credFile = join(homedir(), ".deeplake", "credentials.json");
+      if (existsSync(credFile)) {
+        unlinkSync(credFile);
+        console.log("Logged out. Credentials removed.");
+      } else {
+        console.log("Not logged in.");
+      }
+      break;
+    }
+
     default:
-      console.log("Commands: login, whoami, org list, org switch, workspaces, workspace, sessions prune, invite, members, remove, autoupdate");
+      console.log("Commands: login, logout, whoami, org list, org switch, workspaces, workspace, sessions prune, invite, members, remove, autoupdate");
   }
 }
 
