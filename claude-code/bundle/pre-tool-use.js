@@ -76,6 +76,9 @@ function log(tag, msg) {
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
+function sqlLike(value) {
+  return sqlStr(value).replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
@@ -264,16 +267,8 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${tbl}" created`);
-    } else {
-      for (const col of ["project", "description", "creation_date", "last_update_date", "author"]) {
-        try {
-          await this.query(`ALTER TABLE "${tbl}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
-          log2(`added column "${col}" to "${tbl}"`);
-        } catch {
-        }
-      }
     }
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
@@ -281,7 +276,7 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${name}" created`);
     }
   }
@@ -399,8 +394,10 @@ var SAFE_BUILTINS = /* @__PURE__ */ new Set([
   "esac"
 ]);
 function isSafe(cmd) {
+  if (/\$\(|`|<\(/.test(cmd))
+    return false;
   const stripped = cmd.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
-  const stages = stripped.split(/\||;|&&|\|\|/);
+  const stages = stripped.split(/\||;|&&|\|\||\n/);
   for (const stage of stages) {
     const firstToken = stage.trim().split(/\s+/)[0] ?? "";
     if (firstToken && !SAFE_BUILTINS.has(firstToken))
@@ -463,14 +460,18 @@ async function main() {
   log3(`hook fired: tool=${input.tool_name} input=${JSON.stringify(input.tool_input)}`);
   const cmd = input.tool_input.command ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
-  if (!shellCmd && touchesMemory(cmd)) {
-    log3(`unsafe command denied: ${cmd.slice(0, 100)}`);
+  const toolPath = input.tool_input.file_path ?? input.tool_input.path ?? "";
+  if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
+    const guidance = "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. This virtual filesystem only supports bash builtins: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. python, python3, node, and curl are NOT available. You MUST rewrite your command using only the bash tools listed above and try again. For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
+    log3(`unsupported command, returning guidance: ${cmd}`);
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: "This command uses tools not supported by the virtual filesystem.",
-        additionalContext: "Rewrite using safe builtins: cat, ls, grep, jq, head, tail, sort, wc, find, sed, awk. These work natively with Hivemind memory."
+        permissionDecision: "allow",
+        updatedInput: {
+          command: `echo ${JSON.stringify(guidance)}`,
+          description: "[DeepLake] unsupported command \u2014 rewrite using bash builtins"
+        }
       }
     }));
     return;
@@ -503,7 +504,7 @@ async function main() {
         const pattern = input.tool_input.pattern ?? "";
         const ignoreCase = !!input.tool_input["-i"];
         log3(`direct grep: ${pattern}`);
-        const rows = await api.query(`SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 5`);
+        const rows = await api.query(`SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlLike(pattern)}%' LIMIT 5`);
         if (rows.length > 0) {
           const allResults = [];
           const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
@@ -541,7 +542,7 @@ async function main() {
       permissionDecision: "allow",
       updatedInput: {
         command: rewrittenCommand,
-        description: `[DeepLake virtual FS] ${shellCmd}`
+        description: `[DeepLake] ${shellCmd}`
       }
     }
   };

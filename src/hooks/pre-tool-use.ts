@@ -8,7 +8,7 @@ import { dirname } from "node:path";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr } from "../utils/sql.js";
+import { sqlStr, sqlLike } from "../utils/sql.js";
 
 import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("pre", msg);
@@ -51,10 +51,12 @@ const SAFE_BUILTINS = new Set([
 ]);
 
 function isSafe(cmd: string): boolean {
+  // Reject command/process substitution before checking tokens
+  if (/\$\(|`|<\(/.test(cmd)) return false;
   // Strip quoted strings before splitting on pipes — prevents splitting
   // inside jq expressions like 'select(.type) | .content'
   const stripped = cmd.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
-  const stages = stripped.split(/\||;|&&|\|\|/);
+  const stages = stripped.split(/\||;|&&|\|\||\n/);
   for (const stage of stages) {
     const firstToken = stage.trim().split(/\s+/)[0] ?? "";
     if (firstToken && !SAFE_BUILTINS.has(firstToken)) return false;
@@ -130,15 +132,23 @@ async function main(): Promise<void> {
   const cmd = (input.tool_input.command as string) ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
 
-  if (!shellCmd && touchesMemory(cmd)) {
-    // Unsafe command targeting memory — deny and suggest safe alternatives
-    log(`unsafe command denied: ${cmd.slice(0, 100)}`);
+  // Also check non-Bash tools (Read/Write/Edit/Glob/Grep) that touch memory but didn't get a shellCmd
+  const toolPath = (input.tool_input.file_path ?? input.tool_input.path ?? "") as string;
+  if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
+    const guidance = "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. " +
+      "This virtual filesystem only supports bash builtins: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. " +
+      "python, python3, node, and curl are NOT available. " +
+      "You MUST rewrite your command using only the bash tools listed above and try again. " +
+      "For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
+    log(`unsupported command, returning guidance: ${cmd}`);
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: "This command uses tools not supported by the virtual filesystem.",
-        additionalContext: "Rewrite using safe builtins: cat, ls, grep, jq, head, tail, sort, wc, find, sed, awk. These work natively with Hivemind memory.",
+        permissionDecision: "allow",
+        updatedInput: {
+          command: `echo ${JSON.stringify(guidance)}`,
+          description: "[DeepLake] unsupported command — rewrite using bash builtins",
+        },
       },
     }));
     return;
@@ -178,7 +188,7 @@ async function main(): Promise<void> {
         log(`direct grep: ${pattern}`);
         // Single query: fetch path + content together (avoids N+1 round-trips)
         const rows = await api.query(
-          `SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlStr(pattern)}%' LIMIT 5`
+          `SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlLike(pattern)}%' LIMIT 5`
         );
         if (rows.length > 0) {
           const allResults: string[] = [];
@@ -223,7 +233,7 @@ async function main(): Promise<void> {
       permissionDecision: "allow",
       updatedInput: {
         command: rewrittenCommand,
-        description: `[DeepLake virtual FS] ${shellCmd}`,
+        description: `[DeepLake] ${shellCmd}`,
       },
     },
   };

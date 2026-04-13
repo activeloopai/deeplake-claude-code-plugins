@@ -323,7 +323,7 @@ describe("ensureSessionsTable schema", () => {
     expect(createSql).not.toContain("BYTEA");
   });
 
-  it("memory table migration adds author column", async () => {
+  it("memory table creation includes agent column", async () => {
     const { DeeplakeApi } = await import("../../src/deeplake-api.js");
     const api = new DeeplakeApi("token", "https://api.test", "org", "ws", "memory");
     const queryCalls: string[] = [];
@@ -331,13 +331,14 @@ describe("ensureSessionsTable schema", () => {
       queryCalls.push(sql);
       return [];
     }) as typeof api.query;
-    // Table already exists
-    api.listTables = vi.fn().mockResolvedValue(["memory"]) as typeof api.listTables;
+    // Table does not exist
+    api.listTables = vi.fn().mockResolvedValue([]) as typeof api.listTables;
 
     await api.ensureTable();
 
-    const alterCalls = queryCalls.filter(s => s.includes("ALTER TABLE"));
-    const authorAlter = alterCalls.find(s => s.includes("author"));
-    expect(authorAlter).toBeDefined();
+    const createCall = queryCalls.find(s => s.includes("CREATE TABLE"));
+    expect(createCall).toBeDefined();
+    expect(createCall).toContain("agent");
+    expect(createCall).toContain("author");
   });
 });

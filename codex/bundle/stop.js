@@ -1,5 +1,12 @@
 #!/usr/bin/env node
 
+// dist/src/hooks/codex/stop.js
+import { spawn, execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, join as join3 } from "node:path";
+import { writeFileSync, readFileSync as readFileSync2, mkdirSync, appendFileSync as appendFileSync2, existsSync as existsSync2 } from "node:fs";
+import { homedir as homedir3, tmpdir } from "node:os";
+
 // dist/src/utils/stdin.js
 function readStdin() {
   return new Promise((resolve, reject) => {
@@ -272,89 +279,178 @@ var DeeplakeApi = class {
   }
 };
 
-// dist/src/hooks/capture.js
-var log3 = (msg) => log("capture", msg);
+// dist/src/hooks/codex/stop.js
+var log3 = (msg) => log("codex-stop", msg);
+var HOME = homedir3();
+var WIKI_LOG = join3(HOME, ".codex", "hooks", "deeplake-wiki.log");
+var __bundleDir = dirname(fileURLToPath(import.meta.url));
+function wikiLog(msg) {
+  try {
+    mkdirSync(join3(HOME, ".codex", "hooks"), { recursive: true });
+    appendFileSync2(WIKI_LOG, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] ${msg}
+`);
+  } catch {
+  }
+}
+function findSummaryBin() {
+  try {
+    return execSync("which codex 2>/dev/null", { encoding: "utf-8" }).trim();
+  } catch {
+    return "codex";
+  }
+}
+var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry.
+
+SESSION JSONL path: __JSONL__
+SUMMARY FILE to write: __SUMMARY__
+SESSION ID: __SESSION_ID__
+PROJECT: __PROJECT__
+PREVIOUS JSONL OFFSET (lines already processed): __PREV_OFFSET__
+CURRENT JSONL LINES: __JSONL_LINES__
+
+Steps:
+1. Read the session JSONL at the path above.
+   - If PREVIOUS JSONL OFFSET > 0, this is a resumed session. Read the existing summary file first,
+     then focus on lines AFTER the offset for new content. Merge new facts into the existing summary.
+   - If offset is 0, generate from scratch.
+
+2. Write the summary file at the path above with this EXACT format:
+
+# Session __SESSION_ID__
+- **Source**: __JSONL_SERVER_PATH__
+- **Started**: <extract from JSONL>
+- **Ended**: <now>
+- **Project**: __PROJECT__
+- **JSONL offset**: __JSONL_LINES__
+
+## What Happened
+<2-3 dense sentences. What was the goal, what was accomplished, what's left.>
+
+## People
+<For each person mentioned: name, role, what they did/said. Format: **Name** \u2014 role \u2014 action>
+
+## Entities
+<Every named thing: repos, branches, files, APIs, tools, services, tables, features, bugs.
+Format: **entity** (type) \u2014 what was done with it, its current state>
+
+## Decisions & Reasoning
+<Every decision made and WHY.>
+
+## Key Facts
+<Bullet list of atomic facts that could answer future questions.>
+
+## Files Modified
+<bullet list: path (new/modified/deleted) \u2014 what changed>
+
+## Open Questions / TODO
+<Anything unresolved, blocked, or explicitly deferred>
+
+IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact.
+PRIVACY: Never include absolute filesystem paths in the summary.
+LENGTH LIMIT: Keep the total summary under 4000 characters.`;
 var CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
 function buildSessionPath(config, sessionId) {
-  const userName = config.userName;
-  const orgName = config.orgName;
-  const workspace = config.workspaceId ?? "default";
-  return `/sessions/${userName}/${userName}_${orgName}_${workspace}_${sessionId}.jsonl`;
+  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
 }
 async function main() {
-  if (!CAPTURE)
+  if (process.env.DEEPLAKE_WIKI_WORKER === "1")
     return;
   const input = await readStdin();
+  const sessionId = input.session_id;
+  if (!sessionId)
+    return;
   const config = loadConfig();
   if (!config) {
     log3("no config");
     return;
   }
-  const sessionsTable = config.sessionsTableName;
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
-  const ts = (/* @__PURE__ */ new Date()).toISOString();
-  const meta = {
-    session_id: input.session_id,
-    transcript_path: input.transcript_path,
-    cwd: input.cwd,
-    permission_mode: input.permission_mode,
-    hook_event_name: input.hook_event_name,
-    agent_id: input.agent_id,
-    agent_type: input.agent_type,
-    timestamp: ts
-  };
-  let entry;
-  if (input.prompt !== void 0) {
-    log3(`user session=${input.session_id}`);
-    entry = {
-      id: crypto.randomUUID(),
-      ...meta,
-      type: "user_message",
-      content: input.prompt
-    };
-  } else if (input.tool_name !== void 0) {
-    log3(`tool=${input.tool_name} session=${input.session_id}`);
-    entry = {
-      id: crypto.randomUUID(),
-      ...meta,
-      type: "tool_call",
-      tool_name: input.tool_name,
-      tool_use_id: input.tool_use_id,
-      tool_input: JSON.stringify(input.tool_input),
-      tool_response: JSON.stringify(input.tool_response)
-    };
-  } else if (input.last_assistant_message !== void 0) {
-    log3(`assistant session=${input.session_id}`);
-    entry = {
-      id: crypto.randomUUID(),
-      ...meta,
-      type: "assistant_message",
-      content: input.last_assistant_message,
-      ...input.agent_transcript_path ? { agent_transcript_path: input.agent_transcript_path } : {}
-    };
-  } else {
-    log3("unknown event, skipping");
-    return;
-  }
-  const sessionPath = buildSessionPath(config, input.session_id);
-  const line = JSON.stringify(entry);
-  log3(`writing to ${sessionPath}`);
-  const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-  const filename = sessionPath.split("/").pop() ?? "";
-  const jsonForSql = line.replace(/'/g, "''");
-  const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'claude_code', '${ts}', '${ts}')`;
-  try {
-    await api.query(insertSql);
-  } catch (e) {
-    if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
-      log3("table missing, creating and retrying");
-      await api.ensureSessionsTable(sessionsTable);
+  if (CAPTURE) {
+    try {
+      const sessionsTable2 = config.sessionsTableName;
+      const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable2);
+      const ts = (/* @__PURE__ */ new Date()).toISOString();
+      let lastAssistantMessage = "";
+      if (input.transcript_path) {
+        try {
+          const transcriptPath = input.transcript_path;
+          if (existsSync2(transcriptPath)) {
+            const transcript = readFileSync2(transcriptPath, "utf-8");
+            const lines = transcript.trim().split("\n").reverse();
+            for (const line2 of lines) {
+              try {
+                const entry2 = JSON.parse(line2);
+                const msg = entry2.payload ?? entry2;
+                if (msg.role === "assistant" && msg.content) {
+                  const content = typeof msg.content === "string" ? msg.content : Array.isArray(msg.content) ? msg.content.filter((b) => b.type === "output_text" || b.type === "text").map((b) => b.text).join("\n") : "";
+                  if (content) {
+                    lastAssistantMessage = content.slice(0, 4e3);
+                    break;
+                  }
+                }
+              } catch {
+              }
+            }
+            if (lastAssistantMessage)
+              log3(`extracted assistant message from transcript (${lastAssistantMessage.length} chars)`);
+          }
+        } catch (e) {
+          log3(`transcript read failed: ${e.message}`);
+        }
+      }
+      const entry = {
+        id: crypto.randomUUID(),
+        session_id: sessionId,
+        transcript_path: input.transcript_path,
+        cwd: input.cwd,
+        hook_event_name: input.hook_event_name,
+        model: input.model,
+        timestamp: ts,
+        type: lastAssistantMessage ? "assistant_message" : "assistant_stop",
+        content: lastAssistantMessage
+      };
+      const line = JSON.stringify(entry);
+      const sessionPath = buildSessionPath(config, sessionId);
+      const projectName2 = (input.cwd ?? "").split("/").pop() || "unknown";
+      const filename = sessionPath.split("/").pop() ?? "";
+      const jsonForSql = sqlStr(line);
+      const insertSql = `INSERT INTO "${sessionsTable2}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName2)}', 'Stop', 'codex', '${ts}', '${ts}')`;
       await api.query(insertSql);
-    } else {
-      throw e;
+      log3("stop event captured");
+    } catch (e) {
+      log3(`capture failed: ${e.message}`);
     }
   }
-  log3("capture ok \u2192 cloud");
+  const cwd = input.cwd ?? "";
+  const memoryTable = config.tableName;
+  const sessionsTable = config.sessionsTableName;
+  const agentBin = findSummaryBin();
+  const projectName = cwd.split("/").pop() || "unknown";
+  const tmpDir = join3(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  mkdirSync(tmpDir, { recursive: true });
+  const configFile = join3(tmpDir, "config.json");
+  writeFileSync(configFile, JSON.stringify({
+    apiUrl: config.apiUrl,
+    token: config.token,
+    orgId: config.orgId,
+    workspaceId: config.workspaceId,
+    memoryTable,
+    sessionsTable,
+    sessionId,
+    userName: config.userName,
+    project: projectName,
+    tmpDir,
+    codexBin: agentBin,
+    wikiLog: WIKI_LOG,
+    hooksDir: join3(HOME, ".codex", "hooks"),
+    promptTemplate: WIKI_PROMPT_TEMPLATE
+  }));
+  wikiLog(`Stop: spawning summary worker for ${sessionId}`);
+  const workerPath = join3(__bundleDir, "wiki-worker.js");
+  spawn("nohup", ["node", workerPath, configFile], {
+    detached: true,
+    stdio: ["ignore", "ignore", "ignore"]
+  }).unref();
+  wikiLog(`Stop: spawned summary worker for ${sessionId}`);
 }
 main().catch((e) => {
   log3(`fatal: ${e.message}`);

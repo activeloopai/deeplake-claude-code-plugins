@@ -47,6 +47,8 @@ Organization management — each argument is SEPARATE (do NOT quote subcommands 
 - node "DEEPLAKE_AUTH_CMD" members                            — list members
 - node "DEEPLAKE_AUTH_CMD" remove <user-id>                   — remove member
 
+IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem. If a task seems to require Python, rewrite it using bash commands and standard text-processing tools (awk, sed, jq, grep, etc.).
+
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set DEEPLAKE_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
@@ -55,13 +57,22 @@ const GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/
 const VERSION_CHECK_TIMEOUT = 3000; // 3s — don't block session start
 
 function getInstalledVersion(): string | null {
-  try {
-    const pkgPath = join(__bundleDir, "..", "package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-    return pkg.version ?? null;
-  } catch {
-    return null;
+  // Walk up from the bundle directory to find the nearest package.json.
+  // Depending on install method the layout varies:
+  //   marketplace: <root>/claude-code/bundle/  → package.json is 2 levels up
+  //   cache:       <root>/bundle/              → package.json is 1 level up (if present)
+  let dir = __bundleDir;
+  for (let i = 0; i < 5; i++) {
+    const candidate = join(dir, "package.json");
+    try {
+      const pkg = JSON.parse(readFileSync(candidate, "utf-8"));
+      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version) return pkg.version;
+    } catch { /* not here, keep looking */ }
+    const parent = dirname(dir);
+    if (parent === dir) break; // reached filesystem root
+    dir = parent;
   }
+  return null;
 }
 
 async function getLatestVersion(): Promise<string | null> {
@@ -120,9 +131,9 @@ async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: str
   const filename = `${sessionId}.md`;
 
   await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, creation_date, last_update_date) ` +
+    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', '${now}', '${now}')`
+    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${now}', '${now}')`
   );
 
   wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);

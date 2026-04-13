@@ -272,14 +272,11 @@ var DeeplakeApi = class {
   }
 };
 
-// dist/src/hooks/capture.js
-var log3 = (msg) => log("capture", msg);
+// dist/src/hooks/codex/capture.js
+var log3 = (msg) => log("codex-capture", msg);
 var CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
 function buildSessionPath(config, sessionId) {
-  const userName = config.userName;
-  const orgName = config.orgName;
-  const workspace = config.workspaceId ?? "default";
-  return `/sessions/${userName}/${userName}_${orgName}_${workspace}_${sessionId}.jsonl`;
+  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
 }
 async function main() {
   if (!CAPTURE)
@@ -297,14 +294,13 @@ async function main() {
     session_id: input.session_id,
     transcript_path: input.transcript_path,
     cwd: input.cwd,
-    permission_mode: input.permission_mode,
     hook_event_name: input.hook_event_name,
-    agent_id: input.agent_id,
-    agent_type: input.agent_type,
+    model: input.model,
+    turn_id: input.turn_id,
     timestamp: ts
   };
   let entry;
-  if (input.prompt !== void 0) {
+  if (input.hook_event_name === "UserPromptSubmit" && input.prompt !== void 0) {
     log3(`user session=${input.session_id}`);
     entry = {
       id: crypto.randomUUID(),
@@ -312,7 +308,7 @@ async function main() {
       type: "user_message",
       content: input.prompt
     };
-  } else if (input.tool_name !== void 0) {
+  } else if (input.hook_event_name === "PostToolUse" && input.tool_name !== void 0) {
     log3(`tool=${input.tool_name} session=${input.session_id}`);
     entry = {
       id: crypto.randomUUID(),
@@ -323,17 +319,8 @@ async function main() {
       tool_input: JSON.stringify(input.tool_input),
       tool_response: JSON.stringify(input.tool_response)
     };
-  } else if (input.last_assistant_message !== void 0) {
-    log3(`assistant session=${input.session_id}`);
-    entry = {
-      id: crypto.randomUUID(),
-      ...meta,
-      type: "assistant_message",
-      content: input.last_assistant_message,
-      ...input.agent_transcript_path ? { agent_transcript_path: input.agent_transcript_path } : {}
-    };
   } else {
-    log3("unknown event, skipping");
+    log3(`unknown event: ${input.hook_event_name}, skipping`);
     return;
   }
   const sessionPath = buildSessionPath(config, input.session_id);
@@ -341,8 +328,8 @@ async function main() {
   log3(`writing to ${sessionPath}`);
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
   const filename = sessionPath.split("/").pop() ?? "";
-  const jsonForSql = line.replace(/'/g, "''");
-  const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'claude_code', '${ts}', '${ts}')`;
+  const jsonForSql = sqlStr(line);
+  const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'codex', '${ts}', '${ts}')`;
   try {
     await api.query(insertSql);
   } catch (e) {
@@ -354,7 +341,7 @@ async function main() {
       throw e;
     }
   }
-  log3("capture ok \u2192 cloud");
+  log3("capture ok");
 }
 main().catch((e) => {
   log3(`fatal: ${e.message}`);

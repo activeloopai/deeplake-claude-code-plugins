@@ -272,16 +272,8 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${tbl}" created`);
-    } else {
-      for (const col of ["project", "description", "creation_date", "last_update_date", "author"]) {
-        try {
-          await this.query(`ALTER TABLE "${tbl}" ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
-          log2(`added column "${col}" to "${tbl}"`);
-        } catch {
-        }
-      }
     }
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
@@ -289,7 +281,7 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${name}" created`);
     }
   }
@@ -341,19 +333,29 @@ Organization management \u2014 each argument is SEPARATE (do NOT quote subcomman
 - node "DEEPLAKE_AUTH_CMD" members                            \u2014 list members
 - node "DEEPLAKE_AUTH_CMD" remove <user-id>                   \u2014 remove member
 
+IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem. If a task seems to require Python, rewrite it using bash commands and standard text-processing tools (awk, sed, jq, grep, etc.).
+
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set DEEPLAKE_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
 var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 var VERSION_CHECK_TIMEOUT = 3e3;
 function getInstalledVersion() {
-  try {
-    const pkgPath = join4(__bundleDir, "..", "package.json");
-    const pkg = JSON.parse(readFileSync3(pkgPath, "utf-8"));
-    return pkg.version ?? null;
-  } catch {
-    return null;
+  let dir = __bundleDir;
+  for (let i = 0; i < 5; i++) {
+    const candidate = join4(dir, "package.json");
+    try {
+      const pkg = JSON.parse(readFileSync3(candidate, "utf-8"));
+      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version)
+        return pkg.version;
+    } catch {
+    }
+    const parent = dirname(dir);
+    if (parent === dir)
+      break;
+    dir = parent;
   }
+  return null;
 }
 async function getLatestVersion() {
   try {
@@ -402,7 +404,7 @@ async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, 
     ""
   ].join("\n");
   const filename = `${sessionId}.md`;
-  await api.query(`INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', '${now}', '${now}')`);
+  await api.query(`INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${now}', '${now}')`);
   wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
 }
 async function main() {

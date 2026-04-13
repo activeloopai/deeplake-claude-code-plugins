@@ -1,4 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 
 // ── isNewer (extracted from session-start.ts) ───────────────────────────────
 
@@ -113,5 +116,93 @@ describe("autoupdate credential defaults", () => {
     const creds = { autoupdate: false };
     const autoupdate = creds.autoupdate !== false;
     expect(autoupdate).toBe(false);
+  });
+});
+
+// ── getInstalledVersion — walk-up directory search ────────────────────────────
+
+/**
+ * Mirrors the getInstalledVersion logic from session-start.ts:
+ * walks up from bundleDir looking for a package.json with name "hivemind".
+ */
+function getInstalledVersion(bundleDir: string): string | null {
+  let dir = bundleDir;
+  for (let i = 0; i < 5; i++) {
+    const candidate = join(dir, "package.json");
+    try {
+      const pkg = JSON.parse(readFileSync(candidate, "utf-8"));
+      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version) return pkg.version;
+    } catch { /* not here, keep looking */ }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+describe("getInstalledVersion — walk-up directory search", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = join(tmpdir(), `hivemind-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(root, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("finds package.json one level up (cache layout)", () => {
+    // cache: <root>/bundle/  with package.json at <root>/
+    const bundleDir = join(root, "bundle");
+    mkdirSync(bundleDir, { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "hivemind", version: "0.6.18" }));
+    expect(getInstalledVersion(bundleDir)).toBe("0.6.18");
+  });
+
+  it("finds package.json two levels up (marketplace layout)", () => {
+    // marketplace: <root>/claude-code/bundle/  with package.json at <root>/
+    const bundleDir = join(root, "claude-code", "bundle");
+    mkdirSync(bundleDir, { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "hivemind", version: "0.5.0" }));
+    expect(getInstalledVersion(bundleDir)).toBe("0.5.0");
+  });
+
+  it("returns null when no package.json exists", () => {
+    const bundleDir = join(root, "a", "b", "c");
+    mkdirSync(bundleDir, { recursive: true });
+    expect(getInstalledVersion(bundleDir)).toBeNull();
+  });
+
+  it("skips package.json with wrong name", () => {
+    const bundleDir = join(root, "bundle");
+    mkdirSync(bundleDir, { recursive: true });
+    // package.json exists but has wrong name
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "other-pkg", version: "1.0.0" }));
+    expect(getInstalledVersion(bundleDir)).toBeNull();
+  });
+
+  it("skips package.json without version field", () => {
+    const bundleDir = join(root, "bundle");
+    mkdirSync(bundleDir, { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "hivemind" }));
+    expect(getInstalledVersion(bundleDir)).toBeNull();
+  });
+
+  it("finds the nearest matching package.json (not a deeper one)", () => {
+    // Two package.json files: one at <root>/ (v1.0.0), one at <root>/claude-code/ (v2.0.0)
+    const bundleDir = join(root, "claude-code", "bundle");
+    mkdirSync(bundleDir, { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "hivemind", version: "1.0.0" }));
+    writeFileSync(join(root, "claude-code", "package.json"), JSON.stringify({ name: "hivemind", version: "2.0.0" }));
+    // Should find claude-code/package.json first (closer)
+    expect(getInstalledVersion(bundleDir)).toBe("2.0.0");
+  });
+
+  it("finds hivemind-codex package name (codex install)", () => {
+    const bundleDir = join(root, "bundle");
+    mkdirSync(bundleDir, { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "hivemind-codex", version: "0.6.7" }));
+    expect(getInstalledVersion(bundleDir)).toBe("0.6.7");
   });
 });
