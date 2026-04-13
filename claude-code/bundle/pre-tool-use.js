@@ -463,13 +463,22 @@ async function main() {
   log3(`hook fired: tool=${input.tool_name} input=${JSON.stringify(input.tool_input)}`);
   const cmd = input.tool_input.command ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
-  if (!shellCmd && touchesMemory(cmd)) {
-    log3(`unsafe command blocked: ${cmd}`);
+  const toolPath = input.tool_input.file_path ?? input.tool_input.path ?? "";
+  if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
+    if (/\bdeeplake\s+(mount|login|unmount|status)\b/.test(cmd) || cmd.includes("deeplake.ai/install")) {
+      log3(`deeplake CLI command \u2014 passing through to real bash`);
+      return;
+    }
+    const guidance = "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. This virtual filesystem only supports bash builtins: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. python, python3, node, and curl are NOT available. You MUST rewrite your command using only the bash tools listed above and try again. For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
+    log3(`unsupported command, returning guidance: ${cmd}`);
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: "This command is not supported for memory operations. Use standard commands like cat, ls, grep, echo instead."
+        permissionDecision: "allow",
+        updatedInput: {
+          command: `echo ${JSON.stringify(guidance)}`,
+          description: "[DeepLake] unsupported command \u2014 rewrite using bash builtins"
+        }
       }
     }));
     return;

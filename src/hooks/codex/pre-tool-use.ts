@@ -130,8 +130,20 @@ async function main(): Promise<void> {
   const rewritten = rewritePaths(cmd);
 
   if (!isSafe(rewritten)) {
-    log(`unsafe command blocked: ${rewritten}`);
-    blockWithDeny("This command is not supported for memory operations. Use standard commands like cat, ls, grep, echo instead.");
+    // Pass through deeplake CLI commands (mount, login, etc.)
+    if (/\bdeeplake\s+(mount|login|unmount|status)\b/.test(cmd) || cmd.includes("deeplake.ai/install")) {
+      log(`deeplake CLI command — passing through`);
+      return;
+    }
+
+    // Instead of hard-blocking (exit code 2), output guidance so the agent self-corrects.
+    const guidance = "This command is not supported for ~/.deeplake/memory/ operations. " +
+      "Only bash builtins are available: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. " +
+      "Do NOT use python, python3, node, curl, or other interpreters. " +
+      "Rewrite your command using only bash tools and retry.";
+    log(`unsupported command, returning guidance: ${rewritten}`);
+    process.stdout.write(guidance);
+    process.exit(0);
   }
 
   // ── Fast path: handle grep and cat directly via SQL ──
