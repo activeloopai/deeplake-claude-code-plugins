@@ -333,19 +333,29 @@ Organization management \u2014 each argument is SEPARATE (do NOT quote subcomman
 - node "DEEPLAKE_AUTH_CMD" members                            \u2014 list members
 - node "DEEPLAKE_AUTH_CMD" remove <user-id>                   \u2014 remove member
 
+IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem. If a task seems to require Python, rewrite it using bash commands and standard text-processing tools (awk, sed, jq, grep, etc.).
+
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set DEEPLAKE_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
 var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 var VERSION_CHECK_TIMEOUT = 3e3;
 function getInstalledVersion() {
-  try {
-    const pkgPath = join4(__bundleDir, "..", "package.json");
-    const pkg = JSON.parse(readFileSync3(pkgPath, "utf-8"));
-    return pkg.version ?? null;
-  } catch {
-    return null;
+  let dir = __bundleDir;
+  for (let i = 0; i < 5; i++) {
+    const candidate = join4(dir, "package.json");
+    try {
+      const pkg = JSON.parse(readFileSync3(candidate, "utf-8"));
+      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version)
+        return pkg.version;
+    } catch {
+    }
+    const parent = dirname(dir);
+    if (parent === dir)
+      break;
+    dir = parent;
   }
+  return null;
 }
 async function getLatestVersion() {
   try {

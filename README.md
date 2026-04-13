@@ -17,16 +17,17 @@
 </p>
 
 <p align="center">
-  Persistent, cloud-backed shared memory for AI agents.<br>
-  Captures everything. Recalls anything. Shares across sessions, teammates, and machines.
+  Persistent, cloud-backed shared memory for <b>Claude Code • OpenClaw • Codex</b> agents.<br>
 </p>
 
----
+> One session ends, everything important disappears. 
+>
+> Hivemind finally fixes the "agent amnesia" problem. 
 
-## What it does
+Hivemind automatically captures every prompt, tool call, decision, and file operation. Then turns them into searchable memory that is instantly available to every agent and teammate across sessions, machines, and time.
 
-- 🧠 **Captures** every session's prompts, tool calls, and responses into a shared cloud SQL table
-- 🔍 **Searches** across all memory with BM25 full-text search (falls back to ILIKE when index unavailable)
+- 🧠 **Captures** every session's prompts, tool calls, and responses into a shared SQL table on Deeplake Cloud
+- 🔍 **Searches** across all memory with lexical search (falls back to grep when index unavailable)
 - 🔗 **Shares** memory across sessions, agents, teammates, and machines in real-time
 - 📁 **Intercepts** file operations on `~/.deeplake/memory/` through a virtual filesystem backed by SQL
 - 📝 **Summarizes** sessions into AI-generated wiki pages via a background worker at session end
@@ -35,31 +36,61 @@
 
 | Platform        | Status         | Install                                                    |
 |-----------------|----------------|------------------------------------------------------------|
-| **Claude Code** | ✅ Stable      | See [Quick start](#quick-start-claude-code)                |
-| **OpenClaw**    | 🔧 Beta        | See [Quick start](#quick-start-openclaw)                   |
-| **Codex**       | 🔧 Beta        | See [Quick start](#quick-start-codex)                      |
+| **Claude Code** | ✅ Stable      | See [Quick start](#claude-code-setup)                |
+| **OpenClaw**    | 🔧 Beta        | See [Quick start](#install-from-clawhub-telegram-tui-whatsapp)                   |
+| **Codex**       | 🔧 Beta        | See [Quick start](#tell-codex-to-fetch-and-follow-the-install-instructions)                      |
 
-## Quick start (Claude Code)
+## Claude Code Setup
+
+Add the marketplace:
 
 ```
-/plugin marketplace add activeloopai/hivemind && /plugin install hivemind && /hivemind:login
+/plugin marketplace add activeloopai/hivemind
 ```
 
-Auto-updates on each session start. Manual update: `/hivemind:update`
+Install the plugin:
 
-## Quick start (OpenClaw)
+```
+/plugin install hivemind
+```
+
+Reload plugins:
+
+```
+/reload-plugins
+```
+
+Log in:
+
+```
+/hivemind:login
+```
+
+That's it. Your agents now share a brain.
+
+### Updating
+
+The plugin auto-updates on each session start. To manually update:
+
+```
+/hivemind:update
+```
+<details>
+  <summary><b> OpenClaw Setup </b></summary>
+
+
+#### Install from ClawHub (Telegram, TUI, WhatsApp):
 
 ```
 openclaw plugins install hivemind
 ```
 
-Then type `/hivemind_login` in chat, click the auth link, sign in, and send another message to activate.
+Send a message. The plugin sends you an auth link. Click, sign in, done.
+</details>
+<details>
+  <summary><b> Codex Setup </b></summary>
 
-Auto-recall and auto-capture are enabled by default. Data is stored in the same `sessions` table as Claude Code and Codex — all agents share one brain.
-
-## Quick start (Codex)
-
-Tell Codex to fetch and follow the install instructions:
+#### Tell Codex to fetch and follow the install instructions:
 
 ```
 Fetch and follow instructions from https://raw.githubusercontent.com/activeloopai/hivemind/main/codex/INSTALL.md
@@ -80,11 +111,13 @@ Log in when prompted, or run manually:
 node ~/.codex/hivemind/codex/bundle/commands/auth-login.js login
 ```
 
+
 ### Updating
 
 ```bash
 cd ~/.codex/hivemind && git pull
 ```
+
 
 Hooks and skills update instantly — restart Codex to apply.
 
@@ -95,12 +128,14 @@ rm -f ~/.codex/hooks.json ~/.agents/skills/hivemind-memory
 rm -rf ~/.codex/hivemind
 ```
 
+</details>
+
 ## How it works
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Your AI Agent                           │
-└──────────────────────────┬──────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│                   Your Coding Agent                 │
+└──────────────────────────┬──────────────────────────┘
                            │
         ┌──────────────────▼──────────────────┐
         │  📥 Capture (every turn)            │
@@ -108,14 +143,15 @@ rm -rf ~/.codex/hivemind
         └──────────────────┬──────────────────┘
                            │
         ┌──────────────────▼──────────────────┐
-        │  🧠 Hivemind Cloud                  │
-        │  SQL tables · BM25 search           │
-        │  shared across all agents           │
+        │  🧠 Hivemind                        │
+        │  SQL tables · Virtual File System   │
+        │  Search Memory · inject context     │
         └──────────────────┬──────────────────┘
                            │
         ┌──────────────────▼──────────────────┐
-        │  🔍 Recall (before each turn)       │
-        │  search memory · inject context     │
+        │  🌊 Deeplake                        │
+        │   Shared across all agents          │
+        │   Postgres · S3                     │
         └─────────────────────────────────────┘
 ```
 

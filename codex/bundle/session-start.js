@@ -309,6 +309,7 @@ var context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared 
 
 Structure: index.md (start here) \u2192 summaries/*.md \u2192 sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
 Search: grep -r "keyword" ~/.deeplake/memory/
+IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem.
 Do NOT spawn subagents to read deeplake memory.`;
 var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 var VERSION_CHECK_TIMEOUT = 3e3;
@@ -320,13 +321,21 @@ function getInstalledVersion() {
       return plugin.version;
   } catch {
   }
-  try {
-    const pkgPath = join4(__bundleDir, "..", "package.json");
-    const pkg = JSON.parse(readFileSync3(pkgPath, "utf-8"));
-    return pkg.version ?? null;
-  } catch {
-    return null;
+  let dir = __bundleDir;
+  for (let i = 0; i < 5; i++) {
+    const candidate = join4(dir, "package.json");
+    try {
+      const pkg = JSON.parse(readFileSync3(candidate, "utf-8"));
+      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version)
+        return pkg.version;
+    } catch {
+    }
+    const parent = dirname(dir);
+    if (parent === dir)
+      break;
+    dir = parent;
   }
+  return null;
 }
 async function getLatestVersion() {
   try {
@@ -425,7 +434,7 @@ async function main() {
           log3(`autoupdate: updating ${current} \u2192 ${latest}`);
           try {
             const tag = `v${latest}`;
-            const findCmd = `PLUGIN_DIR=$(find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1); if [ -n "$PLUGIN_DIR" ]; then VERSION_DIR=$(ls -1d "$PLUGIN_DIR"/*/ 2>/dev/null | tail -1); TMPDIR=$(mktemp -d); git clone --depth 1 --branch ${tag} -q https://github.com/activeloopai/hivemind.git "$TMPDIR/hivemind" 2>/dev/null && cp -r "$TMPDIR/hivemind/codex/"* "$VERSION_DIR/" 2>/dev/null; rm -rf "$TMPDIR"; fi`;
+            const findCmd = `INSTALL_DIR=""; CACHE_DIR=$(find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1); if [ -n "$CACHE_DIR" ]; then INSTALL_DIR=$(ls -1d "$CACHE_DIR"/*/ 2>/dev/null | tail -1); elif [ -d ~/.codex/hivemind ]; then INSTALL_DIR=~/.codex/hivemind; fi; if [ -n "$INSTALL_DIR" ]; then TMPDIR=$(mktemp -d); git clone --depth 1 --branch ${tag} -q https://github.com/activeloopai/hivemind.git "$TMPDIR/hivemind" 2>/dev/null && cp -r "$TMPDIR/hivemind/codex/"* "$INSTALL_DIR/" 2>/dev/null; rm -rf "$TMPDIR"; fi`;
             execSync2(findCmd, { stdio: "ignore", timeout: 6e4 });
             updateNotice = `
 

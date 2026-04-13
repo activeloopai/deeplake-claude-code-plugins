@@ -405,10 +405,6 @@ function blockWithContent(content) {
   process.stderr.write(content);
   process.exit(2);
 }
-function blockWithDeny(reason) {
-  process.stderr.write(reason);
-  process.exit(2);
-}
 function runVirtualShell(cmd) {
   try {
     return execFileSync("node", [SHELL_BUNDLE, "-c", cmd], {
@@ -431,8 +427,10 @@ async function main() {
     return;
   const rewritten = rewritePaths(cmd);
   if (!isSafe(rewritten)) {
-    log3(`unsafe command blocked: ${rewritten}`);
-    blockWithDeny("This command is not supported for memory operations. Use standard commands like cat, ls, grep, echo instead.");
+    const guidance = "This command is not supported for ~/.deeplake/memory/ operations. Only bash builtins are available: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. Do NOT use python, python3, node, curl, or other interpreters. Rewrite your command using only bash tools and retry.";
+    log3(`unsupported command, returning guidance: ${rewritten}`);
+    process.stdout.write(guidance);
+    process.exit(0);
   }
   const config = loadConfig();
   if (config) {

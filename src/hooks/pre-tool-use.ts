@@ -135,13 +135,27 @@ async function main(): Promise<void> {
   const cmd = (input.tool_input.command as string) ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
 
-  if (!shellCmd && touchesMemory(cmd)) {
-    log(`unsafe command blocked: ${cmd}`);
+  // Also check non-Bash tools (Read/Write/Edit/Glob/Grep) that touch memory but didn't get a shellCmd
+  const toolPath = (input.tool_input.file_path ?? input.tool_input.path ?? "") as string;
+  if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
+    // Instead of denying (which triggers alarm loops in Claude Code), return
+    // an "allow" with guidance that tells the agent to retry with bash.
+    // Uses stdout so the agent sees it as output (not a fatal error), but
+    // prefixed with [RETRY] to signal it should try again differently.
+    const guidance = "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. " +
+      "This virtual filesystem only supports bash builtins: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. " +
+      "python, python3, node, and curl are NOT available. " +
+      "You MUST rewrite your command using only the bash tools listed above and try again. " +
+      "For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
+    log(`unsupported command, returning guidance: ${cmd}`);
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: "This command is not supported for memory operations. Use standard commands like cat, ls, grep, echo instead.",
+        permissionDecision: "allow",
+        updatedInput: {
+          command: `echo ${JSON.stringify(guidance)}`,
+          description: "[DeepLake] unsupported command — rewrite using bash builtins",
+        },
       },
     }));
     return;

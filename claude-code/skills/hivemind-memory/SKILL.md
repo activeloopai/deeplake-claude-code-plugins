@@ -48,6 +48,10 @@ The auth command path is injected at session start. Use the exact path from the 
 - `node "<AUTH_CMD>" remove <user-id>` — remove member
 - `node "<AUTH_CMD>" --help` — show all commands
 
+## Important: Bash Only
+
+Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with `~/.deeplake/memory/`. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem. If a task seems to require Python, rewrite it using bash tools (e.g., `cat file.json | jq 'keys | length'`).
+
 ## Limits
 
 If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
