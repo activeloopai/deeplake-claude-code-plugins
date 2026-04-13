@@ -722,8 +722,21 @@ async function main() {
       }
       break;
     }
+    case "logout": {
+      const { existsSync: existsSync3, unlinkSync } = await import("node:fs");
+      const { join: join4 } = await import("node:path");
+      const { homedir: homedir4 } = await import("node:os");
+      const credFile = join4(homedir4(), ".deeplake", "credentials.json");
+      if (existsSync3(credFile)) {
+        unlinkSync(credFile);
+        console.log("Logged out. Credentials removed.");
+      } else {
+        console.log("Not logged in.");
+      }
+      break;
+    }
     default:
-      console.log("Commands: login, whoami, org list, org switch, workspaces, workspace, sessions prune, invite, members, remove, autoupdate");
+      console.log("Commands: login, logout, whoami, org list, org switch, workspaces, workspace, sessions prune, invite, members, remove, autoupdate");
   }
 }
 main().catch((e) => {
