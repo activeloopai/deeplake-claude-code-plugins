@@ -45,6 +45,10 @@ Each argument is separate — do NOT quote subcommands together. The auth comman
 - `node "<path>/auth-login.js" remove <user-id>` — remove member
 - `node "<path>/auth-login.js" --help` — show all commands
 
+## Important: Bash Only
+
+Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with `~/.deeplake/memory/`. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem. If a task seems to require Python, rewrite it using bash tools (e.g., `cat file.json | jq 'keys | length'`).
+
 ## Limits
 
 Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
