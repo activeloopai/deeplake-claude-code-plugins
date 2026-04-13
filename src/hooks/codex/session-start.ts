@@ -31,6 +31,7 @@ const context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ share
 
 Structure: index.md (start here) → summaries/*.md → sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
 Search: grep -r "keyword" ~/.deeplake/memory/
+IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem.
 Do NOT spawn subagents to read deeplake memory.`;
 
 const GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
@@ -43,14 +44,22 @@ function getInstalledVersion(): string | null {
     const plugin = JSON.parse(readFileSync(pluginJson, "utf-8"));
     if (plugin.version) return plugin.version;
   } catch { /* fall through */ }
-  try {
-    // Fallback: package.json (works for non-monorepo installs)
-    const pkgPath = join(__bundleDir, "..", "package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-    return pkg.version ?? null;
-  } catch {
-    return null;
+  // Walk up from the bundle directory to find the nearest package.json.
+  // Depending on install method the layout varies:
+  //   codex cache: <root>/bundle/              → package.json may be 1+ levels up
+  //   local dev:   <root>/codex/bundle/        → package.json is 2 levels up
+  let dir = __bundleDir;
+  for (let i = 0; i < 5; i++) {
+    const candidate = join(dir, "package.json");
+    try {
+      const pkg = JSON.parse(readFileSync(candidate, "utf-8"));
+      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version) return pkg.version;
+    } catch { /* not here, keep looking */ }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
+  return null;
 }
 
 async function getLatestVersion(): Promise<string | null> {
