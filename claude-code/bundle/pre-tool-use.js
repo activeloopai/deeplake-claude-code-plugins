@@ -465,10 +465,6 @@ async function main() {
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
   const toolPath = input.tool_input.file_path ?? input.tool_input.path ?? "";
   if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
-    if (/^\s*deeplake\s+(mount|login|unmount|status)\b/.test(cmd) && !/[;&|]/.test(cmd) || cmd.includes("deeplake.ai/install")) {
-      log3(`deeplake CLI command \u2014 passing through to real bash`);
-      return;
-    }
     const guidance = "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. This virtual filesystem only supports bash builtins: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. python, python3, node, and curl are NOT available. You MUST rewrite your command using only the bash tools listed above and try again. For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
     log3(`unsupported command, returning guidance: ${cmd}`);
     console.log(JSON.stringify({

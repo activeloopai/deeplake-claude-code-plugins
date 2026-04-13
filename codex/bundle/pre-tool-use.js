@@ -427,10 +427,6 @@ async function main() {
     return;
   const rewritten = rewritePaths(cmd);
   if (!isSafe(rewritten)) {
-    if (/^\s*deeplake\s+(mount|login|unmount|status)\b/.test(cmd) && !/[;&|]/.test(cmd) || cmd.includes("deeplake.ai/install")) {
-      log3(`deeplake CLI command \u2014 passing through`);
-      return;
-    }
     const guidance = "This command is not supported for ~/.deeplake/memory/ operations. Only bash builtins are available: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. Do NOT use python, python3, node, curl, or other interpreters. Rewrite your command using only bash tools and retry.";
     log3(`unsupported command, returning guidance: ${rewritten}`);
     process.stdout.write(guidance);

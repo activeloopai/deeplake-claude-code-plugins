@@ -124,13 +124,6 @@ async function main(): Promise<void> {
   const rewritten = rewritePaths(cmd);
 
   if (!isSafe(rewritten)) {
-    // Pass through deeplake CLI commands (mount, login, etc.)
-    // Anchored to start of string and reject chained commands (;, &&, ||, |).
-    if (/^\s*deeplake\s+(mount|login|unmount|status)\b/.test(cmd) && !/[;&|]/.test(cmd) || cmd.includes("deeplake.ai/install")) {
-      log(`deeplake CLI command — passing through`);
-      return;
-    }
-
     // Instead of hard-blocking (exit code 2), output guidance so the agent self-corrects.
     const guidance = "This command is not supported for ~/.deeplake/memory/ operations. " +
       "Only bash builtins are available: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. " +
