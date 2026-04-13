@@ -192,7 +192,8 @@ export async function switchOrg(orgId: string, orgName?: string): Promise<void> 
 // ── Workspace Commands ───────────────────────────────────────────────────────
 
 export async function listWorkspaces(token: string, apiUrl = DEFAULT_API_URL, orgId?: string): Promise<{ id: string; name: string }[]> {
-  const data = await apiGet("/workspaces", token, apiUrl, orgId) as { id: string; name: string }[];
+  const raw = await apiGet("/workspaces", token, apiUrl, orgId) as any;
+  const data = raw?.data ?? raw;
   return Array.isArray(data) ? data : [];
 }
 
