@@ -346,7 +346,7 @@ function getInstalledVersion() {
     const candidate = join4(dir, "package.json");
     try {
       const pkg = JSON.parse(readFileSync3(candidate, "utf-8"));
-      if (pkg.name === "hivemind" && pkg.version)
+      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version)
         return pkg.version;
     } catch {
     }

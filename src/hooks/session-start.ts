@@ -66,7 +66,7 @@ function getInstalledVersion(): string | null {
     const candidate = join(dir, "package.json");
     try {
       const pkg = JSON.parse(readFileSync(candidate, "utf-8"));
-      if (pkg.name === "hivemind" && pkg.version) return pkg.version;
+      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version) return pkg.version;
     } catch { /* not here, keep looking */ }
     const parent = dirname(dir);
     if (parent === dir) break; // reached filesystem root

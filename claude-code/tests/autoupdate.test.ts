@@ -131,7 +131,7 @@ function getInstalledVersion(bundleDir: string): string | null {
     const candidate = join(dir, "package.json");
     try {
       const pkg = JSON.parse(readFileSync(candidate, "utf-8"));
-      if (pkg.name === "hivemind" && pkg.version) return pkg.version;
+      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version) return pkg.version;
     } catch { /* not here, keep looking */ }
     const parent = dirname(dir);
     if (parent === dir) break;
@@ -197,5 +197,12 @@ describe("getInstalledVersion — walk-up directory search", () => {
     writeFileSync(join(root, "claude-code", "package.json"), JSON.stringify({ name: "hivemind", version: "2.0.0" }));
     // Should find claude-code/package.json first (closer)
     expect(getInstalledVersion(bundleDir)).toBe("2.0.0");
+  });
+
+  it("finds hivemind-codex package name (codex install)", () => {
+    const bundleDir = join(root, "bundle");
+    mkdirSync(bundleDir, { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "hivemind-codex", version: "0.6.7" }));
+    expect(getInstalledVersion(bundleDir)).toBe("0.6.7");
   });
 });
