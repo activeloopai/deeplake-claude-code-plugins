@@ -186,12 +186,15 @@ async function main(): Promise<void> {
           log(`autoupdate: updating ${current} → ${latest}`);
           try {
             const tag = `v${latest}`;
-            const findCmd = `PLUGIN_DIR=$(find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1); ` +
-              `if [ -n "$PLUGIN_DIR" ]; then ` +
-              `VERSION_DIR=$(ls -1d "$PLUGIN_DIR"/*/ 2>/dev/null | tail -1); ` +
+            // Try two install locations: ~/.codex/plugins/cache (plugin system) and ~/.codex/hivemind/ (manual install)
+            const findCmd = `INSTALL_DIR=""; ` +
+              `CACHE_DIR=$(find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1); ` +
+              `if [ -n "$CACHE_DIR" ]; then INSTALL_DIR=$(ls -1d "$CACHE_DIR"/*/ 2>/dev/null | tail -1); fi; ` +
+              `if [ -z "$INSTALL_DIR" ] && [ -d ~/.codex/hivemind ]; then INSTALL_DIR=~/.codex/hivemind; fi; ` +
+              `if [ -n "$INSTALL_DIR" ]; then ` +
               `TMPDIR=$(mktemp -d); ` +
               `git clone --depth 1 --branch ${tag} -q https://github.com/activeloopai/hivemind.git "$TMPDIR/hivemind" 2>/dev/null && ` +
-              `cp -r "$TMPDIR/hivemind/codex/"* "$VERSION_DIR/" 2>/dev/null; ` +
+              `cp -r "$TMPDIR/hivemind/codex/"* "$INSTALL_DIR/" 2>/dev/null; ` +
               `rm -rf "$TMPDIR"; fi`;
             execSync(findCmd, { stdio: "ignore", timeout: 60_000 });
             updateNotice = `\n\nHivemind auto-updated: ${current} → ${latest}. Restart Codex to apply.`;
