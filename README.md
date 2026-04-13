@@ -17,13 +17,12 @@
 </p>
 
 <p align="center">
-  Persistent, cloud-backed shared memory for AI agents.<br>
-  Captures everything. Recalls anything. Shares across sessions, teammates, and machines.
+  Persistent, cloud-backed shared memory for <b>Claude Code • OpenClaw • Codex</b> agents.<br>
 </p>
 
----
+> One session ends, everything important disappear. Hivemind finally fixes the "agent amnesia" problem. 
 
-## What it does
+It automatically captures every prompt, tool call, decision, and file operation. Then turns them into searchable memory that is instantly available to every agent and teammate across sessions, machines, and time.
 
 - 🧠 **Captures** every session's prompts, tool calls, and responses into a shared SQL table on Deeplake Cloud
 - 🔍 **Searches** across all memory with lexical search (falls back to grep when index unavailable)
@@ -35,9 +34,9 @@
 
 | Platform        | Status         | Install                                                    |
 |-----------------|----------------|------------------------------------------------------------|
-| **Claude Code** | ✅ Stable      | See [Quick start](#quick-start-claude-code)                |
-| **OpenClaw**    | 🔧 Beta        | See [Quick start](#quick-start-openclaw)                   |
-| **Codex**       | 🔧 Beta        | See [Quick start](#quick-start-codex)                      |
+| **Claude Code** | ✅ Stable      | See [Quick start](#claude-code-setup)                |
+| **OpenClaw**    | 🔧 Beta        | See [Quick start](#install-from-clawhub-telegram-tui-whatsapp)                   |
+| **Codex**       | 🔧 Beta        | See [Quick start](#tell-codex-to-fetch-and-follow-the-install-instructions)                      |
 
 ## Claude Code Setup
 
@@ -78,7 +77,7 @@ The plugin auto-updates on each session start. To manually update:
   <summary><b> OpenClaw Setup </b></summary>
 
 
-Install from ClawHub (Telegram, TUI, WhatsApp):
+#### Install from ClawHub (Telegram, TUI, WhatsApp):
 
 ```
 openclaw plugins install hivemind
@@ -89,7 +88,7 @@ Send a message. The plugin sends you an auth link. Click, sign in, done.
 <details>
   <summary><b> Codex Setup </b></summary>
 
-Tell Codex to fetch and follow the install instructions:
+#### Tell Codex to fetch and follow the install instructions:
 
 ```
 Fetch and follow instructions from https://raw.githubusercontent.com/activeloopai/hivemind/main/codex/INSTALL.md
