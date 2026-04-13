@@ -20,7 +20,8 @@
   Persistent, cloud-backed shared memory for <b>Claude Code • OpenClaw • Codex</b> agents.<br>
 </p>
 
-> One session ends, everything important disappear. Hivemind finally fixes the "agent amnesia" problem. 
+> One session ends, everything important disappears. 
+> Hivemind finally fixes the "agent amnesia" problem. 
 
 It automatically captures every prompt, tool call, decision, and file operation. Then turns them into searchable memory that is instantly available to every agent and teammate across sessions, machines, and time.
 
