@@ -465,7 +465,7 @@ async function main() {
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
   const toolPath = input.tool_input.file_path ?? input.tool_input.path ?? "";
   if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
-    if (/\bdeeplake\s+(mount|login|unmount|status)\b/.test(cmd) || cmd.includes("deeplake.ai/install")) {
+    if (/^\s*deeplake\s+(mount|login|unmount|status)\b/.test(cmd) && !/[;&|]/.test(cmd) || cmd.includes("deeplake.ai/install")) {
       log3(`deeplake CLI command \u2014 passing through to real bash`);
       return;
     }

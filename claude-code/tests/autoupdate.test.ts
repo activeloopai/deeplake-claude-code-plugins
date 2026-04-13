@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 
 // ── isNewer (extracted from session-start.ts) ───────────────────────────────
@@ -126,11 +126,9 @@ describe("autoupdate credential defaults", () => {
  * walks up from bundleDir looking for a package.json with name "hivemind".
  */
 function getInstalledVersion(bundleDir: string): string | null {
-  const { readFileSync } = require("node:fs");
-  const { join: pjoin, dirname } = require("node:path");
   let dir = bundleDir;
   for (let i = 0; i < 5; i++) {
-    const candidate = pjoin(dir, "package.json");
+    const candidate = join(dir, "package.json");
     try {
       const pkg = JSON.parse(readFileSync(candidate, "utf-8"));
       if (pkg.name === "hivemind" && pkg.version) return pkg.version;

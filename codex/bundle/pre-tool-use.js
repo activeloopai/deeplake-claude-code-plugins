@@ -427,7 +427,7 @@ async function main() {
     return;
   const rewritten = rewritePaths(cmd);
   if (!isSafe(rewritten)) {
-    if (/\bdeeplake\s+(mount|login|unmount|status)\b/.test(cmd) || cmd.includes("deeplake.ai/install")) {
+    if (/^\s*deeplake\s+(mount|login|unmount|status)\b/.test(cmd) && !/[;&|]/.test(cmd) || cmd.includes("deeplake.ai/install")) {
       log3(`deeplake CLI command \u2014 passing through`);
       return;
     }

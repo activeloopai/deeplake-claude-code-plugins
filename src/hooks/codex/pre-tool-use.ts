@@ -99,12 +99,6 @@ function blockWithContent(content: string): never {
   process.exit(2);
 }
 
-/** Block the command with an error/denial message. */
-function blockWithDeny(reason: string): never {
-  process.stderr.write(reason);
-  process.exit(2);
-}
-
 /** Run a command through the virtual shell and return the output. */
 function runVirtualShell(cmd: string): string {
   try {
@@ -131,7 +125,8 @@ async function main(): Promise<void> {
 
   if (!isSafe(rewritten)) {
     // Pass through deeplake CLI commands (mount, login, etc.)
-    if (/\bdeeplake\s+(mount|login|unmount|status)\b/.test(cmd) || cmd.includes("deeplake.ai/install")) {
+    // Anchored to start of string and reject chained commands (;, &&, ||, |).
+    if (/^\s*deeplake\s+(mount|login|unmount|status)\b/.test(cmd) && !/[;&|]/.test(cmd) || cmd.includes("deeplake.ai/install")) {
       log(`deeplake CLI command — passing through`);
       return;
     }

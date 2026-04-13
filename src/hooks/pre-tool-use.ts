@@ -138,8 +138,9 @@ async function main(): Promise<void> {
   // Also check non-Bash tools (Read/Write/Edit/Glob/Grep) that touch memory but didn't get a shellCmd
   const toolPath = (input.tool_input.file_path ?? input.tool_input.path ?? "") as string;
   if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
-    // Pass through deeplake CLI commands (mount, login, etc.) to real bash
-    if (/\bdeeplake\s+(mount|login|unmount|status)\b/.test(cmd) || cmd.includes("deeplake.ai/install")) {
+    // Pass through deeplake CLI commands (mount, login, etc.) to real bash.
+    // Anchored to start of string and reject chained commands (;, &&, ||, |).
+    if (/^\s*deeplake\s+(mount|login|unmount|status)\b/.test(cmd) && !/[;&|]/.test(cmd) || cmd.includes("deeplake.ai/install")) {
       log(`deeplake CLI command — passing through to real bash`);
       return;
     }
