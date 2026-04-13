@@ -108,12 +108,13 @@ await build({
       }));
       build.onLoad({ filter: /.*/, namespace: "fs-wrap" }, () => ({
         contents: [
-          'const _f = await import("node:" + "fs");',
+          'import { createRequire } from "node:module";',
+          'const _f = createRequire(import.meta.url)("fs");',
           'export const { existsSync, writeFileSync, mkdirSync, appendFileSync } = _f;',
           'const _k = ["rea","dFile","Sync"].join("");',
           'export const rfs = _f[_k];',
           'export { rfs as readFileSync };',
-          'export default _f.default ?? _f;',
+          'export default _f;',
         ].join("\n"),
         loader: "js",
       }));
