@@ -309,6 +309,7 @@ var context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared 
 
 Structure: index.md (start here) \u2192 summaries/*.md \u2192 sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
 Search: grep -r "keyword" ~/.deeplake/memory/
+IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem.
 Do NOT spawn subagents to read deeplake memory.`;
 var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 var VERSION_CHECK_TIMEOUT = 3e3;
@@ -320,13 +321,21 @@ function getInstalledVersion() {
       return plugin.version;
   } catch {
   }
-  try {
-    const pkgPath = join4(__bundleDir, "..", "package.json");
-    const pkg = JSON.parse(readFileSync3(pkgPath, "utf-8"));
-    return pkg.version ?? null;
-  } catch {
-    return null;
+  let dir = __bundleDir;
+  for (let i = 0; i < 5; i++) {
+    const candidate = join4(dir, "package.json");
+    try {
+      const pkg = JSON.parse(readFileSync3(candidate, "utf-8"));
+      if (pkg.name === "hivemind" && pkg.version)
+        return pkg.version;
+    } catch {
+    }
+    const parent = dirname(dir);
+    if (parent === dir)
+      break;
+    dir = parent;
   }
+  return null;
 }
 async function getLatestVersion() {
   try {
