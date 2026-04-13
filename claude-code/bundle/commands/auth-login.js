@@ -130,7 +130,7 @@ async function switchOrg(orgId, orgName) {
 }
 async function listWorkspaces(token, apiUrl = DEFAULT_API_URL, orgId) {
   const raw = await apiGet("/workspaces", token, apiUrl, orgId);
-  const data = raw?.data ?? raw;
+  const data = raw.data ?? raw;
   return Array.isArray(data) ? data : [];
 }
 async function switchWorkspace(workspaceId) {
