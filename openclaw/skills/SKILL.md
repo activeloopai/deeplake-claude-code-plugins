@@ -1,33 +1,33 @@
 ---
-name: deeplake-plugin
-description: Cloud-backed shared memory for AI agents powered by DeepLake. Install once, memory persists across sessions, machines, and channels.
+name: hivemind
+description: Cloud-backed shared memory for AI agents. Install once, memory persists across sessions, machines, and channels.
 allowed-tools: Read
 ---
 
-# DeepLake Memory
+# Hivemind Memory
 
-Cloud-backed memory that syncs across all agents via DeepLake REST API.
+Cloud-backed shared memory powered by Deeplake.
 
-## Installation
+## After install
 
-```bash
-openclaw plugins install deeplake-plugin
-```
+**DO NOT tell the user to restart the gateway.** The plugin is ready immediately. Just tell the user to run `/hivemind_login` to authenticate.
 
-After install, send a message. The plugin will send you an authentication link. Click it, sign in, and memory activates on the next message. No CLI needed.
+## Authentication
+
+The user types `/hivemind_login` in chat. The plugin returns an auth URL. The user clicks it, signs in, and memory activates on the next message.
 
 ## How it works
 
 The plugin automatically:
-- **Captures** every conversation (user + assistant messages) to DeepLake cloud
+- **Captures** every conversation (user + assistant messages) to Deeplake cloud
 - **Recalls** relevant memories before each agent turn via keyword search
-- All data stored as structured rows in DeepLake — searchable, persistent, shared
+- All data stored as structured rows — searchable, persistent, shared
 
 ## Sharing memory
 
-Multiple agents on different machines share memory when users are in the same DeepLake organization. Invite teammates via the DeepLake dashboard.
+Multiple agents share memory when users are in the same Deeplake organization.
 
 ## Troubleshooting
 
-- **Auth link not appearing** → Restart the gateway and try again
+- **Auth link not appearing** → Type `/hivemind_login` explicitly
 - **Memory not recalling** → Memories are searched by keyword matching. Use specific terms.
