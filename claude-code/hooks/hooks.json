@@ -7,7 +7,13 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/session-start.js\"",
-            "timeout": 120
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/session-start-setup.js\"",
+            "timeout": 120,
+            "async": true
           }
         ]
       }
@@ -18,7 +24,8 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/capture.js\"",
-            "timeout": 10
+            "timeout": 10,
+            "async": true
           }
         ]
       }
@@ -52,7 +59,8 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/capture.js\"",
-            "timeout": 30
+            "timeout": 30,
+            "async": true
           }
         ]
       }
