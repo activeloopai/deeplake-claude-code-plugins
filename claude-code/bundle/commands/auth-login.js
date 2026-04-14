@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // dist/src/commands/auth.js
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
@@ -21,6 +21,13 @@ function saveCredentials(creds) {
   if (!existsSync(CONFIG_DIR))
     mkdirSync(CONFIG_DIR, { recursive: true, mode: 448 });
   writeFileSync(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
+}
+function deleteCredentials() {
+  if (existsSync(CREDS_PATH)) {
+    unlinkSync(CREDS_PATH);
+    return true;
+  }
+  return false;
 }
 async function apiGet(path, token, apiUrl, orgId) {
   const headers = {
@@ -723,12 +730,7 @@ async function main() {
       break;
     }
     case "logout": {
-      const { existsSync: existsSync3, unlinkSync } = await import("node:fs");
-      const { join: join4 } = await import("node:path");
-      const { homedir: homedir4 } = await import("node:os");
-      const credFile = join4(homedir4(), ".deeplake", "credentials.json");
-      if (existsSync3(credFile)) {
-        unlinkSync(credFile);
+      if (deleteCredentials()) {
         console.log("Logged out. Credentials removed.");
       } else {
         console.log("Not logged in.");

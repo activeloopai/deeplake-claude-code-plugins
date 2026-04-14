@@ -19,7 +19,7 @@
  */
 
 import {
-  login, loadCredentials, saveCredentials, listOrgs, switchOrg,
+  login, loadCredentials, saveCredentials, deleteCredentials, listOrgs, switchOrg,
   listWorkspaces, switchWorkspace,
   inviteMember, listMembers, removeMember,
 } from "./auth.js";
@@ -136,12 +136,7 @@ async function main(): Promise<void> {
     }
 
     case "logout": {
-      const { existsSync, unlinkSync } = await import("node:fs");
-      const { join } = await import("node:path");
-      const { homedir } = await import("node:os");
-      const credFile = join(homedir(), ".deeplake", "credentials.json");
-      if (existsSync(credFile)) {
-        unlinkSync(credFile);
+      if (deleteCredentials()) {
         console.log("Logged out. Credentials removed.");
       } else {
         console.log("Not logged in.");
