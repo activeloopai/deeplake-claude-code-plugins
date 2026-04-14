@@ -1,17 +1,16 @@
 #!/usr/bin/env node
 
 /**
- * Capture hook — writes each session event as a separate row in the sessions table.
- * One INSERT per event, no concat, no race conditions.
+ * Capture hook — appends each session event to a local JSONL queue file.
+ * No network calls — events are flushed to cloud at session end by the wiki worker.
  *
  * Used by: UserPromptSubmit, PostToolUse (async), Stop, SubagentStop
+ *
+ * Queue file: ~/.deeplake/capture/<sessionId>.jsonl
  */
 
-import { homedir } from "node:os";
 import { readStdin } from "../utils/stdin.js";
-import { loadConfig } from "../config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr } from "../utils/sql.js";
+import { appendEvent } from "../utils/capture-queue.js";
 import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("capture", msg);
 
@@ -38,26 +37,10 @@ interface HookInput {
 
 const CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
 
-/** Build the session path matching the CLI convention:
- *  /sessions/<username>/<username>_<org>_<workspace>_<slug>.jsonl */
-function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
-  const userName = config.userName;
-  const orgName = config.orgName;
-  const workspace = config.workspaceId ?? "default";
-
-  return `/sessions/${userName}/${userName}_${orgName}_${workspace}_${sessionId}.jsonl`;
-}
-
 async function main(): Promise<void> {
   if (!CAPTURE) return;
   const input = await readStdin<HookInput>();
-  const config = loadConfig();
-  if (!config) { log("no config"); return; }
 
-  const sessionsTable = config.sessionsTableName;
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
-
-  // Build the event entry
   const ts = new Date().toISOString();
   const meta = {
     session_id: input.session_id,
@@ -105,38 +88,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  const sessionPath = buildSessionPath(config, input.session_id);
-  const line = JSON.stringify(entry);
-  log(`writing to ${sessionPath}`);
-
-  // Simple INSERT — one row per event, no concat, no race conditions.
-  const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-  const filename = sessionPath.split("/").pop() ?? "";
-
-  // For JSONB: only escape single quotes for the SQL literal, keep JSON structure intact.
-  // sqlStr() would also escape backslashes and strip control chars, corrupting the JSON.
-  const jsonForSql = line.replace(/'/g, "''");
-
-  const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'claude_code', '${ts}', '${ts}')`;
-
-  try {
-    await api.query(insertSql);
-  } catch (e: any) {
-    // Fallback: table might not exist (session-start failed or org switched mid-session).
-    // Create it and retry once.
-    if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
-      log("table missing, creating and retrying");
-      await api.ensureSessionsTable(sessionsTable);
-      await api.query(insertSql);
-    } else {
-      throw e;
-    }
-  }
-
-  log("capture ok → cloud");
+  appendEvent(input.session_id, entry);
+  log("capture ok → local queue");
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
