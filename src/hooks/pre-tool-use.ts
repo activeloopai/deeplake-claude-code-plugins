@@ -154,7 +154,7 @@ async function main(): Promise<void> {
         permissionDecision: "allow",
         updatedInput: {
           command: `echo ${JSON.stringify(guidance)}`,
-          description: "[DeepLake] unsupported command — rewrite using bash builtins",
+          description: "[Deeplake] unsupported command — rewrite using bash builtins",
         },
       },
     }));
@@ -183,7 +183,7 @@ async function main(): Promise<void> {
               permissionDecision: "allow",
               updatedInput: {
                 command: `echo ${JSON.stringify(rows[0]["summary"])}`,
-                description: `[DeepLake direct] cat ${virtualPath}`,
+                description: `[Deeplake direct] cat ${virtualPath}`,
               },
             },
           }));
@@ -217,7 +217,7 @@ async function main(): Promise<void> {
               permissionDecision: "allow",
               updatedInput: {
                 command: `echo ${JSON.stringify(results || "(no matches)")}`,
-                description: `[DeepLake direct] grep ${pattern}`,
+                description: `[Deeplake direct] grep ${pattern}`,
               },
             },
           }));
@@ -240,7 +240,7 @@ async function main(): Promise<void> {
       permissionDecision: "allow",
       updatedInput: {
         command: rewrittenCommand,
-        description: `[DeepLake] ${shellCmd}`,
+        description: `[Deeplake] ${shellCmd}`,
       },
     },
   };

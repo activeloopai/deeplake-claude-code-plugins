@@ -126,6 +126,7 @@ function addToLoadPaths(): void {
 // --- API instance ---
 let api: DeeplakeApi | null = null;
 let sessionsTable = "sessions";
+let captureEnabled = true;
 const capturedCounts = new Map<string, number>();
 const fallbackSessionId = crypto.randomUUID();
 
@@ -171,6 +172,15 @@ export default definePluginEntry({
           }
           const url = await requestAuth();
           return { text: `🔐 Sign in to activate Hivemind memory:\n\n${url}\n\nAfter signing in, send another message.` };
+        },
+      });
+
+      pluginApi.registerCommand({
+        name: "hivemind_capture",
+        description: "Toggle conversation capture on/off",
+        handler: async () => {
+          captureEnabled = !captureEnabled;
+          return { text: captureEnabled ? "✅ Capture enabled — conversations will be stored to Hivemind." : "⏸️ Capture paused — conversations will NOT be stored until you run /hivemind_capture again." };
         },
       });
     }
@@ -239,7 +249,7 @@ export default definePluginEntry({
     if (config.autoCapture !== false) {
       hook("agent_end", async (event) => {
         const ev = event as { success?: boolean; session_id?: string; channel?: string; messages?: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }> };
-        if (!ev.success || !ev.messages?.length) return;
+        if (!captureEnabled || !ev.success || !ev.messages?.length) return;
         try {
           const dl = await getApi();
           if (!dl) return;
