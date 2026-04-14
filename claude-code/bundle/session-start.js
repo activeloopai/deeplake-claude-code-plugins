@@ -3,7 +3,7 @@
 // dist/src/hooks/session-start.js
 import { fileURLToPath } from "node:url";
 import { dirname, join as join4 } from "node:path";
-import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2, readFileSync as readFileSync3 } from "node:fs";
+import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2, readFileSync as readFileSync3, readdirSync, rmSync } from "node:fs";
 import { execSync as execSync2 } from "node:child_process";
 import { homedir as homedir4 } from "node:os";
 
@@ -456,6 +456,18 @@ async function main() {
             const scopes = ["user", "project", "local", "managed"];
             const cmd = scopes.map((s) => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null`).join("; ");
             execSync2(cmd, { stdio: "ignore", timeout: 6e4 });
+            try {
+              const cacheParent = join4(homedir4(), ".claude", "plugins", "cache", "hivemind", "hivemind");
+              const entries = readdirSync(cacheParent, { withFileTypes: true });
+              for (const e of entries) {
+                if (e.isDirectory() && e.name !== latest) {
+                  rmSync(join4(cacheParent, e.name), { recursive: true, force: true });
+                  log3(`cache cleanup: removed old version ${e.name}`);
+                }
+              }
+            } catch (e) {
+              log3(`cache cleanup failed: ${e.message}`);
+            }
             updateNotice = `
 
 \u2705 Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.`;
