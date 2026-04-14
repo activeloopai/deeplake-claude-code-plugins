@@ -200,7 +200,7 @@ async function main(): Promise<void> {
           try {
             const scopes = ["user", "project", "local", "managed"];
             const cmd = scopes
-              .map(s => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null`)
+              .map(s => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null || true`)
               .join("; ");
             execSync(cmd, { stdio: "ignore", timeout: 60_000 });
             // Clean up old cached versions, keep only the latest

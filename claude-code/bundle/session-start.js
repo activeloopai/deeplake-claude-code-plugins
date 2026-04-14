@@ -454,7 +454,7 @@ async function main() {
           log3(`autoupdate: updating ${current} \u2192 ${latest}`);
           try {
             const scopes = ["user", "project", "local", "managed"];
-            const cmd = scopes.map((s) => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null`).join("; ");
+            const cmd = scopes.map((s) => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null || true`).join("; ");
             execSync2(cmd, { stdio: "ignore", timeout: 6e4 });
             try {
               const cacheParent = join4(homedir4(), ".claude", "plugins", "cache", "hivemind", "hivemind");
