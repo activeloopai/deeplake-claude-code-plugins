@@ -168,6 +168,7 @@ async function main() {
     apiUrl: config.apiUrl,
     token: config.token,
     orgId: config.orgId,
+    orgName: config.orgName,
     workspaceId: config.workspaceId,
     memoryTable,
     sessionsTable,
