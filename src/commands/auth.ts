@@ -3,7 +3,7 @@
  * and org/workspace management.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
@@ -58,6 +58,14 @@ export function loadCredentials(): Credentials | null {
 export function saveCredentials(creds: Credentials): void {
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   writeFileSync(CREDS_PATH, JSON.stringify({ ...creds, savedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
+}
+
+export function deleteCredentials(): boolean {
+  if (existsSync(CREDS_PATH)) {
+    unlinkSync(CREDS_PATH);
+    return true;
+  }
+  return false;
 }
 
 // ── JWT Helpers ──────────────────────────────────────────────────────────────

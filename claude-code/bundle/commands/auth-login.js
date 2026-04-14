@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // dist/src/commands/auth.js
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
@@ -21,6 +21,13 @@ function saveCredentials(creds) {
   if (!existsSync(CONFIG_DIR))
     mkdirSync(CONFIG_DIR, { recursive: true, mode: 448 });
   writeFileSync(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
+}
+function deleteCredentials() {
+  if (existsSync(CREDS_PATH)) {
+    unlinkSync(CREDS_PATH);
+    return true;
+  }
+  return false;
 }
 async function apiGet(path, token, apiUrl, orgId) {
   const headers = {
@@ -722,8 +729,16 @@ async function main() {
       }
       break;
     }
+    case "logout": {
+      if (deleteCredentials()) {
+        console.log("Logged out. Credentials removed.");
+      } else {
+        console.log("Not logged in.");
+      }
+      break;
+    }
     default:
-      console.log("Commands: login, whoami, org list, org switch, workspaces, workspace, sessions prune, invite, members, remove, autoupdate");
+      console.log("Commands: login, logout, whoami, org list, org switch, workspaces, workspace, sessions prune, invite, members, remove, autoupdate");
   }
 }
 main().catch((e) => {
