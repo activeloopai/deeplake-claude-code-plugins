@@ -38,6 +38,43 @@ interface PluginAPI {
 }
 
 const DEFAULT_API_URL = "https://api.deeplake.ai";
+const GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/openclaw/package.json";
+
+function getInstalledVersion(): string | null {
+  try {
+    // dist/index.js → package.json is one level up
+    const dir = new URL(".", import.meta.url).pathname;
+    const candidates = [join(dir, "..", "package.json"), join(dir, "package.json")];
+    for (const c of candidates) {
+      try {
+        const pkg = JSON.parse(readFileSync(c, "utf-8"));
+        if (pkg.name === "hivemind" && pkg.version) return pkg.version;
+      } catch {}
+    }
+  } catch {}
+  return null;
+}
+
+function isNewer(latest: string, current: string): boolean {
+  const parse = (v: string) => v.split(".").map(Number);
+  const [la, lb, lc] = parse(latest);
+  const [ca, cb, cc] = parse(current);
+  return la > ca || (la === ca && lb > cb) || (la === ca && lb === cb && lc > cc);
+}
+
+async function checkForUpdate(logger: PluginLogger): Promise<void> {
+  try {
+    const current = getInstalledVersion();
+    if (!current) return;
+    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return;
+    const pkg = await res.json();
+    const latest = pkg.version;
+    if (latest && isNewer(latest, current)) {
+      logger.info?.(`⬆️ Hivemind update available: ${current} → ${latest}. Run: openclaw plugins update hivemind`);
+    }
+  } catch {}
+}
 
 // --- Auth state ---
 let authPending = false;
@@ -313,6 +350,9 @@ export default definePluginEntry({
         logger.error(`Pre-auth failed: ${err instanceof Error ? err.message : String(err)}`);
       });
     }
+
+    // Non-blocking version check
+    checkForUpdate(logger).catch(() => {});
 
     logger.info?.("Hivemind plugin registered");
     } catch (err) {
