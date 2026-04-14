@@ -18,8 +18,7 @@ import { writeFileSync, readFileSync, mkdirSync, appendFileSync, existsSync } fr
 import { homedir, tmpdir } from "node:os";
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
-import { DeeplakeApi } from "../../deeplake-api.js";
-import { sqlStr } from "../../utils/sql.js";
+import { appendEvent } from "../../utils/capture-queue.js";
 import { log as _log } from "../../utils/debug.js";
 
 const log = (msg: string) => _log("codex-stop", msg);
@@ -117,11 +116,9 @@ async function main(): Promise<void> {
   const config = loadConfig();
   if (!config) { log("no config"); return; }
 
-  // 1. Capture the stop event (try to extract last assistant message from transcript)
+  // 1. Capture the stop event to local queue (no network)
   if (CAPTURE) {
     try {
-      const sessionsTable = config.sessionsTableName;
-      const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
       const ts = new Date().toISOString();
 
       // Codex Stop doesn't include last_assistant_message, but it provides
@@ -132,13 +129,10 @@ async function main(): Promise<void> {
           const transcriptPath = input.transcript_path;
           if (existsSync(transcriptPath)) {
             const transcript = readFileSync(transcriptPath, "utf-8");
-            // Codex transcript is JSONL with format:
-            // {"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"..."}]}}
             const lines = transcript.trim().split("\n").reverse();
             for (const line of lines) {
               try {
                 const entry = JSON.parse(line);
-                // Codex nests the message inside payload
                 const msg = entry.payload ?? entry;
                 if (msg.role === "assistant" && msg.content) {
                   const content = typeof msg.content === "string"
@@ -160,7 +154,7 @@ async function main(): Promise<void> {
         }
       }
 
-      const entry = {
+      appendEvent(sessionId, {
         id: crypto.randomUUID(),
         session_id: sessionId,
         transcript_path: input.transcript_path,
@@ -170,20 +164,8 @@ async function main(): Promise<void> {
         timestamp: ts,
         type: lastAssistantMessage ? "assistant_message" : "assistant_stop",
         content: lastAssistantMessage,
-      };
-      const line = JSON.stringify(entry);
-      const sessionPath = buildSessionPath(config, sessionId);
-      const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-      const filename = sessionPath.split("/").pop() ?? "";
-      const jsonForSql = sqlStr(line);
-
-      const insertSql =
-        `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
-        `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ` +
-        `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', 'Stop', 'codex', '${ts}', '${ts}')`;
-
-      await api.query(insertSql);
-      log("stop event captured");
+      });
+      log("stop event captured → local queue");
     } catch (e: any) {
       log(`capture failed: ${e.message}`);
     }
@@ -204,6 +186,7 @@ async function main(): Promise<void> {
     apiUrl: config.apiUrl,
     token: config.token,
     orgId: config.orgId,
+    orgName: config.orgName,
     workspaceId: config.workspaceId,
     memoryTable,
     sessionsTable,

@@ -1,21 +1,16 @@
 #!/usr/bin/env node
 
 /**
- * Codex Capture hook — writes each session event as a row in the sessions table.
+ * Codex Capture hook — appends each session event to a local JSONL queue file.
+ * No network calls — events are flushed to cloud at session end by the wiki worker.
  *
  * Used by: UserPromptSubmit, PostToolUse
  *
- * Codex input fields:
- *   All events: session_id, transcript_path, cwd, hook_event_name, model
- *   UserPromptSubmit: prompt (user text)
- *   PostToolUse: tool_name, tool_use_id, tool_input, tool_response
- *   Stop: (no extra fields — Codex has no last_assistant_message equivalent)
+ * Queue file: ~/.deeplake/capture/<sessionId>.jsonl
  */
 
 import { readStdin } from "../../utils/stdin.js";
-import { loadConfig } from "../../config.js";
-import { DeeplakeApi } from "../../deeplake-api.js";
-import { sqlStr } from "../../utils/sql.js";
+import { appendEvent } from "../../utils/capture-queue.js";
 import { log as _log } from "../../utils/debug.js";
 const log = (msg: string) => _log("codex-capture", msg);
 
@@ -37,18 +32,9 @@ interface CodexHookInput {
 
 const CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
 
-function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
-  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
-}
-
 async function main(): Promise<void> {
   if (!CAPTURE) return;
   const input = await readStdin<CodexHookInput>();
-  const config = loadConfig();
-  if (!config) { log("no config"); return; }
-
-  const sessionsTable = config.sessionsTableName;
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
 
   const ts = new Date().toISOString();
   const meta = {
@@ -87,32 +73,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  const sessionPath = buildSessionPath(config, input.session_id);
-  const line = JSON.stringify(entry);
-  log(`writing to ${sessionPath}`);
-
-  const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-  const filename = sessionPath.split("/").pop() ?? "";
-  const jsonForSql = sqlStr(line);
-
-  const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'codex', '${ts}', '${ts}')`;
-
-  try {
-    await api.query(insertSql);
-  } catch (e: any) {
-    if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
-      log("table missing, creating and retrying");
-      await api.ensureSessionsTable(sessionsTable);
-      await api.query(insertSql);
-    } else {
-      throw e;
-    }
-  }
-
-  log("capture ok");
+  appendEvent(input.session_id, entry);
+  log("capture ok → local queue");
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
