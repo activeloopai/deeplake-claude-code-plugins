@@ -1,5 +1,7 @@
 import { build } from "esbuild";
-import { chmodSync } from "node:fs";
+import { chmodSync, writeFileSync } from "node:fs";
+
+const esmPackageJson = '{"type":"module"}\n';
 
 // Claude Code plugin
 const ccHooks = [
@@ -32,6 +34,7 @@ await build({
 for (const h of ccAll) {
   chmodSync(`claude-code/bundle/${h.out}.js`, 0o755);
 }
+writeFileSync("claude-code/bundle/package.json", esmPackageJson);
 
 // Codex plugin
 const codexHooks = [
@@ -64,6 +67,7 @@ await build({
 for (const h of codexAll) {
   chmodSync(`codex/bundle/${h.out}.js`, 0o755);
 }
+writeFileSync("codex/bundle/package.json", esmPackageJson);
 
 // OpenClaw plugin
 await build({
@@ -74,5 +78,6 @@ await build({
   outdir: "openclaw/dist",
   external: ["node:*"],
 });
+writeFileSync("openclaw/dist/package.json", esmPackageJson);
 
 console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + 1 OpenClaw bundles`);
