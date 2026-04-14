@@ -38,7 +38,7 @@ interface PluginAPI {
 }
 
 const DEFAULT_API_URL = "https://api.deeplake.ai";
-const GITHUB_RAW_PKG = "https://registry.npmjs.org/hivemind/latest";
+const GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/openclaw/package.json";
 
 function getInstalledVersion(): string | null {
   try {
