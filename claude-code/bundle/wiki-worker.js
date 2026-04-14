@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/wiki-worker.js
-import { readFileSync as readFileSync2, writeFileSync, existsSync as existsSync2, appendFileSync as appendFileSync3, mkdirSync as mkdirSync2, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, appendFileSync as appendFileSync2, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join as join3 } from "node:path";
+import { join as join2 } from "node:path";
 
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
@@ -15,40 +15,15 @@ function utcTimestamp(d = /* @__PURE__ */ new Date()) {
   return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
 }
 
-// dist/src/utils/capture-queue.js
-import { appendFileSync as appendFileSync2, mkdirSync, readFileSync, existsSync, unlinkSync } from "node:fs";
-import { join as join2 } from "node:path";
-import { homedir as homedir2 } from "node:os";
-var QUEUE_DIR = join2(homedir2(), ".deeplake", "capture");
-function queuePath(sessionId) {
-  return join2(QUEUE_DIR, `${sessionId}.jsonl`);
-}
-function readEvents(sessionId) {
-  const path = queuePath(sessionId);
-  if (!existsSync(path))
-    return [];
-  const content = readFileSync(path, "utf-8").trim();
-  if (!content)
-    return [];
-  return content.split("\n").map((line) => JSON.parse(line));
-}
-function deleteQueue(sessionId) {
-  const path = queuePath(sessionId);
-  try {
-    unlinkSync(path);
-  } catch {
-  }
-}
-
 // dist/src/hooks/wiki-worker.js
-var cfg = JSON.parse(readFileSync2(process.argv[2], "utf-8"));
+var cfg = JSON.parse(readFileSync(process.argv[2], "utf-8"));
 var tmpDir = cfg.tmpDir;
-var tmpJsonl = join3(tmpDir, "session.jsonl");
-var tmpSummary = join3(tmpDir, "summary.md");
+var tmpJsonl = join2(tmpDir, "session.jsonl");
+var tmpSummary = join2(tmpDir, "summary.md");
 function wlog(msg) {
   try {
-    mkdirSync2(cfg.hooksDir, { recursive: true });
-    appendFileSync3(cfg.wikiLog, `[${utcTimestamp()}] wiki-worker(${cfg.sessionId}): ${msg}
+    mkdirSync(cfg.hooksDir, { recursive: true });
+    appendFileSync2(cfg.wikiLog, `[${utcTimestamp()}] wiki-worker(${cfg.sessionId}): ${msg}
 `);
   } catch {
   }
@@ -73,7 +48,7 @@ async function query(sql, retries = 2) {
         return [];
       return j.rows.map((row) => Object.fromEntries(j.columns.map((col, i) => [col, row[i]])));
     }
-    if (attempt < retries && (r.status === 502 || r.status === 503 || r.status === 429 || r.status === 500)) {
+    if (attempt < retries && (r.status === 502 || r.status === 503 || r.status === 429)) {
       wlog(`API ${r.status}, retrying in ${attempt + 1}s...`);
       await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 1e3));
       continue;
@@ -88,69 +63,21 @@ function cleanup() {
   } catch {
   }
 }
-function buildSessionPath() {
-  const org = cfg.orgName ?? cfg.orgId;
-  return `/sessions/${cfg.userName}/${cfg.userName}_${org}_${cfg.workspaceId}_${cfg.sessionId}.jsonl`;
-}
-async function flushQueue() {
-  const events = readEvents(cfg.sessionId);
-  const jsonlServerPath = buildSessionPath();
-  if (events.length === 0) {
-    wlog("no local events to flush");
-    return { events, jsonlServerPath };
-  }
-  wlog(`flushing ${events.length} events to cloud`);
-  const filename = jsonlServerPath.split("/").pop() ?? "";
-  for (const event of events) {
-    const line = JSON.stringify(event);
-    const jsonForSql = line.replace(/'/g, "''");
-    const ts = event.timestamp ?? (/* @__PURE__ */ new Date()).toISOString();
-    const hookEvent = event.hook_event_name ?? "";
-    try {
-      await query(`INSERT INTO "${cfg.sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${esc(jsonlServerPath)}', '${esc(filename)}', '${jsonForSql}'::jsonb, '${esc(cfg.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${esc(cfg.project)}', '${esc(hookEvent)}', 'claude_code', '${ts}', '${ts}')`);
-    } catch (e) {
-      wlog(`flush event failed: ${e.message}`);
-      throw e;
-    }
-  }
-  deleteQueue(cfg.sessionId);
-  wlog(`flushed ${events.length} events, deleted local queue`);
-  return { events, jsonlServerPath };
-}
 async function main() {
   try {
-    const { events, jsonlServerPath } = await flushQueue();
-    wlog("fetching cloud events");
-    try {
-      await query(`SELECT deeplake_sync_table('${cfg.sessionsTable}')`);
-    } catch {
-    }
-    const cloudRows = await query(`SELECT message, creation_date FROM "${cfg.sessionsTable}" WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`);
-    const seenIds = /* @__PURE__ */ new Set();
-    const allEvents = [];
-    for (const row of cloudRows) {
-      const msg = typeof row.message === "string" ? JSON.parse(row.message) : row.message;
-      const id = msg?.id;
-      if (id && !seenIds.has(id)) {
-        seenIds.add(id);
-        allEvents.push(msg);
-      }
-    }
-    for (const evt of events) {
-      const id = evt.id;
-      if (id && !seenIds.has(id)) {
-        seenIds.add(id);
-        allEvents.push(evt);
-      }
-    }
-    if (allEvents.length === 0) {
+    wlog("fetching session events");
+    await query(`SELECT deeplake_sync_table('${cfg.sessionsTable}')`);
+    const rows = await query(`SELECT message, creation_date FROM "${cfg.sessionsTable}" WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`);
+    if (rows.length === 0) {
       wlog("no session events found \u2014 exiting");
       return;
     }
-    const jsonlContent = allEvents.map((e) => JSON.stringify(e)).join("\n");
-    const jsonlLines = allEvents.length;
+    const jsonlContent = rows.map((r) => typeof r.message === "string" ? r.message : JSON.stringify(r.message)).join("\n");
+    const jsonlLines = rows.length;
+    const pathRows = await query(`SELECT DISTINCT path FROM "${cfg.sessionsTable}" WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`);
+    const jsonlServerPath = pathRows.length > 0 ? pathRows[0].path : `/sessions/unknown/${cfg.sessionId}.jsonl`;
     writeFileSync(tmpJsonl, jsonlContent);
-    wlog(`found ${jsonlLines} total events at ${jsonlServerPath}`);
+    wlog(`found ${jsonlLines} events at ${jsonlServerPath}`);
     let prevOffset = 0;
     try {
       await query(`SELECT deeplake_sync_table('${cfg.memoryTable}')`);
@@ -185,8 +112,8 @@ async function main() {
     } catch (e) {
       wlog(`claude -p failed: ${e.status ?? e.message}`);
     }
-    if (existsSync2(tmpSummary)) {
-      const text = readFileSync2(tmpSummary, "utf-8");
+    if (existsSync(tmpSummary)) {
+      const text = readFileSync(tmpSummary, "utf-8");
       if (text.trim()) {
         const fname = `${cfg.sessionId}.md`;
         const vpath = `/summaries/${cfg.userName}/${fname}`;
