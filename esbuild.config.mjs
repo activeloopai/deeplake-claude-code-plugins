@@ -4,6 +4,7 @@ import { chmodSync } from "node:fs";
 // Claude Code plugin
 const ccHooks = [
   { entry: "dist/src/hooks/session-start.js", out: "session-start" },
+  { entry: "dist/src/hooks/session-start-setup.js", out: "session-start-setup" },
   { entry: "dist/src/hooks/capture.js", out: "capture" },
   { entry: "dist/src/hooks/pre-tool-use.js", out: "pre-tool-use" },
   { entry: "dist/src/hooks/session-end.js", out: "session-end" },
@@ -36,6 +37,7 @@ for (const h of ccAll) {
 // Codex plugin
 const codexHooks = [
   { entry: "dist/src/hooks/codex/session-start.js", out: "session-start" },
+  { entry: "dist/src/hooks/codex/session-start-setup.js", out: "session-start-setup" },
   { entry: "dist/src/hooks/codex/capture.js", out: "capture" },
   { entry: "dist/src/hooks/codex/pre-tool-use.js", out: "pre-tool-use" },
   { entry: "dist/src/hooks/codex/stop.js", out: "stop" },
