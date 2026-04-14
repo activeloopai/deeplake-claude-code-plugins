@@ -394,6 +394,7 @@ async function main() {
     } catch {
     }
   }
+  const captureEnabled = process.env.DEEPLAKE_CAPTURE !== "false";
   if (input.session_id) {
     try {
       const config = loadConfig();
@@ -401,7 +402,9 @@ async function main() {
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
         await api.ensureTable();
         await api.ensureSessionsTable(config.sessionsTableName);
-        await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
+        if (captureEnabled) {
+          await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
+        }
         log3("setup complete");
       }
     } catch (e) {

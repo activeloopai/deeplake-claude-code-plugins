@@ -133,7 +133,8 @@ async function main(): Promise<void> {
     } catch { /* non-fatal */ }
   }
 
-  // Table setup + placeholder
+  // Table setup + sync — always sync, only skip placeholder when capture disabled
+  const captureEnabled = process.env.DEEPLAKE_CAPTURE !== "false";
   if (input.session_id) {
     try {
       const config = loadConfig();
@@ -141,7 +142,9 @@ async function main(): Promise<void> {
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
         await api.ensureTable();
         await api.ensureSessionsTable(config.sessionsTableName);
-        await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
+        if (captureEnabled) {
+          await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
+        }
         log("setup complete");
       }
     } catch (e: any) {

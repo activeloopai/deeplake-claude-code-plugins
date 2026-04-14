@@ -420,6 +420,8 @@ async function main() {
       log3(`capture failed: ${e.message}`);
     }
   }
+  if (!CAPTURE)
+    return;
   const cwd = input.cwd ?? "";
   const memoryTable = config.tableName;
   const sessionsTable = config.sessionsTableName;

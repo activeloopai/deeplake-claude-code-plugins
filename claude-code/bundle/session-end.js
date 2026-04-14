@@ -147,6 +147,8 @@ LENGTH LIMIT: Keep the total summary under 4000 characters. Be dense and concise
 async function main() {
   if (process.env.DEEPLAKE_WIKI_WORKER === "1")
     return;
+  if (process.env.DEEPLAKE_CAPTURE === "false")
+    return;
   const input = await readStdin();
   const sessionId = input.session_id;
   const cwd = input.cwd ?? "";

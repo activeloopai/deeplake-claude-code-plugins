@@ -100,6 +100,8 @@ LENGTH LIMIT: Keep the total summary under 4000 characters. Be dense and concise
 async function main(): Promise<void> {
   // Skip if this is a sub-session spawned by the wiki worker itself
   if (process.env.DEEPLAKE_WIKI_WORKER === "1") return;
+  // Skip when capture is disabled (e.g. benchmark runs)
+  if (process.env.DEEPLAKE_CAPTURE === "false") return;
 
   const input = await readStdin<StopInput>();
   const sessionId = input.session_id;
