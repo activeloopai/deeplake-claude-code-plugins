@@ -197,15 +197,14 @@ async function main(): Promise<void> {
               `cp -r "$TMPDIR/hivemind/codex/"* "$INSTALL_DIR/" 2>/dev/null; ` +
               `rm -rf "$TMPDIR"; fi`;
             execSync(findCmd, { stdio: "ignore", timeout: 60_000 });
-            // Clean up old cached versions
+            // Clean up old cached versions using same find strategy as the update
             try {
-              const cacheBase = join(homedir(), ".codex", "plugins", "cache");
-              const hivemindDirs = execSync(`find "${cacheBase}" -maxdepth 3 -name "hivemind" -type d 2>/dev/null`, { encoding: "utf-8" }).trim().split("\n").filter(Boolean);
-              for (const hDir of hivemindDirs) {
-                const entries = readdirSync(hDir, { withFileTypes: true });
+              const cacheDir = execSync(`find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1`, { encoding: "utf-8" }).trim();
+              if (cacheDir) {
+                const entries = readdirSync(cacheDir, { withFileTypes: true });
                 for (const e of entries) {
                   if (e.isDirectory() && e.name !== latest) {
-                    rmSync(join(hDir, e.name), { recursive: true, force: true });
+                    rmSync(join(cacheDir, e.name), { recursive: true, force: true });
                     log(`cache cleanup: removed old version ${e.name}`);
                   }
                 }

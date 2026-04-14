@@ -437,13 +437,12 @@ async function main() {
             const findCmd = `INSTALL_DIR=""; CACHE_DIR=$(find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1); if [ -n "$CACHE_DIR" ]; then INSTALL_DIR=$(ls -1d "$CACHE_DIR"/*/ 2>/dev/null | tail -1); elif [ -d ~/.codex/hivemind ]; then INSTALL_DIR=~/.codex/hivemind; fi; if [ -n "$INSTALL_DIR" ]; then TMPDIR=$(mktemp -d); git clone --depth 1 --branch ${tag} -q https://github.com/activeloopai/hivemind.git "$TMPDIR/hivemind" 2>/dev/null && cp -r "$TMPDIR/hivemind/codex/"* "$INSTALL_DIR/" 2>/dev/null; rm -rf "$TMPDIR"; fi`;
             execSync2(findCmd, { stdio: "ignore", timeout: 6e4 });
             try {
-              const cacheBase = join4(homedir4(), ".codex", "plugins", "cache");
-              const hivemindDirs = execSync2(`find "${cacheBase}" -maxdepth 3 -name "hivemind" -type d 2>/dev/null`, { encoding: "utf-8" }).trim().split("\n").filter(Boolean);
-              for (const hDir of hivemindDirs) {
-                const entries = readdirSync(hDir, { withFileTypes: true });
+              const cacheDir = execSync2(`find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1`, { encoding: "utf-8" }).trim();
+              if (cacheDir) {
+                const entries = readdirSync(cacheDir, { withFileTypes: true });
                 for (const e of entries) {
                   if (e.isDirectory() && e.name !== latest) {
-                    rmSync(join4(hDir, e.name), { recursive: true, force: true });
+                    rmSync(join4(cacheDir, e.name), { recursive: true, force: true });
                     log3(`cache cleanup: removed old version ${e.name}`);
                   }
                 }
