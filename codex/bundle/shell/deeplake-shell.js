@@ -67170,11 +67170,17 @@ var DeeplakeFs = class _DeeplakeFs {
   // ── Virtual index.md generation ────────────────────────────────────────────
   async generateVirtualIndex() {
     const rows = await this.client.query(`SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" WHERE path LIKE '${sqlStr("/summaries/")}%' ORDER BY last_update_date DESC`);
-    const sessionPathsByUser = /* @__PURE__ */ new Map();
+    const sessionPathsByKey = /* @__PURE__ */ new Map();
     for (const sp of this.sessionPaths) {
-      const m26 = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
-      if (m26)
-        sessionPathsByUser.set(m26[1], sp.slice(1));
+      const hivemind = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
+      if (hivemind) {
+        sessionPathsByKey.set(hivemind[1], sp.slice(1));
+      } else {
+        const fname = sp.split("/").pop() ?? "";
+        const stem = fname.replace(/\.[^.]+$/, "");
+        if (stem)
+          sessionPathsByKey.set(stem, sp.slice(1));
+      }
     }
     const lines = [
       "# Session Index",
@@ -67192,7 +67198,8 @@ var DeeplakeFs = class _DeeplakeFs {
       const summaryUser = match2[1];
       const sessionId = match2[2];
       const relPath = `summaries/${summaryUser}/${sessionId}.md`;
-      const convPath = sessionPathsByUser.get(sessionId);
+      const baseName = sessionId.replace(/_summary$/, "");
+      const convPath = sessionPathsByKey.get(sessionId) ?? sessionPathsByKey.get(baseName);
       const convLink = convPath ? `[messages](${convPath})` : "";
       const project = row["project"] || "";
       const description = row["description"] || "";
