@@ -42,6 +42,13 @@ describe("codex hooks.json", () => {
     expect(sessionStart[0].matcher).toBe("startup|resume");
   });
 
+  it("SessionStart timeout is <= 15s (regression: was 120s)", () => {
+    const sessionStart = hooks.hooks.SessionStart;
+    for (const hook of sessionStart[0].hooks) {
+      expect(hook.timeout).toBeLessThanOrEqual(15);
+    }
+  });
+
   it("no hooks use the async flag (not supported in Codex)", () => {
     for (const [, entries] of Object.entries(hooks.hooks) as [string, any[]][]) {
       for (const entry of entries) {
@@ -87,6 +94,7 @@ describe("codex bundle output", () => {
 
   const expectedFiles = [
     "session-start.js",
+    "session-start-setup.js",
     "capture.js",
     "pre-tool-use.js",
     "stop.js",
