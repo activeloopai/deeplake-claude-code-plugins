@@ -3,7 +3,7 @@
 // dist/src/hooks/codex/session-start.js
 import { fileURLToPath } from "node:url";
 import { dirname, join as join4 } from "node:path";
-import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2, readFileSync as readFileSync3, readdirSync, rmSync } from "node:fs";
+import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2, readFileSync as readFileSync3 } from "node:fs";
 import { execSync as execSync2 } from "node:child_process";
 import { homedir as homedir4 } from "node:os";
 
@@ -436,20 +436,6 @@ async function main() {
             const tag = `v${latest}`;
             const findCmd = `INSTALL_DIR=""; CACHE_DIR=$(find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1); if [ -n "$CACHE_DIR" ]; then INSTALL_DIR=$(ls -1d "$CACHE_DIR"/*/ 2>/dev/null | tail -1); elif [ -d ~/.codex/hivemind ]; then INSTALL_DIR=~/.codex/hivemind; fi; if [ -n "$INSTALL_DIR" ]; then TMPDIR=$(mktemp -d); git clone --depth 1 --branch ${tag} -q https://github.com/activeloopai/hivemind.git "$TMPDIR/hivemind" 2>/dev/null && cp -r "$TMPDIR/hivemind/codex/"* "$INSTALL_DIR/" 2>/dev/null; rm -rf "$TMPDIR"; fi`;
             execSync2(findCmd, { stdio: "ignore", timeout: 6e4 });
-            try {
-              const cacheDir = execSync2(`find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1`, { encoding: "utf-8" }).trim();
-              if (cacheDir) {
-                const entries = readdirSync(cacheDir, { withFileTypes: true });
-                for (const e of entries) {
-                  if (e.isDirectory() && e.name !== latest) {
-                    rmSync(join4(cacheDir, e.name), { recursive: true, force: true });
-                    log3(`cache cleanup: removed old version ${e.name}`);
-                  }
-                }
-              }
-            } catch (e) {
-              log3(`cache cleanup failed: ${e.message}`);
-            }
             updateNotice = `
 
 Hivemind auto-updated: ${current} \u2192 ${latest}. Restart Codex to apply.`;
