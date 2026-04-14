@@ -1,21 +1,30 @@
 #!/usr/bin/env node
 
 /**
- * Background wiki worker — reads session events from the sessions table,
- * runs claude -p to generate a wiki summary, and uploads it to the memory table.
+ * Background wiki worker — flushes local capture queue to cloud,
+ * then generates a wiki summary using claude -p.
  *
- * Invoked by session-end.ts as: node wiki-worker.js <config.json>
+ * Invoked by session-end.ts / codex stop.ts as: node wiki-worker.js <config.json>
+ *
+ * Flow:
+ * 1. Read events from local queue (~/.deeplake/capture/<sessionId>.jsonl)
+ * 2. Batch-upload events to sessions table (cloud)
+ * 3. Delete local queue file
+ * 4. Run claude -p to generate wiki summary
+ * 5. Upload summary to memory table
  */
 
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { utcTimestamp } from "../utils/debug.js";
+import { readEvents, readRawJsonl, deleteQueue } from "../utils/capture-queue.js";
 
 interface WorkerConfig {
   apiUrl: string;
   token: string;
   orgId: string;
+  orgName: string;
   workspaceId: string;
   memoryTable: string;
   sessionsTable: string;
@@ -67,7 +76,7 @@ async function query(sql: string, retries = 2): Promise<Record<string, unknown>[
         Object.fromEntries(j.columns!.map((col, i) => [col, row[i]]))
       );
     }
-    if (attempt < retries && (r.status === 502 || r.status === 503 || r.status === 429)) {
+    if (attempt < retries && (r.status === 502 || r.status === 503 || r.status === 429 || r.status === 500)) {
       wlog(`API ${r.status}, retrying in ${attempt + 1}s...`);
       await new Promise(resolve => setTimeout(resolve, (attempt + 1) * 1000));
       continue;
@@ -81,40 +90,98 @@ function cleanup(): void {
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
+/** Build the session path matching the CLI convention. */
+function buildSessionPath(): string {
+  const org = cfg.orgName ?? cfg.orgId;
+  return `/sessions/${cfg.userName}/${cfg.userName}_${org}_${cfg.workspaceId}_${cfg.sessionId}.jsonl`;
+}
+
+/** Flush local queue events to the cloud sessions table. */
+async function flushQueue(): Promise<{ events: Record<string, unknown>[]; jsonlServerPath: string }> {
+  const events = readEvents(cfg.sessionId);
+  const jsonlServerPath = buildSessionPath();
+
+  if (events.length === 0) {
+    wlog("no local events to flush");
+    return { events, jsonlServerPath };
+  }
+
+  wlog(`flushing ${events.length} events to cloud`);
+  const filename = jsonlServerPath.split("/").pop() ?? "";
+
+  for (const event of events) {
+    const line = JSON.stringify(event);
+    // For JSONB: only escape single quotes for the SQL literal
+    const jsonForSql = line.replace(/'/g, "''");
+    const ts = (event.timestamp as string) ?? new Date().toISOString();
+    const hookEvent = (event.hook_event_name as string) ?? "";
+
+    try {
+      await query(
+        `INSERT INTO "${cfg.sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+        `VALUES ('${crypto.randomUUID()}', '${esc(jsonlServerPath)}', '${esc(filename)}', '${jsonForSql}'::jsonb, '${esc(cfg.userName)}', ` +
+        `${Buffer.byteLength(line, "utf-8")}, '${esc(cfg.project)}', '${esc(hookEvent)}', 'claude_code', '${ts}', '${ts}')`
+      );
+    } catch (e: any) {
+      wlog(`flush event failed: ${e.message}`);
+      // Don't delete queue if flush fails — events will be retried next session end
+      throw e;
+    }
+  }
+
+  deleteQueue(cfg.sessionId);
+  wlog(`flushed ${events.length} events, deleted local queue`);
+  return { events, jsonlServerPath };
+}
+
 async function main(): Promise<void> {
   try {
-    // 1. Fetch session events from sessions table, reconstruct JSONL
-    wlog("fetching session events");
-    await query(`SELECT deeplake_sync_table('${cfg.sessionsTable}')`);
-    const rows = await query(
+    // 1. Flush local queue to cloud
+    const { events, jsonlServerPath } = await flushQueue();
+
+    // 2. Also fetch any events already in cloud (from previous sessions or partial flushes)
+    wlog("fetching cloud events");
+    try {
+      await query(`SELECT deeplake_sync_table('${cfg.sessionsTable}')`);
+    } catch { /* sync might fail on new tables, continue */ }
+    const cloudRows = await query(
       `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
       `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
     );
 
-    if (rows.length === 0) {
+    // Merge: cloud events + local events (deduped by id)
+    const seenIds = new Set<string>();
+    const allEvents: Record<string, unknown>[] = [];
+
+    for (const row of cloudRows) {
+      const msg = typeof row.message === "string" ? JSON.parse(row.message) : row.message;
+      const id = msg?.id as string;
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id);
+        allEvents.push(msg);
+      }
+    }
+    // Add local events not already in cloud (e.g. if flush failed partially)
+    for (const evt of events) {
+      const id = evt.id as string;
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id);
+        allEvents.push(evt);
+      }
+    }
+
+    if (allEvents.length === 0) {
       wlog("no session events found — exiting");
       return;
     }
 
-    // Reconstruct JSONL from individual rows (message is JSONB — may be object or string)
-    const jsonlContent = rows
-      .map(r => typeof r.message === "string" ? r.message : JSON.stringify(r.message))
-      .join("\n");
-    const jsonlLines = rows.length;
-
-    // Derive the server path
-    const pathRows = await query(
-      `SELECT DISTINCT path FROM "${cfg.sessionsTable}" ` +
-      `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`
-    );
-    const jsonlServerPath = pathRows.length > 0
-      ? pathRows[0].path as string
-      : `/sessions/unknown/${cfg.sessionId}.jsonl`;
-
+    // Reconstruct JSONL
+    const jsonlContent = allEvents.map(e => JSON.stringify(e)).join("\n");
+    const jsonlLines = allEvents.length;
     writeFileSync(tmpJsonl, jsonlContent);
-    wlog(`found ${jsonlLines} events at ${jsonlServerPath}`);
+    wlog(`found ${jsonlLines} total events at ${jsonlServerPath}`);
 
-    // 2. Check for existing summary in memory table (resumed session)
+    // 3. Check for existing summary in memory table (resumed session)
     let prevOffset = 0;
     try {
       await query(`SELECT deeplake_sync_table('${cfg.memoryTable}')`);
@@ -131,7 +198,7 @@ async function main(): Promise<void> {
       }
     } catch { /* no existing summary */ }
 
-    // 3. Build prompt and run claude -p
+    // 4. Build prompt and run claude -p
     const prompt = cfg.promptTemplate
       .replace(/__JSONL__/g, tmpJsonl)
       .replace(/__SUMMARY__/g, tmpSummary)
@@ -158,7 +225,7 @@ async function main(): Promise<void> {
       wlog(`claude -p failed: ${e.status ?? e.message}`);
     }
 
-    // 4. Upload summary to memory table
+    // 5. Upload summary to memory table
     if (existsSync(tmpSummary)) {
       const text = readFileSync(tmpSummary, "utf-8");
       if (text.trim()) {
