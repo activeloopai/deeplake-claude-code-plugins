@@ -503,20 +503,54 @@ async function main() {
           }));
           return;
         }
+        if (virtualPath.startsWith("/sessions/")) {
+          const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+          try {
+            const sessionRows = await api.query(`SELECT message::text AS content FROM "${sessionsTable}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
+            if (sessionRows.length > 0 && sessionRows[0]["content"]) {
+              console.log(JSON.stringify({
+                hookSpecificOutput: {
+                  hookEventName: "PreToolUse",
+                  permissionDecision: "allow",
+                  updatedInput: {
+                    command: `echo ${JSON.stringify(sessionRows[0]["content"])}`,
+                    description: `[DeepLake direct] cat ${virtualPath}`
+                  }
+                }
+              }));
+              return;
+            }
+          } catch {
+          }
+        }
       } else if (input.tool_name === "Grep") {
         const pattern = input.tool_input.pattern ?? "";
         const ignoreCase = !!input.tool_input["-i"];
         log3(`direct grep: ${pattern}`);
-        const rows = await api.query(`SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlLike(pattern)}%' LIMIT 5`);
-        if (rows.length > 0) {
+        const likeOp = ignoreCase ? "ILIKE" : "LIKE";
+        const escapedPattern = sqlLike(pattern);
+        const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+        const [memoryRows, sessionRows] = await Promise.all([
+          api.query(`SELECT path, summary FROM "${table}" WHERE summary ${likeOp} '%${escapedPattern}%' LIMIT 5`).catch(() => []),
+          api.query(`SELECT path, message::text AS content FROM "${sessionsTable}" WHERE message::text ${likeOp} '%${escapedPattern}%' LIMIT 3`).catch(() => [])
+        ]);
+        if (memoryRows.length > 0 || sessionRows.length > 0) {
           const allResults = [];
           const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
-          for (const row of rows) {
+          for (const row of memoryRows) {
             const p = row["path"];
             const text = row["summary"];
             if (!text)
               continue;
             const matches = text.split("\n").filter((line) => re.test(line)).slice(0, 5).map((line) => `${p}:${line.slice(0, 300)}`);
+            allResults.push(...matches);
+          }
+          for (const row of sessionRows) {
+            const p = row["path"];
+            const text = row["content"];
+            if (!text)
+              continue;
+            const matches = text.split(/(?:"text"\s*:\s*")/g).filter((chunk) => re.test(chunk)).slice(0, 3).map((chunk) => `${p}:${chunk.slice(0, 300).replace(/\\n/g, " ")}`);
             allResults.push(...matches);
           }
           const results = allResults.join("\n");
