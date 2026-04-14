@@ -8,7 +8,7 @@ import { execSync as execSync2 } from "node:child_process";
 import { homedir as homedir4 } from "node:os";
 
 // dist/src/commands/auth.js
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";

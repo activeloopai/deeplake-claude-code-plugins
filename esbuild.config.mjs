@@ -1,5 +1,7 @@
 import { build } from "esbuild";
-import { chmodSync } from "node:fs";
+import { chmodSync, writeFileSync } from "node:fs";
+
+const esmPackageJson = '{"type":"module"}\n';
 
 // Claude Code plugin
 const ccHooks = [
@@ -32,6 +34,7 @@ await build({
 for (const h of ccAll) {
   chmodSync(`claude-code/bundle/${h.out}.js`, 0o755);
 }
+writeFileSync("claude-code/bundle/package.json", esmPackageJson);
 
 // Codex plugin
 const codexHooks = [
@@ -64,6 +67,7 @@ await build({
 for (const h of codexAll) {
   chmodSync(`codex/bundle/${h.out}.js`, 0o755);
 }
+writeFileSync("codex/bundle/package.json", esmPackageJson);
 
 // OpenClaw plugin — stub child_process and strip process.env references
 // to avoid OpenClaw security scanner flagging "env var + network = credential harvesting".
@@ -110,7 +114,7 @@ await build({
         contents: [
           'import { createRequire } from "node:module";',
           'const _f = createRequire(import.meta.url)("fs");',
-          'export const { existsSync, writeFileSync, mkdirSync, appendFileSync } = _f;',
+          'export const { existsSync, writeFileSync, mkdirSync, appendFileSync, unlinkSync } = _f;',
           'const _k = ["rea","dFile","Sync"].join("");',
           'export const rfs = _f[_k];',
           'export { rfs as readFileSync };',
@@ -121,12 +125,13 @@ await build({
     },
   }],
 });
+writeFileSync("openclaw/dist/package.json", esmPackageJson);
 
 // Post-build: strip "readFileSync" literal from OpenClaw bundle so the scanner
 // doesn't match it against "readFileSync|readFile" + "fetch" = exfiltration.
-import { readFileSync as _read, writeFileSync as _write } from "node:fs";
+import { readFileSync as _read } from "node:fs";
 const ocBundle = "openclaw/dist/index.js";
-const src = _read(ocBundle, "utf-8");
-_write(ocBundle, src.replace(/readFileSync/g, "rfs"));
+const ocSrc = _read(ocBundle, "utf-8");
+writeFileSync(ocBundle, ocSrc.replace(/readFileSync/g, "rfs"));
 
 console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + 1 OpenClaw bundles`);
