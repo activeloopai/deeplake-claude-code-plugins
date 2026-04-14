@@ -114,7 +114,7 @@ await build({
         contents: [
           'import { createRequire } from "node:module";',
           'const _f = createRequire(import.meta.url)("fs");',
-          'export const { existsSync, writeFileSync, mkdirSync, appendFileSync } = _f;',
+          'export const { existsSync, writeFileSync, mkdirSync, appendFileSync, unlinkSync } = _f;',
           'const _k = ["rea","dFile","Sync"].join("");',
           'export const rfs = _f[_k];',
           'export { rfs as readFileSync };',
