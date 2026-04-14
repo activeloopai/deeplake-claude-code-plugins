@@ -210,6 +210,28 @@ export default definePluginEntry({
           return { text: `🔐 Sign in to activate Hivemind memory:\n\n${url}\n\nAfter signing in, send another message.` };
         },
       });
+
+      pluginApi.registerCommand({
+        name: "hivemind_update",
+        description: "Check for Hivemind updates and show how to upgrade",
+        handler: async () => {
+          const current = getInstalledVersion();
+          if (!current) return { text: "Could not determine installed version." };
+          try {
+            const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(3000) });
+            if (!res.ok) return { text: `Current version: ${current}. Could not check for updates.` };
+            const pkg = await res.json();
+            const latest = typeof pkg.version === "string" ? pkg.version : null;
+            if (!latest) return { text: `Current version: ${current}. Could not parse latest version.` };
+            if (isNewer(latest, current)) {
+              return { text: `⬆️ Update available: ${current} → ${latest}\n\nRun in your terminal:\n\`openclaw plugins update hivemind\`` };
+            }
+            return { text: `✅ Hivemind v${current} is up to date.` };
+          } catch {
+            return { text: `Current version: ${current}. Could not check for updates.` };
+          }
+        },
+      });
     }
 
     const config = (pluginApi.pluginConfig ?? {}) as PluginConfig;
