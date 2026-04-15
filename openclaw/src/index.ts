@@ -365,12 +365,15 @@ export default definePluginEntry({
       });
     }
 
-    // Pre-fetch auth URL during registration
+    // Prompt login if not authenticated
     const creds = loadCredentials();
-    if (!creds?.token && !authPending) {
-      requestAuth().catch(err => {
-        logger.error(`Pre-auth failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
+    if (!creds?.token) {
+      logger.info?.("Hivemind installed. Run /hivemind_login to authenticate and activate shared memory.");
+      if (!authPending) {
+        requestAuth().catch(err => {
+          logger.error(`Pre-auth failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
     }
 
     // Non-blocking version check
