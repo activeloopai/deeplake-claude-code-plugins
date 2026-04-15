@@ -9,6 +9,7 @@ import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { sqlStr, sqlLike } from "../utils/sql.js";
+import { type GrepParams, parseBashGrep, handleGrepDirect } from "./grep-direct.js";
 
 import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("pre", msg);
@@ -128,6 +129,45 @@ function getShellCommand(toolName: string, toolInput: Record<string, unknown>): 
   return null;
 }
 
+// ── Output helper ────────────────────────────────────────────────────────────
+
+function emitResult(command: string, description: string): void {
+  console.log(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      updatedInput: { command, description },
+    },
+  }));
+}
+
+// ── Grep parameter extraction (Claude Code specific) ─────────────────────────
+
+/** Extract grep parameters from Grep tool input or Bash grep command. */
+function extractGrepParams(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  shellCmd: string,
+): GrepParams | null {
+  if (toolName === "Grep") {
+    const outputMode = (toolInput.output_mode as string) ?? "files_with_matches";
+    return {
+      pattern: (toolInput.pattern as string) ?? "",
+      targetPath: rewritePaths((toolInput.path as string) ?? "") || "/",
+      ignoreCase: !!toolInput["-i"],
+      wordMatch: false,
+      filesOnly: outputMode === "files_with_matches",
+      countOnly: outputMode === "count",
+      lineNumber: !!toolInput["-n"],
+      invertMatch: false,
+      fixedString: false,
+    };
+  }
+  if (toolName === "Bash") return parseBashGrep(shellCmd);
+  return null;
+}
+
+
 async function main(): Promise<void> {
   const input = await readStdin<PreToolUseInput>();
   log(`hook fired: tool=${input.tool_name} input=${JSON.stringify(input.tool_input)}`);
@@ -165,106 +205,205 @@ async function main(): Promise<void> {
 
   // ── Fast path: handle Read and Grep directly via SQL (no shell spawn) ──
   const config = loadConfig();
-  if (config && (input.tool_name === "Read" || input.tool_name === "Grep")) {
+  if (config) {
     const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
+    const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
     const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
 
     try {
-      if (input.tool_name === "Read") {
-        const virtualPath = rewritePaths((input.tool_input.file_path as string) ?? "");
-        log(`direct read: ${virtualPath}`);
-        // Try memory table first (summaries)
-        const rows = await api.query(
-          `SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
-        );
-        if (rows.length > 0 && rows[0]["summary"]) {
-          console.log(JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "allow",
-              updatedInput: {
-                command: `echo ${JSON.stringify(rows[0]["summary"])}`,
-                description: `[DeepLake direct] cat ${virtualPath}`,
-              },
-            },
-          }));
+      // ── Grep (Grep tool or Bash grep) — single SQL query ──
+      const grepParams = extractGrepParams(input.tool_name, input.tool_input, shellCmd);
+      if (grepParams) {
+        log(`direct grep: pattern=${grepParams.pattern} path=${grepParams.targetPath}`);
+        const result = await handleGrepDirect(api, table, sessionsTable, grepParams);
+        if (result !== null) {
+          emitResult(`echo ${JSON.stringify(result)}`, `[DeepLake direct] grep ${grepParams.pattern}`);
           return;
         }
-        // Try sessions table (raw data) — for paths like /sessions/conv_N_session_M.json
-        if (virtualPath.startsWith("/sessions/")) {
-          const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
-          try {
-            const sessionRows = await api.query(
-              `SELECT message::text AS content FROM "${sessionsTable}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
+      }
+
+      // ── Read file: Read tool, or Bash cat/head/tail ──
+      {
+        let virtualPath: string | null = null;
+        let lineLimit = 0; // 0 = all lines
+        let fromEnd = false; // true = tail
+
+        if (input.tool_name === "Read") {
+          virtualPath = rewritePaths((input.tool_input.file_path as string) ?? "");
+        } else if (input.tool_name === "Bash") {
+          // cat <file> [2>...] [| grep ... | head -N]  or  [| head -N]
+          // Strip stderr redirect (2>/dev/null, 2>&1, etc.) and optional grep -v pipe
+          const catCmd = shellCmd.replace(/\s+2>\S+/g, "").trim();
+          const catPipeHead = catCmd.match(/^cat\s+(\S+?)\s*(?:\|[^|]*)*\|\s*head\s+(?:-n?\s*)?(-?\d+)\s*$/);
+          if (catPipeHead) { virtualPath = catPipeHead[1]; lineLimit = Math.abs(parseInt(catPipeHead[2], 10)); }
+          // cat <file>
+          if (!virtualPath) {
+            const catMatch = catCmd.match(/^cat\s+(\S+)\s*$/);
+            if (catMatch) virtualPath = catMatch[1];
+          }
+          // head [-n] N <file>
+          if (!virtualPath) {
+            const headMatch = shellCmd.match(/^head\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ??
+                              shellCmd.match(/^head\s+(\S+)\s*$/);
+            if (headMatch) {
+              if (headMatch[2]) { virtualPath = headMatch[2]; lineLimit = Math.abs(parseInt(headMatch[1], 10)); }
+              else { virtualPath = headMatch[1]; lineLimit = 10; }
+            }
+          }
+          // tail [-n] N <file>
+          if (!virtualPath) {
+            const tailMatch = shellCmd.match(/^tail\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ??
+                              shellCmd.match(/^tail\s+(\S+)\s*$/);
+            if (tailMatch) {
+              fromEnd = true;
+              if (tailMatch[2]) { virtualPath = tailMatch[2]; lineLimit = Math.abs(parseInt(tailMatch[1], 10)); }
+              else { virtualPath = tailMatch[1]; lineLimit = 10; }
+            }
+          }
+          // wc -l <file>
+          if (!virtualPath) {
+            const wcMatch = shellCmd.match(/^wc\s+-l\s+(\S+)\s*$/);
+            if (wcMatch) { virtualPath = wcMatch[1]; lineLimit = -1; } // -1 = count mode
+          }
+        }
+
+        if (virtualPath && !virtualPath.endsWith("/")) {
+          log(`direct read: ${virtualPath}`);
+          let content: string | null = null;
+
+          if (virtualPath.startsWith("/sessions/")) {
+            // Session files live in the sessions table — skip memory
+            try {
+              const sessionRows = await api.query(
+                `SELECT message::text AS content FROM "${sessionsTable}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
+              );
+              if (sessionRows.length > 0 && sessionRows[0]["content"]) {
+                content = sessionRows[0]["content"] as string;
+              }
+            } catch { /* fall through to shell */ }
+          } else {
+            // Memory table (summaries, notes, etc.)
+            const rows = await api.query(
+              `SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
             );
-            if (sessionRows.length > 0 && sessionRows[0]["content"]) {
-              console.log(JSON.stringify({
-                hookSpecificOutput: {
-                  hookEventName: "PreToolUse",
-                  permissionDecision: "allow",
-                  updatedInput: {
-                    command: `echo ${JSON.stringify(sessionRows[0]["content"])}`,
-                    description: `[DeepLake direct] cat ${virtualPath}`,
-                  },
-                },
-              }));
+            if (rows.length > 0 && rows[0]["summary"]) {
+              content = rows[0]["summary"] as string;
+            } else if (virtualPath === "/index.md") {
+              // Virtual index — generate from metadata
+              const idxRows = await api.query(
+                `SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
+              );
+              const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
+              for (const r of idxRows) {
+                const p = r["path"] as string;
+                const proj = r["project"] as string || "";
+                const desc = (r["description"] as string || "").slice(0, 120);
+                const date = (r["creation_date"] as string || "").slice(0, 10);
+                lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
+              }
+              content = lines.join("\n");
+            }
+          }
+
+          if (content !== null) {
+            if (lineLimit === -1) {
+              const count = content.split("\n").length;
+              emitResult(`echo ${JSON.stringify(`${count} ${virtualPath}`)}`, `[DeepLake direct] wc -l ${virtualPath}`);
               return;
             }
-          } catch { /* fall through to shell */ }
+            if (lineLimit > 0) {
+              const lines = content.split("\n");
+              content = fromEnd ? lines.slice(-lineLimit).join("\n") : lines.slice(0, lineLimit).join("\n");
+            }
+            const label = lineLimit > 0 ? (fromEnd ? `tail -${lineLimit}` : `head -${lineLimit}`) : "cat";
+            emitResult(`echo ${JSON.stringify(content)}`, `[DeepLake direct] ${label} ${virtualPath}`);
+            return;
+          }
         }
-      } else if (input.tool_name === "Grep") {
-        const pattern = (input.tool_input.pattern as string) ?? "";
-        const ignoreCase = !!input.tool_input["-i"];
-        log(`direct grep: ${pattern}`);
-        const likeOp = ignoreCase ? "ILIKE" : "LIKE";
-        const escapedPattern = sqlLike(pattern);
-        const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+      }
 
-        // Search both memory (summaries) and sessions (raw data) in parallel
-        const [memoryRows, sessionRows] = await Promise.all([
-          api.query(
-            `SELECT path, summary FROM "${table}" WHERE summary ${likeOp} '%${escapedPattern}%' LIMIT 5`
-          ).catch(() => [] as Record<string, unknown>[]),
-          api.query(
-            `SELECT path, message::text AS content FROM "${sessionsTable}" WHERE message::text ${likeOp} '%${escapedPattern}%' LIMIT 3`
-          ).catch(() => [] as Record<string, unknown>[]),
-        ]);
+      // ── ls: Bash ls or Glob tool ──
+      {
+        let lsDir: string | null = null;
+        let longFormat = false;
 
-        if (memoryRows.length > 0 || sessionRows.length > 0) {
-          const allResults: string[] = [];
-          const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
-          for (const row of memoryRows) {
-            const p = row["path"] as string;
-            const text = row["summary"] as string;
-            if (!text) continue;
-            const matches = text.split("\n")
-              .filter(line => re.test(line))
-              .slice(0, 5)
-              .map(line => `${p}:${line.slice(0, 300)}`);
-            allResults.push(...matches);
+        if (input.tool_name === "Glob") {
+          lsDir = rewritePaths((input.tool_input.path as string) ?? "") || "/";
+        } else if (input.tool_name === "Bash") {
+          const lsMatch = shellCmd.match(/^ls\s+(?:-([a-zA-Z]+)\s+)?(\S+)?\s*$/);
+          if (lsMatch) {
+            lsDir = lsMatch[2] ?? "/";
+            longFormat = (lsMatch[1] ?? "").includes("l");
           }
-          for (const row of sessionRows) {
-            const p = row["path"] as string;
-            const text = row["content"] as string;
-            if (!text) continue;
-            // Extract matching dialogue turns from session JSON
-            const matches = text.split(/(?:"text"\s*:\s*")/g)
-              .filter(chunk => re.test(chunk))
-              .slice(0, 3)
-              .map(chunk => `${p}:${chunk.slice(0, 300).replace(/\\n/g, " ")}`);
-            allResults.push(...matches);
+        }
+
+        if (lsDir) {
+          const dir = lsDir.replace(/\/+$/, "") || "/";
+          log(`direct ls: ${dir}`);
+          // Query the right table(s) based on path
+          const isSessionDir = dir === "/sessions" || dir.startsWith("/sessions/");
+          const isRoot = dir === "/";
+          const lsQueries: Promise<Record<string, unknown>[]>[] = [];
+          if (!isSessionDir) {
+            lsQueries.push(api.query(
+              `SELECT path, size_bytes FROM "${table}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`
+            ).catch(() => []));
           }
-          const results = allResults.join("\n");
-          console.log(JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "allow",
-              updatedInput: {
-                command: `echo ${JSON.stringify(results || "(no matches)")}`,
-                description: `[DeepLake direct] grep ${pattern}`,
-              },
-            },
-          }));
+          if (isSessionDir || isRoot) {
+            lsQueries.push(api.query(
+              `SELECT path, size_bytes FROM "${sessionsTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`
+            ).catch(() => []));
+          }
+          const rows = (await Promise.all(lsQueries)).flat();
+          const entries = new Map<string, { isDir: boolean; size: number }>();
+          const prefix = dir === "/" ? "/" : dir + "/";
+          for (const row of rows) {
+            const p = row["path"] as string;
+            if (!p.startsWith(prefix) && dir !== "/") continue;
+            const rest = dir === "/" ? p.slice(1) : p.slice(prefix.length);
+            const slash = rest.indexOf("/");
+            const name = slash === -1 ? rest : rest.slice(0, slash);
+            if (!name) continue;
+            const existing = entries.get(name);
+            if (slash !== -1) {
+              if (!existing) entries.set(name, { isDir: true, size: 0 });
+            } else {
+              entries.set(name, { isDir: false, size: (row["size_bytes"] as number) ?? 0 });
+            }
+          }
+          const lines: string[] = [];
+          for (const [name, info] of [...entries].sort((a, b) => a[0].localeCompare(b[0]))) {
+            if (longFormat) {
+              const type = info.isDir ? "drwxr-xr-x" : "-rw-r--r--";
+              const size = String(info.isDir ? 0 : info.size).padStart(6);
+              lines.push(`${type} 1 user user ${size} ${name}${info.isDir ? "/" : ""}`);
+            } else {
+              lines.push(name + (info.isDir ? "/" : ""));
+            }
+          }
+          emitResult(`echo ${JSON.stringify(lines.join("\n") || "(empty directory)")}`, `[DeepLake direct] ls ${dir}`);
+          return;
+        }
+      }
+
+      // ── find <dir> -name '<pattern>' ──
+      if (input.tool_name === "Bash") {
+        const findMatch = shellCmd.match(/^find\s+(\S+)\s+(?:-type\s+\S+\s+)?-name\s+'([^']+)'/);
+        if (findMatch) {
+          const dir = findMatch[1].replace(/\/+$/, "") || "/";
+          const namePattern = findMatch[2].replace(/\*/g, "%").replace(/\?/g, "_");
+          log(`direct find: ${dir} -name '${findMatch[2]}'`);
+          const isSessionDir = dir === "/sessions" || dir.startsWith("/sessions/");
+          const findTable = isSessionDir ? sessionsTable : table;
+          const rows = await api.query(
+            `SELECT path FROM "${findTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`
+          );
+          let result = rows.map(r => r["path"] as string).join("\n") || "";
+          // Handle piped wc -l
+          if (/\|\s*wc\s+-l\s*$/.test(shellCmd)) {
+            result = String(rows.length);
+          }
+          emitResult(`echo ${JSON.stringify(result || "(no matches)")}`, `[DeepLake direct] find ${dir}`);
           return;
         }
       }
