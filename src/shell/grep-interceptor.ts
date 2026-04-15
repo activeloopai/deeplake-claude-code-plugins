@@ -5,6 +5,8 @@ import type { DeeplakeFs } from "./deeplake-fs.js";
 
 import { sqlStr as esc, sqlLike } from "../utils/sql.js";
 
+const MAX_FALLBACK_CANDIDATES = 500;
+
 /**
  * Custom grep command for just-bash that replaces the built-in when the target
  * paths are under the Deeplake mount. Two-phase strategy:
@@ -20,6 +22,7 @@ export function createGrepCommand(
   client: DeeplakeApi,
   fs: DeeplakeFs,
   table: string,
+  sessionsTable?: string,
 ) {
   return defineCommand("grep", async (args, ctx) => {
     const parsed = yargsParser(args, {
@@ -44,34 +47,57 @@ export function createGrepCommand(
     const mount = fs.mountPoint;
 
     // Only intercept if all targets are under our mount point
-    const allUnderMount = targets.every(t => t === mount || t.startsWith(mount + "/"));
+    const mountPrefix = mount === "/" ? "/" : mount + "/";
+    const allUnderMount = targets.every(t => t === mount || t.startsWith(mountPrefix));
     if (!allUnderMount) {
       // Signal to caller that this command doesn't handle it
       return { stdout: "", stderr: "", exitCode: 127 };
     }
 
-    // ── Phase 1: coarse filter — try BM25, fall back to in-memory ──────────
+    // ── Phase 1: coarse filter — BM25 on summaries + LIKE on sessions ─────
     let candidates: string[] = [];
 
     try {
-      const bm25 = await Promise.race([
+      const queries: Promise<Record<string, unknown>[]>[] = [
         client.query(`SELECT path FROM "${table}" WHERE summary <#> '${esc(pattern)}' LIMIT 50`),
+      ];
+      if (sessionsTable) {
+        queries.push(
+          client.query(`SELECT path FROM "${sessionsTable}" WHERE message::text LIKE '%${sqlLike(pattern)}%' LIMIT 10`)
+        );
+      }
+      const results = await Promise.race([
+        Promise.all(queries),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 3000)),
       ]);
-      candidates = bm25.map(r => r["path"] as string).filter(Boolean);
+      for (const rows of results) {
+        candidates.push(...rows.map(r => r["path"] as string).filter(Boolean));
+      }
     } catch {
-      // BM25 index not available or timed out — fall back to in-memory
-    }
-
-    if (candidates.length === 0) {
-      // No BM25 results or no index — use all files under targets and search in-memory
-      candidates = fs.getAllPaths().filter(p => !p.endsWith("/"));
+      // BM25/LIKE not available or timed out — fall back to in-memory
     }
 
     // Narrow candidates to those under the requested targets
-    candidates = candidates.filter(c =>
-      targets.some(t => t === "/" || c === t || c.startsWith(t + "/"))
-    );
+    const withinTargets = (p: string) =>
+      targets.some(t => t === "/" || p === t || p.startsWith(t + "/"));
+
+    if (candidates.length === 0) {
+      // No BM25 results or no index — only scan files under requested targets.
+      candidates = fs.getAllPaths().filter(p => !p.endsWith("/") && withinTargets(p));
+      if (candidates.length > MAX_FALLBACK_CANDIDATES) {
+        candidates = candidates.slice(0, MAX_FALLBACK_CANDIDATES);
+      }
+    } else {
+      candidates = candidates.filter(c => withinTargets(c));
+    }
+
+    // Preserve order and remove duplicates to avoid repeated reads.
+    const seen = new Set<string>();
+    candidates = candidates.filter((c) => {
+      if (seen.has(c)) return false;
+      seen.add(c);
+      return true;
+    });
 
     // ── Phase 2: prefetch into content cache (single batch query) ───────────
     await fs.prefetch(candidates);
