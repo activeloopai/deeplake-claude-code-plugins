@@ -94,22 +94,8 @@ export class DeeplakeFs implements IFileSystem {
     // Ensure the table exists before bootstrapping.
     await client.ensureTable();
 
-    // Sync both tables in parallel before bootstrap queries.
-    // Track whether session sync succeeded — skip session bootstrap if it failed.
-    let sessionSyncOk = false;
-    const syncPromises: Promise<unknown>[] = [
-      client.query(`SELECT deeplake_sync_table('${table}')`),
-    ];
-    if (sessionsTable) {
-      syncPromises.push(
-        client.query(`SELECT deeplake_sync_table('${sessionsTable}')`)
-          .then(() => { sessionSyncOk = true; })
-          .catch(() => { /* sessions table may not exist yet */ })
-      );
-    }
-    await Promise.all(syncPromises);
-
     // Bootstrap memory + sessions metadata in parallel.
+    let sessionSyncOk = true;
     const memoryBootstrap = (async () => {
       const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
       try {
@@ -210,8 +196,6 @@ export class DeeplakeFs implements IFileSystem {
         failures++;
       }
     }
-    // Sync so subsequent reads see the successfully written data.
-    await this.client.query(`SELECT deeplake_sync_table('${this.table}')`);
     if (failures > 0) {
       throw new Error(`flush: ${failures}/${rows.length} writes failed and were re-queued`);
     }

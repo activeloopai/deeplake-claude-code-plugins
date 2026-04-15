@@ -85,7 +85,6 @@ async function main(): Promise<void> {
   try {
     // 1. Fetch session events from sessions table, reconstruct JSONL
     wlog("fetching session events");
-    await query(`SELECT deeplake_sync_table('${cfg.sessionsTable}')`);
     const rows = await query(
       `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
       `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
@@ -117,7 +116,6 @@ async function main(): Promise<void> {
     // 2. Check for existing summary in memory table (resumed session)
     let prevOffset = 0;
     try {
-      await query(`SELECT deeplake_sync_table('${cfg.memoryTable}')`);
       const sumRows = await query(
         `SELECT summary FROM "${cfg.memoryTable}" ` +
         `WHERE path = '${esc(`/summaries/${cfg.userName}/${cfg.sessionId}.md`)}' LIMIT 1`
@@ -166,8 +164,7 @@ async function main(): Promise<void> {
         const vpath = `/summaries/${cfg.userName}/${fname}`;
         const ts = new Date().toISOString();
 
-        await query(`SELECT deeplake_sync_table('${cfg.memoryTable}')`);
-        const existing = await query(
+          const existing = await query(
           `SELECT path FROM "${cfg.memoryTable}" WHERE path = '${esc(vpath)}' LIMIT 1`
         );
 

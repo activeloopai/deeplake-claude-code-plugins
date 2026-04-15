@@ -76,7 +76,6 @@ function isNewer(latest: string, current: string): boolean {
 async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
 
-  await api.query(`SELECT deeplake_sync_table('${table}')`);
   const existing = await api.query(
     `SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`
   );
