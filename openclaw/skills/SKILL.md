@@ -23,6 +23,16 @@ The plugin automatically:
 - **Recalls** relevant memories before each agent turn via keyword search
 - All data stored as structured rows — searchable, persistent, shared
 
+## Commands
+
+- `/hivemind_login` — sign in
+- `/hivemind_capture` — toggle capture on/off
+- `/hivemind_whoami` — show current org and workspace
+- `/hivemind_orgs` — list organizations
+- `/hivemind_switch_org <name-or-id>` — switch organization
+- `/hivemind_workspaces` — list workspaces
+- `/hivemind_switch_workspace <id>` — switch workspace
+
 ## Sharing memory
 
 Multiple agents share memory when users are in the same Deeplake organization.
