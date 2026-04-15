@@ -27,6 +27,7 @@ import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr, sqlLike } from "../../utils/sql.js";
+import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
 
 import { log as _log } from "../../utils/debug.js";
 const log = (msg: string) => _log("codex-pre", msg);
@@ -197,30 +198,14 @@ async function main(): Promise<void> {
         }
       }
 
-      // Detect: grep [-ri] <pattern> <path>
-      const grepMatch = rewritten.match(/^grep\s+(?:-[a-zA-Z]+\s+)*(?:'([^']*)'|"([^"]*)"|(\S+))\s+(\S+)/);
-      if (grepMatch) {
-        const pattern = grepMatch[1] ?? grepMatch[2] ?? grepMatch[3];
-        const ignoreCase = /\s-[a-zA-Z]*i/.test(rewritten);
-        log(`direct grep: ${pattern}`);
-        const rows = await api.query(
-          `SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlLike(pattern)}%' LIMIT 5`
-        );
-        if (rows.length > 0) {
-          const allResults: string[] = [];
-          const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
-          for (const row of rows) {
-            const p = row["path"] as string;
-            const text = row["summary"] as string;
-            if (!text) continue;
-            const matches = text.split("\n")
-              .filter(line => re.test(line))
-              .slice(0, 5)
-              .map(line => `${p}:${line.slice(0, 300)}`);
-            allResults.push(...matches);
-          }
-          const results = allResults.join("\n");
-          blockWithContent(results || "(no matches)");
+      // Detect: grep/egrep/fgrep with all flags
+      const grepParams = parseBashGrep(rewritten);
+      if (grepParams) {
+        const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+        log(`direct grep: pattern=${grepParams.pattern} path=${grepParams.targetPath}`);
+        const result = await handleGrepDirect(api, table, sessionsTable, grepParams);
+        if (result !== null) {
+          blockWithContent(result);
         }
       }
     } catch (e: any) {
