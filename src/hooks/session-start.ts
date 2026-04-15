@@ -8,7 +8,7 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdirSync, appendFileSync, readFileSync } from "node:fs";
+import { mkdirSync, appendFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials, login } from "../commands/auth.js";
@@ -200,9 +200,22 @@ async function main(): Promise<void> {
           try {
             const scopes = ["user", "project", "local", "managed"];
             const cmd = scopes
-              .map(s => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null`)
+              .map(s => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null || true`)
               .join("; ");
             execSync(cmd, { stdio: "ignore", timeout: 60_000 });
+            // Clean up old cached versions, keep only the latest
+            try {
+              const cacheParent = join(homedir(), ".claude", "plugins", "cache", "hivemind", "hivemind");
+              const entries = readdirSync(cacheParent, { withFileTypes: true });
+              for (const e of entries) {
+                if (e.isDirectory() && e.name !== latest) {
+                  rmSync(join(cacheParent, e.name), { recursive: true, force: true });
+                  log(`cache cleanup: removed old version ${e.name}`);
+                }
+              }
+            } catch (e: any) {
+              log(`cache cleanup failed: ${e.message}`);
+            }
             updateNotice = `\n\n✅ Hivemind auto-updated: ${current} → ${latest}. Run /reload-plugins to apply.`;
             process.stderr.write(`✅ Hivemind auto-updated: ${current} → ${latest}. Run /reload-plugins to apply.\n`);
             log(`autoupdate succeeded: ${current} → ${latest}`);
