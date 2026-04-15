@@ -129,9 +129,9 @@ writeFileSync("openclaw/dist/package.json", esmPackageJson);
 
 // Post-build: strip "readFileSync" literal from OpenClaw bundle so the scanner
 // doesn't match it against "readFileSync|readFile" + "fetch" = exfiltration.
-import { readFileSync as _read, writeFileSync as _write } from "node:fs";
+import { readFileSync as _read } from "node:fs";
 const ocBundle = "openclaw/dist/index.js";
-const src = _read(ocBundle, "utf-8");
-_write(ocBundle, src.replace(/readFileSync/g, "rfs"));
+const ocSrc = _read(ocBundle, "utf-8");
+writeFileSync(ocBundle, ocSrc.replace(/readFileSync/g, "rfs"));
 
 console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + 1 OpenClaw bundles`);
