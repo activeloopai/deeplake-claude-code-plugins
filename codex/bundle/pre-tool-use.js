@@ -633,13 +633,77 @@ async function main() {
     const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
     const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
     try {
-      const catMatch = rewritten.match(/^cat\s+(\S+)$/);
-      if (catMatch) {
-        const virtualPath = catMatch[1];
-        log3(`direct read: ${virtualPath}`);
-        const rows = await api.query(`SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
-        if (rows.length > 0 && rows[0]["summary"]) {
-          blockWithContent(rows[0]["summary"]);
+      {
+        let virtualPath = null;
+        let lineLimit = 0;
+        let fromEnd = false;
+        const catCmd = rewritten.replace(/\s+2>\S+/g, "").trim();
+        const catPipeHead = catCmd.match(/^cat\s+(\S+?)\s*(?:\|[^|]*)*\|\s*head\s+(?:-n?\s*)?(-?\d+)\s*$/);
+        if (catPipeHead) {
+          virtualPath = catPipeHead[1];
+          lineLimit = Math.abs(parseInt(catPipeHead[2], 10));
+        }
+        if (!virtualPath) {
+          const catMatch = catCmd.match(/^cat\s+(\S+)\s*$/);
+          if (catMatch)
+            virtualPath = catMatch[1];
+        }
+        if (!virtualPath) {
+          const headMatch = rewritten.match(/^head\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ?? rewritten.match(/^head\s+(\S+)\s*$/);
+          if (headMatch) {
+            if (headMatch[2]) {
+              virtualPath = headMatch[2];
+              lineLimit = Math.abs(parseInt(headMatch[1], 10));
+            } else {
+              virtualPath = headMatch[1];
+              lineLimit = 10;
+            }
+          }
+        }
+        if (!virtualPath) {
+          const tailMatch = rewritten.match(/^tail\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ?? rewritten.match(/^tail\s+(\S+)\s*$/);
+          if (tailMatch) {
+            fromEnd = true;
+            if (tailMatch[2]) {
+              virtualPath = tailMatch[2];
+              lineLimit = Math.abs(parseInt(tailMatch[1], 10));
+            } else {
+              virtualPath = tailMatch[1];
+              lineLimit = 10;
+            }
+          }
+        }
+        if (!virtualPath) {
+          const wcMatch = rewritten.match(/^wc\s+-l\s+(\S+)\s*$/);
+          if (wcMatch) {
+            virtualPath = wcMatch[1];
+            lineLimit = -1;
+          }
+        }
+        if (virtualPath && !virtualPath.endsWith("/")) {
+          const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+          const isSession = virtualPath.startsWith("/sessions/");
+          log3(`direct read: ${virtualPath}`);
+          let content = null;
+          if (isSession) {
+            const rows = await api.query(`SELECT message::text AS content FROM "${sessionsTable}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
+            if (rows.length > 0 && rows[0]["content"])
+              content = rows[0]["content"];
+          } else {
+            const rows = await api.query(`SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
+            if (rows.length > 0 && rows[0]["summary"])
+              content = rows[0]["summary"];
+          }
+          if (content !== null) {
+            if (lineLimit === -1) {
+              blockWithContent(`${content.split("\n").length} ${virtualPath}`);
+            }
+            if (lineLimit > 0) {
+              const lines = content.split("\n");
+              content = fromEnd ? lines.slice(-lineLimit).join("\n") : lines.slice(0, lineLimit).join("\n");
+            }
+            blockWithContent(content);
+          }
         }
       }
       const lsMatch = rewritten.match(/^ls\s+(?:-[a-zA-Z]+\s+)*(\S+)?\s*$/);
@@ -681,6 +745,23 @@ async function main() {
           blockWithContent(lines.join("\n"));
         } else {
           blockWithContent(`ls: cannot access '${dir}': No such file or directory`);
+        }
+      }
+      {
+        const findMatch = rewritten.match(/^find\s+(\S+)\s+(?:-type\s+\S+\s+)?-name\s+'([^']+)'/);
+        if (findMatch) {
+          const dir = findMatch[1].replace(/\/+$/, "") || "/";
+          const namePattern = sqlLike(findMatch[2]).replace(/\*/g, "%").replace(/\?/g, "_");
+          const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+          const isSessionDir = dir === "/sessions" || dir.startsWith("/sessions/");
+          const findTable = isSessionDir ? sessionsTable : table;
+          log3(`direct find: ${dir} -name '${findMatch[2]}'`);
+          const rows = await api.query(`SELECT path FROM "${findTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`);
+          let result2 = rows.map((r) => r["path"]).join("\n") || "";
+          if (/\|\s*wc\s+-l\s*$/.test(rewritten)) {
+            result2 = String(rows.length);
+          }
+          blockWithContent(result2 || "(no matches)");
         }
       }
       const grepParams = parseBashGrep(rewritten);
