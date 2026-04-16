@@ -150,7 +150,7 @@ interface SessionStartInput {
 
 async function main(): Promise<void> {
   // Skip if this is a sub-session spawned by the wiki worker
-  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
+  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1") return;
 
   const input = await readStdin<SessionStartInput>();
 
