@@ -107,8 +107,6 @@ function wikiLog(msg: string): void {
 async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
 
-  // Check if summary already exists (resumed session)
-  await api.query(`SELECT deeplake_sync_table('${table}')`);
   const existing = await api.query(
     `SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`
   );
