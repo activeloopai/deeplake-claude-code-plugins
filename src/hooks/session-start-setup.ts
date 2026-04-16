@@ -35,6 +35,11 @@ function wikiLog(msg: string): void {
 }
 
 function getInstalledVersion(): string | null {
+  try {
+    const pluginJson = join(__bundleDir, "..", ".claude-plugin", "plugin.json");
+    const plugin = JSON.parse(readFileSync(pluginJson, "utf-8"));
+    if (plugin.version) return plugin.version;
+  } catch { /* fall through */ }
   let dir = __bundleDir;
   for (let i = 0; i < 5; i++) {
     const candidate = join(dir, "package.json");

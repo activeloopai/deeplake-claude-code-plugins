@@ -364,6 +364,13 @@ Debugging: Set DEEPLAKE_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-de
 var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 var VERSION_CHECK_TIMEOUT = 3e3;
 function getInstalledVersion() {
+  try {
+    const pluginJson = join4(__bundleDir, "..", ".claude-plugin", "plugin.json");
+    const plugin = JSON.parse(readFileSync3(pluginJson, "utf-8"));
+    if (plugin.version)
+      return plugin.version;
+  } catch {
+  }
   let dir = __bundleDir;
   for (let i = 0; i < 5; i++) {
     const candidate = join4(dir, "package.json");
