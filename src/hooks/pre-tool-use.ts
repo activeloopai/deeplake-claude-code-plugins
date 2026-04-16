@@ -289,17 +289,27 @@ async function main(): Promise<void> {
             if (rows.length > 0 && rows[0]["summary"]) {
               content = rows[0]["summary"] as string;
             } else if (virtualPath === "/index.md") {
-              // Virtual index — generate from metadata
-              const idxRows = await api.query(
-                `SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
-              );
-              const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
+              // Virtual index — generate from all entries in memory table
+              // Try companion memory table first (has descriptions), fall back to primary
+              const memTable = table.endsWith("_sessions")
+                ? table.replace(/_sessions$/, "_memory") : table;
+              let idxRows: Record<string, unknown>[] = [];
+              try {
+                idxRows = await api.query(
+                  `SELECT path, description, creation_date FROM "${memTable}" ORDER BY path LIMIT 500`
+                );
+              } catch { /* companion table may not exist */ }
+              if (idxRows.length === 0) {
+                idxRows = await api.query(
+                  `SELECT path, description, creation_date FROM "${table}" ORDER BY path LIMIT 500`
+                );
+              }
+              const lines = ["# Memory Index", "", `${idxRows.length} entries:`, ""];
               for (const r of idxRows) {
                 const p = r["path"] as string;
-                const proj = r["project"] as string || "";
-                const desc = (r["description"] as string || "").slice(0, 120);
+                const desc = (r["description"] as string || "").slice(0, 100);
                 const date = (r["creation_date"] as string || "").slice(0, 10);
-                lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
+                lines.push(`- [${p}](${p}) ${date} ${desc}`);
               }
               content = lines.join("\n");
             }
