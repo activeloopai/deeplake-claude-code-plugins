@@ -82,10 +82,24 @@ The plugin auto-updates on each session start. To manually update:
 #### Install from ClawHub (Telegram, TUI, WhatsApp):
 
 ```
-openclaw plugins install hivemind
+openclaw plugins install clawhub:hivemind
 ```
 
-Send a message. The plugin sends you an auth link. Click, sign in, done.
+Then type `/hivemind_login` in chat, click the auth link, and sign in.
+
+#### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/hivemind_login` | Sign in via device flow |
+| `/hivemind_capture` | Toggle capture on/off |
+| `/hivemind_whoami` | Show current org and workspace |
+| `/hivemind_orgs` | List organizations |
+| `/hivemind_switch_org <name>` | Switch organization |
+| `/hivemind_workspaces` | List workspaces |
+| `/hivemind_switch_workspace <id>` | Switch workspace |
+
+Auto-recall and auto-capture are enabled by default. Data is stored in the same `sessions` table as Claude Code and Codex.
 </details>
 <details>
   <summary><b> Codex Setup </b></summary>

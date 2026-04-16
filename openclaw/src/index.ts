@@ -1,8 +1,4 @@
 function definePluginEntry<T>(entry: T): T { return entry; }
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-
 // Shared core imports
 import { loadConfig } from "../../src/config.js";
 import { loadCredentials, saveCredentials, requestDeviceCode, pollForToken, listOrgs } from "../../src/commands/auth.js";
@@ -107,22 +103,6 @@ async function requestAuth(): Promise<string> {
   }
 }
 
-// --- OpenClaw-specific: ensure plugin is in load.paths for hook wiring ---
-function addToLoadPaths(): void {
-  const ocConfigPath = join(homedir(), ".openclaw", "openclaw.json");
-  if (!existsSync(ocConfigPath)) return;
-  try {
-    const ocConfig = JSON.parse(readFileSync(ocConfigPath, "utf-8"));
-    const installPath = ocConfig?.plugins?.installs?.["hivemind"]?.installPath;
-    if (!installPath) return;
-    const loadPaths: string[] = ocConfig?.plugins?.load?.paths ?? [];
-    if (loadPaths.includes(installPath)) return;
-    if (!ocConfig.plugins.load) ocConfig.plugins.load = {};
-    ocConfig.plugins.load.paths = [...loadPaths, installPath];
-    writeFileSync(ocConfigPath, JSON.stringify(ocConfig, null, 2));
-  } catch {}
-}
-
 // --- API instance ---
 let api: DeeplakeApi | null = null;
 let sessionsTable = "sessions";
@@ -154,12 +134,9 @@ export default definePluginEntry({
   id: "hivemind",
   name: "Hivemind",
   description: "Cloud-backed shared memory powered by Deeplake",
-  kind: "memory",
 
   register(pluginApi: PluginAPI) {
     try {
-    addToLoadPaths();
-
     // Login command — works immediately after install, no hook dependency
     if (pluginApi.registerCommand) {
       pluginApi.registerCommand({
