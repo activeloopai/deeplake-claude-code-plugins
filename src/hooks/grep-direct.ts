@@ -121,10 +121,8 @@ export async function handleGrepDirect(
   // Strategy: BM25 first (ranked, fast with index), LIKE fallback if BM25 fails.
   let rows: Record<string, unknown>[] = [];
 
+  // Search primary table
   if (!hasRegexMeta) {
-    // BM25 ranked search disabled — CREATE INDEX causes oid errors on fresh tables.
-    // See bm25-oid-bug.sh. Using LIKE until Deeplake fixes the oid invalidation.
-    // When re-enabling, uncomment the BM25 block and make LIKE the fallback.
     const contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
     try {
       rows = await api.query(
@@ -132,12 +130,31 @@ export async function handleGrepDirect(
       );
     } catch { rows = []; }
   } else {
-    // Regex pattern — fetch all files under path, filter in-memory
     try {
       rows = await api.query(
         `SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter} LIMIT 100`,
       );
     } catch { rows = []; }
+  }
+
+  // Cross-table enrichment: search the companion memory/summaries table
+  // for structured wiki-style context. Convention: if table is X_sessions
+  // or X, companion is X_memory. Summaries are prepended for priority.
+  if (!hasRegexMeta) {
+    const memoryTable = table.endsWith("_sessions")
+      ? table.replace(/_sessions$/, "_memory")
+      : (sessionsTable !== table ? sessionsTable : null);
+    if (memoryTable && memoryTable !== table) {
+      try {
+        const contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
+        const summaryRows = await api.query(
+          `SELECT path, summary AS content FROM "${memoryTable}" WHERE 1=1${contentFilter} LIMIT 20`,
+        );
+        if (summaryRows.length > 0) {
+          rows = [...summaryRows, ...rows];
+        }
+      } catch { /* best-effort — table may not exist */ }
+    }
   }
 
   // ── regex refinement ──
