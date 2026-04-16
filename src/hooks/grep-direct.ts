@@ -122,27 +122,15 @@ export async function handleGrepDirect(
   let rows: Record<string, unknown>[] = [];
 
   if (!hasRegexMeta) {
-    // Try BM25 ranked search first
+    // BM25 ranked search disabled — CREATE INDEX causes oid errors on fresh tables.
+    // See bm25-oid-bug.sh. Using LIKE until Deeplake fixes the oid invalidation.
+    // When re-enabling, uncomment the BM25 block and make LIKE the fallback.
+    const contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
     try {
       rows = await api.query(
-        `SELECT path, summary AS content, summary <#> '${sqlStr(pattern)}' AS score FROM "${table}" WHERE 1=1${pathFilter} ORDER BY score DESC LIMIT 100`,
+        `SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter}${contentFilter} LIMIT 100`,
       );
-      // BM25 returns all rows with score 0 for non-matches — filter them
-      rows = rows.filter(r => (r["score"] as number) > 0);
-    } catch {
-      // BM25 not available (no index) — fall back to LIKE
-      rows = [];
-    }
-
-    // LIKE fallback if BM25 returned nothing or failed
-    if (rows.length === 0) {
-      const contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
-      try {
-        rows = await api.query(
-          `SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter}${contentFilter} LIMIT 100`,
-        );
-      } catch { rows = []; }
-    }
+    } catch { rows = []; }
   } else {
     // Regex pattern — fetch all files under path, filter in-memory
     try {
