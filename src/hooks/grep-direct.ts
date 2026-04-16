@@ -111,21 +111,46 @@ export async function handleGrepDirect(
     pathFilter = ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
   }
 
-  // For regex patterns, skip content LIKE (can't match regex syntax).
-  // Fetch all files under the path and filter in-memory instead.
+  // For regex patterns, can't use BM25 or LIKE — fetch all files under path
   const hasRegexMeta = !fixedString && /[.*+?^${}()|[\]\\]/.test(pattern);
-  const contentFilter = hasRegexMeta ? "" : ` AND summary ${likeOp} '%${escapedLike}%'`;
 
   // Search only the memory/summaries table — sessions contain raw JSONB
   // (prompts, tool calls) which is slow to scan and produces noisy results.
   // Summaries already contain all useful content from sessions.
-  const queries: Promise<Record<string, unknown>[]>[] = [
-    api.query(
-      `SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter}${contentFilter} LIMIT 100`,
-    ).catch(() => [] as Record<string, unknown>[]),
-  ];
+  //
+  // Strategy: BM25 first (ranked, fast with index), LIKE fallback if BM25 fails.
+  let rows: Record<string, unknown>[] = [];
 
-  const allRows = (await Promise.all(queries)).flat();
+  if (!hasRegexMeta) {
+    // Try BM25 ranked search first
+    try {
+      rows = await api.query(
+        `SELECT path, summary AS content, summary <#> '${sqlStr(pattern)}' AS score FROM "${table}" WHERE 1=1${pathFilter} ORDER BY score DESC LIMIT 100`,
+      );
+      // BM25 returns all rows with score 0 for non-matches — filter them
+      rows = rows.filter(r => (r["score"] as number) > 0);
+    } catch {
+      // BM25 not available (no index) — fall back to LIKE
+      rows = [];
+    }
+
+    // LIKE fallback if BM25 returned nothing or failed
+    if (rows.length === 0) {
+      const contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
+      try {
+        rows = await api.query(
+          `SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter}${contentFilter} LIMIT 100`,
+        );
+      } catch { rows = []; }
+    }
+  } else {
+    // Regex pattern — fetch all files under path, filter in-memory
+    try {
+      rows = await api.query(
+        `SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter} LIMIT 100`,
+      );
+    } catch { rows = []; }
+  }
 
   // ── regex refinement ──
   let reStr = fixedString
@@ -137,9 +162,9 @@ export async function handleGrepDirect(
   catch { re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : ""); }
 
   const output: string[] = [];
-  const multi = allRows.length > 1;
+  const multi = rows.length > 1;
 
-  for (const row of allRows) {
+  for (const row of rows) {
     const p = row["path"] as string;
     const text = row["content"] as string;
     if (!text) continue;

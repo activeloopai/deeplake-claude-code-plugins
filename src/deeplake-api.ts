@@ -253,6 +253,12 @@ export class DeeplakeApi {
       );
       log(`table "${tbl}" created`);
     }
+    // Ensure BM25 index exists on summary column (idempotent)
+    try {
+      await this.query(
+        `CREATE INDEX IF NOT EXISTS idx_${tbl}_summary_bm25 ON "${this.workspaceId}"."${tbl}" USING deeplake_index (summary) WITH (index_type = 'bm25')`
+      );
+    } catch { /* index may already exist or not be supported */ }
   }
 
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
