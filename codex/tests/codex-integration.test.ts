@@ -295,6 +295,40 @@ describe("codex integration: pre-tool-use", () => {
   });
 });
 
+// ── SessionStartSetup ───────────────────────────────────────────────────────
+
+describe("codex integration: session-start-setup", () => {
+  it("exits cleanly when DEEPLAKE_WIKI_WORKER=1", () => {
+    const raw = runHook("session-start-setup.js", {
+      session_id: "test-session-setup-001",
+      cwd: "/tmp/test-project",
+      hook_event_name: "SessionStart",
+      model: "gpt-5.2",
+    }, { DEEPLAKE_WIKI_WORKER: "1" });
+    expect(raw).toBe("");
+  });
+
+  it("exits cleanly with no credentials (DEEPLAKE_TOKEN='')", () => {
+    const raw = runHook("session-start-setup.js", {
+      session_id: "test-session-setup-002",
+      cwd: "/tmp/test-project",
+      hook_event_name: "SessionStart",
+      model: "gpt-5.2",
+    });
+    expect(raw).toBe("");
+  });
+
+  it("does NOT produce stdout output (fire-and-forget)", () => {
+    const raw = runHook("session-start-setup.js", {
+      session_id: "test-session-setup-003",
+      cwd: "/tmp/test-project",
+      hook_event_name: "SessionStart",
+      model: "gpt-5.2",
+    });
+    expect(raw).toBe("");
+  });
+});
+
 // ── Stop ─────────────────────────────────────────────────────────────────────
 
 describe("codex integration: stop", () => {

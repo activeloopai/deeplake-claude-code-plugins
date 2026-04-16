@@ -27,6 +27,7 @@ import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr, sqlLike } from "../../utils/sql.js";
+import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
 
 import { log as _log } from "../../utils/debug.js";
 const log = (msg: string) => _log("codex-pre", msg);
@@ -141,16 +142,89 @@ async function main(): Promise<void> {
     const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
 
     try {
-      // Detect: cat <path>
-      const catMatch = rewritten.match(/^cat\s+(\S+)$/);
-      if (catMatch) {
-        const virtualPath = catMatch[1];
-        log(`direct read: ${virtualPath}`);
-        const rows = await api.query(
-          `SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
-        );
-        if (rows.length > 0 && rows[0]["summary"]) {
-          blockWithContent(rows[0]["summary"] as string);
+      // Detect: cat/head/tail/wc — read a single file
+      {
+        let virtualPath: string | null = null;
+        let lineLimit = 0;
+        let fromEnd = false;
+
+        // cat <file> [2>/dev/null] [| head -N]
+        const catCmd = rewritten.replace(/\s+2>\S+/g, "").trim();
+        const catPipeHead = catCmd.match(/^cat\s+(\S+?)\s*(?:\|[^|]*)*\|\s*head\s+(?:-n?\s*)?(-?\d+)\s*$/);
+        if (catPipeHead) { virtualPath = catPipeHead[1]; lineLimit = Math.abs(parseInt(catPipeHead[2], 10)); }
+        if (!virtualPath) {
+          const catMatch = catCmd.match(/^cat\s+(\S+)\s*$/);
+          if (catMatch) virtualPath = catMatch[1];
+        }
+        // head [-n] N <file>
+        if (!virtualPath) {
+          const headMatch = rewritten.match(/^head\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ??
+                            rewritten.match(/^head\s+(\S+)\s*$/);
+          if (headMatch) {
+            if (headMatch[2]) { virtualPath = headMatch[2]; lineLimit = Math.abs(parseInt(headMatch[1], 10)); }
+            else { virtualPath = headMatch[1]; lineLimit = 10; }
+          }
+        }
+        // tail [-n] N <file>
+        if (!virtualPath) {
+          const tailMatch = rewritten.match(/^tail\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ??
+                            rewritten.match(/^tail\s+(\S+)\s*$/);
+          if (tailMatch) {
+            fromEnd = true;
+            if (tailMatch[2]) { virtualPath = tailMatch[2]; lineLimit = Math.abs(parseInt(tailMatch[1], 10)); }
+            else { virtualPath = tailMatch[1]; lineLimit = 10; }
+          }
+        }
+        // wc -l <file>
+        if (!virtualPath) {
+          const wcMatch = rewritten.match(/^wc\s+-l\s+(\S+)\s*$/);
+          if (wcMatch) { virtualPath = wcMatch[1]; lineLimit = -1; }
+        }
+
+        if (virtualPath && !virtualPath.endsWith("/")) {
+          const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+          const isSession = virtualPath.startsWith("/sessions/");
+          log(`direct read: ${virtualPath}`);
+
+          let content: string | null = null;
+          if (isSession) {
+            const rows = await api.query(
+              `SELECT message::text AS content FROM "${sessionsTable}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
+            );
+            if (rows.length > 0 && rows[0]["content"]) content = rows[0]["content"] as string;
+          } else {
+            const rows = await api.query(
+              `SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
+            );
+            if (rows.length > 0 && rows[0]["summary"]) {
+              content = rows[0]["summary"] as string;
+            } else if (virtualPath === "/index.md") {
+              // Virtual index — generate from metadata
+              const idxRows = await api.query(
+                `SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
+              );
+              const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
+              for (const r of idxRows) {
+                const p = r["path"] as string;
+                const proj = r["project"] as string || "";
+                const desc = (r["description"] as string || "").slice(0, 120);
+                const date = (r["creation_date"] as string || "").slice(0, 10);
+                lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
+              }
+              content = lines.join("\n");
+            }
+          }
+
+          if (content !== null) {
+            if (lineLimit === -1) {
+              blockWithContent(`${content.split("\n").length} ${virtualPath}`);
+            }
+            if (lineLimit > 0) {
+              const lines = content.split("\n");
+              content = fromEnd ? lines.slice(-lineLimit).join("\n") : lines.slice(0, lineLimit).join("\n");
+            }
+            blockWithContent(content);
+          }
         }
       }
 
@@ -197,30 +271,35 @@ async function main(): Promise<void> {
         }
       }
 
-      // Detect: grep [-ri] <pattern> <path>
-      const grepMatch = rewritten.match(/^grep\s+(?:-[a-zA-Z]+\s+)*(?:'([^']*)'|"([^"]*)"|(\S+))\s+(\S+)/);
-      if (grepMatch) {
-        const pattern = grepMatch[1] ?? grepMatch[2] ?? grepMatch[3];
-        const ignoreCase = /\s-[a-zA-Z]*i/.test(rewritten);
-        log(`direct grep: ${pattern}`);
-        const rows = await api.query(
-          `SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlLike(pattern)}%' LIMIT 5`
-        );
-        if (rows.length > 0) {
-          const allResults: string[] = [];
-          const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
-          for (const row of rows) {
-            const p = row["path"] as string;
-            const text = row["summary"] as string;
-            if (!text) continue;
-            const matches = text.split("\n")
-              .filter(line => re.test(line))
-              .slice(0, 5)
-              .map(line => `${p}:${line.slice(0, 300)}`);
-            allResults.push(...matches);
+      // Detect: find <dir> -name '<pattern>'
+      {
+        const findMatch = rewritten.match(/^find\s+(\S+)\s+(?:-type\s+\S+\s+)?-name\s+'([^']+)'/);
+        if (findMatch) {
+          const dir = findMatch[1].replace(/\/+$/, "") || "/";
+          const namePattern = sqlLike(findMatch[2]).replace(/\*/g, "%").replace(/\?/g, "_");
+          const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+          const isSessionDir = dir === "/sessions" || dir.startsWith("/sessions/");
+          const findTable = isSessionDir ? sessionsTable : table;
+          log(`direct find: ${dir} -name '${findMatch[2]}'`);
+          const rows = await api.query(
+            `SELECT path FROM "${findTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`
+          );
+          let result = rows.map(r => r["path"] as string).join("\n") || "";
+          if (/\|\s*wc\s+-l\s*$/.test(rewritten)) {
+            result = String(rows.length);
           }
-          const results = allResults.join("\n");
-          blockWithContent(results || "(no matches)");
+          blockWithContent(result || "(no matches)");
+        }
+      }
+
+      // Detect: grep/egrep/fgrep with all flags
+      const grepParams = parseBashGrep(rewritten);
+      if (grepParams) {
+        const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+        log(`direct grep: pattern=${grepParams.pattern} path=${grepParams.targetPath}`);
+        const result = await handleGrepDirect(api, table, sessionsTable, grepParams);
+        if (result !== null) {
+          blockWithContent(result);
         }
       }
     } catch (e: any) {

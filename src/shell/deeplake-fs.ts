@@ -94,22 +94,8 @@ export class DeeplakeFs implements IFileSystem {
     // Ensure the table exists before bootstrapping.
     await client.ensureTable();
 
-    // Sync both tables in parallel before bootstrap queries.
-    // Track whether session sync succeeded — skip session bootstrap if it failed.
-    let sessionSyncOk = false;
-    const syncPromises: Promise<unknown>[] = [
-      client.query(`SELECT deeplake_sync_table('${table}')`),
-    ];
-    if (sessionsTable) {
-      syncPromises.push(
-        client.query(`SELECT deeplake_sync_table('${sessionsTable}')`)
-          .then(() => { sessionSyncOk = true; })
-          .catch(() => { /* sessions table may not exist yet */ })
-      );
-    }
-    await Promise.all(syncPromises);
-
     // Bootstrap memory + sessions metadata in parallel.
+    let sessionSyncOk = true;
     const memoryBootstrap = (async () => {
       const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
       try {
@@ -210,8 +196,6 @@ export class DeeplakeFs implements IFileSystem {
         failures++;
       }
     }
-    // Sync so subsequent reads see the successfully written data.
-    await this.client.query(`SELECT deeplake_sync_table('${this.table}')`);
     if (failures > 0) {
       throw new Error(`flush: ${failures}/${rows.length} writes failed and were re-queued`);
     }
@@ -256,12 +240,21 @@ export class DeeplakeFs implements IFileSystem {
       `WHERE path LIKE '${esc("/summaries/")}%' ORDER BY last_update_date DESC`
     );
 
-    // Build a lookup: sessionId → JSONL path from sessionPaths
-    const sessionPathsByUser = new Map<string, string>();
+    // Build a lookup: key → session path from sessionPaths
+    // Supports two formats:
+    //   1. /sessions/<user>/<user>_<org>_<ws>_<sessionId>.jsonl  → key = sessionId
+    //   2. /sessions/<filename>.json (e.g. conv_0_session_1.json) → key = filename stem
+    const sessionPathsByKey = new Map<string, string>();
     for (const sp of this.sessionPaths) {
-      // Session path format: /sessions/<user>/<user>_<org>_<ws>_<sessionId>.jsonl
-      const m = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
-      if (m) sessionPathsByUser.set(m[1], sp.slice(1)); // strip leading /
+      const hivemind = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
+      if (hivemind) {
+        sessionPathsByKey.set(hivemind[1], sp.slice(1));
+      } else {
+        // Generic: extract filename without extension
+        const fname = sp.split("/").pop() ?? "";
+        const stem = fname.replace(/\.[^.]+$/, "");
+        if (stem) sessionPathsByKey.set(stem, sp.slice(1));
+      }
     }
 
     const lines: string[] = [
@@ -280,7 +273,9 @@ export class DeeplakeFs implements IFileSystem {
       const summaryUser = match[1];
       const sessionId = match[2];
       const relPath = `summaries/${summaryUser}/${sessionId}.md`;
-      const convPath = sessionPathsByUser.get(sessionId);
+      // Try matching session: first exact sessionId, then strip _summary suffix
+      const baseName = sessionId.replace(/_summary$/, "");
+      const convPath = sessionPathsByKey.get(sessionId) ?? sessionPathsByKey.get(baseName);
       const convLink = convPath ? `[messages](${convPath})` : "";
       const project = (row["project"] as string) || "";
       const description = (row["description"] as string) || "";

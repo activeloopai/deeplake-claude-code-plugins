@@ -3,6 +3,19 @@ import { log as _log } from "./utils/debug.js";
 import { sqlStr } from "./utils/sql.js";
 
 const log = (msg: string) => _log("sdk", msg);
+const TRACE_SQL = process.env.DEEPLAKE_TRACE_SQL === "1" || process.env.DEEPLAKE_DEBUG === "1";
+const DEBUG_FILE_LOG = process.env.DEEPLAKE_DEBUG === "1";
+
+function summarizeSql(sql: string, maxLen = 220): string {
+  const compact = sql.replace(/\s+/g, " ").trim();
+  return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
+}
+
+function traceSql(msg: string): void {
+  if (!TRACE_SQL) return;
+  process.stderr.write(`[deeplake-sql] ${msg}\n`);
+  if (DEBUG_FILE_LOG) log(msg);
+}
 
 // ── Retry & concurrency primitives ──────────────────────────────────────────
 
@@ -60,9 +73,18 @@ export class DeeplakeApi {
 
   /** Execute SQL with retry on transient errors and bounded concurrency. */
   async query(sql: string): Promise<Record<string, unknown>[]> {
+    const startedAt = Date.now();
+    const summary = summarizeSql(sql);
+    traceSql(`query start: ${summary}`);
     await this._sem.acquire();
     try {
-      return await this._queryWithRetry(sql);
+      const rows = await this._queryWithRetry(sql);
+      traceSql(`query ok (${Date.now() - startedAt}ms, rows=${rows.length}): ${summary}`);
+      return rows;
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      traceSql(`query fail (${Date.now() - startedAt}ms): ${summary} :: ${message}`);
+      throw e;
     } finally {
       this._sem.release();
     }
@@ -231,6 +253,13 @@ export class DeeplakeApi {
       );
       log(`table "${tbl}" created`);
     }
+    // BM25 index disabled — CREATE INDEX causes intermittent oid errors on fresh tables.
+    // See bm25-oid-bug.sh for reproduction. Re-enable once Deeplake fixes the oid invalidation.
+    // try {
+    //   await this.query(
+    //     `CREATE INDEX IF NOT EXISTS idx_${tbl}_summary_bm25 ON "${this.workspaceId}"."${tbl}" USING deeplake_index (summary) WITH (index_type = 'bm25')`
+    //   );
+    // } catch { /* index may already exist or not be supported */ }
   }
 
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */

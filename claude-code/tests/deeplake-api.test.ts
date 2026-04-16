@@ -350,6 +350,7 @@ describe("DeeplakeApi.ensureTable", () => {
   });
 
   it("does nothing when table already exists", async () => {
+    // BM25 index creation is disabled (oid bug), so ensureTable only calls listTables
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "my_table" }] }),

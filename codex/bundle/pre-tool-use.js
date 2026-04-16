@@ -83,6 +83,20 @@ function sqlLike(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
+var TRACE_SQL = process.env.DEEPLAKE_TRACE_SQL === "1" || process.env.DEEPLAKE_DEBUG === "1";
+var DEBUG_FILE_LOG = process.env.DEEPLAKE_DEBUG === "1";
+function summarizeSql(sql, maxLen = 220) {
+  const compact = sql.replace(/\s+/g, " ").trim();
+  return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
+}
+function traceSql(msg) {
+  if (!TRACE_SQL)
+    return;
+  process.stderr.write(`[deeplake-sql] ${msg}
+`);
+  if (DEBUG_FILE_LOG)
+    log2(msg);
+}
 var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
@@ -130,9 +144,18 @@ var DeeplakeApi = class {
   }
   /** Execute SQL with retry on transient errors and bounded concurrency. */
   async query(sql) {
+    const startedAt = Date.now();
+    const summary = summarizeSql(sql);
+    traceSql(`query start: ${summary}`);
     await this._sem.acquire();
     try {
-      return await this._queryWithRetry(sql);
+      const rows = await this._queryWithRetry(sql);
+      traceSql(`query ok (${Date.now() - startedAt}ms, rows=${rows.length}): ${summary}`);
+      return rows;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      traceSql(`query fail (${Date.now() - startedAt}ms): ${summary} :: ${message}`);
+      throw e;
     } finally {
       this._sem.release();
     }
@@ -282,6 +305,179 @@ var DeeplakeApi = class {
     }
   }
 };
+
+// dist/src/hooks/grep-direct.js
+function parseBashGrep(cmd) {
+  const first = cmd.trim().split(/\s*\|\s*/)[0];
+  if (!/^(grep|egrep|fgrep)\b/.test(first))
+    return null;
+  const isFixed = first.startsWith("fgrep");
+  const tokens = [];
+  let pos = 0;
+  while (pos < first.length) {
+    if (first[pos] === " " || first[pos] === "	") {
+      pos++;
+      continue;
+    }
+    if (first[pos] === "'" || first[pos] === '"') {
+      const q = first[pos];
+      let end = pos + 1;
+      while (end < first.length && first[end] !== q)
+        end++;
+      tokens.push(first.slice(pos + 1, end));
+      pos = end + 1;
+    } else {
+      let end = pos;
+      while (end < first.length && first[end] !== " " && first[end] !== "	")
+        end++;
+      tokens.push(first.slice(pos, end));
+      pos = end;
+    }
+  }
+  let ignoreCase = false, wordMatch = false, filesOnly = false, countOnly = false, lineNumber = false, invertMatch = false, fixedString = isFixed;
+  let ti = 1;
+  while (ti < tokens.length && tokens[ti].startsWith("-") && tokens[ti] !== "--") {
+    const flag = tokens[ti];
+    if (flag.startsWith("--")) {
+      const handlers = {
+        "--ignore-case": () => {
+          ignoreCase = true;
+        },
+        "--word-regexp": () => {
+          wordMatch = true;
+        },
+        "--files-with-matches": () => {
+          filesOnly = true;
+        },
+        "--count": () => {
+          countOnly = true;
+        },
+        "--line-number": () => {
+          lineNumber = true;
+        },
+        "--invert-match": () => {
+          invertMatch = true;
+        },
+        "--fixed-strings": () => {
+          fixedString = true;
+        }
+      };
+      handlers[flag]?.();
+      ti++;
+      continue;
+    }
+    for (const c of flag.slice(1)) {
+      switch (c) {
+        case "i":
+          ignoreCase = true;
+          break;
+        case "w":
+          wordMatch = true;
+          break;
+        case "l":
+          filesOnly = true;
+          break;
+        case "c":
+          countOnly = true;
+          break;
+        case "n":
+          lineNumber = true;
+          break;
+        case "v":
+          invertMatch = true;
+          break;
+        case "F":
+          fixedString = true;
+          break;
+      }
+    }
+    ti++;
+  }
+  if (ti < tokens.length && tokens[ti] === "--")
+    ti++;
+  if (ti >= tokens.length)
+    return null;
+  let target = tokens[ti + 1] ?? "/";
+  if (target === "." || target === "./")
+    target = "/";
+  return {
+    pattern: tokens[ti],
+    targetPath: target,
+    ignoreCase,
+    wordMatch,
+    filesOnly,
+    countOnly,
+    lineNumber,
+    invertMatch,
+    fixedString
+  };
+}
+async function handleGrepDirect(api, table, sessionsTable, params) {
+  if (!params.pattern)
+    return null;
+  const { pattern, targetPath, ignoreCase, wordMatch, filesOnly, countOnly, lineNumber, invertMatch, fixedString } = params;
+  const likeOp = ignoreCase ? "ILIKE" : "LIKE";
+  const escapedLike = sqlLike(pattern);
+  let pathFilter = "";
+  if (targetPath && targetPath !== "/") {
+    const clean = targetPath.replace(/\/+$/, "");
+    pathFilter = ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+  }
+  const hasRegexMeta = !fixedString && /[.*+?^${}()|[\]\\]/.test(pattern);
+  let rows = [];
+  if (!hasRegexMeta) {
+    const contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
+    try {
+      rows = await api.query(`SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter}${contentFilter} LIMIT 100`);
+    } catch {
+      rows = [];
+    }
+  } else {
+    try {
+      rows = await api.query(`SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter} LIMIT 100`);
+    } catch {
+      rows = [];
+    }
+  }
+  let reStr = fixedString ? pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : pattern;
+  if (wordMatch)
+    reStr = `\\b${reStr}\\b`;
+  let re;
+  try {
+    re = new RegExp(reStr, ignoreCase ? "i" : "");
+  } catch {
+    re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
+  }
+  const output = [];
+  const multi = rows.length > 1;
+  for (const row of rows) {
+    const p = row["path"];
+    const text = row["content"];
+    if (!text)
+      continue;
+    const lines = text.split("\n");
+    const matched = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (re.test(lines[i]) !== !!invertMatch) {
+        if (filesOnly) {
+          output.push(p);
+          break;
+        }
+        const prefix = multi ? `${p}:` : "";
+        const ln = lineNumber ? `${i + 1}:` : "";
+        matched.push(`${prefix}${ln}${lines[i]}`);
+      }
+    }
+    if (!filesOnly) {
+      if (countOnly) {
+        output.push(`${multi ? `${p}:` : ""}${matched.length}`);
+      } else {
+        output.push(...matched);
+      }
+    }
+  }
+  return output.join("\n") || "(no matches)";
+}
 
 // dist/src/hooks/codex/pre-tool-use.js
 var log3 = (msg) => log("codex-pre", msg);
@@ -437,13 +633,89 @@ async function main() {
     const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
     const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
     try {
-      const catMatch = rewritten.match(/^cat\s+(\S+)$/);
-      if (catMatch) {
-        const virtualPath = catMatch[1];
-        log3(`direct read: ${virtualPath}`);
-        const rows = await api.query(`SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
-        if (rows.length > 0 && rows[0]["summary"]) {
-          blockWithContent(rows[0]["summary"]);
+      {
+        let virtualPath = null;
+        let lineLimit = 0;
+        let fromEnd = false;
+        const catCmd = rewritten.replace(/\s+2>\S+/g, "").trim();
+        const catPipeHead = catCmd.match(/^cat\s+(\S+?)\s*(?:\|[^|]*)*\|\s*head\s+(?:-n?\s*)?(-?\d+)\s*$/);
+        if (catPipeHead) {
+          virtualPath = catPipeHead[1];
+          lineLimit = Math.abs(parseInt(catPipeHead[2], 10));
+        }
+        if (!virtualPath) {
+          const catMatch = catCmd.match(/^cat\s+(\S+)\s*$/);
+          if (catMatch)
+            virtualPath = catMatch[1];
+        }
+        if (!virtualPath) {
+          const headMatch = rewritten.match(/^head\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ?? rewritten.match(/^head\s+(\S+)\s*$/);
+          if (headMatch) {
+            if (headMatch[2]) {
+              virtualPath = headMatch[2];
+              lineLimit = Math.abs(parseInt(headMatch[1], 10));
+            } else {
+              virtualPath = headMatch[1];
+              lineLimit = 10;
+            }
+          }
+        }
+        if (!virtualPath) {
+          const tailMatch = rewritten.match(/^tail\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ?? rewritten.match(/^tail\s+(\S+)\s*$/);
+          if (tailMatch) {
+            fromEnd = true;
+            if (tailMatch[2]) {
+              virtualPath = tailMatch[2];
+              lineLimit = Math.abs(parseInt(tailMatch[1], 10));
+            } else {
+              virtualPath = tailMatch[1];
+              lineLimit = 10;
+            }
+          }
+        }
+        if (!virtualPath) {
+          const wcMatch = rewritten.match(/^wc\s+-l\s+(\S+)\s*$/);
+          if (wcMatch) {
+            virtualPath = wcMatch[1];
+            lineLimit = -1;
+          }
+        }
+        if (virtualPath && !virtualPath.endsWith("/")) {
+          const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+          const isSession = virtualPath.startsWith("/sessions/");
+          log3(`direct read: ${virtualPath}`);
+          let content = null;
+          if (isSession) {
+            const rows = await api.query(`SELECT message::text AS content FROM "${sessionsTable}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
+            if (rows.length > 0 && rows[0]["content"])
+              content = rows[0]["content"];
+          } else {
+            const rows = await api.query(`SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
+            if (rows.length > 0 && rows[0]["summary"]) {
+              content = rows[0]["summary"];
+            } else if (virtualPath === "/index.md") {
+              const idxRows = await api.query(`SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`);
+              const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
+              for (const r of idxRows) {
+                const p = r["path"];
+                const proj = r["project"] || "";
+                const desc = (r["description"] || "").slice(0, 120);
+                const date = (r["creation_date"] || "").slice(0, 10);
+                lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
+              }
+              content = lines.join("\n");
+            }
+          }
+          if (content !== null) {
+            if (lineLimit === -1) {
+              blockWithContent(`${content.split("\n").length} ${virtualPath}`);
+            }
+            if (lineLimit > 0) {
+              const lines = content.split("\n");
+              content = fromEnd ? lines.slice(-lineLimit).join("\n") : lines.slice(0, lineLimit).join("\n");
+            }
+            blockWithContent(content);
+          }
         }
       }
       const lsMatch = rewritten.match(/^ls\s+(?:-[a-zA-Z]+\s+)*(\S+)?\s*$/);
@@ -487,25 +759,30 @@ async function main() {
           blockWithContent(`ls: cannot access '${dir}': No such file or directory`);
         }
       }
-      const grepMatch = rewritten.match(/^grep\s+(?:-[a-zA-Z]+\s+)*(?:'([^']*)'|"([^"]*)"|(\S+))\s+(\S+)/);
-      if (grepMatch) {
-        const pattern = grepMatch[1] ?? grepMatch[2] ?? grepMatch[3];
-        const ignoreCase = /\s-[a-zA-Z]*i/.test(rewritten);
-        log3(`direct grep: ${pattern}`);
-        const rows = await api.query(`SELECT path, summary FROM "${table}" WHERE summary ${ignoreCase ? "ILIKE" : "LIKE"} '%${sqlLike(pattern)}%' LIMIT 5`);
-        if (rows.length > 0) {
-          const allResults = [];
-          const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
-          for (const row of rows) {
-            const p = row["path"];
-            const text = row["summary"];
-            if (!text)
-              continue;
-            const matches = text.split("\n").filter((line) => re.test(line)).slice(0, 5).map((line) => `${p}:${line.slice(0, 300)}`);
-            allResults.push(...matches);
+      {
+        const findMatch = rewritten.match(/^find\s+(\S+)\s+(?:-type\s+\S+\s+)?-name\s+'([^']+)'/);
+        if (findMatch) {
+          const dir = findMatch[1].replace(/\/+$/, "") || "/";
+          const namePattern = sqlLike(findMatch[2]).replace(/\*/g, "%").replace(/\?/g, "_");
+          const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+          const isSessionDir = dir === "/sessions" || dir.startsWith("/sessions/");
+          const findTable = isSessionDir ? sessionsTable : table;
+          log3(`direct find: ${dir} -name '${findMatch[2]}'`);
+          const rows = await api.query(`SELECT path FROM "${findTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`);
+          let result2 = rows.map((r) => r["path"]).join("\n") || "";
+          if (/\|\s*wc\s+-l\s*$/.test(rewritten)) {
+            result2 = String(rows.length);
           }
-          const results = allResults.join("\n");
-          blockWithContent(results || "(no matches)");
+          blockWithContent(result2 || "(no matches)");
+        }
+      }
+      const grepParams = parseBashGrep(rewritten);
+      if (grepParams) {
+        const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+        log3(`direct grep: pattern=${grepParams.pattern} path=${grepParams.targetPath}`);
+        const result2 = await handleGrepDirect(api, table, sessionsTable, grepParams);
+        if (result2 !== null) {
+          blockWithContent(result2);
         }
       }
     } catch (e) {

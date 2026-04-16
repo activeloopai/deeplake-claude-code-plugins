@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/codex/session-start.js
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join as join4 } from "node:path";
-import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2, readFileSync as readFileSync3 } from "node:fs";
-import { execSync as execSync2 } from "node:child_process";
-import { homedir as homedir4 } from "node:os";
+import { dirname, join as join3 } from "node:path";
+import { readFileSync as readFileSync2 } from "node:fs";
 
 // dist/src/commands/auth.js
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
@@ -23,266 +22,6 @@ function loadCredentials() {
     return null;
   }
 }
-function saveCredentials(creds) {
-  if (!existsSync(CONFIG_DIR))
-    mkdirSync(CONFIG_DIR, { recursive: true, mode: 448 });
-  writeFileSync(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
-}
-
-// dist/src/config.js
-import { readFileSync as readFileSync2, existsSync as existsSync2 } from "node:fs";
-import { join as join2 } from "node:path";
-import { homedir as homedir2, userInfo } from "node:os";
-function loadConfig() {
-  const home = homedir2();
-  const credPath = join2(home, ".deeplake", "credentials.json");
-  let creds = null;
-  if (existsSync2(credPath)) {
-    try {
-      creds = JSON.parse(readFileSync2(credPath, "utf-8"));
-    } catch {
-      return null;
-    }
-  }
-  const token = process.env.DEEPLAKE_TOKEN ?? creds?.token;
-  const orgId = process.env.DEEPLAKE_ORG_ID ?? creds?.orgId;
-  if (!token || !orgId)
-    return null;
-  return {
-    token,
-    orgId,
-    orgName: creds?.orgName ?? orgId,
-    userName: creds?.userName || userInfo().username || "unknown",
-    workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
-    apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: process.env.DEEPLAKE_TABLE ?? "memory",
-    sessionsTableName: process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
-    memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join2(home, ".deeplake", "memory")
-  };
-}
-
-// dist/src/deeplake-api.js
-import { randomUUID } from "node:crypto";
-
-// dist/src/utils/debug.js
-import { appendFileSync } from "node:fs";
-import { join as join3 } from "node:path";
-import { homedir as homedir3 } from "node:os";
-var DEBUG = process.env.DEEPLAKE_DEBUG === "1";
-var LOG = join3(homedir3(), ".deeplake", "hook-debug.log");
-function log(tag, msg) {
-  if (!DEBUG)
-    return;
-  appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
-`);
-}
-
-// dist/src/utils/sql.js
-function sqlStr(value) {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
-}
-
-// dist/src/deeplake-api.js
-var log2 = (msg) => log("sdk", msg);
-var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
-var MAX_RETRIES = 3;
-var BASE_DELAY_MS = 500;
-var MAX_CONCURRENCY = 5;
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-var Semaphore = class {
-  max;
-  waiting = [];
-  active = 0;
-  constructor(max) {
-    this.max = max;
-  }
-  async acquire() {
-    if (this.active < this.max) {
-      this.active++;
-      return;
-    }
-    await new Promise((resolve) => this.waiting.push(resolve));
-  }
-  release() {
-    this.active--;
-    const next = this.waiting.shift();
-    if (next) {
-      this.active++;
-      next();
-    }
-  }
-};
-var DeeplakeApi = class {
-  token;
-  apiUrl;
-  orgId;
-  workspaceId;
-  tableName;
-  _pendingRows = [];
-  _sem = new Semaphore(MAX_CONCURRENCY);
-  constructor(token, apiUrl, orgId, workspaceId, tableName) {
-    this.token = token;
-    this.apiUrl = apiUrl;
-    this.orgId = orgId;
-    this.workspaceId = workspaceId;
-    this.tableName = tableName;
-  }
-  /** Execute SQL with retry on transient errors and bounded concurrency. */
-  async query(sql) {
-    await this._sem.acquire();
-    try {
-      return await this._queryWithRetry(sql);
-    } finally {
-      this._sem.release();
-    }
-  }
-  async _queryWithRetry(sql) {
-    let lastError;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      let resp;
-      try {
-        resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.token}`,
-            "Content-Type": "application/json",
-            "X-Activeloop-Org-Id": this.orgId
-          },
-          body: JSON.stringify({ query: sql })
-        });
-      } catch (e) {
-        lastError = e instanceof Error ? e : new Error(String(e));
-        if (attempt < MAX_RETRIES) {
-          const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
-          log2(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
-          await sleep(delay);
-          continue;
-        }
-        throw lastError;
-      }
-      if (resp.ok) {
-        const raw = await resp.json();
-        if (!raw?.rows || !raw?.columns)
-          return [];
-        return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i) => [col, row[i]])));
-      }
-      const text = await resp.text().catch(() => "");
-      if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
-        const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
-        log2(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
-        await sleep(delay);
-        continue;
-      }
-      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
-    }
-    throw lastError ?? new Error("Query failed: max retries exceeded");
-  }
-  // ── Writes ──────────────────────────────────────────────────────────────────
-  /** Queue rows for writing. Call commit() to flush. */
-  appendRows(rows) {
-    this._pendingRows.push(...rows);
-  }
-  /** Flush pending rows via SQL. */
-  async commit() {
-    if (this._pendingRows.length === 0)
-      return;
-    const rows = this._pendingRows;
-    this._pendingRows = [];
-    const CONCURRENCY = 10;
-    for (let i = 0; i < rows.length; i += CONCURRENCY) {
-      const chunk = rows.slice(i, i + CONCURRENCY);
-      await Promise.allSettled(chunk.map((r) => this.upsertRowSql(r)));
-    }
-    log2(`commit: ${rows.length} rows`);
-  }
-  async upsertRowSql(row) {
-    const ts = (/* @__PURE__ */ new Date()).toISOString();
-    const cd = row.creationDate ?? ts;
-    const lud = row.lastUpdateDate ?? ts;
-    const exists = await this.query(`SELECT path FROM "${this.tableName}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`);
-    if (exists.length > 0) {
-      let setClauses = `summary = E'${sqlStr(row.contentText)}', mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
-      if (row.project !== void 0)
-        setClauses += `, project = '${sqlStr(row.project)}'`;
-      if (row.description !== void 0)
-        setClauses += `, description = '${sqlStr(row.description)}'`;
-      await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(row.path)}'`);
-    } else {
-      const id = randomUUID();
-      let cols = "id, path, filename, summary, mime_type, size_bytes, creation_date, last_update_date";
-      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
-      if (row.project !== void 0) {
-        cols += ", project";
-        vals += `, '${sqlStr(row.project)}'`;
-      }
-      if (row.description !== void 0) {
-        cols += ", description";
-        vals += `, '${sqlStr(row.description)}'`;
-      }
-      await this.query(`INSERT INTO "${this.tableName}" (${cols}) VALUES (${vals})`);
-    }
-  }
-  /** Update specific columns on a row by path. */
-  async updateColumns(path, columns) {
-    const setClauses = Object.entries(columns).map(([col, val]) => typeof val === "number" ? `${col} = ${val}` : `${col} = '${sqlStr(String(val))}'`).join(", ");
-    await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(path)}'`);
-  }
-  // ── Convenience ─────────────────────────────────────────────────────────────
-  /** Create a BM25 search index on a column. */
-  async createIndex(column) {
-    await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
-  }
-  /** List all tables in the workspace (with retry). */
-  async listTables() {
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
-          headers: {
-            Authorization: `Bearer ${this.token}`,
-            "X-Activeloop-Org-Id": this.orgId
-          }
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          return (data.tables ?? []).map((t) => t.table_name);
-        }
-        if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
-          await sleep(BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200);
-          continue;
-        }
-        return [];
-      } catch {
-        if (attempt < MAX_RETRIES) {
-          await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
-          continue;
-        }
-        return [];
-      }
-    }
-    return [];
-  }
-  /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
-  async ensureTable(name) {
-    const tbl = name ?? this.tableName;
-    const tables = await this.listTables();
-    if (!tables.includes(tbl)) {
-      log2(`table "${tbl}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
-      log2(`table "${tbl}" created`);
-    }
-  }
-  /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
-  async ensureSessionsTable(name) {
-    const tables = await this.listTables();
-    if (!tables.includes(name)) {
-      log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
-      log2(`table "${name}" created`);
-    }
-  }
-};
 
 // dist/src/utils/stdin.js
 function readStdin() {
@@ -301,31 +40,42 @@ function readStdin() {
   });
 }
 
+// dist/src/utils/debug.js
+import { appendFileSync } from "node:fs";
+import { join as join2 } from "node:path";
+import { homedir as homedir2 } from "node:os";
+var DEBUG = process.env.DEEPLAKE_DEBUG === "1";
+var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
+function log(tag, msg) {
+  if (!DEBUG)
+    return;
+  appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
+`);
+}
+
 // dist/src/hooks/codex/session-start.js
-var log3 = (msg) => log("codex-session-start", msg);
+var log2 = (msg) => log("codex-session-start", msg);
 var __bundleDir = dirname(fileURLToPath(import.meta.url));
-var AUTH_CMD = join4(__bundleDir, "commands", "auth-login.js");
+var AUTH_CMD = join3(__bundleDir, "commands", "auth-login.js");
 var context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
 
 Structure: index.md (start here) \u2192 summaries/*.md \u2192 sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
 Search: grep -r "keyword" ~/.deeplake/memory/
 IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem.
 Do NOT spawn subagents to read deeplake memory.`;
-var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
-var VERSION_CHECK_TIMEOUT = 3e3;
 function getInstalledVersion() {
   try {
-    const pluginJson = join4(__bundleDir, "..", ".codex-plugin", "plugin.json");
-    const plugin = JSON.parse(readFileSync3(pluginJson, "utf-8"));
+    const pluginJson = join3(__bundleDir, "..", ".codex-plugin", "plugin.json");
+    const plugin = JSON.parse(readFileSync2(pluginJson, "utf-8"));
     if (plugin.version)
       return plugin.version;
   } catch {
   }
   let dir = __bundleDir;
   for (let i = 0; i < 5; i++) {
-    const candidate = join4(dir, "package.json");
+    const candidate = join3(dir, "package.json");
     try {
-      const pkg = JSON.parse(readFileSync3(candidate, "utf-8"));
+      const pkg = JSON.parse(readFileSync2(candidate, "utf-8"));
       if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version)
         return pkg.version;
     } catch {
@@ -337,140 +87,40 @@ function getInstalledVersion() {
   }
   return null;
 }
-async function getLatestVersion() {
-  try {
-    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(VERSION_CHECK_TIMEOUT) });
-    if (!res.ok)
-      return null;
-    const pkg = await res.json();
-    return pkg.version ?? null;
-  } catch {
-    return null;
-  }
-}
-function isNewer(latest, current) {
-  const parse = (v) => v.split(".").map(Number);
-  const [la, lb, lc] = parse(latest);
-  const [ca, cb, cc] = parse(current);
-  return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
-}
-var HOME = homedir4();
-var WIKI_LOG = join4(HOME, ".codex", "hooks", "deeplake-wiki.log");
-function wikiLog(msg) {
-  try {
-    mkdirSync2(join4(HOME, ".codex", "hooks"), { recursive: true });
-    appendFileSync2(WIKI_LOG, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] ${msg}
-`);
-  } catch {
-  }
-}
-async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, workspaceId) {
-  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
-  await api.query(`SELECT deeplake_sync_table('${table}')`);
-  const existing = await api.query(`SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`);
-  if (existing.length > 0) {
-    wikiLog(`SessionStart: summary exists for ${sessionId} (resumed)`);
-    return;
-  }
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const projectName = cwd.split("/").pop() ?? "unknown";
-  const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
-  const content = [
-    `# Session ${sessionId}`,
-    `- **Source**: ${sessionSource}`,
-    `- **Started**: ${now}`,
-    `- **Project**: ${projectName}`,
-    `- **Status**: in-progress`,
-    ""
-  ].join("\n");
-  const filename = `${sessionId}.md`;
-  await api.query(`INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'codex', '${now}', '${now}')`);
-  wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
-}
 async function main() {
   if (process.env.DEEPLAKE_WIKI_WORKER === "1")
     return;
   const input = await readStdin();
-  let creds = loadCredentials();
+  const creds = loadCredentials();
   if (!creds?.token) {
-    log3("no credentials found \u2014 run auth login to authenticate");
+    log2("no credentials found \u2014 run auth login to authenticate");
   } else {
-    log3(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
-    if (creds.token && !creds.userName) {
-      try {
-        const { userInfo: userInfo2 } = await import("node:os");
-        creds.userName = userInfo2().username ?? "unknown";
-        saveCredentials(creds);
-        log3(`backfilled userName: ${creds.userName}`);
-      } catch {
-      }
-    }
+    log2(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
   }
-  if (input.session_id && creds?.token) {
-    try {
-      const config = loadConfig();
-      if (config) {
-        const table = config.tableName;
-        const sessionsTable = config.sessionsTableName;
-        const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
-        await api.ensureTable();
-        await api.ensureSessionsTable(sessionsTable);
-        await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
-        log3("placeholder created");
-      }
-    } catch (e) {
-      log3(`placeholder failed: ${e.message}`);
-      wikiLog(`SessionStart: placeholder failed for ${input.session_id}: ${e.message}`);
-    }
+  if (creds?.token) {
+    const setupScript = join3(__bundleDir, "session-start-setup.js");
+    const child = spawn("node", [setupScript], {
+      detached: true,
+      stdio: ["pipe", "ignore", "ignore"],
+      env: { ...process.env }
+    });
+    child.stdin?.write(JSON.stringify(input));
+    child.stdin?.end();
+    child.unref();
+    log2("spawned async setup process");
   }
-  const autoupdate = creds?.autoupdate !== false;
-  let updateNotice = "";
-  try {
-    const current = getInstalledVersion();
-    if (current) {
-      const latest = await getLatestVersion();
-      if (latest && isNewer(latest, current)) {
-        if (autoupdate) {
-          log3(`autoupdate: updating ${current} \u2192 ${latest}`);
-          try {
-            const tag = `v${latest}`;
-            const findCmd = `INSTALL_DIR=""; CACHE_DIR=$(find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1); if [ -n "$CACHE_DIR" ]; then INSTALL_DIR=$(ls -1d "$CACHE_DIR"/*/ 2>/dev/null | tail -1); elif [ -d ~/.codex/hivemind ]; then INSTALL_DIR=~/.codex/hivemind; fi; if [ -n "$INSTALL_DIR" ]; then TMPDIR=$(mktemp -d); git clone --depth 1 --branch ${tag} -q https://github.com/activeloopai/hivemind.git "$TMPDIR/hivemind" 2>/dev/null && cp -r "$TMPDIR/hivemind/codex/"* "$INSTALL_DIR/" 2>/dev/null; rm -rf "$TMPDIR"; fi`;
-            execSync2(findCmd, { stdio: "ignore", timeout: 6e4 });
-            updateNotice = `
-
-Hivemind auto-updated: ${current} \u2192 ${latest}. Restart Codex to apply.`;
-            process.stderr.write(`Hivemind auto-updated: ${current} \u2192 ${latest}. Restart Codex to apply.
-`);
-            log3(`autoupdate succeeded: ${current} \u2192 ${latest} (tag: ${tag})`);
-          } catch (e) {
-            updateNotice = `
-
-Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed.`;
-            process.stderr.write(`Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed.
-`);
-            log3(`autoupdate failed: ${e.message}`);
-          }
-        } else {
-          updateNotice = `
-
-Hivemind update available: ${current} \u2192 ${latest}.`;
-          process.stderr.write(`Hivemind update available: ${current} \u2192 ${latest}.
-`);
-          log3(`update available (autoupdate off): ${current} \u2192 ${latest}`);
-        }
-      } else {
-        log3(`version up to date: ${current}`);
-      }
-    }
-  } catch (e) {
-    log3(`version check failed: ${e.message}`);
+  let versionNotice = "";
+  const current = getInstalledVersion();
+  if (current) {
+    versionNotice = `
+Hivemind v${current}`;
   }
   const additionalContext = creds?.token ? `${context}
-Logged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}` : `${context}
-Not logged in to Deeplake. Run: node "${AUTH_CMD}" login${updateNotice}`;
+Logged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${versionNotice}` : `${context}
+Not logged in to Deeplake. Run: node "${AUTH_CMD}" login${versionNotice}`;
   console.log(additionalContext);
 }
 main().catch((e) => {
-  log3(`fatal: ${e.message}`);
+  log2(`fatal: ${e.message}`);
   process.exit(0);
 });

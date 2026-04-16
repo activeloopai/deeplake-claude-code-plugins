@@ -66,7 +66,6 @@ function cleanup() {
 async function main() {
   try {
     wlog("fetching session events");
-    await query(`SELECT deeplake_sync_table('${cfg.sessionsTable}')`);
     const rows = await query(`SELECT message, creation_date FROM "${cfg.sessionsTable}" WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`);
     if (rows.length === 0) {
       wlog("no session events found \u2014 exiting");
@@ -80,7 +79,6 @@ async function main() {
     wlog(`found ${jsonlLines} events at ${jsonlServerPath}`);
     let prevOffset = 0;
     try {
-      await query(`SELECT deeplake_sync_table('${cfg.memoryTable}')`);
       const sumRows = await query(`SELECT summary FROM "${cfg.memoryTable}" WHERE path = '${esc(`/summaries/${cfg.userName}/${cfg.sessionId}.md`)}' LIMIT 1`);
       if (sumRows.length > 0 && sumRows[0]["summary"]) {
         const existing = sumRows[0]["summary"];
@@ -118,7 +116,6 @@ async function main() {
         const fname = `${cfg.sessionId}.md`;
         const vpath = `/summaries/${cfg.userName}/${fname}`;
         const ts = (/* @__PURE__ */ new Date()).toISOString();
-        await query(`SELECT deeplake_sync_table('${cfg.memoryTable}')`);
         const existing = await query(`SELECT path FROM "${cfg.memoryTable}" WHERE path = '${esc(vpath)}' LIMIT 1`);
         if (existing.length > 0) {
           await query(`UPDATE "${cfg.memoryTable}" SET summary = E'${esc(text)}', size_bytes = ${Buffer.byteLength(text)}, last_update_date = '${ts}' WHERE path = '${esc(vpath)}'`);

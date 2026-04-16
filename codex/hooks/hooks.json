@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "node \"$CODEX_PLUGIN_ROOT/bundle/session-start.js\"",
-            "timeout": 120
+            "timeout": 10
           }
         ]
       }

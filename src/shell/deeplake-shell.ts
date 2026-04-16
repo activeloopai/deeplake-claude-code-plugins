@@ -62,7 +62,7 @@ async function main(): Promise<void> {
   const bash = new Bash({
     fs,
     cwd: mount,
-    customCommands: [createGrepCommand(client, fs, table)],
+    customCommands: [createGrepCommand(client, fs, table, sessionsTable)],
     env: {
       HOME: mount,
       DEEPLAKE_TABLE: table,

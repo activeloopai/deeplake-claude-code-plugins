@@ -66772,9 +66772,26 @@ function log(tag, msg) {
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
+function sqlLike(value) {
+  return sqlStr(value).replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
+var TRACE_SQL = process.env.DEEPLAKE_TRACE_SQL === "1" || process.env.DEEPLAKE_DEBUG === "1";
+var DEBUG_FILE_LOG = process.env.DEEPLAKE_DEBUG === "1";
+function summarizeSql(sql, maxLen = 220) {
+  const compact = sql.replace(/\s+/g, " ").trim();
+  return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
+}
+function traceSql(msg) {
+  if (!TRACE_SQL)
+    return;
+  process.stderr.write(`[deeplake-sql] ${msg}
+`);
+  if (DEBUG_FILE_LOG)
+    log2(msg);
+}
 var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
@@ -66822,9 +66839,18 @@ var DeeplakeApi = class {
   }
   /** Execute SQL with retry on transient errors and bounded concurrency. */
   async query(sql) {
+    const startedAt = Date.now();
+    const summary = summarizeSql(sql);
+    traceSql(`query start: ${summary}`);
     await this._sem.acquire();
     try {
-      return await this._queryWithRetry(sql);
+      const rows = await this._queryWithRetry(sql);
+      traceSql(`query ok (${Date.now() - startedAt}ms, rows=${rows.length}): ${summary}`);
+      return rows;
+    } catch (e6) {
+      const message = e6 instanceof Error ? e6.message : String(e6);
+      traceSql(`query fail (${Date.now() - startedAt}ms): ${summary} :: ${message}`);
+      throw e6;
     } finally {
       this._sem.release();
     }
@@ -67038,17 +67064,7 @@ var DeeplakeFs = class _DeeplakeFs {
     const fs3 = new _DeeplakeFs(client, table, mount);
     fs3.sessionsTable = sessionsTable ?? null;
     await client.ensureTable();
-    let sessionSyncOk = false;
-    const syncPromises = [
-      client.query(`SELECT deeplake_sync_table('${table}')`)
-    ];
-    if (sessionsTable) {
-      syncPromises.push(client.query(`SELECT deeplake_sync_table('${sessionsTable}')`).then(() => {
-        sessionSyncOk = true;
-      }).catch(() => {
-      }));
-    }
-    await Promise.all(syncPromises);
+    let sessionSyncOk = true;
     const memoryBootstrap = (async () => {
       const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
       try {
@@ -67139,7 +67155,6 @@ var DeeplakeFs = class _DeeplakeFs {
         failures++;
       }
     }
-    await this.client.query(`SELECT deeplake_sync_table('${this.table}')`);
     if (failures > 0) {
       throw new Error(`flush: ${failures}/${rows.length} writes failed and were re-queued`);
     }
@@ -67170,11 +67185,17 @@ var DeeplakeFs = class _DeeplakeFs {
   // ── Virtual index.md generation ────────────────────────────────────────────
   async generateVirtualIndex() {
     const rows = await this.client.query(`SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" WHERE path LIKE '${sqlStr("/summaries/")}%' ORDER BY last_update_date DESC`);
-    const sessionPathsByUser = /* @__PURE__ */ new Map();
+    const sessionPathsByKey = /* @__PURE__ */ new Map();
     for (const sp of this.sessionPaths) {
-      const m26 = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
-      if (m26)
-        sessionPathsByUser.set(m26[1], sp.slice(1));
+      const hivemind = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
+      if (hivemind) {
+        sessionPathsByKey.set(hivemind[1], sp.slice(1));
+      } else {
+        const fname = sp.split("/").pop() ?? "";
+        const stem = fname.replace(/\.[^.]+$/, "");
+        if (stem)
+          sessionPathsByKey.set(stem, sp.slice(1));
+      }
     }
     const lines = [
       "# Session Index",
@@ -67192,7 +67213,8 @@ var DeeplakeFs = class _DeeplakeFs {
       const summaryUser = match2[1];
       const sessionId = match2[2];
       const relPath = `summaries/${summaryUser}/${sessionId}.md`;
-      const convPath = sessionPathsByUser.get(sessionId);
+      const baseName = sessionId.replace(/_summary$/, "");
+      const convPath = sessionPathsByKey.get(sessionId) ?? sessionPathsByKey.get(baseName);
       const convLink = convPath ? `[messages](${convPath})` : "";
       const project = row["project"] || "";
       const description = row["description"] || "";
@@ -68534,7 +68556,8 @@ yargsParser.looksLikeNumber = looksLikeNumber;
 var lib_default = yargsParser;
 
 // dist/src/shell/grep-interceptor.js
-function createGrepCommand(client, fs3, table) {
+var MAX_FALLBACK_CANDIDATES = 500;
+function createGrepCommand(client, fs3, table, sessionsTable) {
   return Yi2("grep", async (args, ctx) => {
     const parsed = lib_default(args, {
       boolean: ["r", "R", "l", "i", "n", "v", "c", "F", "fixed-strings", "recursive", "ignore-case"],
@@ -68550,23 +68573,44 @@ function createGrepCommand(client, fs3, table) {
     if (targets.length === 0)
       return { stdout: "", stderr: "", exitCode: 1 };
     const mount = fs3.mountPoint;
-    const allUnderMount = targets.every((t6) => t6 === mount || t6.startsWith(mount + "/"));
+    const mountPrefix = mount === "/" ? "/" : mount + "/";
+    const allUnderMount = targets.every((t6) => t6 === mount || t6.startsWith(mountPrefix));
     if (!allUnderMount) {
       return { stdout: "", stderr: "", exitCode: 127 };
     }
     let candidates = [];
     try {
-      const bm25 = await Promise.race([
-        client.query(`SELECT path FROM "${table}" WHERE summary <#> '${sqlStr(pattern)}' LIMIT 50`),
+      const queries = [
+        client.query(`SELECT path FROM "${table}" WHERE summary <#> '${sqlStr(pattern)}' LIMIT 50`)
+      ];
+      if (sessionsTable) {
+        queries.push(client.query(`SELECT path FROM "${sessionsTable}" WHERE message::text LIKE '%${sqlLike(pattern)}%' LIMIT 10`));
+      }
+      const results = await Promise.race([
+        Promise.all(queries),
         new Promise((_16, reject) => setTimeout(() => reject(new Error("timeout")), 3e3))
       ]);
-      candidates = bm25.map((r10) => r10["path"]).filter(Boolean);
+      for (const rows of results) {
+        candidates.push(...rows.map((r10) => r10["path"]).filter(Boolean));
+      }
     } catch {
     }
+    const withinTargets = (p22) => targets.some((t6) => t6 === "/" || p22 === t6 || p22.startsWith(t6 + "/"));
     if (candidates.length === 0) {
-      candidates = fs3.getAllPaths().filter((p22) => !p22.endsWith("/"));
+      candidates = fs3.getAllPaths().filter((p22) => !p22.endsWith("/") && withinTargets(p22));
+      if (candidates.length > MAX_FALLBACK_CANDIDATES) {
+        candidates = candidates.slice(0, MAX_FALLBACK_CANDIDATES);
+      }
+    } else {
+      candidates = candidates.filter((c15) => withinTargets(c15));
     }
-    candidates = candidates.filter((c15) => targets.some((t6) => t6 === "/" || c15 === t6 || c15.startsWith(t6 + "/")));
+    const seen = /* @__PURE__ */ new Set();
+    candidates = candidates.filter((c15) => {
+      if (seen.has(c15))
+        return false;
+      seen.add(c15);
+      return true;
+    });
     await fs3.prefetch(candidates);
     const fixedString = parsed.F || parsed["fixed-strings"];
     const ignoreCase = parsed.i || parsed["ignore-case"];
@@ -68637,7 +68681,7 @@ async function main() {
   const bash = new xt6({
     fs: fs3,
     cwd: mount,
-    customCommands: [createGrepCommand(client, fs3, table)],
+    customCommands: [createGrepCommand(client, fs3, table, sessionsTable)],
     env: {
       HOME: mount,
       DEEPLAKE_TABLE: table,

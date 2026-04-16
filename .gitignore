@@ -9,3 +9,5 @@ coverage/
 bench/
 .claude/
 CLAUDE.md
+RESULTS-fast-path-all-commands.md
+PLAN-fast-path-all-commands.md

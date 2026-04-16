@@ -44,36 +44,101 @@ function runPreToolUse(
   };
 }
 
-// ── Safe commands: should be intercepted and rewritten to virtual shell ──────
+// ── Read commands: fast path (direct SQL) or shell fallback ──────────────────
 
-describe("pre-tool-use: safe bash commands targeting memory", () => {
-  it("rewrites ls to virtual shell", () => {
+describe("pre-tool-use: commands targeting memory are intercepted", () => {
+  it("intercepts ls", () => {
     const r = runPreToolUse("Bash", { command: "ls ~/.deeplake/memory/" });
     expect(r.empty).toBe(false);
     if (!r.empty) {
       expect(r.decision).toBe("allow");
-      expect(r.updatedCommand).toContain("deeplake-shell.js");
-      expect(r.updatedCommand).toContain("ls /");
+      // Fast path: echo with results, or shell fallback
+      expect(r.updatedCommand).toBeDefined();
     }
   });
 
-  it("rewrites cat to virtual shell", () => {
+  it("intercepts cat", () => {
     const r = runPreToolUse("Bash", { command: "cat ~/.deeplake/memory/index.md" });
     expect(r.empty).toBe(false);
     if (!r.empty) {
       expect(r.decision).toBe("allow");
-      expect(r.updatedCommand).toContain("cat /index.md");
+      expect(r.updatedCommand).toBeDefined();
     }
   });
 
-  it("rewrites grep to virtual shell", () => {
+  it("intercepts cat with 2>/dev/null", () => {
+    const r = runPreToolUse("Bash", { command: "cat ~/.deeplake/memory/file.md 2>/dev/null" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+    }
+  });
+
+  it("intercepts cat 2>&1 | head", () => {
+    const r = runPreToolUse("Bash", { command: "cat ~/.deeplake/memory/index.md 2>&1 | head -200" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+    }
+  });
+
+  it("intercepts grep", () => {
     const r = runPreToolUse("Bash", { command: "grep -r 'keyword' ~/.deeplake/memory/" });
     expect(r.empty).toBe(false);
     if (!r.empty) {
       expect(r.decision).toBe("allow");
-      expect(r.updatedCommand).toContain("grep -r 'keyword' /");
     }
   });
+
+  it("intercepts head", () => {
+    const r = runPreToolUse("Bash", { command: "head -20 ~/.deeplake/memory/index.md" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+    }
+  });
+
+  it("intercepts head -n N", () => {
+    const r = runPreToolUse("Bash", { command: "head -n 50 ~/.deeplake/memory/index.md" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+    }
+  });
+
+  it("intercepts tail", () => {
+    const r = runPreToolUse("Bash", { command: "tail -10 ~/.deeplake/memory/index.md" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+    }
+  });
+
+  it("intercepts wc -l", () => {
+    const r = runPreToolUse("Bash", { command: "wc -l ~/.deeplake/memory/index.md" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+    }
+  });
+
+  it("intercepts find -name", () => {
+    const r = runPreToolUse("Bash", { command: "find ~/.deeplake/memory/ -name '*.json'" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+    }
+  });
+
+  it("intercepts ls -la", () => {
+    const r = runPreToolUse("Bash", { command: "ls -la ~/.deeplake/memory/summaries/" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+    }
+  });
+
+  // ── Write commands still use shell ──
 
   it("rewrites echo redirect to virtual shell", () => {
     const r = runPreToolUse("Bash", { command: "echo 'hello' > ~/.deeplake/memory/test.md" });
@@ -86,33 +151,6 @@ describe("pre-tool-use: safe bash commands targeting memory", () => {
 
   it("rewrites jq pipeline to virtual shell", () => {
     const r = runPreToolUse("Bash", { command: "cat ~/.deeplake/memory/data.json | jq '.keys | length'" });
-    expect(r.empty).toBe(false);
-    if (!r.empty) {
-      expect(r.decision).toBe("allow");
-      expect(r.updatedCommand).toContain("deeplake-shell.js");
-    }
-  });
-
-  it("rewrites find to virtual shell", () => {
-    const r = runPreToolUse("Bash", { command: "find ~/.deeplake/memory/ -name '*.json'" });
-    expect(r.empty).toBe(false);
-    if (!r.empty) {
-      expect(r.decision).toBe("allow");
-      expect(r.updatedCommand).toContain("deeplake-shell.js");
-    }
-  });
-
-  it("rewrites wc to virtual shell", () => {
-    const r = runPreToolUse("Bash", { command: "wc -l ~/.deeplake/memory/index.md" });
-    expect(r.empty).toBe(false);
-    if (!r.empty) {
-      expect(r.decision).toBe("allow");
-      expect(r.updatedCommand).toContain("deeplake-shell.js");
-    }
-  });
-
-  it("rewrites head/tail to virtual shell", () => {
-    const r = runPreToolUse("Bash", { command: "head -5 ~/.deeplake/memory/index.md" });
     expect(r.empty).toBe(false);
     if (!r.empty) {
       expect(r.decision).toBe("allow");

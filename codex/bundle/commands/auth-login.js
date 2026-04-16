@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // dist/src/commands/auth.js
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
@@ -21,6 +21,13 @@ function saveCredentials(creds) {
   if (!existsSync(CONFIG_DIR))
     mkdirSync(CONFIG_DIR, { recursive: true, mode: 448 });
   writeFileSync(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
+}
+function deleteCredentials() {
+  if (existsSync(CREDS_PATH)) {
+    unlinkSync(CREDS_PATH);
+    return true;
+  }
+  return false;
 }
 async function apiGet(path, token, apiUrl, orgId) {
   const headers = {
@@ -129,7 +136,8 @@ async function switchOrg(orgId, orgName) {
   saveCredentials({ ...creds, orgId, orgName });
 }
 async function listWorkspaces(token, apiUrl = DEFAULT_API_URL, orgId) {
-  const data = await apiGet("/workspaces", token, apiUrl, orgId);
+  const raw = await apiGet("/workspaces", token, apiUrl, orgId);
+  const data = raw.data ?? raw;
   return Array.isArray(data) ? data : [];
 }
 async function switchWorkspace(workspaceId) {
@@ -248,6 +256,20 @@ function sqlStr(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
+var TRACE_SQL = process.env.DEEPLAKE_TRACE_SQL === "1" || process.env.DEEPLAKE_DEBUG === "1";
+var DEBUG_FILE_LOG = process.env.DEEPLAKE_DEBUG === "1";
+function summarizeSql(sql, maxLen = 220) {
+  const compact = sql.replace(/\s+/g, " ").trim();
+  return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
+}
+function traceSql(msg) {
+  if (!TRACE_SQL)
+    return;
+  process.stderr.write(`[deeplake-sql] ${msg}
+`);
+  if (DEBUG_FILE_LOG)
+    log2(msg);
+}
 var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
@@ -295,9 +317,18 @@ var DeeplakeApi = class {
   }
   /** Execute SQL with retry on transient errors and bounded concurrency. */
   async query(sql) {
+    const startedAt = Date.now();
+    const summary = summarizeSql(sql);
+    traceSql(`query start: ${summary}`);
     await this._sem.acquire();
     try {
-      return await this._queryWithRetry(sql);
+      const rows = await this._queryWithRetry(sql);
+      traceSql(`query ok (${Date.now() - startedAt}ms, rows=${rows.length}): ${summary}`);
+      return rows;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      traceSql(`query fail (${Date.now() - startedAt}ms): ${summary} :: ${message}`);
+      throw e;
     } finally {
       this._sem.release();
     }
@@ -721,8 +752,16 @@ async function main() {
       }
       break;
     }
+    case "logout": {
+      if (deleteCredentials()) {
+        console.log("Logged out. Credentials removed.");
+      } else {
+        console.log("Not logged in.");
+      }
+      break;
+    }
     default:
-      console.log("Commands: login, whoami, org list, org switch, workspaces, workspace, sessions prune, invite, members, remove, autoupdate");
+      console.log("Commands: login, logout, whoami, org list, org switch, workspaces, workspace, sessions prune, invite, members, remove, autoupdate");
   }
 }
 main().catch((e) => {

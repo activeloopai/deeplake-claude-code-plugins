@@ -189,7 +189,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // 2. Spawn wiki worker (session summary generation)
+  // 2. Spawn wiki worker (session summary generation) — skip when capture disabled
+  if (!CAPTURE) return;
   const cwd = input.cwd ?? "";
   const memoryTable = config.tableName;
   const sessionsTable = config.sessionsTableName;
