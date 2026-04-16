@@ -452,6 +452,8 @@ async function main() {
           log3(`autoupdate: updating ${current} \u2192 ${latest}`);
           try {
             const tag = `v${latest}`;
+            if (!/^v\d+\.\d+\.\d+$/.test(tag))
+              throw new Error(`unsafe version tag: ${tag}`);
             const findCmd = `INSTALL_DIR=""; CACHE_DIR=$(find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1); if [ -n "$CACHE_DIR" ]; then INSTALL_DIR=$(ls -1d "$CACHE_DIR"/*/ 2>/dev/null | tail -1); elif [ -d ~/.codex/hivemind ]; then INSTALL_DIR=~/.codex/hivemind; fi; if [ -n "$INSTALL_DIR" ]; then TMPDIR=$(mktemp -d); git clone --depth 1 --branch ${tag} -q https://github.com/activeloopai/hivemind.git "$TMPDIR/hivemind" 2>/dev/null && cp -r "$TMPDIR/hivemind/codex/"* "$INSTALL_DIR/" 2>/dev/null; rm -rf "$TMPDIR"; fi`;
             execSync2(findCmd, { stdio: "ignore", timeout: 6e4 });
             process.stderr.write(`Hivemind auto-updated: ${current} \u2192 ${latest}. Restart Codex to apply.

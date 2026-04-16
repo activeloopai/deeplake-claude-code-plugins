@@ -163,6 +163,7 @@ async function main(): Promise<void> {
           log(`autoupdate: updating ${current} → ${latest}`);
           try {
             const tag = `v${latest}`;
+            if (!/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error(`unsafe version tag: ${tag}`);
             const findCmd = `INSTALL_DIR=""; ` +
               `CACHE_DIR=$(find ~/.codex/plugins/cache -maxdepth 3 -name "hivemind" -type d 2>/dev/null | head -1); ` +
               `if [ -n "$CACHE_DIR" ]; then INSTALL_DIR=$(ls -1d "$CACHE_DIR"/*/ 2>/dev/null | tail -1); ` +

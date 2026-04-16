@@ -391,7 +391,7 @@ async function main(): Promise<void> {
         const findMatch = shellCmd.match(/^find\s+(\S+)\s+(?:-type\s+\S+\s+)?-name\s+'([^']+)'/);
         if (findMatch) {
           const dir = findMatch[1].replace(/\/+$/, "") || "/";
-          const namePattern = findMatch[2].replace(/\*/g, "%").replace(/\?/g, "_");
+          const namePattern = sqlLike(findMatch[2]).replace(/\*/g, "%").replace(/\?/g, "_");
           log(`direct find: ${dir} -name '${findMatch[2]}'`);
           const isSessionDir = dir === "/sessions" || dir.startsWith("/sessions/");
           const findTable = isSessionDir ? sessionsTable : table;
