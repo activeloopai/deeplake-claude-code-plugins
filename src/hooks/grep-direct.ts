@@ -137,6 +137,7 @@ export async function handleGrepDirect(
     } catch { rows = []; }
   }
 
+  const output: string[] = [];
   // Cross-table enrichment: search the companion memory/summaries table
   // for structured wiki-style context. Convention: if table is X_sessions
   // or X, companion is X_memory. Summaries are prepended for priority.
@@ -151,7 +152,16 @@ export async function handleGrepDirect(
           `SELECT path, summary AS content FROM "${memoryTable}" WHERE 1=1${contentFilter} LIMIT 20`,
         );
         if (summaryRows.length > 0) {
-          rows = [...summaryRows, ...rows];
+          // Output full summaries directly (compact and structured)
+          for (const sr of summaryRows) {
+            const sp = sr["path"] as string;
+            const sc = sr["content"] as string;
+            if (sc) {
+              output.push(`=== ${sp} ===`);
+              output.push(sc);
+              output.push("");
+            }
+          }
         }
       } catch { /* best-effort — table may not exist */ }
     }
@@ -166,7 +176,6 @@ export async function handleGrepDirect(
   try { re = new RegExp(reStr, ignoreCase ? "i" : ""); }
   catch { re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : ""); }
 
-  const output: string[] = [];
   const multi = rows.length > 1;
 
   for (const row of rows) {
