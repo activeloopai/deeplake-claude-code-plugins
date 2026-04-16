@@ -39,8 +39,8 @@ function loadConfig() {
       return null;
     }
   }
-  const token = process.env.DEEPLAKE_TOKEN ?? creds?.token;
-  const orgId = process.env.DEEPLAKE_ORG_ID ?? creds?.orgId;
+  const token = process.env.HIVEMIND_TOKEN ?? creds?.token;
+  const orgId = process.env.HIVEMIND_ORG_ID ?? creds?.orgId;
   if (!token || !orgId)
     return null;
   return {
@@ -48,11 +48,11 @@ function loadConfig() {
     orgId,
     orgName: creds?.orgName ?? orgId,
     userName: creds?.userName || userInfo().username || "unknown",
-    workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
-    apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: process.env.DEEPLAKE_TABLE ?? "memory",
-    sessionsTableName: process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
-    memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory")
+    workspaceId: process.env.HIVEMIND_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
+    apiUrl: process.env.HIVEMIND_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
+    tableName: process.env.HIVEMIND_TABLE ?? "memory",
+    sessionsTableName: process.env.HIVEMIND_SESSIONS_TABLE ?? "sessions",
+    memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? join(home, ".deeplake", "memory")
   };
 }
 
@@ -60,7 +60,7 @@ function loadConfig() {
 import { appendFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
-var DEBUG = process.env.DEEPLAKE_DEBUG === "1";
+var DEBUG = process.env.HIVEMIND_DEBUG === "1";
 var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
 function utcTimestamp(d = /* @__PURE__ */ new Date()) {
   return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
@@ -145,9 +145,9 @@ PRIVACY: Never include absolute filesystem paths (e.g. /home/user/..., /Users/..
 
 LENGTH LIMIT: Keep the total summary under 4000 characters. Be dense and concise \u2014 prioritize facts over prose. If a session is short, the summary should be short too.`;
 async function main() {
-  if (process.env.DEEPLAKE_WIKI_WORKER === "1")
+  if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
-  if (process.env.DEEPLAKE_CAPTURE === "false")
+  if (process.env.HIVEMIND_CAPTURE === "false")
     return;
   const input = await readStdin();
   const sessionId = input.session_id;

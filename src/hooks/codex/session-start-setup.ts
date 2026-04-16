@@ -116,7 +116,7 @@ interface CodexSessionStartInput {
 }
 
 async function main(): Promise<void> {
-  if (process.env.DEEPLAKE_WIKI_WORKER === "1") return;
+  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<CodexSessionStartInput>();
   const creds = loadCredentials();
@@ -133,7 +133,7 @@ async function main(): Promise<void> {
   }
 
   // Table setup + sync — always sync, only skip placeholder when capture disabled
-  const captureEnabled = process.env.DEEPLAKE_CAPTURE !== "false";
+  const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
   if (input.session_id) {
     try {
       const config = loadConfig();

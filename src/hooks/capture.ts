@@ -36,7 +36,7 @@ interface HookInput {
   agent_transcript_path?: string;
 }
 
-const CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
+const CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 
 /** Build the session path matching the CLI convention:
  *  /sessions/<username>/<username>_<org>_<workspace>_<slug>.jsonl */

@@ -36,8 +36,8 @@ export function loadConfig(): Config | null {
     }
   }
 
-  const token = process.env.DEEPLAKE_TOKEN ?? creds?.token;
-  const orgId = process.env.DEEPLAKE_ORG_ID ?? creds?.orgId;
+  const token = process.env.HIVEMIND_TOKEN ?? creds?.token;
+  const orgId = process.env.HIVEMIND_ORG_ID ?? creds?.orgId;
   if (!token || !orgId) return null;
 
   return {
@@ -45,10 +45,10 @@ export function loadConfig(): Config | null {
     orgId,
     orgName: creds?.orgName ?? orgId,
     userName: creds?.userName || userInfo().username || "unknown",
-    workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
-    apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: process.env.DEEPLAKE_TABLE ?? "memory",
-    sessionsTableName: process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
-    memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory"),
+    workspaceId: process.env.HIVEMIND_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
+    apiUrl: process.env.HIVEMIND_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
+    tableName: process.env.HIVEMIND_TABLE ?? "memory",
+    sessionsTableName: process.env.HIVEMIND_SESSIONS_TABLE ?? "sessions",
+    memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? join(home, ".deeplake", "memory"),
   };
 }

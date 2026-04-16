@@ -3,8 +3,8 @@ import { log as _log } from "./utils/debug.js";
 import { sqlStr } from "./utils/sql.js";
 
 const log = (msg: string) => _log("sdk", msg);
-const TRACE_SQL = process.env.DEEPLAKE_TRACE_SQL === "1" || process.env.DEEPLAKE_DEBUG === "1";
-const DEBUG_FILE_LOG = process.env.DEEPLAKE_DEBUG === "1";
+const TRACE_SQL = process.env.HIVEMIND_TRACE_SQL === "1" || process.env.HIVEMIND_DEBUG === "1";
+const DEBUG_FILE_LOG = process.env.HIVEMIND_DEBUG === "1";
 
 function summarizeSql(sql: string, maxLen = 220): string {
   const compact = sql.replace(/\s+/g, " ").trim();

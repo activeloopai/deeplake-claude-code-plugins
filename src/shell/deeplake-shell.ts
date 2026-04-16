@@ -11,11 +11,11 @@
  *   npm run shell -- -c "echo 'hello world' > /memory/hello.txt && cat /memory/hello.txt"
  *
  * Environment / credentials (any of):
- *   DEEPLAKE_TOKEN, DEEPLAKE_ORG_ID        — required
- *   DEEPLAKE_WORKSPACE_ID                  — default: "default"
- *   DEEPLAKE_API_URL                       — default: https://api.deeplake.ai
- *   DEEPLAKE_TABLE                         — default: "memory"
- *   DEEPLAKE_MOUNT                         — virtual root path, default: "/memory"
+ *   HIVEMIND_TOKEN, HIVEMIND_ORG_ID        — required
+ *   HIVEMIND_WORKSPACE_ID                  — default: "default"
+ *   HIVEMIND_API_URL                       — default: https://api.deeplake.ai
+ *   HIVEMIND_TABLE                         — default: "memory"
+ *   HIVEMIND_MOUNT                         — virtual root path, default: "/memory"
  *
  * Or create ~/.deeplake/credentials.json:
  *   { "token": "...", "orgId": "...", "workspaceId": "default" }
@@ -33,14 +33,14 @@ async function main(): Promise<void> {
   if (!config) {
     process.stderr.write(
       "Deeplake credentials not found.\n" +
-      "Set DEEPLAKE_TOKEN + DEEPLAKE_ORG_ID in environment, or create ~/.deeplake/credentials.json\n"
+      "Set HIVEMIND_TOKEN + HIVEMIND_ORG_ID in environment, or create ~/.deeplake/credentials.json\n"
     );
     process.exit(1);
   }
 
-  const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
-  const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
-  const mount = process.env["DEEPLAKE_MOUNT"] ?? "/";
+  const table = process.env["HIVEMIND_TABLE"] ?? "memory";
+  const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
+  const mount = process.env["HIVEMIND_MOUNT"] ?? "/";
 
   const isOneShot = process.argv.includes("-c");
 
@@ -65,8 +65,8 @@ async function main(): Promise<void> {
     customCommands: [createGrepCommand(client, fs, table, sessionsTable)],
     env: {
       HOME: mount,
-      DEEPLAKE_TABLE: table,
-      DEEPLAKE_MOUNT: mount,
+      HIVEMIND_TABLE: table,
+      HIVEMIND_MOUNT: mount,
     },
   });
 

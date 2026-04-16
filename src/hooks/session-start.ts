@@ -37,21 +37,21 @@ SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only 
 Search command: Grep pattern="keyword" path="~/.deeplake/memory"
 
 Organization management — each argument is SEPARATE (do NOT quote subcommands together):
-- node "DEEPLAKE_AUTH_CMD" login                              — SSO login
-- node "DEEPLAKE_AUTH_CMD" whoami                             — show current user/org
-- node "DEEPLAKE_AUTH_CMD" org list                           — list organizations
-- node "DEEPLAKE_AUTH_CMD" org switch <name-or-id>            — switch organization
-- node "DEEPLAKE_AUTH_CMD" workspaces                         — list workspaces
-- node "DEEPLAKE_AUTH_CMD" workspace <id>                     — switch workspace
-- node "DEEPLAKE_AUTH_CMD" invite <email> <ADMIN|WRITE|READ>  — invite member (ALWAYS ask user which role before inviting)
-- node "DEEPLAKE_AUTH_CMD" members                            — list members
-- node "DEEPLAKE_AUTH_CMD" remove <user-id>                   — remove member
+- node "HIVEMIND_AUTH_CMD" login                              — SSO login
+- node "HIVEMIND_AUTH_CMD" whoami                             — show current user/org
+- node "HIVEMIND_AUTH_CMD" org list                           — list organizations
+- node "HIVEMIND_AUTH_CMD" org switch <name-or-id>            — switch organization
+- node "HIVEMIND_AUTH_CMD" workspaces                         — list workspaces
+- node "HIVEMIND_AUTH_CMD" workspace <id>                     — switch workspace
+- node "HIVEMIND_AUTH_CMD" invite <email> <ADMIN|WRITE|READ>  — invite member (ALWAYS ask user which role before inviting)
+- node "HIVEMIND_AUTH_CMD" members                            — list members
+- node "HIVEMIND_AUTH_CMD" remove <user-id>                   — remove member
 
 IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem. If a task seems to require Python, rewrite it using bash commands and standard text-processing tools (awk, sed, jq, grep, etc.).
 
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
-Debugging: Set DEEPLAKE_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
+Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
 
 const GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 const VERSION_CHECK_TIMEOUT = 3000; // 3s — don't block session start
@@ -150,7 +150,7 @@ interface SessionStartInput {
 
 async function main(): Promise<void> {
   // Skip if this is a sub-session spawned by the wiki worker
-  if (process.env.DEEPLAKE_WIKI_WORKER === "1") return;
+  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<SessionStartInput>();
 
@@ -242,7 +242,7 @@ async function main(): Promise<void> {
     log(`version check failed: ${e.message}`);
   }
 
-  const resolvedContext = context.replace(/DEEPLAKE_AUTH_CMD/g, AUTH_CMD);
+  const resolvedContext = context.replace(/HIVEMIND_AUTH_CMD/g, AUTH_CMD);
   const additionalContext = creds?.token
     ? `${resolvedContext}\n\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}`
     : `${resolvedContext}\n\n⚠️ Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${updateNotice}`;

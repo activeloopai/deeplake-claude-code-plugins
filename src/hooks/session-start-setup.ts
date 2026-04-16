@@ -112,7 +112,7 @@ interface SessionStartInput {
 }
 
 async function main(): Promise<void> {
-  if (process.env.DEEPLAKE_WIKI_WORKER === "1") return;
+  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<SessionStartInput>();
   const creds = loadCredentials();
@@ -131,7 +131,7 @@ async function main(): Promise<void> {
   // Table setup + sync (fire-and-forget, async hook)
   // Always sync tables so queries return fresh data.
   // Only skip the placeholder when capture is disabled (e.g. benchmark runs).
-  const captureEnabled = process.env.DEEPLAKE_CAPTURE !== "false";
+  const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
   if (input.session_id) {
     try {
       const config = loadConfig();

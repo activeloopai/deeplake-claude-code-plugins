@@ -40,8 +40,8 @@ function loadConfig() {
       return null;
     }
   }
-  const token = process.env.DEEPLAKE_TOKEN ?? creds?.token;
-  const orgId = process.env.DEEPLAKE_ORG_ID ?? creds?.orgId;
+  const token = process.env.HIVEMIND_TOKEN ?? creds?.token;
+  const orgId = process.env.HIVEMIND_ORG_ID ?? creds?.orgId;
   if (!token || !orgId)
     return null;
   return {
@@ -49,11 +49,11 @@ function loadConfig() {
     orgId,
     orgName: creds?.orgName ?? orgId,
     userName: creds?.userName || userInfo().username || "unknown",
-    workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
-    apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: process.env.DEEPLAKE_TABLE ?? "memory",
-    sessionsTableName: process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
-    memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory")
+    workspaceId: process.env.HIVEMIND_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
+    apiUrl: process.env.HIVEMIND_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
+    tableName: process.env.HIVEMIND_TABLE ?? "memory",
+    sessionsTableName: process.env.HIVEMIND_SESSIONS_TABLE ?? "sessions",
+    memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? join(home, ".deeplake", "memory")
   };
 }
 
@@ -64,7 +64,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
-var DEBUG = process.env.DEEPLAKE_DEBUG === "1";
+var DEBUG = process.env.HIVEMIND_DEBUG === "1";
 var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
 function log(tag, msg) {
   if (!DEBUG)
@@ -83,8 +83,8 @@ function sqlLike(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
-var TRACE_SQL = process.env.DEEPLAKE_TRACE_SQL === "1" || process.env.DEEPLAKE_DEBUG === "1";
-var DEBUG_FILE_LOG = process.env.DEEPLAKE_DEBUG === "1";
+var TRACE_SQL = process.env.HIVEMIND_TRACE_SQL === "1" || process.env.HIVEMIND_DEBUG === "1";
+var DEBUG_FILE_LOG = process.env.HIVEMIND_DEBUG === "1";
 function summarizeSql(sql, maxLen = 220) {
   const compact = sql.replace(/\s+/g, " ").trim();
   return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
@@ -630,7 +630,7 @@ async function main() {
   }
   const config = loadConfig();
   if (config) {
-    const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
+    const table = process.env["HIVEMIND_TABLE"] ?? "memory";
     const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
     try {
       {
@@ -681,7 +681,7 @@ async function main() {
           }
         }
         if (virtualPath && !virtualPath.endsWith("/")) {
-          const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+          const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
           const isSession = virtualPath.startsWith("/sessions/");
           log3(`direct read: ${virtualPath}`);
           let content = null;
@@ -764,7 +764,7 @@ async function main() {
         if (findMatch) {
           const dir = findMatch[1].replace(/\/+$/, "") || "/";
           const namePattern = sqlLike(findMatch[2]).replace(/\*/g, "%").replace(/\?/g, "_");
-          const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+          const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
           const isSessionDir = dir === "/sessions" || dir.startsWith("/sessions/");
           const findTable = isSessionDir ? sessionsTable : table;
           log3(`direct find: ${dir} -name '${findMatch[2]}'`);
@@ -778,7 +778,7 @@ async function main() {
       }
       const grepParams = parseBashGrep(rewritten);
       if (grepParams) {
-        const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+        const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
         log3(`direct grep: pattern=${grepParams.pattern} path=${grepParams.targetPath}`);
         const result2 = await handleGrepDirect(api, table, sessionsTable, grepParams);
         if (result2 !== null) {

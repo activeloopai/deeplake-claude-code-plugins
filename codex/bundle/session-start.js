@@ -44,7 +44,7 @@ function readStdin() {
 import { appendFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
-var DEBUG = process.env.DEEPLAKE_DEBUG === "1";
+var DEBUG = process.env.HIVEMIND_DEBUG === "1";
 var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
 function log(tag, msg) {
   if (!DEBUG)
@@ -88,7 +88,7 @@ function getInstalledVersion() {
   return null;
 }
 async function main() {
-  if (process.env.DEEPLAKE_WIKI_WORKER === "1")
+  if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
   const input = await readStdin();
   const creds = loadCredentials();
