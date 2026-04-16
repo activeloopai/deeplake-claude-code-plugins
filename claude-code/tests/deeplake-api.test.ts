@@ -349,14 +349,19 @@ describe("DeeplakeApi.ensureTable", () => {
     expect(createSql).toContain("USING deeplake");
   });
 
-  it("does nothing when table already exists", async () => {
+  it("skips CREATE TABLE when table already exists but still creates BM25 index", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "my_table" }] }),
     });
+    // BM25 index creation (idempotent, may succeed or fail)
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ columns: [], rows: null, row_count: 0 }),
+    });
     const api = makeApi("my_table");
     await api.ensureTable();
-    expect(mockFetch).toHaveBeenCalledOnce(); // only listTables, no CREATE
+    expect(mockFetch).toHaveBeenCalledTimes(2); // listTables + CREATE INDEX (no CREATE TABLE)
   });
 
   it("creates table with custom name", async () => {
