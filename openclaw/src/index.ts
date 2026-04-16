@@ -38,11 +38,10 @@ interface PluginAPI {
 }
 
 const DEFAULT_API_URL = "https://api.deeplake.ai";
-const GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/openclaw/package.json";
+const VERSION_URL = "https://raw.githubusercontent.com/activeloopai/hivemind/main/openclaw/openclaw.plugin.json";
 
 function getInstalledVersion(): string | null {
   try {
-    // dist/index.js → package.json is one level up
     const dir = new URL(".", import.meta.url).pathname;
     const candidates = [join(dir, "..", "package.json"), join(dir, "package.json")];
     for (const c of candidates) {
@@ -66,12 +65,12 @@ async function checkForUpdate(logger: PluginLogger): Promise<void> {
   try {
     const current = getInstalledVersion();
     if (!current) return;
-    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(3000) });
     if (!res.ok) return;
-    const pkg = await res.json();
-    const latest = typeof pkg.version === "string" ? pkg.version : null;
+    const manifest = await res.json() as { version?: string };
+    const latest = manifest.version ?? null;
     if (latest && isNewer(latest, current)) {
-      logger.info?.(`⬆️ Hivemind update available: ${current} → ${latest}. Run: openclaw plugins update hivemind`);
+      logger.info?.(`⬆️ Hivemind update available: ${current} → ${latest}. Run: openclaw plugins install clawhub:hivemind`);
     }
   } catch {}
 }
