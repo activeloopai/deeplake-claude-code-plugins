@@ -192,6 +192,9 @@ export async function handleGrepDirect(
     const p = row["path"] as string;
     const text = row["content"] as string;
     if (!text) continue;
+    // Extract date from session JSON for temporal context
+    const dateMatch = text.match(/"date_time"\s*:\s*"([^"]+)"/); 
+    let sessionDate = dateMatch ? `[${dateMatch[1]}] ` : "";
 
     const lines = text.split("\n");
     const matched: string[] = [];
@@ -201,7 +204,9 @@ export async function handleGrepDirect(
         if (filesOnly) { output.push(p); break; }
         const prefix = multi ? `${p}:` : "";
         const ln = lineNumber ? `${i + 1}:` : "";
-        matched.push(`${prefix}${ln}${lines[i]}`);
+        matched.push(`${prefix}${sessionDate}${ln}${lines[i]}`);
+        // @ts-ignore - clear after first use
+        sessionDate && (sessionDate = "");
       }
     }
 
