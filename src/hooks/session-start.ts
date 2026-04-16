@@ -171,7 +171,12 @@ async function main(): Promise<void> {
     }
   }
 
-  // Create placeholder summary + ensure sessions table via direct SQL (no DeeplakeFs bootstrap)
+  // Ensure tables exist and (when capture is enabled) create the placeholder
+  // summary via direct SQL. Tables must always be synced so queries return
+  // fresh data — only the placeholder INSERT is skipped when DEEPLAKE_CAPTURE=false
+  // (benchmark runs, explicit opt-out). Mirrors the guard already in
+  // session-start-setup.ts / session-end.ts / codex hooks.
+  const captureEnabled = process.env.DEEPLAKE_CAPTURE !== "false";
   if (input.session_id && creds?.token) {
     try {
       const config = loadConfig();
@@ -179,11 +184,14 @@ async function main(): Promise<void> {
         const table = config.tableName;
         const sessionsTable = config.sessionsTableName;
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
-        // Ensure both tables exist (once per session)
         await api.ensureTable();
         await api.ensureSessionsTable(sessionsTable);
-        await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
-        log("placeholder created");
+        if (captureEnabled) {
+          await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
+          log("placeholder created");
+        } else {
+          log("placeholder skipped (DEEPLAKE_CAPTURE=false)");
+        }
       }
     } catch (e: any) {
       log(`placeholder failed: ${e.message}`);
