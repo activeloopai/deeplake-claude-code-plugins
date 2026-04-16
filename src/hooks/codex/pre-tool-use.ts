@@ -196,7 +196,23 @@ async function main(): Promise<void> {
             const rows = await api.query(
               `SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
             );
-            if (rows.length > 0 && rows[0]["summary"]) content = rows[0]["summary"] as string;
+            if (rows.length > 0 && rows[0]["summary"]) {
+              content = rows[0]["summary"] as string;
+            } else if (virtualPath === "/index.md") {
+              // Virtual index — generate from metadata
+              const idxRows = await api.query(
+                `SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
+              );
+              const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
+              for (const r of idxRows) {
+                const p = r["path"] as string;
+                const proj = r["project"] as string || "";
+                const desc = (r["description"] as string || "").slice(0, 120);
+                const date = (r["creation_date"] as string || "").slice(0, 10);
+                lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
+              }
+              content = lines.join("\n");
+            }
           }
 
           if (content !== null) {

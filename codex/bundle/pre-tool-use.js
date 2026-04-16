@@ -691,8 +691,20 @@ async function main() {
               content = rows[0]["content"];
           } else {
             const rows = await api.query(`SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
-            if (rows.length > 0 && rows[0]["summary"])
+            if (rows.length > 0 && rows[0]["summary"]) {
               content = rows[0]["summary"];
+            } else if (virtualPath === "/index.md") {
+              const idxRows = await api.query(`SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`);
+              const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
+              for (const r of idxRows) {
+                const p = r["path"];
+                const proj = r["project"] || "";
+                const desc = (r["description"] || "").slice(0, 120);
+                const date = (r["creation_date"] || "").slice(0, 10);
+                lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
+              }
+              content = lines.join("\n");
+            }
           }
           if (content !== null) {
             if (lineLimit === -1) {
