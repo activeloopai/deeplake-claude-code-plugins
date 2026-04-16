@@ -94,10 +94,27 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Get merged PR description
+        if: steps.check.outputs.exists == 'false'
+        id: pr
+        run: |
+          # Find the most recent merged PR targeting main
+          PR_BODY=$(gh pr list --state merged --base main --limit 1 --json body,title -q '.[0].body // ""')
+          PR_TITLE=$(gh pr list --state merged --base main --limit 1 --json title -q '.[0].title // ""')
+          {
+            echo "body<<ENDOFBODY"
+            echo "$PR_BODY"
+            echo "ENDOFBODY"
+            echo "title=$PR_TITLE"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Create GitHub Release
         if: steps.check.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
-          name: ${{ steps.version.outputs.version }}
-          generate_release_notes: true
+          name: "${{ steps.version.outputs.version }} — ${{ steps.pr.outputs.title }}"
+          body: ${{ steps.pr.outputs.body }}
+          generate_release_notes: false
