@@ -57,6 +57,12 @@ const GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/
 const VERSION_CHECK_TIMEOUT = 3000; // 3s — don't block session start
 
 function getInstalledVersion(): string | null {
+  // Try plugin manifest first (works in both cache and marketplace layouts)
+  try {
+    const pluginJson = join(__bundleDir, "..", ".claude-plugin", "plugin.json");
+    const plugin = JSON.parse(readFileSync(pluginJson, "utf-8"));
+    if (plugin.version) return plugin.version;
+  } catch { /* fall through */ }
   // Walk up from the bundle directory to find the nearest package.json.
   // Depending on install method the layout varies:
   //   marketplace: <root>/claude-code/bundle/  → package.json is 2 levels up

@@ -343,6 +343,13 @@ function wikiLog(msg) {
   }
 }
 function getInstalledVersion() {
+  try {
+    const pluginJson = join4(__bundleDir, "..", ".claude-plugin", "plugin.json");
+    const plugin = JSON.parse(readFileSync3(pluginJson, "utf-8"));
+    if (plugin.version)
+      return plugin.version;
+  } catch {
+  }
   let dir = __bundleDir;
   for (let i = 0; i < 5; i++) {
     const candidate = join4(dir, "package.json");

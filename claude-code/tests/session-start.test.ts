@@ -64,6 +64,33 @@ describe("claude-code bundle: session-start-setup.js exists", () => {
   });
 });
 
+// ── getInstalledVersion: must read .claude-plugin/plugin.json ────────────────
+
+describe("claude-code: version detection from plugin.json", () => {
+  it("session-start.js reads version from .claude-plugin/plugin.json", () => {
+    // This is the cache layout — no package.json with version exists,
+    // only .claude-plugin/plugin.json has it. If this test fails,
+    // auto-update will break for all installed users (CC v2.1.94+).
+    const bundle = readFileSync(join(bundleDir, "session-start.js"), "utf-8");
+    expect(bundle).toContain(".claude-plugin");
+    expect(bundle).toContain("plugin.json");
+  });
+
+  it("session-start-setup.js reads version from .claude-plugin/plugin.json", () => {
+    const bundle = readFileSync(join(bundleDir, "session-start-setup.js"), "utf-8");
+    expect(bundle).toContain(".claude-plugin");
+    expect(bundle).toContain("plugin.json");
+  });
+
+  it(".claude-plugin/plugin.json exists and has a version", () => {
+    const pluginJsonPath = join(ccRoot, ".claude-plugin", "plugin.json");
+    expect(existsSync(pluginJsonPath)).toBe(true);
+    const plugin = JSON.parse(readFileSync(pluginJsonPath, "utf-8"));
+    expect(plugin.version).toBeDefined();
+    expect(plugin.version).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+});
+
 // ── session-start.js integration tests ──────────────────────────────────────
 
 function runHook(bundle: string, input: Record<string, unknown>, extraEnv: Record<string, string> = {}): string {
