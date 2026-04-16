@@ -121,9 +121,19 @@ export async function handleGrepDirect(
   // Strategy: BM25 first (ranked, fast with index), LIKE fallback if BM25 fails.
   let rows: Record<string, unknown>[] = [];
 
-  // Search primary table
+  // Search primary table — for multi-word patterns, use OR to find any word
   if (!hasRegexMeta) {
-    const contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
+    const words = pattern.split(/\s+/).filter((w: string) => w.length > 2);
+    let contentFilter: string;
+    if (words.length > 1) {
+      // Multi-word: search for any word (OR) to cast a wider net
+      const wordFilters = words.slice(0, 4).map((w: string) => 
+        `summary ${likeOp} '%${sqlLike(w)}%'`
+      );
+      contentFilter = ` AND (${wordFilters.join(" OR ")})`;
+    } else {
+      contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
+    }
     try {
       rows = await api.query(
         `SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter}${contentFilter} LIMIT 100`,
