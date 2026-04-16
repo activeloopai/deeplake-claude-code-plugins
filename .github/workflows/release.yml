@@ -58,12 +58,13 @@ jobs:
               if (md.plugins) md.plugins.forEach(p => p.version = v);
               fs.writeFileSync(mf, JSON.stringify(md, null, 2) + '\n');
             }
-            // Update openclaw plugin if exists
-            const ocf = 'openclaw/openclaw.plugin.json';
-            if (fs.existsSync(ocf)) {
-              const od = JSON.parse(fs.readFileSync(ocf, 'utf-8'));
-              od.version = v;
-              fs.writeFileSync(ocf, JSON.stringify(od, null, 2) + '\n');
+            // Update openclaw version files if they exist
+            for (const ocf of ['openclaw/openclaw.plugin.json', 'openclaw/package.json']) {
+              if (fs.existsSync(ocf)) {
+                const od = JSON.parse(fs.readFileSync(ocf, 'utf-8'));
+                od.version = v;
+                fs.writeFileSync(ocf, JSON.stringify(od, null, 2) + '\n');
+              }
             }
             // Update codex package.json if exists
             const cpf = 'codex/package.json';

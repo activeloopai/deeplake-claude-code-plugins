@@ -5,6 +5,7 @@
  *
  * Usage:
  *   node auth-login.js login              — device flow login
+ *   node auth-login.js logout             — remove credentials
  *   node auth-login.js org list           — list orgs
  *   node auth-login.js org switch <id>    — switch org
  *   node auth-login.js workspaces         — list workspaces
@@ -18,7 +19,7 @@
  */
 
 import {
-  login, loadCredentials, saveCredentials, listOrgs, switchOrg,
+  login, loadCredentials, saveCredentials, deleteCredentials, listOrgs, switchOrg,
   listWorkspaces, switchWorkspace,
   inviteMember, listMembers, removeMember,
 } from "./auth.js";
@@ -134,8 +135,17 @@ async function main(): Promise<void> {
       break;
     }
 
+    case "logout": {
+      if (deleteCredentials()) {
+        console.log("Logged out. Credentials removed.");
+      } else {
+        console.log("Not logged in.");
+      }
+      break;
+    }
+
     default:
-      console.log("Commands: login, whoami, org list, org switch, workspaces, workspace, sessions prune, invite, members, remove, autoupdate");
+      console.log("Commands: login, logout, whoami, org list, org switch, workspaces, workspace, sessions prune, invite, members, remove, autoupdate");
   }
 }
 
