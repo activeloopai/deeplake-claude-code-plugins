@@ -17,6 +17,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the "Build PR coverage comment" step can do
+          # `git diff origin/<base>...HEAD` to detect touched src/ files.
+          # Default shallow checkout (depth=1) produces "no merge base".
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -75,6 +80,7 @@ jobs:
       - name: Build PR coverage comment
         if: github.event_name == 'pull_request' && always()
         id: pr-coverage
+        continue-on-error: true
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
@@ -83,7 +89,6 @@ jobs:
             echo "body-file=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git fetch origin "$BASE_REF" --depth=1 2>/dev/null || true
           node <<'NODE' > /tmp/pr-coverage.md
           const { execSync } = require('node:child_process');
           const fs = require('node:fs');
