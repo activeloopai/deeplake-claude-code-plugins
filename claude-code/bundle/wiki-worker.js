@@ -193,27 +193,21 @@ async function main() {
         const fname = `${cfg.sessionId}.md`;
         const vpath = `/summaries/${cfg.userName}/${fname}`;
         const ts = (/* @__PURE__ */ new Date()).toISOString();
+        const whatHappened = text.match(/## What Happened\n([\s\S]*?)(?=\n##|$)/);
+        const desc = whatHappened ? whatHappened[1].trim().slice(0, 300) : "completed";
         const existing = await query(`SELECT path FROM "${cfg.memoryTable}" WHERE path = '${esc(vpath)}' LIMIT 1`);
         if (existing.length > 0) {
-          await query(`UPDATE "${cfg.memoryTable}" SET summary = E'${esc(text)}', size_bytes = ${Buffer.byteLength(text)}, last_update_date = '${ts}' WHERE path = '${esc(vpath)}'`);
+          await query(`UPDATE "${cfg.memoryTable}" SET summary = E'${esc(text)}', size_bytes = ${Buffer.byteLength(text)}, description = E'${esc(desc)}', last_update_date = '${ts}' WHERE path = '${esc(vpath)}'`);
         } else {
           const id = crypto.randomUUID();
-          await query(`INSERT INTO "${cfg.memoryTable}" (id, path, filename, summary, author, mime_type, size_bytes, project, agent, creation_date, last_update_date) VALUES ('${id}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', '${esc(cfg.userName)}', 'text/markdown', ${Buffer.byteLength(text)}, '${esc(cfg.project)}', 'claude_code', '${ts}', '${ts}')`);
+          await query(`INSERT INTO "${cfg.memoryTable}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${id}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', '${esc(cfg.userName)}', 'text/markdown', ${Buffer.byteLength(text)}, '${esc(cfg.project)}', E'${esc(desc)}', 'claude_code', '${ts}', '${ts}')`);
         }
-        wlog(`uploaded ${vpath}`);
+        wlog(`uploaded ${vpath} (summary=${text.length}, desc=${desc.length})`);
         try {
           finalizeSummary(cfg.sessionId, jsonlLines);
           wlog(`sidecar updated: lastSummaryCount=${jsonlLines}`);
         } catch (e) {
           wlog(`sidecar update failed: ${e.message}`);
-        }
-        try {
-          const whatHappened = text.match(/## What Happened\n([\s\S]*?)(?=\n##|$)/);
-          const desc = whatHappened ? whatHappened[1].trim().slice(0, 300) : "completed";
-          await query(`UPDATE "${cfg.memoryTable}" SET description = E'${esc(desc)}', last_update_date = '${ts}' WHERE path = '${esc(vpath)}'`);
-          wlog("updated description");
-        } catch (e) {
-          wlog(`description update failed: ${e.message}`);
         }
       }
     } else {
