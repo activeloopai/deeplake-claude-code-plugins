@@ -13,10 +13,17 @@
  */
 
 import { readStdin } from "../../utils/stdin.js";
-import { loadConfig } from "../../config.js";
+import { loadConfig, type Config } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { log as _log } from "../../utils/debug.js";
+import {
+  bumpTotalCount,
+  loadTriggerConfig,
+  shouldTrigger,
+  tryAcquireLock,
+} from "../summary-state.js";
+import { bundleDirFromImportMeta, spawnCodexWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 const log = (msg: string) => _log("codex-capture", msg);
 
 interface CodexHookInput {
@@ -113,6 +120,34 @@ async function main(): Promise<void> {
   }
 
   log("capture ok");
+
+  maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
+}
+
+function maybeTriggerPeriodicSummary(sessionId: string, cwd: string, config: Config): void {
+  if (process.env.DEEPLAKE_WIKI_WORKER === "1") return;
+
+  try {
+    const state = bumpTotalCount(sessionId);
+    const cfg = loadTriggerConfig();
+    if (!shouldTrigger(state, cfg)) return;
+
+    if (!tryAcquireLock(sessionId)) {
+      log(`periodic trigger suppressed (lock held) session=${sessionId}`);
+      return;
+    }
+
+    wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
+    spawnCodexWikiWorker({
+      config,
+      sessionId,
+      cwd,
+      bundleDir: bundleDirFromImportMeta(import.meta.url),
+      reason: "Periodic",
+    });
+  } catch (e: any) {
+    log(`periodic trigger error: ${e.message}`);
+  }
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
