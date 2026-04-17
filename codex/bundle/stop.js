@@ -1,11 +1,7 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/codex/stop.js
-import { spawn, execSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { dirname, join as join3 } from "node:path";
-import { writeFileSync, readFileSync as readFileSync2, mkdirSync, appendFileSync as appendFileSync2, existsSync as existsSync2 } from "node:fs";
-import { homedir as homedir3, tmpdir } from "node:os";
+import { readFileSync as readFileSync2, existsSync as existsSync2 } from "node:fs";
 
 // dist/src/utils/stdin.js
 function readStdin() {
@@ -302,26 +298,14 @@ var DeeplakeApi = class {
   }
 };
 
-// dist/src/hooks/codex/stop.js
-var log3 = (msg) => log("codex-stop", msg);
+// dist/src/hooks/codex/spawn-wiki-worker.js
+import { spawn, execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, join as join3 } from "node:path";
+import { writeFileSync, mkdirSync, appendFileSync as appendFileSync2 } from "node:fs";
+import { homedir as homedir3, tmpdir } from "node:os";
 var HOME = homedir3();
 var WIKI_LOG = join3(HOME, ".codex", "hooks", "deeplake-wiki.log");
-var __bundleDir = dirname(fileURLToPath(import.meta.url));
-function wikiLog(msg) {
-  try {
-    mkdirSync(join3(HOME, ".codex", "hooks"), { recursive: true });
-    appendFileSync2(WIKI_LOG, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] ${msg}
-`);
-  } catch {
-  }
-}
-function findSummaryBin() {
-  try {
-    return execSync("which codex 2>/dev/null", { encoding: "utf-8" }).trim();
-  } catch {
-    return "codex";
-  }
-}
 var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry.
 
 SESSION JSONL path: __JSONL__
@@ -371,6 +355,57 @@ Format: **entity** (type) \u2014 what was done with it, its current state>
 IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact.
 PRIVACY: Never include absolute filesystem paths in the summary.
 LENGTH LIMIT: Keep the total summary under 4000 characters.`;
+function wikiLog(msg) {
+  try {
+    mkdirSync(join3(HOME, ".codex", "hooks"), { recursive: true });
+    appendFileSync2(WIKI_LOG, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] ${msg}
+`);
+  } catch {
+  }
+}
+function findCodexBin() {
+  try {
+    return execSync("which codex 2>/dev/null", { encoding: "utf-8" }).trim();
+  } catch {
+    return "codex";
+  }
+}
+function spawnCodexWikiWorker(opts) {
+  const { config, sessionId, cwd, bundleDir, reason } = opts;
+  const projectName = cwd.split("/").pop() || "unknown";
+  const tmpDir = join3(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  mkdirSync(tmpDir, { recursive: true });
+  const configFile = join3(tmpDir, "config.json");
+  writeFileSync(configFile, JSON.stringify({
+    apiUrl: config.apiUrl,
+    token: config.token,
+    orgId: config.orgId,
+    workspaceId: config.workspaceId,
+    memoryTable: config.tableName,
+    sessionsTable: config.sessionsTableName,
+    sessionId,
+    userName: config.userName,
+    project: projectName,
+    tmpDir,
+    codexBin: findCodexBin(),
+    wikiLog: WIKI_LOG,
+    hooksDir: join3(HOME, ".codex", "hooks"),
+    promptTemplate: WIKI_PROMPT_TEMPLATE
+  }));
+  wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
+  const workerPath = join3(bundleDir, "wiki-worker.js");
+  spawn("nohup", ["node", workerPath, configFile], {
+    detached: true,
+    stdio: ["ignore", "ignore", "ignore"]
+  }).unref();
+  wikiLog(`${reason}: spawned summary worker for ${sessionId}`);
+}
+function bundleDirFromImportMeta(importMetaUrl) {
+  return dirname(fileURLToPath(importMetaUrl));
+}
+
+// dist/src/hooks/codex/stop.js
+var log3 = (msg) => log("codex-stop", msg);
 var CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
 function buildSessionPath(config, sessionId) {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
@@ -389,8 +424,8 @@ async function main() {
   }
   if (CAPTURE) {
     try {
-      const sessionsTable2 = config.sessionsTableName;
-      const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable2);
+      const sessionsTable = config.sessionsTableName;
+      const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
       const ts = (/* @__PURE__ */ new Date()).toISOString();
       let lastAssistantMessage = "";
       if (input.transcript_path) {
@@ -433,10 +468,10 @@ async function main() {
       };
       const line = JSON.stringify(entry);
       const sessionPath = buildSessionPath(config, sessionId);
-      const projectName2 = (input.cwd ?? "").split("/").pop() || "unknown";
+      const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
       const filename = sessionPath.split("/").pop() ?? "";
       const jsonForSql = sqlStr(line);
-      const insertSql = `INSERT INTO "${sessionsTable2}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName2)}', 'Stop', 'codex', '${ts}', '${ts}')`;
+      const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', 'Stop', 'codex', '${ts}', '${ts}')`;
       await api.query(insertSql);
       log3("stop event captured");
     } catch (e) {
@@ -445,37 +480,14 @@ async function main() {
   }
   if (!CAPTURE)
     return;
-  const cwd = input.cwd ?? "";
-  const memoryTable = config.tableName;
-  const sessionsTable = config.sessionsTableName;
-  const agentBin = findSummaryBin();
-  const projectName = cwd.split("/").pop() || "unknown";
-  const tmpDir = join3(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
-  mkdirSync(tmpDir, { recursive: true });
-  const configFile = join3(tmpDir, "config.json");
-  writeFileSync(configFile, JSON.stringify({
-    apiUrl: config.apiUrl,
-    token: config.token,
-    orgId: config.orgId,
-    workspaceId: config.workspaceId,
-    memoryTable,
-    sessionsTable,
+  wikiLog(`Stop: triggering summary for ${sessionId}`);
+  spawnCodexWikiWorker({
+    config,
     sessionId,
-    userName: config.userName,
-    project: projectName,
-    tmpDir,
-    codexBin: agentBin,
-    wikiLog: WIKI_LOG,
-    hooksDir: join3(HOME, ".codex", "hooks"),
-    promptTemplate: WIKI_PROMPT_TEMPLATE
-  }));
-  wikiLog(`Stop: spawning summary worker for ${sessionId}`);
-  const workerPath = join3(__bundleDir, "wiki-worker.js");
-  spawn("nohup", ["node", workerPath, configFile], {
-    detached: true,
-    stdio: ["ignore", "ignore", "ignore"]
-  }).unref();
-  wikiLog(`Stop: spawned summary worker for ${sessionId}`);
+    cwd: input.cwd ?? "",
+    bundleDir: bundleDirFromImportMeta(import.meta.url),
+    reason: "Stop"
+  });
 }
 main().catch((e) => {
   log3(`fatal: ${e.message}`);
