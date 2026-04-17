@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, dev]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   test:
     name: Typecheck and Test
@@ -26,13 +30,16 @@ jobs:
         run: npm run typecheck
 
       - name: Run tests with coverage
-        run: npx vitest run --coverage --coverage.reporter=text --coverage.reporter=json-summary
+        # Per-file 80% thresholds for PR #60 files are declared in
+        # vitest.config.ts under `coverage.thresholds`. Vitest exits non-zero
+        # if any of them regress below 80%, which fails the job.
+        run: npx vitest run --coverage
 
-      - name: Coverage summary
+      - name: Write coverage summary to job page
         if: always()
         run: |
           if [ -f coverage/coverage-summary.json ]; then
-            echo "### Test Coverage" >> $GITHUB_STEP_SUMMARY
+            echo "### Test Coverage (overall)" >> $GITHUB_STEP_SUMMARY
             node -e "
               const c = require('./coverage/coverage-summary.json').total;
               const fmt = (v) => v.pct.toFixed(1) + '%';
@@ -43,7 +50,34 @@ jobs:
               console.log('| Functions | ' + fmt(c.functions) + ' |');
               console.log('| Lines | ' + fmt(c.lines) + ' |');
             " >> $GITHUB_STEP_SUMMARY
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### PR-tracked files (must stay ≥ 80 %)" >> $GITHUB_STEP_SUMMARY
+            node -e "
+              const summary = require('./coverage/coverage-summary.json');
+              const tracked = [
+                'src/shell/grep-core.ts',
+                'src/shell/grep-interceptor.ts',
+                'src/hooks/grep-direct.ts',
+              ];
+              console.log('| File | Stmts | Branch | Funcs | Lines |');
+              console.log('|------|------:|-------:|------:|------:|');
+              const fmt = v => v == null ? '—' : v.toFixed(1) + '%';
+              for (const rel of tracked) {
+                const key = Object.keys(summary).find(k => k.endsWith(rel));
+                const c = key ? summary[key] : null;
+                if (!c) { console.log('| \`' + rel + '\` | — | — | — | — |'); continue; }
+                console.log('| \`' + rel + '\` | ' + fmt(c.statements.pct) + ' | ' + fmt(c.branches.pct) + ' | ' + fmt(c.functions.pct) + ' | ' + fmt(c.lines.pct) + ' |');
+              }
+            " >> $GITHUB_STEP_SUMMARY
           fi
+
+      - name: Post coverage comment on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: davelosert/vitest-coverage-report-action@v2
+        with:
+          json-summary-path: coverage/coverage-summary.json
+          name: coverage
 
       - name: Build bundles
         run: npm run build
