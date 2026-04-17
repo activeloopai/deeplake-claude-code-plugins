@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 // Shared core imports
 import { loadConfig } from "../../src/config.js";
-import { loadCredentials, saveCredentials, requestDeviceCode, pollForToken, listOrgs } from "../../src/commands/auth.js";
+import { loadCredentials, saveCredentials, requestDeviceCode, pollForToken, listOrgs, switchOrg, listWorkspaces, switchWorkspace } from "../../src/commands/auth.js";
 import { DeeplakeApi } from "../../src/deeplake-api.js";
 import { sqlStr, sqlLike } from "../../src/utils/sql.js";
 
@@ -181,6 +181,78 @@ export default definePluginEntry({
         handler: async () => {
           captureEnabled = !captureEnabled;
           return { text: captureEnabled ? "✅ Capture enabled — conversations will be stored to Hivemind." : "⏸️ Capture paused — conversations will NOT be stored until you run /hivemind_capture again." };
+        },
+      });
+
+      pluginApi.registerCommand({
+        name: "hivemind_whoami",
+        description: "Show current Hivemind org and workspace",
+        handler: async () => {
+          const creds = loadCredentials();
+          if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
+          return { text: `Org: ${creds.orgName ?? creds.orgId}\nWorkspace: ${creds.workspaceId ?? "default"}` };
+        },
+      });
+
+      pluginApi.registerCommand({
+        name: "hivemind_orgs",
+        description: "List available organizations",
+        handler: async () => {
+          const creds = loadCredentials();
+          if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
+          const orgs = await listOrgs(creds.token, creds.apiUrl);
+          if (!orgs.length) return { text: "No organizations found." };
+          const lines = orgs.map(o => `${o.id === creds.orgId ? "→ " : "  "}${o.name}`);
+          return { text: lines.join("\n") };
+        },
+      });
+
+      pluginApi.registerCommand({
+        name: "hivemind_switch_org",
+        description: "Switch to a different organization",
+        acceptsArgs: true,
+        handler: async (ctx: CommandContext) => {
+          const creds = loadCredentials();
+          if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
+          const target = ctx.args?.trim();
+          if (!target) return { text: "Usage: /hivemind_switch_org <name-or-id>" };
+          const orgs = await listOrgs(creds.token, creds.apiUrl);
+          const match = orgs.find(o => o.id === target || o.name.toLowerCase() === target.toLowerCase());
+          if (!match) return { text: `Org not found: ${target}` };
+          await switchOrg(match.id, match.name);
+          api = null;
+          return { text: `Switched to org: ${match.name}` };
+        },
+      });
+
+      pluginApi.registerCommand({
+        name: "hivemind_workspaces",
+        description: "List available workspaces",
+        handler: async () => {
+          const creds = loadCredentials();
+          if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
+          const ws = await listWorkspaces(creds.token, creds.apiUrl, creds.orgId);
+          if (!ws.length) return { text: "No workspaces found." };
+          const lines = ws.map(w => `${w.id === (creds.workspaceId ?? "default") ? "→ " : "  "}${w.name}`);
+          return { text: lines.join("\n") };
+        },
+      });
+
+      pluginApi.registerCommand({
+        name: "hivemind_switch_workspace",
+        description: "Switch to a different workspace",
+        acceptsArgs: true,
+        handler: async (ctx: CommandContext) => {
+          const creds = loadCredentials();
+          if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
+          const target = ctx.args?.trim();
+          if (!target) return { text: "Usage: /hivemind_switch_workspace <name-or-id>" };
+          const ws = await listWorkspaces(creds.token, creds.apiUrl, creds.orgId);
+          const match = ws.find(w => w.id === target || w.name.toLowerCase() === target.toLowerCase());
+          if (!match) return { text: `Workspace not found: ${target}` };
+          await switchWorkspace(match.id);
+          api = null;
+          return { text: `Switched to workspace: ${match.name}` };
         },
       });
     }
