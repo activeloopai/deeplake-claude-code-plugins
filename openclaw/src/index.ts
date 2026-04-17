@@ -245,11 +245,14 @@ export default definePluginEntry({
         handler: async (ctx: CommandContext) => {
           const creds = loadCredentials();
           if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
-          const wsId = ctx.args?.trim();
-          if (!wsId) return { text: "Usage: /hivemind_switch_workspace <id>" };
-          await switchWorkspace(wsId);
+          const target = ctx.args?.trim();
+          if (!target) return { text: "Usage: /hivemind_switch_workspace <name-or-id>" };
+          const ws = await listWorkspaces(creds.token, creds.apiUrl, creds.orgId);
+          const match = ws.find(w => w.id === target || w.name.toLowerCase() === target.toLowerCase());
+          if (!match) return { text: `Workspace not found: ${target}` };
+          await switchWorkspace(match.id);
           api = null;
-          return { text: `Switched to workspace: ${wsId}` };
+          return { text: `Switched to workspace: ${match.name}` };
         },
       });
     }
