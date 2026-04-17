@@ -92,6 +92,31 @@ function releaseLock(sessionId) {
   }
 }
 
+// dist/src/hooks/upload-summary.js
+import { randomUUID } from "node:crypto";
+function esc(s) {
+  return s.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+}
+function extractDescription(text) {
+  const match = text.match(/## What Happened\n([\s\S]*?)(?=\n##|$)/);
+  return match ? match[1].trim().slice(0, 300) : "completed";
+}
+async function uploadSummary(query2, params) {
+  const { tableName, vpath, fname, userName, project, agent, text } = params;
+  const ts = params.ts ?? (/* @__PURE__ */ new Date()).toISOString();
+  const desc = extractDescription(text);
+  const sizeBytes = Buffer.byteLength(text);
+  const existing = await query2(`SELECT path FROM "${tableName}" WHERE path = '${esc(vpath)}' LIMIT 1`);
+  if (existing.length > 0) {
+    const sql2 = `UPDATE "${tableName}" SET summary = E'${esc(text)}', size_bytes = ${sizeBytes}, description = E'${esc(desc)}', last_update_date = '${ts}' WHERE path = '${esc(vpath)}'`;
+    await query2(sql2);
+    return { path: "update", sql: sql2, descLength: desc.length, summaryLength: text.length };
+  }
+  const sql = `INSERT INTO "${tableName}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${randomUUID()}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', '${esc(userName)}', 'text/markdown', ${sizeBytes}, '${esc(project)}', E'${esc(desc)}', '${esc(agent)}', '${ts}', '${ts}')`;
+  await query2(sql);
+  return { path: "insert", sql, descLength: desc.length, summaryLength: text.length };
+}
+
 // dist/src/hooks/wiki-worker.js
 var cfg = JSON.parse(readFileSync2(process.argv[2], "utf-8"));
 var tmpDir = cfg.tmpDir;
@@ -105,7 +130,7 @@ function wlog(msg) {
   } catch {
   }
 }
-function esc(s) {
+function esc2(s) {
   return s.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 async function query(sql, retries = 2) {
@@ -143,20 +168,20 @@ function cleanup() {
 async function main() {
   try {
     wlog("fetching session events");
-    const rows = await query(`SELECT message, creation_date FROM "${cfg.sessionsTable}" WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`);
+    const rows = await query(`SELECT message, creation_date FROM "${cfg.sessionsTable}" WHERE path LIKE '${esc2(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`);
     if (rows.length === 0) {
       wlog("no session events found \u2014 exiting");
       return;
     }
     const jsonlContent = rows.map((r) => typeof r.message === "string" ? r.message : JSON.stringify(r.message)).join("\n");
     const jsonlLines = rows.length;
-    const pathRows = await query(`SELECT DISTINCT path FROM "${cfg.sessionsTable}" WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`);
+    const pathRows = await query(`SELECT DISTINCT path FROM "${cfg.sessionsTable}" WHERE path LIKE '${esc2(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`);
     const jsonlServerPath = pathRows.length > 0 ? pathRows[0].path : `/sessions/unknown/${cfg.sessionId}.jsonl`;
     writeFileSync2(tmpJsonl, jsonlContent);
     wlog(`found ${jsonlLines} events at ${jsonlServerPath}`);
     let prevOffset = 0;
     try {
-      const sumRows = await query(`SELECT summary FROM "${cfg.memoryTable}" WHERE path = '${esc(`/summaries/${cfg.userName}/${cfg.sessionId}.md`)}' LIMIT 1`);
+      const sumRows = await query(`SELECT summary FROM "${cfg.memoryTable}" WHERE path = '${esc2(`/summaries/${cfg.userName}/${cfg.sessionId}.md`)}' LIMIT 1`);
       if (sumRows.length > 0 && sumRows[0]["summary"]) {
         const existing = sumRows[0]["summary"];
         const match = existing.match(/\*\*JSONL offset\*\*:\s*(\d+)/);
@@ -192,17 +217,17 @@ async function main() {
       if (text.trim()) {
         const fname = `${cfg.sessionId}.md`;
         const vpath = `/summaries/${cfg.userName}/${fname}`;
-        const ts = (/* @__PURE__ */ new Date()).toISOString();
-        const whatHappened = text.match(/## What Happened\n([\s\S]*?)(?=\n##|$)/);
-        const desc = whatHappened ? whatHappened[1].trim().slice(0, 300) : "completed";
-        const existing = await query(`SELECT path FROM "${cfg.memoryTable}" WHERE path = '${esc(vpath)}' LIMIT 1`);
-        if (existing.length > 0) {
-          await query(`UPDATE "${cfg.memoryTable}" SET summary = E'${esc(text)}', size_bytes = ${Buffer.byteLength(text)}, description = E'${esc(desc)}', last_update_date = '${ts}' WHERE path = '${esc(vpath)}'`);
-        } else {
-          const id = crypto.randomUUID();
-          await query(`INSERT INTO "${cfg.memoryTable}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${id}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', '${esc(cfg.userName)}', 'text/markdown', ${Buffer.byteLength(text)}, '${esc(cfg.project)}', E'${esc(desc)}', 'claude_code', '${ts}', '${ts}')`);
-        }
-        wlog(`uploaded ${vpath} (summary=${text.length}, desc=${desc.length})`);
+        const result = await uploadSummary(query, {
+          tableName: cfg.memoryTable,
+          vpath,
+          fname,
+          userName: cfg.userName,
+          project: cfg.project,
+          agent: "claude_code",
+          sessionId: cfg.sessionId,
+          text
+        });
+        wlog(`uploaded ${vpath} (summary=${result.summaryLength}, desc=${result.descLength})`);
         try {
           finalizeSummary(cfg.sessionId, jsonlLines);
           wlog(`sidecar updated: lastSummaryCount=${jsonlLines}`);
