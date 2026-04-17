@@ -44,8 +44,12 @@ function loadConfig() {
       return null;
     }
   }
-  const token = process.env.DEEPLAKE_TOKEN ?? creds?.token;
-  const orgId = process.env.DEEPLAKE_ORG_ID ?? creds?.orgId;
+  const env = process.env;
+  if (!env.HIVEMIND_TOKEN && env.DEEPLAKE_TOKEN) {
+    process.stderr.write("[hivemind] DEEPLAKE_* env vars are deprecated; use HIVEMIND_* instead\n");
+  }
+  const token = env.HIVEMIND_TOKEN ?? env.DEEPLAKE_TOKEN ?? creds?.token;
+  const orgId = env.HIVEMIND_ORG_ID ?? env.DEEPLAKE_ORG_ID ?? creds?.orgId;
   if (!token || !orgId)
     return null;
   return {
@@ -53,11 +57,11 @@ function loadConfig() {
     orgId,
     orgName: creds?.orgName ?? orgId,
     userName: creds?.userName || userInfo().username || "unknown",
-    workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
-    apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: process.env.DEEPLAKE_TABLE ?? "memory",
-    sessionsTableName: process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
-    memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join2(home, ".deeplake", "memory")
+    workspaceId: env.HIVEMIND_WORKSPACE_ID ?? env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
+    apiUrl: env.HIVEMIND_API_URL ?? env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
+    tableName: env.HIVEMIND_TABLE ?? env.DEEPLAKE_TABLE ?? "memory",
+    sessionsTableName: env.HIVEMIND_SESSIONS_TABLE ?? env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
+    memoryPath: env.HIVEMIND_MEMORY_PATH ?? env.DEEPLAKE_MEMORY_PATH ?? join2(home, ".deeplake", "memory")
   };
 }
 
@@ -68,7 +72,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { join as join3 } from "node:path";
 import { homedir as homedir3 } from "node:os";
-var DEBUG = process.env.DEEPLAKE_DEBUG === "1";
+var DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 var LOG = join3(homedir3(), ".deeplake", "hook-debug.log");
 function utcTimestamp(d = /* @__PURE__ */ new Date()) {
   return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
@@ -87,8 +91,8 @@ function sqlStr(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
-var TRACE_SQL = process.env.DEEPLAKE_TRACE_SQL === "1" || process.env.DEEPLAKE_DEBUG === "1";
-var DEBUG_FILE_LOG = process.env.DEEPLAKE_DEBUG === "1";
+var TRACE_SQL = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+var DEBUG_FILE_LOG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 function summarizeSql(sql, maxLen = 220) {
   const compact = sql.replace(/\s+/g, " ").trim();
   return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
@@ -346,21 +350,21 @@ SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only 
 Search command: Grep pattern="keyword" path="~/.deeplake/memory"
 
 Organization management \u2014 each argument is SEPARATE (do NOT quote subcommands together):
-- node "DEEPLAKE_AUTH_CMD" login                              \u2014 SSO login
-- node "DEEPLAKE_AUTH_CMD" whoami                             \u2014 show current user/org
-- node "DEEPLAKE_AUTH_CMD" org list                           \u2014 list organizations
-- node "DEEPLAKE_AUTH_CMD" org switch <name-or-id>            \u2014 switch organization
-- node "DEEPLAKE_AUTH_CMD" workspaces                         \u2014 list workspaces
-- node "DEEPLAKE_AUTH_CMD" workspace <id>                     \u2014 switch workspace
-- node "DEEPLAKE_AUTH_CMD" invite <email> <ADMIN|WRITE|READ>  \u2014 invite member (ALWAYS ask user which role before inviting)
-- node "DEEPLAKE_AUTH_CMD" members                            \u2014 list members
-- node "DEEPLAKE_AUTH_CMD" remove <user-id>                   \u2014 remove member
+- node "HIVEMIND_AUTH_CMD" login                              \u2014 SSO login
+- node "HIVEMIND_AUTH_CMD" whoami                             \u2014 show current user/org
+- node "HIVEMIND_AUTH_CMD" org list                           \u2014 list organizations
+- node "HIVEMIND_AUTH_CMD" org switch <name-or-id>            \u2014 switch organization
+- node "HIVEMIND_AUTH_CMD" workspaces                         \u2014 list workspaces
+- node "HIVEMIND_AUTH_CMD" workspace <id>                     \u2014 switch workspace
+- node "HIVEMIND_AUTH_CMD" invite <email> <ADMIN|WRITE|READ>  \u2014 invite member (ALWAYS ask user which role before inviting)
+- node "HIVEMIND_AUTH_CMD" members                            \u2014 list members
+- node "HIVEMIND_AUTH_CMD" remove <user-id>                   \u2014 remove member
 
 IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem. If a task seems to require Python, rewrite it using bash commands and standard text-processing tools (awk, sed, jq, grep, etc.).
 
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
-Debugging: Set DEEPLAKE_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
+Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
 var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 var VERSION_CHECK_TIMEOUT = 3e3;
 function getInstalledVersion() {
@@ -437,7 +441,7 @@ async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, 
   wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
 }
 async function main() {
-  if (process.env.DEEPLAKE_WIKI_WORKER === "1")
+  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1")
     return;
   const input = await readStdin();
   let creds = loadCredentials();
@@ -534,7 +538,7 @@ async function main() {
   } catch (e) {
     log3(`version check failed: ${e.message}`);
   }
-  const resolvedContext = context.replace(/DEEPLAKE_AUTH_CMD/g, AUTH_CMD);
+  const resolvedContext = context.replace(/HIVEMIND_AUTH_CMD/g, AUTH_CMD);
   const additionalContext = creds?.token ? `${resolvedContext}
 
 Logged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}` : `${resolvedContext}

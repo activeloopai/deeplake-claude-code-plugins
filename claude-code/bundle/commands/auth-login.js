@@ -216,8 +216,12 @@ function loadConfig() {
       return null;
     }
   }
-  const token = process.env.DEEPLAKE_TOKEN ?? creds?.token;
-  const orgId = process.env.DEEPLAKE_ORG_ID ?? creds?.orgId;
+  const env = process.env;
+  if (!env.HIVEMIND_TOKEN && env.DEEPLAKE_TOKEN) {
+    process.stderr.write("[hivemind] DEEPLAKE_* env vars are deprecated; use HIVEMIND_* instead\n");
+  }
+  const token = env.HIVEMIND_TOKEN ?? env.DEEPLAKE_TOKEN ?? creds?.token;
+  const orgId = env.HIVEMIND_ORG_ID ?? env.DEEPLAKE_ORG_ID ?? creds?.orgId;
   if (!token || !orgId)
     return null;
   return {
@@ -225,11 +229,11 @@ function loadConfig() {
     orgId,
     orgName: creds?.orgName ?? orgId,
     userName: creds?.userName || userInfo().username || "unknown",
-    workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
-    apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: process.env.DEEPLAKE_TABLE ?? "memory",
-    sessionsTableName: process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
-    memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join2(home, ".deeplake", "memory")
+    workspaceId: env.HIVEMIND_WORKSPACE_ID ?? env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
+    apiUrl: env.HIVEMIND_API_URL ?? env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
+    tableName: env.HIVEMIND_TABLE ?? env.DEEPLAKE_TABLE ?? "memory",
+    sessionsTableName: env.HIVEMIND_SESSIONS_TABLE ?? env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
+    memoryPath: env.HIVEMIND_MEMORY_PATH ?? env.DEEPLAKE_MEMORY_PATH ?? join2(home, ".deeplake", "memory")
   };
 }
 
@@ -240,7 +244,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { join as join3 } from "node:path";
 import { homedir as homedir3 } from "node:os";
-var DEBUG = process.env.DEEPLAKE_DEBUG === "1";
+var DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 var LOG = join3(homedir3(), ".deeplake", "hook-debug.log");
 function log(tag, msg) {
   if (!DEBUG)
@@ -256,8 +260,8 @@ function sqlStr(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
-var TRACE_SQL = process.env.DEEPLAKE_TRACE_SQL === "1" || process.env.DEEPLAKE_DEBUG === "1";
-var DEBUG_FILE_LOG = process.env.DEEPLAKE_DEBUG === "1";
+var TRACE_SQL = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+var DEBUG_FILE_LOG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 function summarizeSql(sql, maxLen = 220) {
   const compact = sql.replace(/\s+/g, " ").trim();
   return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;

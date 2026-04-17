@@ -206,8 +206,8 @@ async function main(): Promise<void> {
   // ── Fast path: handle Read and Grep directly via SQL (no shell spawn) ──
   const config = loadConfig();
   if (config) {
-    const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
-    const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+    const table = process.env["HIVEMIND_TABLE"] ?? "memory";
+    const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
     const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
 
     try {

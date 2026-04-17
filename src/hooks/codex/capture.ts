@@ -35,7 +35,7 @@ interface CodexHookInput {
   tool_response?: Record<string, unknown>;
 }
 
-const CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
+const CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
 
 function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
