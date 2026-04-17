@@ -309,6 +309,292 @@ var DeeplakeApi = class {
   }
 };
 
+// dist/src/shell/grep-core.js
+var TOOL_INPUT_FIELDS = [
+  "command",
+  "file_path",
+  "path",
+  "pattern",
+  "prompt",
+  "subagent_type",
+  "query",
+  "url",
+  "notebook_path",
+  "old_string",
+  "new_string",
+  "content",
+  "skill",
+  "args",
+  "taskId",
+  "status",
+  "subject",
+  "description",
+  "to",
+  "message",
+  "summary",
+  "max_results"
+];
+var TOOL_RESPONSE_DROP = /* @__PURE__ */ new Set([
+  "interrupted",
+  "isImage",
+  "noOutputExpected",
+  "type",
+  "stderr",
+  "structuredPatch",
+  "userModified",
+  "originalFile",
+  "replaceAll",
+  "totalDurationMs",
+  "totalTokens",
+  "totalToolUseCount",
+  "usage",
+  "toolStats",
+  "durationMs",
+  "durationSeconds",
+  "bytes",
+  "code",
+  "codeText",
+  "agentId",
+  "agentType",
+  "verificationNudgeNeeded",
+  "numLines",
+  "numFiles",
+  "truncated",
+  "statusChange",
+  "updatedFields",
+  "isAgent",
+  "success"
+]);
+function maybeParseJson(v) {
+  if (typeof v !== "string")
+    return v;
+  const s = v.trim();
+  if (s[0] !== "{" && s[0] !== "[")
+    return v;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return v;
+  }
+}
+function snakeCase(k) {
+  return k.replace(/([A-Z])/g, "_$1").toLowerCase();
+}
+function camelCase(k) {
+  return k.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+}
+function formatToolInput(raw) {
+  const p = maybeParseJson(raw);
+  if (typeof p !== "object" || p === null)
+    return String(p ?? "");
+  const parts = [];
+  for (const k of TOOL_INPUT_FIELDS) {
+    if (p[k] === void 0)
+      continue;
+    const v = p[k];
+    parts.push(`${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`);
+  }
+  for (const k of ["glob", "output_mode", "limit", "offset"]) {
+    if (p[k] !== void 0)
+      parts.push(`${k}: ${p[k]}`);
+  }
+  return parts.length ? parts.join("\n") : JSON.stringify(p);
+}
+function formatToolResponse(raw, inp, toolName) {
+  const r = maybeParseJson(raw);
+  if (typeof r !== "object" || r === null)
+    return String(r ?? "");
+  if (toolName === "Edit" || toolName === "Write" || toolName === "MultiEdit") {
+    return r.filePath ? `[wrote ${r.filePath}]` : "[ok]";
+  }
+  if (typeof r.stdout === "string") {
+    const stderr = r.stderr;
+    return r.stdout + (stderr ? `
+stderr: ${stderr}` : "");
+  }
+  if (typeof r.content === "string")
+    return r.content;
+  if (r.file && typeof r.file === "object") {
+    const f = r.file;
+    if (typeof f.content === "string")
+      return `[${f.filePath ?? ""}]
+${f.content}`;
+    if (typeof f.base64 === "string")
+      return `[binary ${f.filePath ?? ""}: ${f.base64.length} base64 chars]`;
+  }
+  if (Array.isArray(r.filenames))
+    return r.filenames.join("\n");
+  if (Array.isArray(r.matches)) {
+    return r.matches.map((m) => typeof m === "string" ? m : JSON.stringify(m)).join("\n");
+  }
+  if (Array.isArray(r.results)) {
+    return r.results.map((x) => typeof x === "string" ? x : x?.title ?? x?.url ?? JSON.stringify(x)).join("\n");
+  }
+  const inpObj = maybeParseJson(inp);
+  const kept = {};
+  for (const [k, v] of Object.entries(r)) {
+    if (TOOL_RESPONSE_DROP.has(k))
+      continue;
+    if (v === "" || v === false || v == null)
+      continue;
+    if (typeof inpObj === "object" && inpObj) {
+      const inObj = inpObj;
+      if (k in inObj && JSON.stringify(inObj[k]) === JSON.stringify(v))
+        continue;
+      const snake = snakeCase(k);
+      if (snake in inObj && JSON.stringify(inObj[snake]) === JSON.stringify(v))
+        continue;
+      const camel = camelCase(k);
+      if (camel in inObj && JSON.stringify(inObj[camel]) === JSON.stringify(v))
+        continue;
+    }
+    kept[k] = v;
+  }
+  return Object.keys(kept).length ? JSON.stringify(kept) : "[ok]";
+}
+function formatToolCall(obj) {
+  return `[tool:${obj?.tool_name ?? "?"}]
+input: ${formatToolInput(obj?.tool_input)}
+response: ${formatToolResponse(obj?.tool_response, obj?.tool_input, obj?.tool_name)}`;
+}
+function normalizeContent(path, raw) {
+  if (!path.includes("/sessions/"))
+    return raw;
+  if (!raw || raw[0] !== "{")
+    return raw;
+  let obj;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+  if (Array.isArray(obj.turns)) {
+    const header = [];
+    if (obj.date_time)
+      header.push(`date: ${obj.date_time}`);
+    if (obj.speakers) {
+      const s = obj.speakers;
+      const names = [s.speaker_a, s.speaker_b].filter(Boolean).join(", ");
+      if (names)
+        header.push(`speakers: ${names}`);
+    }
+    const lines = obj.turns.map((t) => {
+      const sp = String(t?.speaker ?? t?.name ?? "?").trim();
+      const tx = String(t?.text ?? t?.content ?? "").replace(/\s+/g, " ").trim();
+      const tag = t?.dia_id ? `[${t.dia_id}] ` : "";
+      return `${tag}${sp}: ${tx}`;
+    });
+    const out2 = [...header, ...lines].join("\n");
+    return out2.trim() ? out2 : raw;
+  }
+  const stripRecalled = (t) => {
+    const i = t.indexOf("<recalled-memories>");
+    if (i === -1)
+      return t;
+    const j = t.lastIndexOf("</recalled-memories>");
+    if (j === -1 || j < i)
+      return t;
+    const head = t.slice(0, i);
+    const tail = t.slice(j + "</recalled-memories>".length);
+    return (head + tail).replace(/^\s+/, "").replace(/\n{3,}/g, "\n\n");
+  };
+  let out = null;
+  if (obj.type === "user_message") {
+    out = `[user] ${stripRecalled(String(obj.content ?? ""))}`;
+  } else if (obj.type === "assistant_message") {
+    const agent = obj.agent_type ? ` (agent=${obj.agent_type})` : "";
+    out = `[assistant${agent}] ${stripRecalled(String(obj.content ?? ""))}`;
+  } else if (obj.type === "tool_call") {
+    out = formatToolCall(obj);
+  }
+  if (out === null)
+    return raw;
+  const trimmed = out.trim();
+  if (!trimmed || trimmed === "[user]" || trimmed === "[assistant]" || /^\[tool:[^\]]*\]\s+input:\s+\{\}\s+response:\s+\{\}$/.test(trimmed))
+    return raw;
+  return out;
+}
+async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern } = opts;
+  const limit = opts.limit ?? 100;
+  const memFilter = contentScanOnly ? "" : ` AND summary::text ${likeOp} '%${escapedPattern}%'`;
+  const sessFilter = contentScanOnly ? "" : ` AND message::text ${likeOp} '%${escapedPattern}%'`;
+  const memQuery = `SELECT path, summary::text AS content FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
+  const sessQuery = `SELECT path, message::text AS content FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
+  const [memRows, sessRows] = await Promise.all([
+    api.query(memQuery).catch(() => []),
+    api.query(sessQuery).catch(() => [])
+  ]);
+  const rows = [];
+  for (const r of memRows)
+    rows.push({ path: String(r.path), content: String(r.content ?? "") });
+  for (const r of sessRows)
+    rows.push({ path: String(r.path), content: String(r.content ?? "") });
+  return rows;
+}
+function buildPathFilter(targetPath) {
+  if (!targetPath || targetPath === "/")
+    return "";
+  const clean = targetPath.replace(/\/+$/, "");
+  return ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+}
+function compileGrepRegex(params) {
+  let reStr = params.fixedString ? params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : params.pattern;
+  if (params.wordMatch)
+    reStr = `\\b${reStr}\\b`;
+  try {
+    return new RegExp(reStr, params.ignoreCase ? "i" : "");
+  } catch {
+    return new RegExp(params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), params.ignoreCase ? "i" : "");
+  }
+}
+function refineGrepMatches(rows, params, forceMultiFilePrefix) {
+  const re = compileGrepRegex(params);
+  const multi = forceMultiFilePrefix ?? rows.length > 1;
+  const output = [];
+  for (const row of rows) {
+    if (!row.content)
+      continue;
+    const lines = row.content.split("\n");
+    const matched = [];
+    let fileEmitted = false;
+    for (let i = 0; i < lines.length; i++) {
+      const hit = re.test(lines[i]);
+      if (hit !== !!params.invertMatch) {
+        if (params.filesOnly) {
+          if (!fileEmitted) {
+            output.push(row.path);
+            fileEmitted = true;
+          }
+          break;
+        }
+        const prefix = multi ? `${row.path}:` : "";
+        const ln = params.lineNumber ? `${i + 1}:` : "";
+        matched.push(`${prefix}${ln}${lines[i]}`);
+      }
+    }
+    if (!params.filesOnly) {
+      if (params.countOnly) {
+        output.push(`${multi ? `${row.path}:` : ""}${matched.length}`);
+      } else {
+        output.push(...matched);
+      }
+    }
+  }
+  return output;
+}
+async function grepBothTables(api, memoryTable, sessionsTable, params, targetPath) {
+  const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
+  const rows = await searchDeeplakeTables(api, memoryTable, sessionsTable, {
+    pathFilter: buildPathFilter(targetPath),
+    contentScanOnly: hasRegexMeta,
+    likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
+    escapedPattern: sqlLike(params.pattern)
+  });
+  const normalized = rows.map((r) => ({ path: r.path, content: normalizeContent(r.path, r.content) }));
+  return refineGrepMatches(normalized, params);
+}
+
 // dist/src/hooks/grep-direct.js
 function parseBashGrep(cmd) {
   const first = cmd.trim().split(/\s*\|\s*/)[0];
@@ -418,67 +704,17 @@ function parseBashGrep(cmd) {
 async function handleGrepDirect(api, table, sessionsTable, params) {
   if (!params.pattern)
     return null;
-  const { pattern, targetPath, ignoreCase, wordMatch, filesOnly, countOnly, lineNumber, invertMatch, fixedString } = params;
-  const likeOp = ignoreCase ? "ILIKE" : "LIKE";
-  const escapedLike = sqlLike(pattern);
-  let pathFilter = "";
-  if (targetPath && targetPath !== "/") {
-    const clean = targetPath.replace(/\/+$/, "");
-    pathFilter = ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
-  }
-  const hasRegexMeta = !fixedString && /[.*+?^${}()|[\]\\]/.test(pattern);
-  let rows = [];
-  if (!hasRegexMeta) {
-    const contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
-    try {
-      rows = await api.query(`SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter}${contentFilter} LIMIT 100`);
-    } catch {
-      rows = [];
-    }
-  } else {
-    try {
-      rows = await api.query(`SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter} LIMIT 100`);
-    } catch {
-      rows = [];
-    }
-  }
-  let reStr = fixedString ? pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : pattern;
-  if (wordMatch)
-    reStr = `\\b${reStr}\\b`;
-  let re;
-  try {
-    re = new RegExp(reStr, ignoreCase ? "i" : "");
-  } catch {
-    re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
-  }
-  const output = [];
-  const multi = rows.length > 1;
-  for (const row of rows) {
-    const p = row["path"];
-    const text = row["content"];
-    if (!text)
-      continue;
-    const lines = text.split("\n");
-    const matched = [];
-    for (let i = 0; i < lines.length; i++) {
-      if (re.test(lines[i]) !== !!invertMatch) {
-        if (filesOnly) {
-          output.push(p);
-          break;
-        }
-        const prefix = multi ? `${p}:` : "";
-        const ln = lineNumber ? `${i + 1}:` : "";
-        matched.push(`${prefix}${ln}${lines[i]}`);
-      }
-    }
-    if (!filesOnly) {
-      if (countOnly) {
-        output.push(`${multi ? `${p}:` : ""}${matched.length}`);
-      } else {
-        output.push(...matched);
-      }
-    }
-  }
+  const matchParams = {
+    pattern: params.pattern,
+    ignoreCase: params.ignoreCase,
+    wordMatch: params.wordMatch,
+    filesOnly: params.filesOnly,
+    countOnly: params.countOnly,
+    lineNumber: params.lineNumber,
+    invertMatch: params.invertMatch,
+    fixedString: params.fixedString
+  };
+  const output = await grepBothTables(api, table, sessionsTable, matchParams, params.targetPath);
   return output.join("\n") || "(no matches)";
 }
 
