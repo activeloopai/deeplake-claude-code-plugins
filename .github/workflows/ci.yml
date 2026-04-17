@@ -85,7 +85,9 @@ jobs:
           # 80% target there is a UI default and does NOT reflect our
           # enforcement model (we enforce per-file via vitest.config.ts).
           file-coverage-mode: changes
-          name: coverage
+          # `name` is omitted on purpose: passing `name: coverage` makes the
+          # comment title "Coverage Report for coverage" (ugly duplication).
+          # With no name, the comment title is just "Coverage Report".
 
       - name: Build bundles
         run: npm run build
