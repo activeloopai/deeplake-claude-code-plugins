@@ -49,7 +49,7 @@ function esc(s: string): string {
     .replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 
-async function query(sql: string, retries = 2): Promise<Record<string, unknown>[]> {
+async function query(sql: string, retries = 4): Promise<Record<string, unknown>[]> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     const r = await fetch(`${cfg.apiUrl}/workspaces/${cfg.workspaceId}/tables/query`, {
       method: "POST",
@@ -67,9 +67,19 @@ async function query(sql: string, retries = 2): Promise<Record<string, unknown>[
         Object.fromEntries(j.columns!.map((col, i) => [col, row[i]]))
       );
     }
-    if (attempt < retries && (r.status === 502 || r.status === 503 || r.status === 429)) {
-      wlog(`API ${r.status}, retrying in ${attempt + 1}s...`);
-      await new Promise(resolve => setTimeout(resolve, (attempt + 1) * 1000));
+    // 403 on Deeplake arrives as a CloudFlare/nginx HTML page when the shared
+    // IP hits a rate limit (codex exec bursts while the worker is running),
+    // and 401 shows up transiently when the upstream auth cache expires.
+    // Treat both as retryable with exponential backoff.
+    const retryable = r.status === 401 || r.status === 403 ||
+      r.status === 429 || r.status === 500 || r.status === 502 || r.status === 503;
+    if (attempt < retries && retryable) {
+      // Exponential backoff with jitter — Cloudflare/nginx 403s from IP
+      // rate limiting (codex exec bursts) can take 30-60 s to clear.
+      const base = Math.min(30_000, 2000 * Math.pow(2, attempt));
+      const delay = base + Math.floor(Math.random() * 1000);
+      wlog(`API ${r.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
+      await new Promise(resolve => setTimeout(resolve, delay));
       continue;
     }
     throw new Error(`API ${r.status}: ${(await r.text()).slice(0, 200)}`);

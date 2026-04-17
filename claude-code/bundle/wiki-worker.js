@@ -133,7 +133,7 @@ function wlog(msg) {
 function esc2(s) {
   return s.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
-async function query(sql, retries = 2) {
+async function query(sql, retries = 4) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     const r = await fetch(`${cfg.apiUrl}/workspaces/${cfg.workspaceId}/tables/query`, {
       method: "POST",
@@ -150,9 +150,12 @@ async function query(sql, retries = 2) {
         return [];
       return j.rows.map((row) => Object.fromEntries(j.columns.map((col, i) => [col, row[i]])));
     }
-    if (attempt < retries && (r.status === 502 || r.status === 503 || r.status === 429)) {
-      wlog(`API ${r.status}, retrying in ${attempt + 1}s...`);
-      await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 1e3));
+    const retryable = r.status === 401 || r.status === 403 || r.status === 429 || r.status === 500 || r.status === 502 || r.status === 503;
+    if (attempt < retries && retryable) {
+      const base = Math.min(3e4, 2e3 * Math.pow(2, attempt));
+      const delay = base + Math.floor(Math.random() * 1e3);
+      wlog(`API ${r.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
       continue;
     }
     throw new Error(`API ${r.status}: ${(await r.text()).slice(0, 200)}`);
