@@ -371,8 +371,8 @@ function loadTriggerConfig() {
   const n = Number(process.env.HIVEMIND_SUMMARY_EVERY_N_MSGS ?? "");
   const h = Number(process.env.HIVEMIND_SUMMARY_EVERY_HOURS ?? "");
   return {
-    everyNMessages: Number.isInteger(n) && n > 0 ? n : 150,
-    everyHours: Number.isFinite(h) && h > 0 ? h : 4
+    everyNMessages: Number.isInteger(n) && n > 0 ? n : 30,
+    everyHours: Number.isFinite(h) && h > 0 ? h : 1
   };
 }
 function shouldTrigger(state, cfg, now = Date.now()) {
