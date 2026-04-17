@@ -11,22 +11,15 @@
  * Codex output: JSON with optional { decision: "block", reason: "..." } to continue
  */
 
-import { spawn, execSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-import { writeFileSync, readFileSync, mkdirSync, appendFileSync, existsSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { readFileSync, existsSync } from "node:fs";
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { log as _log } from "../../utils/debug.js";
+import { bundleDirFromImportMeta, spawnCodexWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 
 const log = (msg: string) => _log("codex-stop", msg);
-
-const HOME = homedir();
-const WIKI_LOG = join(HOME, ".codex", "hooks", "deeplake-wiki.log");
-const __bundleDir = dirname(fileURLToPath(import.meta.url));
 
 interface CodexStopInput {
   session_id: string;
@@ -35,71 +28,6 @@ interface CodexStopInput {
   hook_event_name: string;
   model: string;
 }
-
-function wikiLog(msg: string): void {
-  try {
-    mkdirSync(join(HOME, ".codex", "hooks"), { recursive: true });
-    appendFileSync(WIKI_LOG, `[${new Date().toISOString().replace("T", " ").slice(0, 19)}] ${msg}\n`);
-  } catch { /* ignore */ }
-}
-
-function findSummaryBin(): string {
-  try {
-    return execSync("which codex 2>/dev/null", { encoding: "utf-8" }).trim();
-  } catch {
-    return "codex";
-  }
-}
-
-const WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge — entities, decisions, relationships, and facts — into a structured, searchable wiki entry.
-
-SESSION JSONL path: __JSONL__
-SUMMARY FILE to write: __SUMMARY__
-SESSION ID: __SESSION_ID__
-PROJECT: __PROJECT__
-PREVIOUS JSONL OFFSET (lines already processed): __PREV_OFFSET__
-CURRENT JSONL LINES: __JSONL_LINES__
-
-Steps:
-1. Read the session JSONL at the path above.
-   - If PREVIOUS JSONL OFFSET > 0, this is a resumed session. Read the existing summary file first,
-     then focus on lines AFTER the offset for new content. Merge new facts into the existing summary.
-   - If offset is 0, generate from scratch.
-
-2. Write the summary file at the path above with this EXACT format:
-
-# Session __SESSION_ID__
-- **Source**: __JSONL_SERVER_PATH__
-- **Started**: <extract from JSONL>
-- **Ended**: <now>
-- **Project**: __PROJECT__
-- **JSONL offset**: __JSONL_LINES__
-
-## What Happened
-<2-3 dense sentences. What was the goal, what was accomplished, what's left.>
-
-## People
-<For each person mentioned: name, role, what they did/said. Format: **Name** — role — action>
-
-## Entities
-<Every named thing: repos, branches, files, APIs, tools, services, tables, features, bugs.
-Format: **entity** (type) — what was done with it, its current state>
-
-## Decisions & Reasoning
-<Every decision made and WHY.>
-
-## Key Facts
-<Bullet list of atomic facts that could answer future questions.>
-
-## Files Modified
-<bullet list: path (new/modified/deleted) — what changed>
-
-## Open Questions / TODO
-<Anything unresolved, blocked, or explicitly deferred>
-
-IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact.
-PRIVACY: Never include absolute filesystem paths in the summary.
-LENGTH LIMIT: Keep the total summary under 4000 characters.`;
 
 const CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
 
@@ -189,45 +117,16 @@ async function main(): Promise<void> {
     }
   }
 
-  // 2. Spawn wiki worker (session summary generation) — skip when capture disabled
+  // 2. Spawn wiki worker — skip when capture disabled
   if (!CAPTURE) return;
-  const cwd = input.cwd ?? "";
-  const memoryTable = config.tableName;
-  const sessionsTable = config.sessionsTableName;
-  const agentBin = findSummaryBin();
-  const projectName = cwd.split("/").pop() || "unknown";
-
-  const tmpDir = join(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
-  mkdirSync(tmpDir, { recursive: true });
-
-  const configFile = join(tmpDir, "config.json");
-  writeFileSync(configFile, JSON.stringify({
-    apiUrl: config.apiUrl,
-    token: config.token,
-    orgId: config.orgId,
-    workspaceId: config.workspaceId,
-    memoryTable,
-    sessionsTable,
+  wikiLog(`Stop: triggering summary for ${sessionId}`);
+  spawnCodexWikiWorker({
+    config,
     sessionId,
-    userName: config.userName,
-    project: projectName,
-    tmpDir,
-    codexBin: agentBin,
-    wikiLog: WIKI_LOG,
-    hooksDir: join(HOME, ".codex", "hooks"),
-    promptTemplate: WIKI_PROMPT_TEMPLATE,
-  }));
-
-  wikiLog(`Stop: spawning summary worker for ${sessionId}`);
-
-  // Reuse the same wiki-worker.js — it's platform-agnostic
-  const workerPath = join(__bundleDir, "wiki-worker.js");
-  spawn("nohup", ["node", workerPath, configFile], {
-    detached: true,
-    stdio: ["ignore", "ignore", "ignore"],
-  }).unref();
-
-  wikiLog(`Stop: spawned summary worker for ${sessionId}`);
+    cwd: input.cwd ?? "",
+    bundleDir: bundleDirFromImportMeta(import.meta.url),
+    reason: "Stop",
+  });
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });

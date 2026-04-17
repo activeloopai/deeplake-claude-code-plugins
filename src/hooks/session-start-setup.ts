@@ -14,7 +14,6 @@ import { homedir } from "node:os";
 import { loadCredentials, saveCredentials } from "../commands/auth.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr } from "../utils/sql.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log, utcTimestamp } from "../utils/debug.js";
 const log = (msg: string) => _log("session-setup", msg);
@@ -72,40 +71,6 @@ function isNewer(latest: string, current: string): boolean {
   return la > ca || (la === ca && lb > cb) || (la === ca && lb === cb && lc > cc);
 }
 
-/** Create a placeholder summary via direct SQL INSERT. */
-async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
-  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
-
-  const existing = await api.query(
-    `SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`
-  );
-  if (existing.length > 0) {
-    wikiLog(`SessionSetup: summary exists for ${sessionId} (resumed)`);
-    return;
-  }
-
-  const now = new Date().toISOString();
-  const projectName = cwd.split("/").pop() ?? "unknown";
-  const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
-  const content = [
-    `# Session ${sessionId}`,
-    `- **Source**: ${sessionSource}`,
-    `- **Started**: ${now}`,
-    `- **Project**: ${projectName}`,
-    `- **Status**: in-progress`,
-    "",
-  ].join("\n");
-  const filename = `${sessionId}.md`;
-
-  await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${now}', '${now}')`
-  );
-
-  wikiLog(`SessionSetup: created placeholder for ${sessionId} (${cwd})`);
-}
-
 interface SessionStartInput {
   session_id: string;
   cwd?: string;
@@ -128,10 +93,6 @@ async function main(): Promise<void> {
     } catch { /* non-fatal */ }
   }
 
-  // Table setup + sync (fire-and-forget, async hook)
-  // Always sync tables so queries return fresh data.
-  // Only skip the placeholder when capture is disabled (e.g. benchmark runs).
-  const captureEnabled = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
   if (input.session_id) {
     try {
       const config = loadConfig();
@@ -139,9 +100,6 @@ async function main(): Promise<void> {
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
         await api.ensureTable();
         await api.ensureSessionsTable(config.sessionsTableName);
-        if (captureEnabled) {
-          await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
-        }
         log("setup complete");
       }
     } catch (e: any) {

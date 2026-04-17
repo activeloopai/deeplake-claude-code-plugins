@@ -9,10 +9,17 @@
 
 import { homedir } from "node:os";
 import { readStdin } from "../utils/stdin.js";
-import { loadConfig } from "../config.js";
+import { loadConfig, type Config } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { sqlStr } from "../utils/sql.js";
 import { log as _log } from "../utils/debug.js";
+import {
+  bumpTotalCount,
+  loadTriggerConfig,
+  shouldTrigger,
+  tryAcquireLock,
+} from "./summary-state.js";
+import { bundleDirFromImportMeta, spawnWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 const log = (msg: string) => _log("capture", msg);
 
 interface HookInput {
@@ -137,6 +144,35 @@ async function main(): Promise<void> {
   }
 
   log("capture ok → cloud");
+
+  maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
+}
+
+/** Increment the event counter and, if the threshold is crossed, spawn a background wiki worker. */
+function maybeTriggerPeriodicSummary(sessionId: string, cwd: string, config: Config): void {
+  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
+
+  try {
+    const state = bumpTotalCount(sessionId);
+    const cfg = loadTriggerConfig();
+    if (!shouldTrigger(state, cfg)) return;
+
+    if (!tryAcquireLock(sessionId)) {
+      log(`periodic trigger suppressed (lock held) session=${sessionId}`);
+      return;
+    }
+
+    wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
+    spawnWikiWorker({
+      config,
+      sessionId,
+      cwd,
+      bundleDir: bundleDirFromImportMeta(import.meta.url),
+      reason: "Periodic",
+    });
+  } catch (e: any) {
+    log(`periodic trigger error: ${e.message}`);
+  }
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
