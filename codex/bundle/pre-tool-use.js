@@ -426,7 +426,14 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
   const hasRegexMeta = !fixedString && /[.*+?^${}()|[\]\\]/.test(pattern);
   let rows = [];
   if (!hasRegexMeta) {
-    const contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
+    const words = pattern.split(/\s+/).filter((w) => w.length > 2);
+    let contentFilter;
+    if (words.length > 1) {
+      const wordFilters = words.slice(0, 4).map((w) => `summary ${likeOp} '%${sqlLike(w)}%'`);
+      contentFilter = ` AND (${wordFilters.join(" OR ")})`;
+    } else {
+      contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
+    }
     try {
       rows = await api.query(`SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter}${contentFilter} LIMIT 100`);
     } catch {
@@ -439,6 +446,29 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
       rows = [];
     }
   }
+  const output = [];
+  if (!hasRegexMeta) {
+    const memoryTable = table.endsWith("_sessions") ? table.replace(/_sessions$/, "_memory") : sessionsTable !== table ? sessionsTable : null;
+    if (memoryTable && memoryTable !== table) {
+      try {
+        const words2 = pattern.split(/\s+/).filter((w) => w.length > 2);
+        const contentFilter = words2.length > 1 ? ` AND (${words2.slice(0, 4).map((w) => `summary ${likeOp} '%${sqlLike(w)}%'`).join(" OR ")})` : ` AND summary ${likeOp} '%${escapedLike}%'`;
+        const summaryRows = await api.query(`SELECT path, summary AS content FROM "${memoryTable}" WHERE 1=1${contentFilter} LIMIT 20`);
+        if (summaryRows.length > 0) {
+          for (const sr of summaryRows) {
+            const sp = sr["path"];
+            const sc = sr["content"];
+            if (sc) {
+              output.push(`=== ${sp} ===`);
+              output.push(sc);
+              output.push("");
+            }
+          }
+        }
+      } catch {
+      }
+    }
+  }
   let reStr = fixedString ? pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : pattern;
   if (wordMatch)
     reStr = `\\b${reStr}\\b`;
@@ -448,13 +478,14 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
   } catch {
     re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
   }
-  const output = [];
   const multi = rows.length > 1;
   for (const row of rows) {
     const p = row["path"];
     const text = row["content"];
     if (!text)
       continue;
+    const dateMatch = text.match(/"date_time"\s*:\s*"([^"]+)"/);
+    let sessionDate = dateMatch ? `[${dateMatch[1]}] ` : "";
     const lines = text.split("\n");
     const matched = [];
     for (let i = 0; i < lines.length; i++) {
@@ -465,7 +496,9 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
         }
         const prefix = multi ? `${p}:` : "";
         const ln = lineNumber ? `${i + 1}:` : "";
-        matched.push(`${prefix}${ln}${lines[i]}`);
+        matched.push(`${prefix}${sessionDate}${ln}${lines[i]}`);
+        if (sessionDate)
+          sessionDate = "";
       }
     }
     if (!filesOnly) {

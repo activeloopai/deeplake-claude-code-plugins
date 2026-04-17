@@ -425,7 +425,14 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
   const hasRegexMeta = !fixedString && /[.*+?^${}()|[\]\\]/.test(pattern);
   let rows = [];
   if (!hasRegexMeta) {
-    const contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
+    const words = pattern.split(/\s+/).filter((w) => w.length > 2);
+    let contentFilter;
+    if (words.length > 1) {
+      const wordFilters = words.slice(0, 4).map((w) => `summary ${likeOp} '%${sqlLike(w)}%'`);
+      contentFilter = ` AND (${wordFilters.join(" OR ")})`;
+    } else {
+      contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
+    }
     try {
       rows = await api.query(`SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter}${contentFilter} LIMIT 100`);
     } catch {
@@ -438,6 +445,29 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
       rows = [];
     }
   }
+  const output = [];
+  if (!hasRegexMeta) {
+    const memoryTable = table.endsWith("_sessions") ? table.replace(/_sessions$/, "_memory") : sessionsTable !== table ? sessionsTable : null;
+    if (memoryTable && memoryTable !== table) {
+      try {
+        const words2 = pattern.split(/\s+/).filter((w) => w.length > 2);
+        const contentFilter = words2.length > 1 ? ` AND (${words2.slice(0, 4).map((w) => `summary ${likeOp} '%${sqlLike(w)}%'`).join(" OR ")})` : ` AND summary ${likeOp} '%${escapedLike}%'`;
+        const summaryRows = await api.query(`SELECT path, summary AS content FROM "${memoryTable}" WHERE 1=1${contentFilter} LIMIT 20`);
+        if (summaryRows.length > 0) {
+          for (const sr of summaryRows) {
+            const sp = sr["path"];
+            const sc = sr["content"];
+            if (sc) {
+              output.push(`=== ${sp} ===`);
+              output.push(sc);
+              output.push("");
+            }
+          }
+        }
+      } catch {
+      }
+    }
+  }
   let reStr = fixedString ? pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : pattern;
   if (wordMatch)
     reStr = `\\b${reStr}\\b`;
@@ -447,13 +477,14 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
   } catch {
     re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : "");
   }
-  const output = [];
   const multi = rows.length > 1;
   for (const row of rows) {
     const p = row["path"];
     const text = row["content"];
     if (!text)
       continue;
+    const dateMatch = text.match(/"date_time"\s*:\s*"([^"]+)"/);
+    let sessionDate = dateMatch ? `[${dateMatch[1]}] ` : "";
     const lines = text.split("\n");
     const matched = [];
     for (let i = 0; i < lines.length; i++) {
@@ -464,7 +495,9 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
         }
         const prefix = multi ? `${p}:` : "";
         const ln = lineNumber ? `${i + 1}:` : "";
-        matched.push(`${prefix}${ln}${lines[i]}`);
+        matched.push(`${prefix}${sessionDate}${ln}${lines[i]}`);
+        if (sessionDate)
+          sessionDate = "";
       }
     }
     if (!filesOnly) {
@@ -690,6 +723,22 @@ async function main() {
   const toolPath = input.tool_input.file_path ?? input.tool_input.path ?? "";
   if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
     const guidance = "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. This virtual filesystem only supports bash builtins: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. python, python3, node, and curl are NOT available. You MUST rewrite your command using only the bash tools listed above and try again. For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
+    const memPath = (cmd.match(/~\/\.deeplake\/memory\/\S+/) || toolPath.match(/~\/\.deeplake\/memory\/\S+/) || [""])[0];
+    const cleanPath = memPath ? rewritePaths(memPath) : "";
+    if (cleanPath && !cleanPath.endsWith("/")) {
+      log3(`unsupported command on file, converting to read: ${cleanPath}`);
+      console.log(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "allow",
+          updatedInput: {
+            command: `cat '${cleanPath.replace(/'/g, "'\\\\''")}'`,
+            description: "[DeepLake] converted unsupported command to file read"
+          }
+        }
+      }));
+      return;
+    }
     log3(`unsupported command, returning guidance: ${cmd}`);
     console.log(JSON.stringify({
       hookSpecificOutput: {
@@ -787,14 +836,21 @@ async function main() {
             if (rows.length > 0 && rows[0]["summary"]) {
               content = rows[0]["summary"];
             } else if (virtualPath === "/index.md") {
-              const idxRows = await api.query(`SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`);
-              const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
+              const memTable = table.endsWith("_sessions") ? table.replace(/_sessions$/, "_memory") : table;
+              let idxRows = [];
+              try {
+                idxRows = await api.query(`SELECT path, description, creation_date FROM "${memTable}" ORDER BY path LIMIT 500`);
+              } catch {
+              }
+              if (idxRows.length === 0) {
+                idxRows = await api.query(`SELECT path, description, creation_date FROM "${table}" ORDER BY path LIMIT 500`);
+              }
+              const lines = ["# Memory Index", "", `${idxRows.length} entries:`, ""];
               for (const r of idxRows) {
                 const p = r["path"];
-                const proj = r["project"] || "";
-                const desc = (r["description"] || "").slice(0, 120);
+                const desc = (r["description"] || "").slice(0, 100);
                 const date = (r["creation_date"] || "").slice(0, 10);
-                lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
+                lines.push(`- [${p}](${p}) ${date} ${desc}`);
               }
               content = lines.join("\n");
             }

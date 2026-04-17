@@ -208,8 +208,7 @@ export async function handleGrepDirect(
         const prefix = multi ? `${p}:` : "";
         const ln = lineNumber ? `${i + 1}:` : "";
         matched.push(`${prefix}${sessionDate}${ln}${lines[i]}`);
-        // @ts-ignore - clear after first use
-        sessionDate && (sessionDate = "");
+        if (sessionDate) sessionDate = "";
       }
     }
 
