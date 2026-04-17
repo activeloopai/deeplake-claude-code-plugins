@@ -77,6 +77,14 @@ jobs:
         uses: davelosert/vitest-coverage-report-action@v2
         with:
           json-summary-path: coverage/coverage-summary.json
+          # json is required to render per-file / per-line coverage in the
+          # "Changes" section of the PR comment.
+          json-final-path: coverage/coverage-final.json
+          # Scope the comment to files actually touched in this PR. The
+          # action also shows an overall project table above that; its
+          # 80% target there is a UI default and does NOT reflect our
+          # enforcement model (we enforce per-file via vitest.config.ts).
+          file-coverage-mode: changes
           name: coverage
 
       - name: Build bundles

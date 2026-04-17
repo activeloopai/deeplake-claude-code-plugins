@@ -18,7 +18,11 @@ export default defineConfig({
     environment: "node",
     coverage: {
       provider: "v8",
-      reporter: ["text", "text-summary", "json-summary", "html"],
+      // `json` is needed by davelosert/vitest-coverage-report-action@v2 to
+      // render per-file / per-line coverage in its PR comment (alongside the
+      // aggregated json-summary). Without it the action emits a warning
+      // about a missing coverage-final.json and falls back to the summary.
+      reporter: ["text", "text-summary", "json", "json-summary", "html"],
       reportsDirectory: "coverage",
       include: ["src/**/*.ts"],
       exclude: [
