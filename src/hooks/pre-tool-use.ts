@@ -187,25 +187,33 @@ async function main(): Promise<void> {
       "python, python3, node, and curl are NOT available. " +
       "You MUST rewrite your command using only the bash tools listed above and try again. " +
       "For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
-    // Try to extract a useful file path or search term from the command
-    const memPath = (cmd.match(/~\/\.deeplake\/memory\/\S+/) || toolPath.match(/~\/\.deeplake\/memory\/\S+/) || [""])[0];
-    const cleanPath = memPath ? rewritePaths(memPath) : "";
-    
-    if (cleanPath && !cleanPath.endsWith("/")) {
-      // Unsupported command on a specific file — do a read instead
-      log(`unsupported command on file, converting to read: ${cleanPath}`);
-      console.log(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: "allow",
-          updatedInput: {
-            command: `cat '${cleanPath.replace(/'/g, "'\\\\''")}'`,
-            description: "[DeepLake] converted unsupported command to file read",
+    // Only auto-convert when the user is clearly trying to READ a memory
+    // file with an unsupported interpreter (python, node, ruby, perl).
+    // curl/wget and anything with shell metacharacters fall through to the
+    // RETRY guidance below — converting them would hide actual intent.
+    const isReadLike = /^(?:python3?|node|deno|bun|ruby|perl)\b/.test(cmd.trim());
+    const hasShellMeta = /[$`;|&<>()\\]/.test(cmd);
+    if (isReadLike && !hasShellMeta) {
+      const pathMatch = cmd.match(/~\/\.deeplake\/memory\/[\w./_-]+/)
+        || toolPath.match(/~\/\.deeplake\/memory\/[\w./_-]+/);
+      const memPath = pathMatch ? pathMatch[0] : "";
+      const cleanPath = memPath ? rewritePaths(memPath) : "";
+      if (cleanPath && !cleanPath.endsWith("/")) {
+        log(`unsupported command on file, converting to read: ${cleanPath}`);
+        console.log(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "allow",
+            updatedInput: {
+              command: `cat '${cleanPath.replace(/'/g, "'\\''")}'`,
+              description: "[DeepLake] converted unsupported command to file read",
+            },
           },
-        },
-      }));
-      return;
+        }));
+        return;
+      }
     }
+
 
     log(`unsupported command, returning guidance: ${cmd}`);
     console.log(JSON.stringify({

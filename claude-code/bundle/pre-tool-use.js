@@ -723,21 +723,26 @@ async function main() {
   const toolPath = input.tool_input.file_path ?? input.tool_input.path ?? "";
   if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
     const guidance = "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. This virtual filesystem only supports bash builtins: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. python, python3, node, and curl are NOT available. You MUST rewrite your command using only the bash tools listed above and try again. For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
-    const memPath = (cmd.match(/~\/\.deeplake\/memory\/\S+/) || toolPath.match(/~\/\.deeplake\/memory\/\S+/) || [""])[0];
-    const cleanPath = memPath ? rewritePaths(memPath) : "";
-    if (cleanPath && !cleanPath.endsWith("/")) {
-      log3(`unsupported command on file, converting to read: ${cleanPath}`);
-      console.log(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: "allow",
-          updatedInput: {
-            command: `cat '${cleanPath.replace(/'/g, "'\\\\''")}'`,
-            description: "[DeepLake] converted unsupported command to file read"
+    const isReadLike = /^(?:python3?|node|deno|bun|ruby|perl)\b/.test(cmd.trim());
+    const hasShellMeta = /[$`;|&<>()\\]/.test(cmd);
+    if (isReadLike && !hasShellMeta) {
+      const pathMatch = cmd.match(/~\/\.deeplake\/memory\/[\w./_-]+/) || toolPath.match(/~\/\.deeplake\/memory\/[\w./_-]+/);
+      const memPath = pathMatch ? pathMatch[0] : "";
+      const cleanPath = memPath ? rewritePaths(memPath) : "";
+      if (cleanPath && !cleanPath.endsWith("/")) {
+        log3(`unsupported command on file, converting to read: ${cleanPath}`);
+        console.log(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "allow",
+            updatedInput: {
+              command: `cat '${cleanPath.replace(/'/g, "'\\''")}'`,
+              description: "[DeepLake] converted unsupported command to file read"
+            }
           }
-        }
-      }));
-      return;
+        }));
+        return;
+      }
     }
     log3(`unsupported command, returning guidance: ${cmd}`);
     console.log(JSON.stringify({
