@@ -72,22 +72,90 @@ jobs:
             " >> $GITHUB_STEP_SUMMARY
           fi
 
-      - name: Post coverage comment on PR
+      - name: Build PR coverage comment
         if: github.event_name == 'pull_request' && always()
-        uses: davelosert/vitest-coverage-report-action@v2
+        id: pr-coverage
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ ! -f coverage/coverage-summary.json ]; then
+            echo "no coverage summary — skipping PR comment"
+            echo "body-file=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch origin "$BASE_REF" --depth=1 2>/dev/null || true
+          node <<'NODE' > /tmp/pr-coverage.md
+          const { execSync } = require('node:child_process');
+          const fs = require('node:fs');
+          const summary = JSON.parse(fs.readFileSync('coverage/coverage-summary.json', 'utf8'));
+          const baseRef = process.env.BASE_REF || 'main';
+          const diff = execSync(`git diff --name-only origin/${baseRef}...HEAD`, { encoding: 'utf8' });
+          const changed = diff.split('\n')
+            .filter(f => f.startsWith('src/') && f.endsWith('.ts') && !f.endsWith('.test.ts') && !f.endsWith('.d.ts'))
+            .sort();
+
+          // Aggregate totals across ONLY the PR-touched files. Same shape
+          // as the davelosert "Coverage Report" box, but scoped to this PR
+          // instead of the whole src/ tree.
+          const agg = {
+            statements: { total: 0, covered: 0 },
+            branches:   { total: 0, covered: 0 },
+            functions:  { total: 0, covered: 0 },
+            lines:      { total: 0, covered: 0 },
+          };
+          const perFile = [];
+          for (const f of changed) {
+            const key = Object.keys(summary).find(k => k.endsWith(f));
+            if (!key) { perFile.push({ f, c: null }); continue; }
+            const c = summary[key];
+            for (const k of Object.keys(agg)) {
+              agg[k].total   += c[k].total;
+              agg[k].covered += c[k].covered;
+            }
+            perFile.push({ f, c });
+          }
+
+          const THRESHOLD = 80;
+          const pct = (m) => m.total === 0 ? null : (m.covered / m.total) * 100;
+          const icon = (p) => p == null ? '⚪' : (p >= THRESHOLD ? '🟢' : '🔴');
+          const fmtPct = (p) => p == null ? '—' : p.toFixed(2) + '%';
+          const fmtCell = (c, k) => c ? ((c[k].pct >= THRESHOLD ? '🟢 ' : '🔴 ') + c[k].pct.toFixed(1) + '%') : '—';
+
+          const out = [];
+          out.push('## Coverage Report');
+          out.push('');
+          if (changed.length === 0) {
+            out.push('_No `src/*.ts` files changed in this PR._');
+          } else {
+            out.push('Scope: files changed in this PR. Enforced threshold: **' + THRESHOLD + '%** per metric (per file via `vitest.config.ts`).');
+            out.push('');
+            out.push('| Status | Category | Percentage | Covered / Total |');
+            out.push('|--------|----------|-----------:|----------------:|');
+            for (const [label, key] of [["Lines","lines"],["Statements","statements"],["Functions","functions"],["Branches","branches"]]) {
+              const p = pct(agg[key]);
+              out.push(`| ${icon(p)} | ${label} | ${fmtPct(p)} (🎯 ${THRESHOLD}%) | ${agg[key].covered} / ${agg[key].total} |`);
+            }
+            out.push('');
+            out.push('### File Coverage');
+            out.push('');
+            out.push('| File | Stmts | Branches | Functions | Lines |');
+            out.push('|------|------:|---------:|----------:|------:|');
+            for (const { f, c } of perFile) {
+              out.push(`| \`${f}\` | ${fmtCell(c, 'statements')} | ${fmtCell(c, 'branches')} | ${fmtCell(c, 'functions')} | ${fmtCell(c, 'lines')} |`);
+            }
+          }
+          out.push('');
+          out.push(`<sub>Generated for commit ${(process.env.GITHUB_SHA || '?').slice(0,7)}.</sub>`);
+          console.log(out.join('\n'));
+          NODE
+          echo "body-file=/tmp/pr-coverage.md" >> "$GITHUB_OUTPUT"
+
+      - name: Post coverage comment on PR
+        if: github.event_name == 'pull_request' && always() && steps.pr-coverage.outputs.body-file != ''
+        uses: marocchino/sticky-pull-request-comment@v2
         with:
-          json-summary-path: coverage/coverage-summary.json
-          # json is required to render per-file / per-line coverage in the
-          # "Changes" section of the PR comment.
-          json-final-path: coverage/coverage-final.json
-          # Scope the comment to files actually touched in this PR. The
-          # action also shows an overall project table above that; its
-          # 80% target there is a UI default and does NOT reflect our
-          # enforcement model (we enforce per-file via vitest.config.ts).
-          file-coverage-mode: changes
-          # `name` is omitted on purpose: passing `name: coverage` makes the
-          # comment title "Coverage Report for coverage" (ugly duplication).
-          # With no name, the comment title is just "Coverage Report".
+          header: pr-coverage-report
+          path: /tmp/pr-coverage.md
 
       - name: Build bundles
         run: npm run build
