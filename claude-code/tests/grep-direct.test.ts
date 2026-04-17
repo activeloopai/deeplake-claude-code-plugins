@@ -1,5 +1,100 @@
-import { describe, it, expect } from "vitest";
-import { parseBashGrep, type GrepParams } from "../../src/hooks/grep-direct.js";
+import { describe, it, expect, vi } from "vitest";
+import { parseBashGrep, handleGrepDirect, type GrepParams } from "../../src/hooks/grep-direct.js";
+
+describe("handleGrepDirect", () => {
+  const baseParams: GrepParams = {
+    pattern: "foo", targetPath: "/",
+    ignoreCase: false, wordMatch: false, filesOnly: false, countOnly: false,
+    lineNumber: false, invertMatch: false, fixedString: false,
+  };
+
+  function mockApi(mem: unknown[], sess: unknown[]) {
+    return {
+      query: vi.fn()
+        .mockImplementationOnce(async () => mem)
+        .mockImplementationOnce(async () => sess),
+    } as any;
+  }
+
+  it("returns null when pattern is empty", async () => {
+    const api = mockApi([], []);
+    const r = await handleGrepDirect(api, "memory", "sessions", { ...baseParams, pattern: "" });
+    expect(r).toBeNull();
+    expect(api.query).not.toHaveBeenCalled();
+  });
+
+  it("delegates to grepBothTables and joins the match lines", async () => {
+    const api = mockApi(
+      [{ path: "/summaries/a.md", content: "foo line here\nbar line" }],
+      [],
+    );
+    const r = await handleGrepDirect(api, "memory", "sessions", baseParams);
+    expect(r).toBe("foo line here");
+  });
+
+  it("emits '(no matches)' when both tables return nothing", async () => {
+    const api = mockApi([], []);
+    const r = await handleGrepDirect(api, "memory", "sessions", baseParams);
+    expect(r).toBe("(no matches)");
+  });
+
+  it("merges results from both memory and sessions", async () => {
+    const api = mockApi(
+      [{ path: "/summaries/a.md", content: "foo in summary" }],
+      [{ path: "/sessions/b.jsonl", content: "foo in session" }],
+    );
+    const r = await handleGrepDirect(api, "memory", "sessions", baseParams);
+    expect(r).toContain("/summaries/a.md:foo in summary");
+    expect(r).toContain("/sessions/b.jsonl:foo in session");
+  });
+
+  it("applies ignoreCase flag at SQL level (ILIKE)", async () => {
+    const api = mockApi([{ path: "/a", content: "Foo" }], []);
+    await handleGrepDirect(api, "memory", "sessions", { ...baseParams, ignoreCase: true });
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain("ILIKE");
+  });
+});
+
+describe("parseBashGrep: long options", () => {
+  // Exercises every --long-option handler so the arrow-fn table inside
+  // parseBashGrep is fully covered.
+
+  it("--ignore-case", () => {
+    const r = parseBashGrep("grep --ignore-case foo /x");
+    expect(r!.ignoreCase).toBe(true);
+  });
+  it("--word-regexp", () => {
+    const r = parseBashGrep("grep --word-regexp foo /x");
+    expect(r!.wordMatch).toBe(true);
+  });
+  it("--files-with-matches", () => {
+    const r = parseBashGrep("grep --files-with-matches foo /x");
+    expect(r!.filesOnly).toBe(true);
+  });
+  it("--count", () => {
+    const r = parseBashGrep("grep --count foo /x");
+    expect(r!.countOnly).toBe(true);
+  });
+  it("--line-number", () => {
+    const r = parseBashGrep("grep --line-number foo /x");
+    expect(r!.lineNumber).toBe(true);
+  });
+  it("--invert-match", () => {
+    const r = parseBashGrep("grep --invert-match foo /x");
+    expect(r!.invertMatch).toBe(true);
+  });
+  it("--fixed-strings", () => {
+    const r = parseBashGrep("grep --fixed-strings foo /x");
+    expect(r!.fixedString).toBe(true);
+  });
+  it("unknown --long option is a no-op (does not crash)", () => {
+    const r = parseBashGrep("grep --unknown-flag foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+  });
+});
+
 
 describe("parseBashGrep", () => {
   // ── Basic parsing ──
