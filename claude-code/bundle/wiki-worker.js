@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/wiki-worker.js
-import { readFileSync, writeFileSync, existsSync, appendFileSync as appendFileSync2, mkdirSync, rmSync } from "node:fs";
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, existsSync as existsSync2, appendFileSync as appendFileSync2, mkdirSync as mkdirSync2, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join as join2 } from "node:path";
+import { join as join3 } from "node:path";
 
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
@@ -15,14 +15,49 @@ function utcTimestamp(d = /* @__PURE__ */ new Date()) {
   return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
 }
 
+// dist/src/hooks/summary-state.js
+import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync, unlinkSync, openSync, closeSync } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { join as join2 } from "node:path";
+var STATE_DIR = join2(homedir2(), ".claude", "hooks", "summary-state");
+function statePath(sessionId) {
+  return join2(STATE_DIR, `${sessionId}.json`);
+}
+function lockPath(sessionId) {
+  return join2(STATE_DIR, `${sessionId}.lock`);
+}
+function readState(sessionId) {
+  const p = statePath(sessionId);
+  if (!existsSync(p))
+    return null;
+  try {
+    return JSON.parse(readFileSync(p, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+function writeState(sessionId, state) {
+  mkdirSync(STATE_DIR, { recursive: true });
+  const p = statePath(sessionId);
+  const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, JSON.stringify(state));
+  renameSync(tmp, p);
+}
+function releaseLock(sessionId) {
+  try {
+    unlinkSync(lockPath(sessionId));
+  } catch {
+  }
+}
+
 // dist/src/hooks/wiki-worker.js
-var cfg = JSON.parse(readFileSync(process.argv[2], "utf-8"));
+var cfg = JSON.parse(readFileSync2(process.argv[2], "utf-8"));
 var tmpDir = cfg.tmpDir;
-var tmpJsonl = join2(tmpDir, "session.jsonl");
-var tmpSummary = join2(tmpDir, "summary.md");
+var tmpJsonl = join3(tmpDir, "session.jsonl");
+var tmpSummary = join3(tmpDir, "summary.md");
 function wlog(msg) {
   try {
-    mkdirSync(cfg.hooksDir, { recursive: true });
+    mkdirSync2(cfg.hooksDir, { recursive: true });
     appendFileSync2(cfg.wikiLog, `[${utcTimestamp()}] wiki-worker(${cfg.sessionId}): ${msg}
 `);
   } catch {
@@ -75,7 +110,7 @@ async function main() {
     const jsonlLines = rows.length;
     const pathRows = await query(`SELECT DISTINCT path FROM "${cfg.sessionsTable}" WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`);
     const jsonlServerPath = pathRows.length > 0 ? pathRows[0].path : `/sessions/unknown/${cfg.sessionId}.jsonl`;
-    writeFileSync(tmpJsonl, jsonlContent);
+    writeFileSync2(tmpJsonl, jsonlContent);
     wlog(`found ${jsonlLines} events at ${jsonlServerPath}`);
     let prevOffset = 0;
     try {
@@ -85,7 +120,7 @@ async function main() {
         const match = existing.match(/\*\*JSONL offset\*\*:\s*(\d+)/);
         if (match)
           prevOffset = parseInt(match[1], 10);
-        writeFileSync(tmpSummary, existing);
+        writeFileSync2(tmpSummary, existing);
         wlog(`existing summary found, offset=${prevOffset}`);
       }
     } catch {
@@ -110,8 +145,8 @@ async function main() {
     } catch (e) {
       wlog(`claude -p failed: ${e.status ?? e.message}`);
     }
-    if (existsSync(tmpSummary)) {
-      const text = readFileSync(tmpSummary, "utf-8");
+    if (existsSync2(tmpSummary)) {
+      const text = readFileSync2(tmpSummary, "utf-8");
       if (text.trim()) {
         const fname = `${cfg.sessionId}.md`;
         const vpath = `/summaries/${cfg.userName}/${fname}`;
@@ -124,6 +159,17 @@ async function main() {
           await query(`INSERT INTO "${cfg.memoryTable}" (id, path, filename, summary, author, mime_type, size_bytes, project, agent, creation_date, last_update_date) VALUES ('${id}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', '${esc(cfg.userName)}', 'text/markdown', ${Buffer.byteLength(text)}, '${esc(cfg.project)}', 'claude_code', '${ts}', '${ts}')`);
         }
         wlog(`uploaded ${vpath}`);
+        try {
+          const prev = readState(cfg.sessionId);
+          writeState(cfg.sessionId, {
+            lastSummaryAt: Date.now(),
+            lastSummaryCount: jsonlLines,
+            totalCount: Math.max(prev?.totalCount ?? 0, jsonlLines)
+          });
+          wlog(`sidecar updated: lastSummaryCount=${jsonlLines}`);
+        } catch (e) {
+          wlog(`sidecar update failed: ${e.message}`);
+        }
         try {
           const whatHappened = text.match(/## What Happened\n([\s\S]*?)(?=\n##|$)/);
           const desc = whatHappened ? whatHappened[1].trim().slice(0, 300) : "completed";
@@ -141,6 +187,10 @@ async function main() {
     wlog(`fatal: ${e.message}`);
   } finally {
     cleanup();
+    try {
+      releaseLock(cfg.sessionId);
+    } catch {
+    }
   }
 }
 main();
