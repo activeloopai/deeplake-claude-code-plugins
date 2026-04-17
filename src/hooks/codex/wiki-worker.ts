@@ -10,6 +10,7 @@
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { readState, writeState, releaseLock } from "../summary-state.js";
 
 interface WorkerConfig {
   apiUrl: string;
@@ -181,6 +182,18 @@ async function main(): Promise<void> {
         wlog(`uploaded ${vpath}`);
 
         try {
+          const prev = readState(cfg.sessionId);
+          writeState(cfg.sessionId, {
+            lastSummaryAt: Date.now(),
+            lastSummaryCount: jsonlLines,
+            totalCount: Math.max(prev?.totalCount ?? 0, jsonlLines),
+          });
+          wlog(`sidecar updated: lastSummaryCount=${jsonlLines}`);
+        } catch (e: any) {
+          wlog(`sidecar update failed: ${e.message}`);
+        }
+
+        try {
           const whatHappened = text.match(/## What Happened\n([\s\S]*?)(?=\n##|$)/);
           const desc = whatHappened ? whatHappened[1].trim().slice(0, 300) : "completed";
           await query(
@@ -201,6 +214,7 @@ async function main(): Promise<void> {
     wlog(`fatal: ${e.message}`);
   } finally {
     cleanup();
+    try { releaseLock(cfg.sessionId); } catch { /* ignore */ }
   }
 }
 
