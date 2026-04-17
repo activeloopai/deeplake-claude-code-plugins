@@ -16,10 +16,11 @@ function utcTimestamp(d = /* @__PURE__ */ new Date()) {
 }
 
 // dist/src/hooks/summary-state.js
-import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync, unlinkSync, openSync, closeSync } from "node:fs";
+import { readFileSync, writeFileSync, writeSync, mkdirSync, renameSync, existsSync, unlinkSync, openSync, closeSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join2 } from "node:path";
 var STATE_DIR = join2(homedir2(), ".claude", "hooks", "summary-state");
+var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
 function statePath(sessionId) {
   return join2(STATE_DIR, `${sessionId}.json`);
 }
@@ -42,6 +43,47 @@ function writeState(sessionId, state) {
   const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, JSON.stringify(state));
   renameSync(tmp, p);
+}
+function withRmwLock(sessionId, fn) {
+  mkdirSync(STATE_DIR, { recursive: true });
+  const rmwLock = statePath(sessionId) + ".rmw";
+  const deadline = Date.now() + 2e3;
+  let fd = null;
+  while (fd === null) {
+    try {
+      fd = openSync(rmwLock, "wx");
+    } catch (e) {
+      if (e.code !== "EEXIST")
+        throw e;
+      if (Date.now() > deadline) {
+        try {
+          unlinkSync(rmwLock);
+        } catch {
+        }
+        continue;
+      }
+      Atomics.wait(YIELD_BUF, 0, 0, 10);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    closeSync(fd);
+    try {
+      unlinkSync(rmwLock);
+    } catch {
+    }
+  }
+}
+function finalizeSummary(sessionId, jsonlLines) {
+  withRmwLock(sessionId, () => {
+    const prev = readState(sessionId);
+    writeState(sessionId, {
+      lastSummaryAt: Date.now(),
+      lastSummaryCount: jsonlLines,
+      totalCount: Math.max(prev?.totalCount ?? 0, jsonlLines)
+    });
+  });
 }
 function releaseLock(sessionId) {
   try {
@@ -160,12 +202,7 @@ async function main() {
         }
         wlog(`uploaded ${vpath}`);
         try {
-          const prev = readState(cfg.sessionId);
-          writeState(cfg.sessionId, {
-            lastSummaryAt: Date.now(),
-            lastSummaryCount: jsonlLines,
-            totalCount: Math.max(prev?.totalCount ?? 0, jsonlLines)
-          });
+          finalizeSummary(cfg.sessionId, jsonlLines);
           wlog(`sidecar updated: lastSummaryCount=${jsonlLines}`);
         } catch (e) {
           wlog(`sidecar update failed: ${e.message}`);

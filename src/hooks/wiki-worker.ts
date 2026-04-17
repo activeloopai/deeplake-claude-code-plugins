@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmS
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { utcTimestamp } from "../utils/debug.js";
-import { readState, writeState, releaseLock } from "./summary-state.js";
+import { finalizeSummary, releaseLock } from "./summary-state.js";
 
 interface WorkerConfig {
   apiUrl: string;
@@ -186,16 +186,8 @@ async function main(): Promise<void> {
         }
         wlog(`uploaded ${vpath}`);
 
-        // Persist sidecar state so capture.ts knows when the last summary happened.
-        // Preserve totalCount (which capture.ts keeps incrementing) and only advance
-        // lastSummaryAt / lastSummaryCount to the current row count.
         try {
-          const prev = readState(cfg.sessionId);
-          writeState(cfg.sessionId, {
-            lastSummaryAt: Date.now(),
-            lastSummaryCount: jsonlLines,
-            totalCount: Math.max(prev?.totalCount ?? 0, jsonlLines),
-          });
+          finalizeSummary(cfg.sessionId, jsonlLines);
           wlog(`sidecar updated: lastSummaryCount=${jsonlLines}`);
         } catch (e: any) {
           wlog(`sidecar update failed: ${e.message}`);

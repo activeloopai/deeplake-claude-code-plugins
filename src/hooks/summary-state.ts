@@ -4,15 +4,14 @@
  * File: ~/.claude/hooks/summary-state/<session_id>.json
  *   { lastSummaryAt: epoch_ms, lastSummaryCount: number, totalCount: number }
  *
- * - capture.ts increments `totalCount` on each event.
- * - wiki-worker.ts updates `lastSummaryAt` and `lastSummaryCount` on success.
- * - Never deleted (so --resume picks up where it left off).
- *
- * Concurrency: tempfile + rename for atomic writes. A rare worker/capture race
- * can drop a single increment — acceptable at threshold ~150.
+ * Never deleted (so --resume picks up where it left off).
+ * All mutations go through withRmwLock so concurrent processes don't lose updates.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync, unlinkSync, openSync, closeSync } from "node:fs";
+import {
+  readFileSync, writeFileSync, writeSync, mkdirSync, renameSync,
+  existsSync, unlinkSync, openSync, closeSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -23,6 +22,7 @@ export interface SummaryState {
 }
 
 const STATE_DIR = join(homedir(), ".claude", "hooks", "summary-state");
+const YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
 
 export function statePath(sessionId: string): string {
   return join(STATE_DIR, `${sessionId}.json`);
@@ -50,7 +50,7 @@ export function writeState(sessionId: string, state: SummaryState): void {
   renameSync(tmp, p);
 }
 
-export function bumpTotalCount(sessionId: string): SummaryState {
+export function withRmwLock<T>(sessionId: string, fn: () => T): T {
   mkdirSync(STATE_DIR, { recursive: true });
   const rmwLock = statePath(sessionId) + ".rmw";
   const deadline = Date.now() + 2000;
@@ -64,9 +64,19 @@ export function bumpTotalCount(sessionId: string): SummaryState {
         try { unlinkSync(rmwLock); } catch { /* ignore */ }
         continue;
       }
+      Atomics.wait(YIELD_BUF, 0, 0, 10);
     }
   }
   try {
+    return fn();
+  } finally {
+    closeSync(fd);
+    try { unlinkSync(rmwLock); } catch { /* ignore */ }
+  }
+}
+
+export function bumpTotalCount(sessionId: string): SummaryState {
+  return withRmwLock(sessionId, () => {
     const now = Date.now();
     const existing = readState(sessionId);
     const next: SummaryState = existing
@@ -74,10 +84,18 @@ export function bumpTotalCount(sessionId: string): SummaryState {
       : { lastSummaryAt: now, lastSummaryCount: 0, totalCount: 1 };
     writeState(sessionId, next);
     return next;
-  } finally {
-    closeSync(fd);
-    try { unlinkSync(rmwLock); } catch { /* ignore */ }
-  }
+  });
+}
+
+export function finalizeSummary(sessionId: string, jsonlLines: number): void {
+  withRmwLock(sessionId, () => {
+    const prev = readState(sessionId);
+    writeState(sessionId, {
+      lastSummaryAt: Date.now(),
+      lastSummaryCount: jsonlLines,
+      totalCount: Math.max(prev?.totalCount ?? 0, jsonlLines),
+    });
+  });
 }
 
 export interface TriggerConfig {
@@ -101,7 +119,6 @@ export function shouldTrigger(state: SummaryState, cfg: TriggerConfig, now = Dat
   return false;
 }
 
-/** Best-effort lock: if the lockfile exists and is recent, another worker is running. */
 export function tryAcquireLock(sessionId: string, maxAgeMs = 10 * 60 * 1000): boolean {
   mkdirSync(STATE_DIR, { recursive: true });
   const p = lockPath(sessionId);
@@ -109,10 +126,17 @@ export function tryAcquireLock(sessionId: string, maxAgeMs = 10 * 60 * 1000): bo
     try {
       const ageMs = Date.now() - parseInt(readFileSync(p, "utf-8"), 10);
       if (Number.isFinite(ageMs) && ageMs < maxAgeMs) return false;
-    } catch { /* fall through and overwrite stale lock */ }
+    } catch { /* treat unreadable as stale */ }
+    try { unlinkSync(p); } catch { return false; }
   }
-  writeFileSync(p, String(Date.now()));
-  return true;
+  try {
+    const fd = openSync(p, "wx");
+    try { writeSync(fd, String(Date.now())); } finally { closeSync(fd); }
+    return true;
+  } catch (e: any) {
+    if (e.code === "EEXIST") return false;
+    throw e;
+  }
 }
 
 export function releaseLock(sessionId: string): void {

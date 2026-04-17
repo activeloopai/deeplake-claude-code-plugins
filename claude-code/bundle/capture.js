@@ -299,10 +299,11 @@ var DeeplakeApi = class {
 };
 
 // dist/src/hooks/summary-state.js
-import { readFileSync as readFileSync2, writeFileSync, mkdirSync, renameSync, existsSync as existsSync2, unlinkSync, openSync, closeSync } from "node:fs";
+import { readFileSync as readFileSync2, writeFileSync, writeSync, mkdirSync, renameSync, existsSync as existsSync2, unlinkSync, openSync, closeSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { join as join3 } from "node:path";
 var STATE_DIR = join3(homedir3(), ".claude", "hooks", "summary-state");
+var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
 function statePath(sessionId) {
   return join3(STATE_DIR, `${sessionId}.json`);
 }
@@ -326,7 +327,7 @@ function writeState(sessionId, state) {
   writeFileSync(tmp, JSON.stringify(state));
   renameSync(tmp, p);
 }
-function bumpTotalCount(sessionId) {
+function withRmwLock(sessionId, fn) {
   mkdirSync(STATE_DIR, { recursive: true });
   const rmwLock = statePath(sessionId) + ".rmw";
   const deadline = Date.now() + 2e3;
@@ -344,14 +345,11 @@ function bumpTotalCount(sessionId) {
         }
         continue;
       }
+      Atomics.wait(YIELD_BUF, 0, 0, 10);
     }
   }
   try {
-    const now = Date.now();
-    const existing = readState(sessionId);
-    const next = existing ? { ...existing, totalCount: existing.totalCount + 1 } : { lastSummaryAt: now, lastSummaryCount: 0, totalCount: 1 };
-    writeState(sessionId, next);
-    return next;
+    return fn();
   } finally {
     closeSync(fd);
     try {
@@ -359,6 +357,15 @@ function bumpTotalCount(sessionId) {
     } catch {
     }
   }
+}
+function bumpTotalCount(sessionId) {
+  return withRmwLock(sessionId, () => {
+    const now = Date.now();
+    const existing = readState(sessionId);
+    const next = existing ? { ...existing, totalCount: existing.totalCount + 1 } : { lastSummaryAt: now, lastSummaryCount: 0, totalCount: 1 };
+    writeState(sessionId, next);
+    return next;
+  });
 }
 function loadTriggerConfig() {
   const n = Number(process.env.HIVEMIND_SUMMARY_EVERY_N_MSGS ?? "");
@@ -386,9 +393,25 @@ function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
         return false;
     } catch {
     }
+    try {
+      unlinkSync(p);
+    } catch {
+      return false;
+    }
   }
-  writeFileSync(p, String(Date.now()));
-  return true;
+  try {
+    const fd = openSync(p, "wx");
+    try {
+      writeSync(fd, String(Date.now()));
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  } catch (e) {
+    if (e.code === "EEXIST")
+      return false;
+    throw e;
+  }
 }
 
 // dist/src/hooks/spawn-wiki-worker.js
