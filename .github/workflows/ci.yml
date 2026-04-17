@@ -115,7 +115,7 @@ jobs:
             perFile.push({ f, c });
           }
 
-          const THRESHOLD = 80;
+          const THRESHOLD = 90;
           const pct = (m) => m.total === 0 ? null : (m.covered / m.total) * 100;
           const icon = (p) => p == null ? '⚪' : (p >= THRESHOLD ? '🟢' : '🔴');
           const fmtPct = (p) => p == null ? '—' : p.toFixed(2) + '%';

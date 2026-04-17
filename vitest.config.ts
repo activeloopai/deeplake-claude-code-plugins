@@ -36,24 +36,28 @@ export default defineConfig({
       // on the new code without having to first bring the whole
       // (~500-file) codebase up to 80%.
       thresholds: {
-        // PR #60 — fix/grep-dual-table-and-normalize
+        // PR #60 — fix/grep-dual-table-and-normalize.
+        // Raised to 90 to surface the red path in the PR coverage comment
+        // for metrics that sit between 80 and 90 (e.g. grep-core branches
+        // at 83%). The actual long-term bar we want to hold is 80; revisit
+        // once the PR has landed.
         "src/shell/grep-core.ts": {
-          statements: 80,
-          branches: 80,
-          functions: 80,
-          lines: 80,
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
         },
         "src/shell/grep-interceptor.ts": {
-          statements: 80,
-          branches: 80,
-          functions: 80,
-          lines: 80,
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
         },
         "src/hooks/grep-direct.ts": {
-          statements: 80,
-          branches: 80,
-          functions: 80,
-          lines: 80,
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
         },
       },
     },
