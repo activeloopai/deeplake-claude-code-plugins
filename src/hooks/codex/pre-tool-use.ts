@@ -138,7 +138,7 @@ async function main(): Promise<void> {
   // ── Fast path: handle grep and cat directly via SQL ──
   const config = loadConfig();
   if (config) {
-    const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
+    const table = process.env["HIVEMIND_TABLE"] ?? "memory";
     const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
 
     try {
@@ -182,7 +182,7 @@ async function main(): Promise<void> {
         }
 
         if (virtualPath && !virtualPath.endsWith("/")) {
-          const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+          const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
           const isSession = virtualPath.startsWith("/sessions/");
           log(`direct read: ${virtualPath}`);
 
@@ -277,7 +277,7 @@ async function main(): Promise<void> {
         if (findMatch) {
           const dir = findMatch[1].replace(/\/+$/, "") || "/";
           const namePattern = sqlLike(findMatch[2]).replace(/\*/g, "%").replace(/\?/g, "_");
-          const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+          const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
           const isSessionDir = dir === "/sessions" || dir.startsWith("/sessions/");
           const findTable = isSessionDir ? sessionsTable : table;
           log(`direct find: ${dir} -name '${findMatch[2]}'`);
@@ -295,7 +295,7 @@ async function main(): Promise<void> {
       // Detect: grep/egrep/fgrep with all flags
       const grepParams = parseBashGrep(rewritten);
       if (grepParams) {
-        const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
+        const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
         log(`direct grep: pattern=${grepParams.pattern} path=${grepParams.targetPath}`);
         const result = await handleGrepDirect(api, table, sessionsTable, grepParams);
         if (result !== null) {

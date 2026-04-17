@@ -26,9 +26,9 @@ function runPreToolUse(
     timeout: 15_000,
     env: {
       ...process.env,
-      DEEPLAKE_CAPTURE: "false",
-      DEEPLAKE_TOKEN: "",
-      DEEPLAKE_ORG_ID: "",
+      HIVEMIND_CAPTURE: "false",
+      HIVEMIND_TOKEN: "",
+      HIVEMIND_ORG_ID: "",
     },
   }).trim();
 

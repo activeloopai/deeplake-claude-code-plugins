@@ -43,7 +43,7 @@ interface HookInput {
   agent_transcript_path?: string;
 }
 
-const CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
+const CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
 
 /** Build the session path matching the CLI convention:
  *  /sessions/<username>/<username>_<org>_<workspace>_<slug>.jsonl */
@@ -150,7 +150,7 @@ async function main(): Promise<void> {
 
 /** Increment the event counter and, if the threshold is crossed, spawn a background wiki worker. */
 function maybeTriggerPeriodicSummary(sessionId: string, cwd: string, config: Config): void {
-  if (process.env.DEEPLAKE_WIKI_WORKER === "1") return;
+  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   try {
     const state = bumpTotalCount(sessionId);

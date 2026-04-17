@@ -15,10 +15,10 @@ function runHook(bundle: string, input: Record<string, unknown>, extraEnv: Recor
     env: {
       ...process.env,
       // Disable capture so we don't hit the real API
-      DEEPLAKE_CAPTURE: "false",
+      HIVEMIND_CAPTURE: "false",
       // Clear credentials to avoid API calls in tests
-      DEEPLAKE_TOKEN: "",
-      DEEPLAKE_ORG_ID: "",
+      HIVEMIND_TOKEN: "",
+      HIVEMIND_ORG_ID: "",
       ...extraEnv,
     },
   });
@@ -37,9 +37,9 @@ function runBlockHook(bundle: string, input: Record<string, unknown>, extraEnv: 
       timeout: 15_000,
       env: {
         ...process.env,
-        DEEPLAKE_CAPTURE: "false",
-        DEEPLAKE_TOKEN: "",
-        DEEPLAKE_ORG_ID: "",
+        HIVEMIND_CAPTURE: "false",
+        HIVEMIND_TOKEN: "",
+        HIVEMIND_ORG_ID: "",
         ...extraEnv,
       },
     });
@@ -128,7 +128,7 @@ describe("codex integration: capture", () => {
       model: "gpt-5.2",
       prompt: "hello world",
     });
-    // With DEEPLAKE_CAPTURE=false, should produce no output and exit 0
+    // With HIVEMIND_CAPTURE=false, should produce no output and exit 0
     expect(raw).toBe("");
   });
 
@@ -298,17 +298,17 @@ describe("codex integration: pre-tool-use", () => {
 // ── SessionStartSetup ───────────────────────────────────────────────────────
 
 describe("codex integration: session-start-setup", () => {
-  it("exits cleanly when DEEPLAKE_WIKI_WORKER=1", () => {
+  it("exits cleanly when HIVEMIND_WIKI_WORKER=1", () => {
     const raw = runHook("session-start-setup.js", {
       session_id: "test-session-setup-001",
       cwd: "/tmp/test-project",
       hook_event_name: "SessionStart",
       model: "gpt-5.2",
-    }, { DEEPLAKE_WIKI_WORKER: "1" });
+    }, { HIVEMIND_WIKI_WORKER: "1" });
     expect(raw).toBe("");
   });
 
-  it("exits cleanly with no credentials (DEEPLAKE_TOKEN='')", () => {
+  it("exits cleanly with no credentials (HIVEMIND_TOKEN='')", () => {
     const raw = runHook("session-start-setup.js", {
       session_id: "test-session-setup-002",
       cwd: "/tmp/test-project",
@@ -339,8 +339,8 @@ describe("codex integration: stop", () => {
       cwd: "/tmp/test-project",
       hook_event_name: "Stop",
       model: "gpt-5.2",
-    }, { DEEPLAKE_WIKI_WORKER: "1" });
-    // With DEEPLAKE_CAPTURE=false and DEEPLAKE_WIKI_WORKER=1, should be silent
+    }, { HIVEMIND_WIKI_WORKER: "1" });
+    // With HIVEMIND_CAPTURE=false and HIVEMIND_WIKI_WORKER=1, should be silent
     expect(raw).toBe("");
   });
 });

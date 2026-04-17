@@ -22,8 +22,8 @@ interface StopInput {
 }
 
 async function main(): Promise<void> {
-  if (process.env.DEEPLAKE_WIKI_WORKER === "1") return;
-  if (process.env.DEEPLAKE_CAPTURE === "false") return;
+  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1") return;
+  if ((process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) === "false") return;
 
   const input = await readStdin<StopInput>();
   const sessionId = input.session_id;

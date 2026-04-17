@@ -100,9 +100,9 @@ function runHook(bundle: string, input: Record<string, unknown>, extraEnv: Recor
     timeout: 15_000,
     env: {
       ...process.env,
-      DEEPLAKE_CAPTURE: "false",
-      DEEPLAKE_TOKEN: "",
-      DEEPLAKE_ORG_ID: "",
+      HIVEMIND_CAPTURE: "false",
+      HIVEMIND_TOKEN: "",
+      HIVEMIND_ORG_ID: "",
       ...extraEnv,
     },
   });
@@ -154,13 +154,13 @@ describe("claude-code integration: session-start-setup.js (async hook)", () => {
     hook_event_name: "SessionStart",
   };
 
-  it("exits cleanly when DEEPLAKE_WIKI_WORKER=1", () => {
-    const raw = runHook("session-start-setup.js", baseInput, { DEEPLAKE_WIKI_WORKER: "1" });
+  it("exits cleanly when HIVEMIND_WIKI_WORKER=1", () => {
+    const raw = runHook("session-start-setup.js", baseInput, { HIVEMIND_WIKI_WORKER: "1" });
     // Fire-and-forget hook: no stdout expected
     expect(raw).toBe("");
   });
 
-  it("exits cleanly with no credentials (DEEPLAKE_TOKEN='')", () => {
+  it("exits cleanly with no credentials (HIVEMIND_TOKEN='')", () => {
     // Should not throw — just exits gracefully
     const raw = runHook("session-start-setup.js", baseInput);
     // No stdout output expected from async fire-and-forget hook

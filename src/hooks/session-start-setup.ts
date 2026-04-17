@@ -77,7 +77,7 @@ interface SessionStartInput {
 }
 
 async function main(): Promise<void> {
-  if (process.env.DEEPLAKE_WIKI_WORKER === "1") return;
+  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1") return;
 
   const input = await readStdin<SessionStartInput>();
   const creds = loadCredentials();

@@ -9,7 +9,7 @@ import { join as join3 } from "node:path";
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-var DEBUG = process.env.DEEPLAKE_DEBUG === "1";
+var DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 var LOG = join(homedir(), ".deeplake", "hook-debug.log");
 function utcTimestamp(d = /* @__PURE__ */ new Date()) {
   return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
@@ -209,7 +209,7 @@ async function main() {
       ], {
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 12e4,
-        env: { ...process.env, DEEPLAKE_WIKI_WORKER: "1", DEEPLAKE_CAPTURE: "false" }
+        env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" }
       });
       wlog("claude -p exited (code 0)");
     } catch (e) {

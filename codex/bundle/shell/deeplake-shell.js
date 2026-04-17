@@ -66735,8 +66735,12 @@ function loadConfig() {
       return null;
     }
   }
-  const token = process.env.DEEPLAKE_TOKEN ?? creds?.token;
-  const orgId = process.env.DEEPLAKE_ORG_ID ?? creds?.orgId;
+  const env2 = process.env;
+  if (!env2.HIVEMIND_TOKEN && env2.DEEPLAKE_TOKEN) {
+    process.stderr.write("[hivemind] DEEPLAKE_* env vars are deprecated; use HIVEMIND_* instead\n");
+  }
+  const token = env2.HIVEMIND_TOKEN ?? env2.DEEPLAKE_TOKEN ?? creds?.token;
+  const orgId = env2.HIVEMIND_ORG_ID ?? env2.DEEPLAKE_ORG_ID ?? creds?.orgId;
   if (!token || !orgId)
     return null;
   return {
@@ -66744,11 +66748,11 @@ function loadConfig() {
     orgId,
     orgName: creds?.orgName ?? orgId,
     userName: creds?.userName || userInfo().username || "unknown",
-    workspaceId: process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
-    apiUrl: process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: process.env.DEEPLAKE_TABLE ?? "memory",
-    sessionsTableName: process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
-    memoryPath: process.env.DEEPLAKE_MEMORY_PATH ?? join4(home, ".deeplake", "memory")
+    workspaceId: env2.HIVEMIND_WORKSPACE_ID ?? env2.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
+    apiUrl: env2.HIVEMIND_API_URL ?? env2.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
+    tableName: env2.HIVEMIND_TABLE ?? env2.DEEPLAKE_TABLE ?? "memory",
+    sessionsTableName: env2.HIVEMIND_SESSIONS_TABLE ?? env2.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
+    memoryPath: env2.HIVEMIND_MEMORY_PATH ?? env2.DEEPLAKE_MEMORY_PATH ?? join4(home, ".deeplake", "memory")
   };
 }
 
@@ -66759,7 +66763,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { join as join5 } from "node:path";
 import { homedir as homedir2 } from "node:os";
-var DEBUG = process.env.DEEPLAKE_DEBUG === "1";
+var DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 var LOG = join5(homedir2(), ".deeplake", "hook-debug.log");
 function log(tag, msg) {
   if (!DEBUG)
@@ -66778,8 +66782,8 @@ function sqlLike(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
-var TRACE_SQL = process.env.DEEPLAKE_TRACE_SQL === "1" || process.env.DEEPLAKE_DEBUG === "1";
-var DEBUG_FILE_LOG = process.env.DEEPLAKE_DEBUG === "1";
+var TRACE_SQL = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+var DEBUG_FILE_LOG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 function summarizeSql(sql, maxLen = 220) {
   const compact = sql.replace(/\s+/g, " ").trim();
   return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
@@ -68660,12 +68664,12 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
 async function main() {
   const config = loadConfig();
   if (!config) {
-    process.stderr.write("Deeplake credentials not found.\nSet DEEPLAKE_TOKEN + DEEPLAKE_ORG_ID in environment, or create ~/.deeplake/credentials.json\n");
+    process.stderr.write("Deeplake credentials not found.\nSet HIVEMIND_TOKEN + HIVEMIND_ORG_ID in environment, or create ~/.deeplake/credentials.json\n");
     process.exit(1);
   }
-  const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
-  const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
-  const mount = process.env["DEEPLAKE_MOUNT"] ?? "/";
+  const table = process.env["HIVEMIND_TABLE"] ?? "memory";
+  const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
+  const mount = process.env["HIVEMIND_MOUNT"] ?? "/";
   const isOneShot = process.argv.includes("-c");
   const client = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
   if (!isOneShot) {
@@ -68684,8 +68688,8 @@ async function main() {
     customCommands: [createGrepCommand(client, fs3, table, sessionsTable)],
     env: {
       HOME: mount,
-      DEEPLAKE_TABLE: table,
-      DEEPLAKE_MOUNT: mount
+      HIVEMIND_TABLE: table,
+      HIVEMIND_MOUNT: mount
     }
   });
   const cIdx = process.argv.indexOf("-c");

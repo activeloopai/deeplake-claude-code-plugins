@@ -42,7 +42,7 @@ interface CodexHookInput {
   tool_response?: Record<string, unknown>;
 }
 
-const CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
+const CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
 
 function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
@@ -125,7 +125,7 @@ async function main(): Promise<void> {
 }
 
 function maybeTriggerPeriodicSummary(sessionId: string, cwd: string, config: Config): void {
-  if (process.env.DEEPLAKE_WIKI_WORKER === "1") return;
+  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   try {
     const state = bumpTotalCount(sessionId);

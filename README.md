@@ -182,13 +182,13 @@ Invite teammates to your Deeplake org. Their agents see your memory, your agents
 Disable capture entirely:
 
 ```bash
-DEEPLAKE_CAPTURE=false claude
+HIVEMIND_CAPTURE=false claude
 ```
 
 Enable debug logging:
 
 ```bash
-DEEPLAKE_DEBUG=1 claude
+HIVEMIND_DEBUG=1 claude
 ```
 
 ## ⚠️ Data collection notice
@@ -209,15 +209,15 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 
 | Variable                  | Default                   | Description                                |
 |---------------------------|---------------------------|--------------------------------------------|
-| `DEEPLAKE_TOKEN`          | —                         | API token (auto-set by login)              |
-| `DEEPLAKE_ORG_ID`         | —                         | Organization ID (auto-set by login)        |
-| `DEEPLAKE_WORKSPACE_ID`   | `default`                 | Workspace name                             |
-| `DEEPLAKE_API_URL`        | `https://api.deeplake.ai` | API endpoint                               |
-| `DEEPLAKE_TABLE`          | `memory`                  | SQL table for summaries and virtual FS     |
-| `DEEPLAKE_SESSIONS_TABLE` | `sessions`                | SQL table for per-event session capture    |
-| `DEEPLAKE_MEMORY_PATH`    | `~/.deeplake/memory`      | Path that triggers interception            |
-| `DEEPLAKE_CAPTURE`        | `true`                    | Set to `false` to disable capture          |
-| `DEEPLAKE_DEBUG`          | —                         | Set to `1` for verbose hook debug logs     |
+| `HIVEMIND_TOKEN`          | —                         | API token (auto-set by login)              |
+| `HIVEMIND_ORG_ID`         | —                         | Organization ID (auto-set by login)        |
+| `HIVEMIND_WORKSPACE_ID`   | `default`                 | Workspace name                             |
+| `HIVEMIND_API_URL`        | `https://api.deeplake.ai` | API endpoint                               |
+| `HIVEMIND_TABLE`          | `memory`                  | SQL table for summaries and virtual FS     |
+| `HIVEMIND_SESSIONS_TABLE` | `sessions`                | SQL table for per-event session capture    |
+| `HIVEMIND_MEMORY_PATH`    | `~/.deeplake/memory`      | Path that triggers interception            |
+| `HIVEMIND_CAPTURE`        | `true`                    | Set to `false` to disable capture          |
+| `HIVEMIND_DEBUG`          | —                         | Set to `1` for verbose hook debug logs     |
 
 ## Architecture
 
@@ -249,7 +249,7 @@ hivemind/
 - ~70 allowlisted builtins run in the virtual FS; unrecognized commands are denied
 - Credentials stored with mode `0600`, config dir with mode `0700`
 - Device flow login: no tokens in environment or code
-- `DEEPLAKE_CAPTURE=false` fully disables data collection
+- `HIVEMIND_CAPTURE=false` fully disables data collection
 
 ## Development
 

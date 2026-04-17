@@ -195,7 +195,7 @@ async function main() {
       ], {
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 12e4,
-        env: { ...process.env, DEEPLAKE_WIKI_WORKER: "1", DEEPLAKE_CAPTURE: "false" }
+        env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" }
       });
       wlog("codex exec exited (code 0)");
     } catch (e) {
