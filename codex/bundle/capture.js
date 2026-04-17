@@ -368,12 +368,15 @@ function loadTriggerConfig() {
   const n = Number(process.env.HIVEMIND_SUMMARY_EVERY_N_MSGS ?? "");
   const h = Number(process.env.HIVEMIND_SUMMARY_EVERY_HOURS ?? "");
   return {
-    everyNMessages: Number.isInteger(n) && n > 0 ? n : 30,
-    everyHours: Number.isFinite(h) && h > 0 ? h : 1
+    everyNMessages: Number.isInteger(n) && n > 0 ? n : 50,
+    everyHours: Number.isFinite(h) && h > 0 ? h : 2
   };
 }
+var FIRST_SUMMARY_AT = 10;
 function shouldTrigger(state, cfg, now = Date.now()) {
   const msgsSince = state.totalCount - state.lastSummaryCount;
+  if (state.lastSummaryCount === 0 && state.totalCount >= FIRST_SUMMARY_AT)
+    return true;
   if (msgsSince >= cfg.everyNMessages)
     return true;
   if (msgsSince > 0 && now - state.lastSummaryAt >= cfg.everyHours * 3600 * 1e3)
