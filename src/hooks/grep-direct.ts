@@ -157,7 +157,10 @@ export async function handleGrepDirect(
       : (sessionsTable !== table ? sessionsTable : null);
     if (memoryTable && memoryTable !== table) {
       try {
-        const contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
+        const words2 = pattern.split(/\s+/).filter((w: string) => w.length > 2);
+        const contentFilter = words2.length > 1
+          ? ` AND (${words2.slice(0, 4).map((w: string) => `summary ${likeOp} '%${sqlLike(w)}%'`).join(" OR ")})`
+          : ` AND summary ${likeOp} '%${escapedLike}%'`;
         const summaryRows = await api.query(
           `SELECT path, summary AS content FROM "${memoryTable}" WHERE 1=1${contentFilter} LIMIT 20`,
         );

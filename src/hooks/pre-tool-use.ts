@@ -199,7 +199,7 @@ async function main(): Promise<void> {
           hookEventName: "PreToolUse",
           permissionDecision: "allow",
           updatedInput: {
-            command: `cat ${cleanPath}`,
+            command: `cat '${cleanPath.replace(/'/g, "'\\\\''")}'`,
             description: "[DeepLake] converted unsupported command to file read",
           },
         },
