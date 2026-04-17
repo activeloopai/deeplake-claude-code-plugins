@@ -70,7 +70,12 @@ const TOOL_INPUT_FIELDS = [
 ] as const;
 
 const TOOL_RESPONSE_DROP = new Set([
-  "interrupted", "isImage", "noOutputExpected", "type", "stderr",
+  // Note: `stderr` is intentionally NOT in this set. The `stdout` high-signal
+  // branch below already de-dupes it for the common case (appends as suffix
+  // when non-empty). If a tool response has ONLY `stderr` and no `stdout`
+  // (hard-failure on some tools), the generic cleanup preserves it so the
+  // error message reaches Claude instead of collapsing to `[ok]`.
+  "interrupted", "isImage", "noOutputExpected", "type",
   "structuredPatch", "userModified", "originalFile", "replaceAll",
   "totalDurationMs", "totalTokens", "totalToolUseCount", "usage", "toolStats",
   "durationMs", "durationSeconds", "bytes", "code", "codeText",
@@ -335,6 +340,13 @@ export async function grepBothTables(
     likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
     escapedPattern: sqlLike(params.pattern),
   });
-  const normalized = rows.map(r => ({ path: r.path, content: normalizeContent(r.path, r.content) }));
+  // Defensive path dedup — memory and sessions tables use disjoint path
+  // prefixes in every schema we ship (/summaries/… vs /sessions/…), so the
+  // overlap is theoretical, but we dedupe to match grep-interceptor.ts and
+  // guarantee each path is emitted once even if a future schema change
+  // introduces overlap.
+  const seen = new Set<string>();
+  const unique = rows.filter(r => seen.has(r.path) ? false : (seen.add(r.path), true));
+  const normalized = unique.map(r => ({ path: r.path, content: normalizeContent(r.path, r.content) }));
   return refineGrepMatches(normalized, params);
 }

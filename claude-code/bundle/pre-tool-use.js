@@ -335,11 +335,15 @@ var TOOL_INPUT_FIELDS = [
   "max_results"
 ];
 var TOOL_RESPONSE_DROP = /* @__PURE__ */ new Set([
+  // Note: `stderr` is intentionally NOT in this set. The `stdout` high-signal
+  // branch below already de-dupes it for the common case (appends as suffix
+  // when non-empty). If a tool response has ONLY `stderr` and no `stdout`
+  // (hard-failure on some tools), the generic cleanup preserves it so the
+  // error message reaches Claude instead of collapsing to `[ok]`.
   "interrupted",
   "isImage",
   "noOutputExpected",
   "type",
-  "stderr",
   "structuredPatch",
   "userModified",
   "originalFile",
@@ -591,7 +595,9 @@ async function grepBothTables(api, memoryTable, sessionsTable, params, targetPat
     likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
     escapedPattern: sqlLike(params.pattern)
   });
-  const normalized = rows.map((r) => ({ path: r.path, content: normalizeContent(r.path, r.content) }));
+  const seen = /* @__PURE__ */ new Set();
+  const unique = rows.filter((r) => seen.has(r.path) ? false : (seen.add(r.path), true));
+  const normalized = unique.map((r) => ({ path: r.path, content: normalizeContent(r.path, r.content) }));
   return refineGrepMatches(normalized, params);
 }
 
