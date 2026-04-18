@@ -2,8 +2,7 @@
 
 // dist/src/hooks/pre-tool-use.js
 import { existsSync as existsSync3 } from "node:fs";
-import { join as join5, dirname } from "node:path";
-import { homedir as homedir4 } from "node:os";
+import { join as join6, dirname } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // dist/src/utils/stdin.js
@@ -1539,13 +1538,12 @@ function writeCachedIndexContent(sessionId, content, deps = {}) {
   }
 }
 
-// dist/src/hooks/pre-tool-use.js
-var log4 = (msg) => log("pre", msg);
+// dist/src/hooks/memory-path-utils.js
+import { homedir as homedir4 } from "node:os";
+import { join as join5 } from "node:path";
 var MEMORY_PATH = join5(homedir4(), ".deeplake", "memory");
 var TILDE_PATH = "~/.deeplake/memory";
 var HOME_VAR_PATH = "$HOME/.deeplake/memory";
-var __bundleDir = dirname(fileURLToPath2(import.meta.url));
-var SHELL_BUNDLE = existsSync3(join5(__bundleDir, "shell", "deeplake-shell.js")) ? join5(__bundleDir, "shell", "deeplake-shell.js") : join5(__bundleDir, "..", "shell", "deeplake-shell.js");
 var SAFE_BUILTINS = /* @__PURE__ */ new Set([
   "cat",
   "ls",
@@ -1606,7 +1604,6 @@ var SAFE_BUILTINS = /* @__PURE__ */ new Set([
   "echo",
   "printf",
   "tee",
-  "cat",
   "pwd",
   "cd",
   "basename",
@@ -1658,6 +1655,11 @@ function touchesMemory(p) {
 function rewritePaths(cmd) {
   return cmd.replace(new RegExp(MEMORY_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?", "g"), "/").replace(/~\/.deeplake\/memory\/?/g, "/").replace(/\$HOME\/.deeplake\/memory\/?/g, "/").replace(/"\$HOME\/.deeplake\/memory\/?"/g, '"/"');
 }
+
+// dist/src/hooks/pre-tool-use.js
+var log4 = (msg) => log("pre", msg);
+var __bundleDir = dirname(fileURLToPath2(import.meta.url));
+var SHELL_BUNDLE = existsSync3(join6(__bundleDir, "shell", "deeplake-shell.js")) ? join6(__bundleDir, "shell", "deeplake-shell.js") : join6(__bundleDir, "..", "shell", "deeplake-shell.js");
 function getShellCommand(toolName, toolInput) {
   switch (toolName) {
     case "Grep": {

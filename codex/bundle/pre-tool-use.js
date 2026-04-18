@@ -3,8 +3,7 @@
 // dist/src/hooks/codex/pre-tool-use.js
 import { execFileSync } from "node:child_process";
 import { existsSync as existsSync3 } from "node:fs";
-import { join as join5, dirname } from "node:path";
-import { homedir as homedir4 } from "node:os";
+import { join as join6, dirname } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // dist/src/utils/stdin.js
@@ -1540,13 +1539,12 @@ function isDirectRun(metaUrl) {
   }
 }
 
-// dist/src/hooks/codex/pre-tool-use.js
-var log4 = (msg) => log("codex-pre", msg);
+// dist/src/hooks/memory-path-utils.js
+import { homedir as homedir4 } from "node:os";
+import { join as join5 } from "node:path";
 var MEMORY_PATH = join5(homedir4(), ".deeplake", "memory");
 var TILDE_PATH = "~/.deeplake/memory";
 var HOME_VAR_PATH = "$HOME/.deeplake/memory";
-var __bundleDir = dirname(fileURLToPath2(import.meta.url));
-var SHELL_BUNDLE = existsSync3(join5(__bundleDir, "shell", "deeplake-shell.js")) ? join5(__bundleDir, "shell", "deeplake-shell.js") : join5(__bundleDir, "..", "shell", "deeplake-shell.js");
 var SAFE_BUILTINS = /* @__PURE__ */ new Set([
   "cat",
   "ls",
@@ -1652,12 +1650,17 @@ function isSafe(cmd) {
   }
   return true;
 }
-function touchesMemory(cmd) {
-  return cmd.includes(MEMORY_PATH) || cmd.includes(TILDE_PATH) || cmd.includes(HOME_VAR_PATH);
+function touchesMemory(p) {
+  return p.includes(MEMORY_PATH) || p.includes(TILDE_PATH) || p.includes(HOME_VAR_PATH);
 }
 function rewritePaths(cmd) {
   return cmd.replace(new RegExp(MEMORY_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?", "g"), "/").replace(/~\/.deeplake\/memory\/?/g, "/").replace(/\$HOME\/.deeplake\/memory\/?/g, "/").replace(/"\$HOME\/.deeplake\/memory\/?"/g, '"/"');
 }
+
+// dist/src/hooks/codex/pre-tool-use.js
+var log4 = (msg) => log("codex-pre", msg);
+var __bundleDir = dirname(fileURLToPath2(import.meta.url));
+var SHELL_BUNDLE = existsSync3(join6(__bundleDir, "shell", "deeplake-shell.js")) ? join6(__bundleDir, "shell", "deeplake-shell.js") : join6(__bundleDir, "..", "shell", "deeplake-shell.js");
 function buildUnsupportedGuidance() {
   return "This command is not supported for ~/.deeplake/memory/ operations. Only bash builtins are available: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. Do NOT use python, python3, node, curl, or other interpreters. Rewrite your command using only bash tools and retry.";
 }
