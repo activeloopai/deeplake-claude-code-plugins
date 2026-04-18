@@ -246,6 +246,11 @@ export function parseCompiledSegment(segment: string): CompiledSegment | null {
     if (!parsed) return null;
     const headTokens = tokenizeShellWords(clean);
     if (!headTokens) return null;
+    if (
+      (headTokens[1] === "-n" && headTokens.length < 4) ||
+      (/^-\d+$/.test(headTokens[1] ?? "") && headTokens.length < 3) ||
+      (headTokens.length === 2 && /^-?\d+$/.test(headTokens[1] ?? ""))
+    ) return null;
     const path = headTokens[headTokens.length - 1];
     if (path === "head" || path === "tail" || path === "-n") return null;
     return {
@@ -285,7 +290,6 @@ export function parseCompiledSegment(segment: string): CompiledSegment | null {
     const patterns = parseFindNamePatterns(tokens);
     if (!patterns) return null;
     const countOnly = pipeline.length === 2 && /^wc\s+-l\s*$/.test(pipeline[1].trim());
-    if (pipeline.length === 2 && !countOnly) return null;
     if (countOnly) {
       if (patterns.length !== 1) return null;
       return { kind: "find", dir, pattern: patterns[0], countOnly };
