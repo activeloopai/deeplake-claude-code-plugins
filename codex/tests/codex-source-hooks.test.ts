@@ -97,6 +97,7 @@ describe("codex capture source", () => {
     expect(spawn).toHaveBeenCalledTimes(1);
 
     const append = vi.fn();
+    const clear = vi.fn();
     const queued = await runCodexCaptureHook({
       session_id: "s1",
       cwd: "/repo",
@@ -109,9 +110,24 @@ describe("codex capture source", () => {
     }, {
       config: baseConfig,
       appendQueuedSessionRowFn: append as any,
+      clearSessionQueryCacheFn: clear as any,
     });
     expect(queued.status).toBe("queued");
     expect(append).toHaveBeenCalledTimes(1);
+    expect(clear).not.toHaveBeenCalled();
+
+    await runCodexCaptureHook({
+      session_id: "s1",
+      cwd: "/repo",
+      hook_event_name: "UserPromptSubmit",
+      model: "gpt-5.2",
+      prompt: "hi",
+    }, {
+      config: baseConfig,
+      appendQueuedSessionRowFn: vi.fn() as any,
+      clearSessionQueryCacheFn: clear as any,
+    });
+    expect(clear).toHaveBeenCalledWith("s1");
   });
 
   it("returns disabled, no_config, and ignored states", async () => {
@@ -377,6 +393,55 @@ describe("codex pre-tool source", () => {
       output: "compiled output",
       rewrittenCommand: "cat /index.md && ls /summaries",
     });
+  });
+
+  it("reuses cached /index.md content for direct and compiled reads within a session", async () => {
+    const readVirtualPathContentFn = vi.fn(async () => "fresh index");
+    const readVirtualPathContentsFn = vi.fn(async (_api, _memory, _sessions, paths: string[]) => new Map(
+      paths.map((path) => [path, path === "/index.md" ? "fresh index" : null]),
+    )) as any;
+    const readCachedIndexContentFn = vi.fn(() => "cached index");
+    const writeCachedIndexContentFn = vi.fn();
+
+    const directDecision = await processCodexPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_use_id: "tu-cache-1",
+      tool_input: { command: "cat ~/.deeplake/memory/index.md" },
+      cwd: "/repo",
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      readCachedIndexContentFn: readCachedIndexContentFn as any,
+      writeCachedIndexContentFn: writeCachedIndexContentFn as any,
+      readVirtualPathContentFn: readVirtualPathContentFn as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+    });
+    expect(directDecision.output).toBe("cached index");
+    expect(readVirtualPathContentFn).not.toHaveBeenCalled();
+    expect(writeCachedIndexContentFn).toHaveBeenCalledWith("s1", "cached index");
+
+    const compiledDecision = await processCodexPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_use_id: "tu-cache-2",
+      tool_input: { command: "cat ~/.deeplake/memory/index.md && ls ~/.deeplake/memory/summaries" },
+      cwd: "/repo",
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      readCachedIndexContentFn: readCachedIndexContentFn as any,
+      writeCachedIndexContentFn: writeCachedIndexContentFn as any,
+      readVirtualPathContentsFn,
+      executeCompiledBashCommandFn: vi.fn(async (_api, _table, _sessions, _cmd, deps) => {
+        const map = await deps.readVirtualPathContentsFn(_api, _table, _sessions, ["/index.md"]);
+        return map.get("/index.md") ?? null;
+      }) as any,
+    });
+    expect(compiledDecision.output).toBe("cached index");
+    expect(readVirtualPathContentsFn).not.toHaveBeenCalled();
   });
 
   it("covers plain cat, directory listings, non-count find, grep fallback, and direct-query exceptions", async () => {

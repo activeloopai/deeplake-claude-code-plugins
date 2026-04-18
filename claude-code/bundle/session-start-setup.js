@@ -283,6 +283,17 @@ var DeeplakeApi = class {
   async createIndex(column) {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
+  buildLookupIndexName(table, suffix) {
+    return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
+  }
+  async ensureLookupIndex(table, suffix, columnsSql) {
+    const indexName = this.buildLookupIndexName(table, suffix);
+    try {
+      await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
+    } catch (e) {
+      log2(`index "${indexName}" skipped: ${e.message}`);
+    }
+  }
   /** List all tables in the workspace (with retry). */
   async listTables(forceRefresh = false) {
     if (!forceRefresh && this._tablesCache)
@@ -345,6 +356,7 @@ var DeeplakeApi = class {
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
     }
+    await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
 };
 
@@ -743,7 +755,7 @@ async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, 
     return;
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const projectName = cwd.split("/").pop() ?? "unknown";
+  const projectName = cwd.split("/").pop() || "unknown";
   const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
   const content = [
     `# Session ${sessionId}`,

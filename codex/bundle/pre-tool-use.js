@@ -3,8 +3,8 @@
 // dist/src/hooks/codex/pre-tool-use.js
 import { execFileSync } from "node:child_process";
 import { existsSync as existsSync2 } from "node:fs";
-import { join as join3, dirname } from "node:path";
-import { homedir as homedir3 } from "node:os";
+import { join as join4, dirname } from "node:path";
+import { homedir as homedir4 } from "node:os";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // dist/src/utils/stdin.js
@@ -272,6 +272,17 @@ var DeeplakeApi = class {
   async createIndex(column) {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
+  buildLookupIndexName(table, suffix) {
+    return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
+  }
+  async ensureLookupIndex(table, suffix, columnsSql) {
+    const indexName = this.buildLookupIndexName(table, suffix);
+    try {
+      await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
+    } catch (e) {
+      log2(`index "${indexName}" skipped: ${e.message}`);
+    }
+  }
   /** List all tables in the workspace (with retry). */
   async listTables(forceRefresh = false) {
     if (!forceRefresh && this._tablesCache)
@@ -334,6 +345,7 @@ var DeeplakeApi = class {
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
     }
+    await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
 };
 
@@ -909,7 +921,8 @@ async function listVirtualPathRows(api, memoryTable, sessionsTable, dir) {
   return (await listVirtualPathRowsForDirs(api, memoryTable, sessionsTable, [dir])).get(dir.replace(/\/+$/, "") || "/") ?? [];
 }
 async function findVirtualPaths(api, memoryTable, sessionsTable, dir, filenamePattern) {
-  const likePath = `${sqlLike(dir === "/" ? "" : dir)}/%`;
+  const normalizedDir = dir.replace(/\/+$/, "") || "/";
+  const likePath = `${sqlLike(normalizedDir === "/" ? "" : normalizedDir)}/%`;
   const rows = await queryUnionRows(api, `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`, `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`);
   return [...new Set(rows.map((row) => row["path"]).filter((value) => typeof value === "string" && value.length > 0))];
 }
@@ -1372,6 +1385,39 @@ async function executeCompiledBashCommand(api, memoryTable, sessionsTable, cmd, 
   return outputs.join("\n");
 }
 
+// dist/src/hooks/query-cache.js
+import { mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync } from "node:fs";
+import { join as join3 } from "node:path";
+import { homedir as homedir3 } from "node:os";
+var log3 = (msg) => log("query-cache", msg);
+var DEFAULT_CACHE_ROOT = join3(homedir3(), ".deeplake", "query-cache");
+var INDEX_CACHE_FILE = "index.md";
+function getSessionQueryCacheDir(sessionId, deps = {}) {
+  const { cacheRoot = DEFAULT_CACHE_ROOT } = deps;
+  return join3(cacheRoot, sessionId);
+}
+function readCachedIndexContent(sessionId, deps = {}) {
+  const { logFn = log3 } = deps;
+  try {
+    return readFileSync2(join3(getSessionQueryCacheDir(sessionId, deps), INDEX_CACHE_FILE), "utf-8");
+  } catch (e) {
+    if (e?.code === "ENOENT")
+      return null;
+    logFn(`read failed for session=${sessionId}: ${e.message}`);
+    return null;
+  }
+}
+function writeCachedIndexContent(sessionId, content, deps = {}) {
+  const { logFn = log3 } = deps;
+  try {
+    const dir = getSessionQueryCacheDir(sessionId, deps);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join3(dir, INDEX_CACHE_FILE), content, "utf-8");
+  } catch (e) {
+    logFn(`write failed for session=${sessionId}: ${e.message}`);
+  }
+}
+
 // dist/src/utils/direct-run.js
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1387,12 +1433,12 @@ function isDirectRun(metaUrl) {
 }
 
 // dist/src/hooks/codex/pre-tool-use.js
-var log3 = (msg) => log("codex-pre", msg);
-var MEMORY_PATH = join3(homedir3(), ".deeplake", "memory");
+var log4 = (msg) => log("codex-pre", msg);
+var MEMORY_PATH = join4(homedir4(), ".deeplake", "memory");
 var TILDE_PATH = "~/.deeplake/memory";
 var HOME_VAR_PATH = "$HOME/.deeplake/memory";
 var __bundleDir = dirname(fileURLToPath2(import.meta.url));
-var SHELL_BUNDLE = existsSync2(join3(__bundleDir, "shell", "deeplake-shell.js")) ? join3(__bundleDir, "shell", "deeplake-shell.js") : join3(__bundleDir, "..", "shell", "deeplake-shell.js");
+var SHELL_BUNDLE = existsSync2(join4(__bundleDir, "shell", "deeplake-shell.js")) ? join4(__bundleDir, "shell", "deeplake-shell.js") : join4(__bundleDir, "..", "shell", "deeplake-shell.js");
 var SAFE_BUILTINS = /* @__PURE__ */ new Set([
   "cat",
   "ls",
@@ -1507,7 +1553,7 @@ function rewritePaths(cmd) {
 function buildUnsupportedGuidance() {
   return "This command is not supported for ~/.deeplake/memory/ operations. Only bash builtins are available: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. Do NOT use python, python3, node, curl, or other interpreters. Rewrite your command using only bash tools and retry.";
 }
-function runVirtualShell(cmd, shellBundle = SHELL_BUNDLE, logFn = log3) {
+function runVirtualShell(cmd, shellBundle = SHELL_BUNDLE, logFn = log4) {
   try {
     return execFileSync("node", [shellBundle, "-c", cmd], {
       encoding: "utf-8",
@@ -1532,7 +1578,7 @@ function buildIndexContent(rows) {
   return lines.join("\n");
 }
 async function processCodexPreToolUse(input, deps = {}) {
-  const { config = loadConfig(), createApi = (table, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table), executeCompiledBashCommandFn = executeCompiledBashCommand, readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, handleGrepDirectFn = handleGrepDirect, runVirtualShellFn = runVirtualShell, shellBundle = SHELL_BUNDLE, logFn = log3 } = deps;
+  const { config = loadConfig(), createApi = (table, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table), executeCompiledBashCommandFn = executeCompiledBashCommand, readVirtualPathContentsFn = readVirtualPathContents, readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, handleGrepDirectFn = handleGrepDirect, readCachedIndexContentFn = readCachedIndexContent, writeCachedIndexContentFn = writeCachedIndexContent, runVirtualShellFn = runVirtualShell, shellBundle = SHELL_BUNDLE, logFn = log4 } = deps;
   const cmd = input.tool_input?.command ?? "";
   logFn(`hook fired: cmd=${cmd}`);
   if (!touchesMemory(cmd))
@@ -1551,8 +1597,29 @@ async function processCodexPreToolUse(input, deps = {}) {
     const table = process.env["HIVEMIND_TABLE"] ?? "memory";
     const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
     const api = createApi(table, config);
+    const readVirtualPathContentsWithCache = async (cachePaths) => {
+      const uniquePaths = [...new Set(cachePaths)];
+      const result2 = new Map(uniquePaths.map((path) => [path, null]));
+      const cachedIndex = uniquePaths.includes("/index.md") ? readCachedIndexContentFn(input.session_id) : null;
+      const remainingPaths = cachedIndex === null ? uniquePaths : uniquePaths.filter((path) => path !== "/index.md");
+      if (cachedIndex !== null) {
+        result2.set("/index.md", cachedIndex);
+      }
+      if (remainingPaths.length > 0) {
+        const fetched = await readVirtualPathContentsFn(api, table, sessionsTable, remainingPaths);
+        for (const [path, content] of fetched)
+          result2.set(path, content);
+      }
+      const fetchedIndex = result2.get("/index.md");
+      if (typeof fetchedIndex === "string") {
+        writeCachedIndexContentFn(input.session_id, fetchedIndex);
+      }
+      return result2;
+    };
     try {
-      const compiled = await executeCompiledBashCommandFn(api, table, sessionsTable, rewritten);
+      const compiled = await executeCompiledBashCommandFn(api, table, sessionsTable, rewritten, {
+        readVirtualPathContentsFn: async (_api, _memoryTable, _sessionsTable, cachePaths) => readVirtualPathContentsWithCache(cachePaths)
+      });
       if (compiled !== null) {
         return { action: "block", output: compiled, rewrittenCommand: rewritten };
       }
@@ -1604,12 +1671,18 @@ async function processCodexPreToolUse(input, deps = {}) {
       }
       if (virtualPath && !virtualPath.endsWith("/")) {
         logFn(`direct read: ${virtualPath}`);
-        let content = await readVirtualPathContentFn(api, table, sessionsTable, virtualPath);
+        let content = virtualPath === "/index.md" ? readCachedIndexContentFn(input.session_id) : null;
+        if (content === null) {
+          content = await readVirtualPathContentFn(api, table, sessionsTable, virtualPath);
+        }
         if (content === null && virtualPath === "/index.md") {
           const idxRows = await api.query(`SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`);
           content = buildIndexContent(idxRows);
         }
         if (content !== null) {
+          if (virtualPath === "/index.md") {
+            writeCachedIndexContentFn(input.session_id, content);
+          }
           if (lineLimit === -1) {
             return { action: "block", output: `${content.split("\n").length} ${virtualPath}`, rewrittenCommand: rewritten };
           }
@@ -1715,7 +1788,7 @@ async function main() {
 }
 if (isDirectRun(import.meta.url)) {
   main().catch((e) => {
-    log3(`fatal: ${e.message}`);
+    log4(`fatal: ${e.message}`);
     process.exit(0);
   });
 }

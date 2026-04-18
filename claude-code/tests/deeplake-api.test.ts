@@ -410,15 +410,20 @@ describe("DeeplakeApi.ensureTable", () => {
       json: async () => ({ tables: [{ table_name: "memory" }] }),
     });
     mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
     const api = makeApi("memory");
 
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
     const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
     expect(createSql).toContain("CREATE TABLE IF NOT EXISTS");
     expect(createSql).toContain("sessions");
+    const indexSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
+    expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
+    expect(indexSql).toContain("\"path\"");
+    expect(indexSql).toContain("\"creation_date\"");
   });
 });
 
@@ -431,6 +436,7 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
       json: async () => ({ tables: [] }),
     });
     mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
     const api = makeApi();
     await api.ensureSessionsTable("sessions");
     const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
@@ -438,15 +444,34 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
     expect(createSql).toContain("sessions");
     expect(createSql).toContain("JSONB");
     expect(createSql).toContain("USING deeplake");
+    const indexSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
+    expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
+    expect(indexSql).toContain("\"sessions\"");
+    expect(indexSql).toContain("(\"path\", \"creation_date\")");
   });
 
-  it("does nothing when sessions table already exists", async () => {
+  it("ensures the lookup index when sessions table already exists", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "sessions" }] }),
     });
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
     const api = makeApi();
     await api.ensureSessionsTable("sessions");
-    expect(mockFetch).toHaveBeenCalledOnce();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const indexSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
+  });
+
+  it("ignores lookup-index creation errors after ensuring the sessions table", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [{ table_name: "sessions" }] }),
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse("forbidden", 403));
+    const api = makeApi();
+
+    await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });

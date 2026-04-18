@@ -345,8 +345,27 @@ function extractSessionId(sessionPath) {
   return filename.replace(/\.jsonl$/, "").split("_").pop() ?? filename;
 }
 
+// dist/src/hooks/query-cache.js
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync4, rmSync as rmSync2, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join6 } from "node:path";
+import { homedir as homedir6 } from "node:os";
+var log2 = (msg) => log("query-cache", msg);
+var DEFAULT_CACHE_ROOT = join6(homedir6(), ".deeplake", "query-cache");
+function getSessionQueryCacheDir(sessionId, deps = {}) {
+  const { cacheRoot = DEFAULT_CACHE_ROOT } = deps;
+  return join6(cacheRoot, sessionId);
+}
+function clearSessionQueryCache(sessionId, deps = {}) {
+  const { logFn = log2 } = deps;
+  try {
+    rmSync2(getSessionQueryCacheDir(sessionId, deps), { recursive: true, force: true });
+  } catch (e) {
+    logFn(`clear failed for session=${sessionId}: ${e.message}`);
+  }
+}
+
 // dist/src/hooks/codex/capture.js
-var log2 = (msg) => log("codex-capture", msg);
+var log3 = (msg) => log("codex-capture", msg);
 var CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
 function buildCodexCaptureEntry(input, timestamp) {
   const meta = {
@@ -380,7 +399,7 @@ function buildCodexCaptureEntry(input, timestamp) {
   return null;
 }
 function maybeTriggerPeriodicSummary(sessionId, cwd, config, deps = {}) {
-  const { bundleDir = bundleDirFromImportMeta(import.meta.url), wikiWorker = process.env.HIVEMIND_WIKI_WORKER === "1", logFn = log2, bumpTotalCountFn = bumpTotalCount, loadTriggerConfigFn = loadTriggerConfig, shouldTriggerFn = shouldTrigger, tryAcquireLockFn = tryAcquireLock, wikiLogFn = wikiLog, spawnCodexWikiWorkerFn = spawnCodexWikiWorker } = deps;
+  const { bundleDir = bundleDirFromImportMeta(import.meta.url), wikiWorker = process.env.HIVEMIND_WIKI_WORKER === "1", logFn = log3, bumpTotalCountFn = bumpTotalCount, loadTriggerConfigFn = loadTriggerConfig, shouldTriggerFn = shouldTrigger, tryAcquireLockFn = tryAcquireLock, wikiLogFn = wikiLog, spawnCodexWikiWorkerFn = spawnCodexWikiWorker } = deps;
   if (wikiWorker)
     return;
   try {
@@ -405,7 +424,7 @@ function maybeTriggerPeriodicSummary(sessionId, cwd, config, deps = {}) {
   }
 }
 async function runCodexCaptureHook(input, deps = {}) {
-  const { captureEnabled = CAPTURE, config = loadConfig(), now = () => (/* @__PURE__ */ new Date()).toISOString(), appendQueuedSessionRowFn = appendQueuedSessionRow, buildQueuedSessionRowFn = buildQueuedSessionRow, maybeTriggerPeriodicSummaryFn = maybeTriggerPeriodicSummary, logFn = log2 } = deps;
+  const { captureEnabled = CAPTURE, config = loadConfig(), now = () => (/* @__PURE__ */ new Date()).toISOString(), appendQueuedSessionRowFn = appendQueuedSessionRow, buildQueuedSessionRowFn = buildQueuedSessionRow, clearSessionQueryCacheFn = clearSessionQueryCache, maybeTriggerPeriodicSummaryFn = maybeTriggerPeriodicSummary, logFn = log3 } = deps;
   if (!captureEnabled)
     return { status: "disabled" };
   if (!config) {
@@ -422,6 +441,9 @@ async function runCodexCaptureHook(input, deps = {}) {
     logFn(`user session=${input.session_id}`);
   else
     logFn(`tool=${input.tool_name} session=${input.session_id}`);
+  if (input.hook_event_name === "UserPromptSubmit") {
+    clearSessionQueryCacheFn(input.session_id);
+  }
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
@@ -444,7 +466,7 @@ async function main() {
 }
 if (isDirectRun(import.meta.url)) {
   main().catch((e) => {
-    log2(`fatal: ${e.message}`);
+    log3(`fatal: ${e.message}`);
     process.exit(0);
   });
 }

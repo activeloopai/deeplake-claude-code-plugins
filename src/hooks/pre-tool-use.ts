@@ -14,9 +14,14 @@ import { type GrepParams, parseBashGrep, handleGrepDirect } from "./grep-direct.
 import { executeCompiledBashCommand } from "./bash-command-compiler.js";
 import {
   findVirtualPaths,
+  readVirtualPathContents,
   listVirtualPathRows,
   readVirtualPathContent,
 } from "./virtual-table-query.js";
+import {
+  readCachedIndexContent,
+  writeCachedIndexContent,
+} from "./query-cache.js";
 
 const log = (msg: string) => _log("pre", msg);
 
@@ -157,9 +162,12 @@ interface ClaudePreToolDeps {
   createApi?: (table: string, config: NonNullable<ReturnType<typeof loadConfig>>) => DeeplakeApi;
   executeCompiledBashCommandFn?: typeof executeCompiledBashCommand;
   handleGrepDirectFn?: typeof handleGrepDirect;
+  readVirtualPathContentsFn?: typeof readVirtualPathContents;
   readVirtualPathContentFn?: typeof readVirtualPathContent;
   listVirtualPathRowsFn?: typeof listVirtualPathRows;
   findVirtualPathsFn?: typeof findVirtualPaths;
+  readCachedIndexContentFn?: typeof readCachedIndexContent;
+  writeCachedIndexContentFn?: typeof writeCachedIndexContent;
   shellBundle?: string;
   logFn?: (msg: string) => void;
 }
@@ -176,9 +184,12 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
     ),
     executeCompiledBashCommandFn = executeCompiledBashCommand,
     handleGrepDirectFn = handleGrepDirect,
+    readVirtualPathContentsFn = readVirtualPathContents,
     readVirtualPathContentFn = readVirtualPathContent,
     listVirtualPathRowsFn = listVirtualPathRows,
     findVirtualPathsFn = findVirtualPaths,
+    readCachedIndexContentFn = readCachedIndexContent,
+    writeCachedIndexContentFn = writeCachedIndexContent,
     shellBundle = SHELL_BUNDLE,
     logFn = log,
   } = deps;
@@ -207,9 +218,41 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
   const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
   const api = createApi(table, config);
 
+  const readVirtualPathContentsWithCache = async (
+    cachePaths: string[],
+  ): Promise<Map<string, string | null>> => {
+    const uniquePaths = [...new Set(cachePaths)];
+    const result = new Map<string, string | null>(uniquePaths.map((path) => [path, null]));
+    const cachedIndex = uniquePaths.includes("/index.md")
+      ? readCachedIndexContentFn(input.session_id)
+      : null;
+
+    const remainingPaths = cachedIndex === null
+      ? uniquePaths
+      : uniquePaths.filter((path) => path !== "/index.md");
+
+    if (cachedIndex !== null) {
+      result.set("/index.md", cachedIndex);
+    }
+
+    if (remainingPaths.length > 0) {
+      const fetched = await readVirtualPathContentsFn(api, table, sessionsTable, remainingPaths);
+      for (const [path, content] of fetched) result.set(path, content);
+    }
+
+    const fetchedIndex = result.get("/index.md");
+    if (typeof fetchedIndex === "string") {
+      writeCachedIndexContentFn(input.session_id, fetchedIndex);
+    }
+
+    return result;
+  };
+
   try {
     if (input.tool_name === "Bash") {
-      const compiled = await executeCompiledBashCommandFn(api, table, sessionsTable, shellCmd);
+      const compiled = await executeCompiledBashCommandFn(api, table, sessionsTable, shellCmd, {
+        readVirtualPathContentsFn: async (_api, _memoryTable, _sessionsTable, cachePaths) => readVirtualPathContentsWithCache(cachePaths),
+      });
       if (compiled !== null) {
         return buildAllowDecision(`echo ${JSON.stringify(compiled)}`, `[DeepLake compiled] ${shellCmd}`);
       }
@@ -261,7 +304,13 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
 
     if (virtualPath && !virtualPath.endsWith("/")) {
       logFn(`direct read: ${virtualPath}`);
-      let content = await readVirtualPathContentFn(api, table, sessionsTable, virtualPath);
+      let content = virtualPath === "/index.md"
+        ? readCachedIndexContentFn(input.session_id)
+        : null;
+
+      if (content === null) {
+        content = await readVirtualPathContentFn(api, table, sessionsTable, virtualPath);
+      }
       if (content === null && virtualPath === "/index.md") {
         const idxRows = await api.query(
           `SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
@@ -277,6 +326,9 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
         content = lines.join("\n");
       }
       if (content !== null) {
+        if (virtualPath === "/index.md") {
+          writeCachedIndexContentFn(input.session_id, content);
+        }
         if (lineLimit === -1) return buildAllowDecision(`echo ${JSON.stringify(`${content.split("\n").length} ${virtualPath}`)}`, `[DeepLake direct] wc -l ${virtualPath}`);
         if (lineLimit > 0) {
           const lines = content.split("\n");

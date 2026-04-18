@@ -22,6 +22,7 @@ import {
   buildQueuedSessionRow,
   buildSessionPath,
 } from "../session-queue.js";
+import { clearSessionQueryCache } from "../query-cache.js";
 
 const log = (msg: string) => _log("codex-capture", msg);
 
@@ -132,6 +133,7 @@ interface CodexCaptureDeps {
   now?: () => string;
   appendQueuedSessionRowFn?: typeof appendQueuedSessionRow;
   buildQueuedSessionRowFn?: typeof buildQueuedSessionRow;
+  clearSessionQueryCacheFn?: typeof clearSessionQueryCache;
   maybeTriggerPeriodicSummaryFn?: typeof maybeTriggerPeriodicSummary;
   logFn?: (msg: string) => void;
 }
@@ -146,6 +148,7 @@ export async function runCodexCaptureHook(input: CodexHookInput, deps: CodexCapt
     now = () => new Date().toISOString(),
     appendQueuedSessionRowFn = appendQueuedSessionRow,
     buildQueuedSessionRowFn = buildQueuedSessionRow,
+    clearSessionQueryCacheFn = clearSessionQueryCache,
     maybeTriggerPeriodicSummaryFn = maybeTriggerPeriodicSummary,
     logFn = log,
   } = deps;
@@ -165,6 +168,10 @@ export async function runCodexCaptureHook(input: CodexHookInput, deps: CodexCapt
 
   if (input.hook_event_name === "UserPromptSubmit") logFn(`user session=${input.session_id}`);
   else logFn(`tool=${input.tool_name} session=${input.session_id}`);
+
+  if (input.hook_event_name === "UserPromptSubmit") {
+    clearSessionQueryCacheFn(input.session_id);
+  }
 
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);

@@ -26,9 +26,14 @@ import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
 import { executeCompiledBashCommand } from "../bash-command-compiler.js";
 import {
   findVirtualPaths,
+  readVirtualPathContents,
   listVirtualPathRows,
   readVirtualPathContent,
 } from "../virtual-table-query.js";
+import {
+  readCachedIndexContent,
+  writeCachedIndexContent,
+} from "../query-cache.js";
 import { log as _log } from "../../utils/debug.js";
 import { isDirectRun } from "../../utils/direct-run.js";
 
@@ -137,10 +142,13 @@ interface CodexPreToolDeps {
   config?: ReturnType<typeof loadConfig>;
   createApi?: (table: string, config: NonNullable<ReturnType<typeof loadConfig>>) => DeeplakeApi;
   executeCompiledBashCommandFn?: typeof executeCompiledBashCommand;
+  readVirtualPathContentsFn?: typeof readVirtualPathContents;
   readVirtualPathContentFn?: typeof readVirtualPathContent;
   listVirtualPathRowsFn?: typeof listVirtualPathRows;
   findVirtualPathsFn?: typeof findVirtualPaths;
   handleGrepDirectFn?: typeof handleGrepDirect;
+  readCachedIndexContentFn?: typeof readCachedIndexContent;
+  writeCachedIndexContentFn?: typeof writeCachedIndexContent;
   runVirtualShellFn?: typeof runVirtualShell;
   shellBundle?: string;
   logFn?: (msg: string) => void;
@@ -160,10 +168,13 @@ export async function processCodexPreToolUse(
       table,
     ),
     executeCompiledBashCommandFn = executeCompiledBashCommand,
+    readVirtualPathContentsFn = readVirtualPathContents,
     readVirtualPathContentFn = readVirtualPathContent,
     listVirtualPathRowsFn = listVirtualPathRows,
     findVirtualPathsFn = findVirtualPaths,
     handleGrepDirectFn = handleGrepDirect,
+    readCachedIndexContentFn = readCachedIndexContent,
+    writeCachedIndexContentFn = writeCachedIndexContent,
     runVirtualShellFn = runVirtualShell,
     shellBundle = SHELL_BUNDLE,
     logFn = log,
@@ -190,8 +201,40 @@ export async function processCodexPreToolUse(
     const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
     const api = createApi(table, config);
 
+    const readVirtualPathContentsWithCache = async (
+      cachePaths: string[],
+    ): Promise<Map<string, string | null>> => {
+      const uniquePaths = [...new Set(cachePaths)];
+      const result = new Map<string, string | null>(uniquePaths.map((path) => [path, null]));
+      const cachedIndex = uniquePaths.includes("/index.md")
+        ? readCachedIndexContentFn(input.session_id)
+        : null;
+
+      const remainingPaths = cachedIndex === null
+        ? uniquePaths
+        : uniquePaths.filter((path) => path !== "/index.md");
+
+      if (cachedIndex !== null) {
+        result.set("/index.md", cachedIndex);
+      }
+
+      if (remainingPaths.length > 0) {
+        const fetched = await readVirtualPathContentsFn(api, table, sessionsTable, remainingPaths);
+        for (const [path, content] of fetched) result.set(path, content);
+      }
+
+      const fetchedIndex = result.get("/index.md");
+      if (typeof fetchedIndex === "string") {
+        writeCachedIndexContentFn(input.session_id, fetchedIndex);
+      }
+
+      return result;
+    };
+
     try {
-      const compiled = await executeCompiledBashCommandFn(api, table, sessionsTable, rewritten);
+      const compiled = await executeCompiledBashCommandFn(api, table, sessionsTable, rewritten, {
+        readVirtualPathContentsFn: async (_api, _memoryTable, _sessionsTable, cachePaths) => readVirtualPathContentsWithCache(cachePaths),
+      });
       if (compiled !== null) {
         return { action: "block", output: compiled, rewrittenCommand: rewritten };
       }
@@ -247,7 +290,12 @@ export async function processCodexPreToolUse(
 
       if (virtualPath && !virtualPath.endsWith("/")) {
         logFn(`direct read: ${virtualPath}`);
-        let content = await readVirtualPathContentFn(api, table, sessionsTable, virtualPath);
+        let content = virtualPath === "/index.md"
+          ? readCachedIndexContentFn(input.session_id)
+          : null;
+        if (content === null) {
+          content = await readVirtualPathContentFn(api, table, sessionsTable, virtualPath);
+        }
         if (content === null && virtualPath === "/index.md") {
           const idxRows = await api.query(
             `SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
@@ -256,6 +304,9 @@ export async function processCodexPreToolUse(
         }
 
         if (content !== null) {
+          if (virtualPath === "/index.md") {
+            writeCachedIndexContentFn(input.session_id, content);
+          }
           if (lineLimit === -1) {
             return { action: "block", output: `${content.split("\n").length} ${virtualPath}`, rewrittenCommand: rewritten };
           }

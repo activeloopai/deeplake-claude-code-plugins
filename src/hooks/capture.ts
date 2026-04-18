@@ -25,6 +25,7 @@ import {
   buildSessionPath,
   flushSessionQueue,
 } from "./session-queue.js";
+import { clearSessionQueryCache } from "./query-cache.js";
 
 const log = (msg: string) => _log("capture", msg);
 
@@ -152,6 +153,7 @@ interface CaptureHookDeps {
   appendQueuedSessionRowFn?: typeof appendQueuedSessionRow;
   buildQueuedSessionRowFn?: typeof buildQueuedSessionRow;
   flushSessionQueueFn?: typeof flushSessionQueue;
+  clearSessionQueryCacheFn?: typeof clearSessionQueryCache;
   maybeTriggerPeriodicSummaryFn?: typeof maybeTriggerPeriodicSummary;
   logFn?: (msg: string) => void;
 }
@@ -175,6 +177,7 @@ export async function runCaptureHook(input: HookInput, deps: CaptureHookDeps = {
     appendQueuedSessionRowFn = appendQueuedSessionRow,
     buildQueuedSessionRowFn = buildQueuedSessionRow,
     flushSessionQueueFn = flushSessionQueue,
+    clearSessionQueryCacheFn = clearSessionQueryCache,
     maybeTriggerPeriodicSummaryFn = maybeTriggerPeriodicSummary,
     logFn = log,
   } = deps;
@@ -195,6 +198,10 @@ export async function runCaptureHook(input: HookInput, deps: CaptureHookDeps = {
   if (input.prompt !== undefined) logFn(`user session=${input.session_id}`);
   else if (input.tool_name !== undefined) logFn(`tool=${input.tool_name} session=${input.session_id}`);
   else logFn(`assistant session=${input.session_id}`);
+
+  if (input.hook_event_name === "UserPromptSubmit") {
+    clearSessionQueryCacheFn(input.session_id);
+  }
 
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);

@@ -216,6 +216,19 @@ export class DeeplakeApi {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
 
+  private buildLookupIndexName(table: string, suffix: string): string {
+    return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
+  }
+
+  private async ensureLookupIndex(table: string, suffix: string, columnsSql: string): Promise<void> {
+    const indexName = this.buildLookupIndexName(table, suffix);
+    try {
+      await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
+    } catch (e: any) {
+      log(`index "${indexName}" skipped: ${e.message}`);
+    }
+  }
+
   /** List all tables in the workspace (with retry). */
   async listTables(forceRefresh = false): Promise<string[]> {
     if (!forceRefresh && this._tablesCache) return [...this._tablesCache];
@@ -315,5 +328,6 @@ export class DeeplakeApi {
       log(`table "${name}" created`);
       if (!tables.includes(name)) this._tablesCache = [...tables, name];
     }
+    await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
 }

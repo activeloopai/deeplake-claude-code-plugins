@@ -174,6 +174,7 @@ describe("claude capture source", () => {
 
     const append = vi.fn();
     const maybe = vi.fn();
+    const clear = vi.fn();
     const queued = await runCaptureHook({
       session_id: "s1",
       cwd: "/repo",
@@ -183,10 +184,12 @@ describe("claude capture source", () => {
       config: baseConfig,
       now: () => "2026-01-01T00:00:00.000Z",
       appendQueuedSessionRowFn: append as any,
+      clearSessionQueryCacheFn: clear as any,
       maybeTriggerPeriodicSummaryFn: maybe as any,
     });
     expect(queued.status).toBe("queued");
     expect(append).toHaveBeenCalledTimes(1);
+    expect(clear).toHaveBeenCalledWith("s1");
     expect(maybe).toHaveBeenCalledWith("s1", "/repo", baseConfig);
 
     const flush = vi.fn(async () => ({ status: "flushed", rows: 2, batches: 1 }));
@@ -375,6 +378,49 @@ describe("claude pre-tool source", () => {
       shellBundle: "/tmp/deeplake-shell.js",
     });
     expect(fallback?.command).toContain('node "/tmp/deeplake-shell.js"');
+  });
+
+  it("reuses cached /index.md content for direct and compiled reads within a session", async () => {
+    const readVirtualPathContentFn = vi.fn(async () => "fresh index");
+    const readVirtualPathContentsFn = vi.fn(async (_api, _memory, _sessions, paths: string[]) => new Map(
+      paths.map((path) => [path, path === "/index.md" ? "fresh index" : null]),
+    )) as any;
+    const readCachedIndexContentFn = vi.fn(() => "cached index");
+    const writeCachedIndexContentFn = vi.fn();
+
+    const directDecision = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Read",
+      tool_input: { file_path: "~/.deeplake/memory/index.md" },
+      tool_use_id: "tu-cache-1",
+    }, {
+      config: baseConfig,
+      readCachedIndexContentFn: readCachedIndexContentFn as any,
+      writeCachedIndexContentFn: writeCachedIndexContentFn as any,
+      readVirtualPathContentFn: readVirtualPathContentFn as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+    });
+    expect(directDecision?.command).toContain("cached index");
+    expect(readVirtualPathContentFn).not.toHaveBeenCalled();
+    expect(writeCachedIndexContentFn).toHaveBeenCalledWith("s1", "cached index");
+
+    const compiledDecision = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "cat ~/.deeplake/memory/index.md && ls ~/.deeplake/memory/summaries" },
+      tool_use_id: "tu-cache-2",
+    }, {
+      config: baseConfig,
+      readCachedIndexContentFn: readCachedIndexContentFn as any,
+      writeCachedIndexContentFn: writeCachedIndexContentFn as any,
+      readVirtualPathContentsFn,
+      executeCompiledBashCommandFn: vi.fn(async (_api, _table, _sessions, _cmd, deps) => {
+        const map = await deps.readVirtualPathContentsFn(_api, _table, _sessions, ["/index.md"]);
+        return map.get("/index.md") ?? null;
+      }) as any,
+    });
+    expect(compiledDecision?.command).toContain("cached index");
+    expect(readVirtualPathContentsFn).not.toHaveBeenCalled();
   });
 
   it("supports head, tail, wc -l, empty directories, and shell fallback after direct-query errors", async () => {

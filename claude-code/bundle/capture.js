@@ -271,6 +271,17 @@ var DeeplakeApi = class {
   async createIndex(column) {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
+  buildLookupIndexName(table, suffix) {
+    return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
+  }
+  async ensureLookupIndex(table, suffix, columnsSql) {
+    const indexName = this.buildLookupIndexName(table, suffix);
+    try {
+      await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
+    } catch (e) {
+      log2(`index "${indexName}" skipped: ${e.message}`);
+    }
+  }
   /** List all tables in the workspace (with retry). */
   async listTables(forceRefresh = false) {
     if (!forceRefresh && this._tablesCache)
@@ -333,6 +344,7 @@ var DeeplakeApi = class {
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
     }
+    await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
 };
 
@@ -816,8 +828,27 @@ function sleep2(ms) {
   return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 
+// dist/src/hooks/query-cache.js
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync4, rmSync as rmSync2, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join6 } from "node:path";
+import { homedir as homedir6 } from "node:os";
+var log3 = (msg) => log("query-cache", msg);
+var DEFAULT_CACHE_ROOT = join6(homedir6(), ".deeplake", "query-cache");
+function getSessionQueryCacheDir(sessionId, deps = {}) {
+  const { cacheRoot = DEFAULT_CACHE_ROOT } = deps;
+  return join6(cacheRoot, sessionId);
+}
+function clearSessionQueryCache(sessionId, deps = {}) {
+  const { logFn = log3 } = deps;
+  try {
+    rmSync2(getSessionQueryCacheDir(sessionId, deps), { recursive: true, force: true });
+  } catch (e) {
+    logFn(`clear failed for session=${sessionId}: ${e.message}`);
+  }
+}
+
 // dist/src/hooks/capture.js
-var log3 = (msg) => log("capture", msg);
+var log4 = (msg) => log("capture", msg);
 var CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
 function buildCaptureEntry(input, timestamp) {
   const meta = {
@@ -861,7 +892,7 @@ function buildCaptureEntry(input, timestamp) {
   return null;
 }
 function maybeTriggerPeriodicSummary(sessionId, cwd, config, deps = {}) {
-  const { bundleDir = bundleDirFromImportMeta(import.meta.url), wikiWorker = process.env.HIVEMIND_WIKI_WORKER === "1", logFn = log3, bumpTotalCountFn = bumpTotalCount, loadTriggerConfigFn = loadTriggerConfig, shouldTriggerFn = shouldTrigger, tryAcquireLockFn = tryAcquireLock, wikiLogFn = wikiLog, spawnWikiWorkerFn = spawnWikiWorker } = deps;
+  const { bundleDir = bundleDirFromImportMeta(import.meta.url), wikiWorker = process.env.HIVEMIND_WIKI_WORKER === "1", logFn = log4, bumpTotalCountFn = bumpTotalCount, loadTriggerConfigFn = loadTriggerConfig, shouldTriggerFn = shouldTrigger, tryAcquireLockFn = tryAcquireLock, wikiLogFn = wikiLog, spawnWikiWorkerFn = spawnWikiWorker } = deps;
   if (wikiWorker)
     return;
   try {
@@ -886,7 +917,7 @@ function maybeTriggerPeriodicSummary(sessionId, cwd, config, deps = {}) {
   }
 }
 async function runCaptureHook(input, deps = {}) {
-  const { captureEnabled = CAPTURE, config = loadConfig(), now = () => (/* @__PURE__ */ new Date()).toISOString(), createApi = (activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, activeConfig.sessionsTableName), appendQueuedSessionRowFn = appendQueuedSessionRow, buildQueuedSessionRowFn = buildQueuedSessionRow, flushSessionQueueFn = flushSessionQueue, maybeTriggerPeriodicSummaryFn = maybeTriggerPeriodicSummary, logFn = log3 } = deps;
+  const { captureEnabled = CAPTURE, config = loadConfig(), now = () => (/* @__PURE__ */ new Date()).toISOString(), createApi = (activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, activeConfig.sessionsTableName), appendQueuedSessionRowFn = appendQueuedSessionRow, buildQueuedSessionRowFn = buildQueuedSessionRow, flushSessionQueueFn = flushSessionQueue, clearSessionQueryCacheFn = clearSessionQueryCache, maybeTriggerPeriodicSummaryFn = maybeTriggerPeriodicSummary, logFn = log4 } = deps;
   if (!captureEnabled)
     return { status: "disabled" };
   if (!config) {
@@ -905,6 +936,9 @@ async function runCaptureHook(input, deps = {}) {
     logFn(`tool=${input.tool_name} session=${input.session_id}`);
   else
     logFn(`assistant session=${input.session_id}`);
+  if (input.hook_event_name === "UserPromptSubmit") {
+    clearSessionQueryCacheFn(input.session_id);
+  }
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
@@ -936,7 +970,7 @@ async function main() {
 }
 if (isDirectRun(import.meta.url)) {
   main().catch((e) => {
-    log3(`fatal: ${e.message}`);
+    log4(`fatal: ${e.message}`);
     process.exit(0);
   });
 }
