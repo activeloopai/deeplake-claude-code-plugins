@@ -183,6 +183,15 @@ function parseHeadTailStage(stage: string): { lineLimit: number; fromEnd: boolea
   return null;
 }
 
+function isValidPipelineHeadTailStage(stage: string): boolean {
+  const tokens = tokenizeShellWords(stage);
+  if (!tokens || (tokens[0] !== "head" && tokens[0] !== "tail")) return false;
+  if (tokens.length === 1) return true;
+  if (tokens.length === 2) return /^-\d+$/.test(tokens[1]);
+  if (tokens.length === 3) return tokens[1] === "-n" && /^-?\d+$/.test(tokens[2]);
+  return false;
+}
+
 function parseFindNamePatterns(tokens: string[]): string[] | null {
   const patterns: string[] = [];
   for (let i = 2; i < tokens.length; i++) {
@@ -231,6 +240,7 @@ export function parseCompiledSegment(segment: string): CompiledSegment | null {
         if (paths.length !== 1) return null;
         countLines = true;
       } else {
+        if (!isValidPipelineHeadTailStage(pipeStage)) return null;
         const headTail = parseHeadTailStage(pipeStage);
         if (!headTail) return null;
         lineLimit = headTail.lineLimit;
@@ -311,7 +321,9 @@ export function parseCompiledSegment(segment: string): CompiledSegment | null {
       if (!grepParams) return null;
       let lineLimit = 0;
       if (pipeline.length === 3) {
-        const headTail = parseHeadTailStage(pipeline[2].trim());
+        const headStage = pipeline[2].trim();
+        if (!isValidPipelineHeadTailStage(headStage)) return null;
+        const headTail = parseHeadTailStage(headStage);
         if (!headTail || headTail.fromEnd) return null;
         lineLimit = headTail.lineLimit;
       }
@@ -327,7 +339,9 @@ export function parseCompiledSegment(segment: string): CompiledSegment | null {
     let lineLimit = 0;
     if (pipeline.length > 1) {
       if (pipeline.length !== 2) return null;
-      const headTail = parseHeadTailStage(pipeline[1].trim());
+      const headStage = pipeline[1].trim();
+      if (!isValidPipelineHeadTailStage(headStage)) return null;
+      const headTail = parseHeadTailStage(headStage);
       if (!headTail || headTail.fromEnd) return null;
       lineLimit = headTail.lineLimit;
     }
