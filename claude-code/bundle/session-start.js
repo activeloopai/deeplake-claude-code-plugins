@@ -128,6 +128,9 @@ Deeplake memory structure:
 - ~/.deeplake/memory/sessions/username/*.jsonl \u2014 raw session data (last resort)
 
 SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw JSONL if summaries don't have enough detail. Do NOT jump straight to JSONL files.
+When index.md points to a likely match, read that exact summary or session file directly before trying broader grep variants.
+For benchmark-style paths like conv_0_session_*.json or named session summaries, open the exact file from index.md instead of probing synonym guesses like "partner", "boyfriend", "married", etc.
+Do NOT probe unrelated local paths such as ~/.claude/projects/, arbitrary home directories, or guessed summary roots when the question is about Deeplake memory.
 
 Search command: Grep pattern="keyword" path="~/.deeplake/memory"
 

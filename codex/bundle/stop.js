@@ -432,12 +432,19 @@ function bundleDirFromImportMeta(importMetaUrl) {
 
 // dist/src/hooks/session-queue.js
 import { appendFileSync as appendFileSync3, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, readdirSync, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join4 } from "node:path";
+import { dirname as dirname2, join as join4 } from "node:path";
 import { homedir as homedir4 } from "node:os";
 var DEFAULT_QUEUE_DIR = join4(homedir4(), ".deeplake", "queue");
 var DEFAULT_MAX_BATCH_ROWS = 50;
 var DEFAULT_STALE_INFLIGHT_MS = 6e4;
+var DEFAULT_AUTH_FAILURE_TTL_MS = 5 * 6e4;
 var BUSY_WAIT_STEP_MS = 100;
+var SessionWriteDisabledError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "SessionWriteDisabledError";
+  }
+};
 function buildSessionPath(config, sessionId) {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
 }
@@ -483,6 +490,9 @@ async function flushSessionQueue(api, opts) {
   mkdirSync2(queueDir, { recursive: true });
   const queuePath = getQueuePath(queueDir, opts.sessionId);
   const inflightPath = getInflightPath(queueDir, opts.sessionId);
+  if (isSessionWriteDisabled(opts.sessionsTable, queueDir)) {
+    return existsSync2(queuePath) || existsSync2(inflightPath) ? { status: "disabled", rows: 0, batches: 0 } : { status: "empty", rows: 0, batches: 0 };
+  }
   let totalRows = 0;
   let totalBatches = 0;
   let flushedAny = false;
@@ -517,6 +527,9 @@ async function flushSessionQueue(api, opts) {
       flushedAny = flushedAny || rows > 0;
     } catch (e) {
       requeueInflight(queuePath, inflightPath);
+      if (e instanceof SessionWriteDisabledError) {
+        return { status: "disabled", rows: totalRows, batches: totalBatches };
+      }
       throw e;
     }
     if (!drainAll) {
@@ -542,22 +555,44 @@ async function flushInflightFile(api, sessionsTable, inflightPath, maxBatchRows)
   }
   let ensured = false;
   let batches = 0;
+  const queueDir = dirname2(inflightPath);
   for (let i = 0; i < rows.length; i += maxBatchRows) {
     const chunk = rows.slice(i, i + maxBatchRows);
     const sql = buildSessionInsertSql(sessionsTable, chunk);
     try {
       await api.query(sql);
     } catch (e) {
+      if (isSessionWriteAuthError(e)) {
+        markSessionWriteDisabled(sessionsTable, errorMessage(e), queueDir);
+        throw new SessionWriteDisabledError(errorMessage(e));
+      }
       if (!ensured && isEnsureSessionsTableRetryable(e)) {
-        await api.ensureSessionsTable(sessionsTable);
+        try {
+          await api.ensureSessionsTable(sessionsTable);
+        } catch (ensureError) {
+          if (isSessionWriteAuthError(ensureError)) {
+            markSessionWriteDisabled(sessionsTable, errorMessage(ensureError), queueDir);
+            throw new SessionWriteDisabledError(errorMessage(ensureError));
+          }
+          throw ensureError;
+        }
         ensured = true;
-        await api.query(sql);
+        try {
+          await api.query(sql);
+        } catch (retryError) {
+          if (isSessionWriteAuthError(retryError)) {
+            markSessionWriteDisabled(sessionsTable, errorMessage(retryError), queueDir);
+            throw new SessionWriteDisabledError(errorMessage(retryError));
+          }
+          throw retryError;
+        }
       } else {
         throw e;
       }
     }
     batches += 1;
   }
+  clearSessionWriteDisabled(sessionsTable, queueDir);
   rmSync(inflightPath, { force: true });
   return { rows: rows.length, batches };
 }
@@ -586,8 +621,47 @@ function isStale(path, staleInflightMs) {
   return Date.now() - statSync(path).mtimeMs >= staleInflightMs;
 }
 function isEnsureSessionsTableRetryable(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes("permission denied") || message.includes("does not exist");
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("does not exist") || message.includes("doesn't exist") || message.includes("relation") || message.includes("not found");
+}
+function isSessionWriteAuthError(error) {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("403") || message.includes("401") || message.includes("forbidden") || message.includes("unauthorized");
+}
+function markSessionWriteDisabled(sessionsTable, reason, queueDir = DEFAULT_QUEUE_DIR) {
+  mkdirSync2(queueDir, { recursive: true });
+  writeFileSync2(getSessionWriteDisabledPath(queueDir, sessionsTable), JSON.stringify({
+    disabledAt: (/* @__PURE__ */ new Date()).toISOString(),
+    reason,
+    sessionsTable
+  }));
+}
+function clearSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR) {
+  rmSync(getSessionWriteDisabledPath(queueDir, sessionsTable), { force: true });
+}
+function isSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR, ttlMs = DEFAULT_AUTH_FAILURE_TTL_MS) {
+  const path = getSessionWriteDisabledPath(queueDir, sessionsTable);
+  if (!existsSync2(path))
+    return false;
+  try {
+    const raw = readFileSync2(path, "utf-8");
+    const state = JSON.parse(raw);
+    const ageMs = Date.now() - new Date(state.disabledAt).getTime();
+    if (Number.isNaN(ageMs) || ageMs >= ttlMs) {
+      rmSync(path, { force: true });
+      return false;
+    }
+    return true;
+  } catch {
+    rmSync(path, { force: true });
+    return false;
+  }
+}
+function getSessionWriteDisabledPath(queueDir, sessionsTable) {
+  return join4(queueDir, `.${sessionsTable}.disabled.json`);
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 async function waitForInflightToClear(inflightPath, waitIfBusyMs) {
   const startedAt = Date.now();

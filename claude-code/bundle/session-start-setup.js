@@ -2,7 +2,7 @@
 
 // dist/src/hooks/session-start-setup.js
 import { fileURLToPath } from "node:url";
-import { dirname as dirname2, join as join6 } from "node:path";
+import { dirname as dirname3, join as join6 } from "node:path";
 import { mkdirSync as mkdirSync4, appendFileSync as appendFileSync3 } from "node:fs";
 import { execSync as execSync2 } from "node:child_process";
 import { homedir as homedir6 } from "node:os";
@@ -355,12 +355,19 @@ function readStdin() {
 
 // dist/src/hooks/session-queue.js
 import { appendFileSync as appendFileSync2, existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync3, readdirSync, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join4 } from "node:path";
+import { dirname, join as join4 } from "node:path";
 import { homedir as homedir4 } from "node:os";
 var DEFAULT_QUEUE_DIR = join4(homedir4(), ".deeplake", "queue");
 var DEFAULT_MAX_BATCH_ROWS = 50;
 var DEFAULT_STALE_INFLIGHT_MS = 6e4;
+var DEFAULT_AUTH_FAILURE_TTL_MS = 5 * 6e4;
 var BUSY_WAIT_STEP_MS = 100;
+var SessionWriteDisabledError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "SessionWriteDisabledError";
+  }
+};
 function buildSessionInsertSql(sessionsTable, rows) {
   if (rows.length === 0)
     throw new Error("buildSessionInsertSql: rows must not be empty");
@@ -380,6 +387,9 @@ async function flushSessionQueue(api, opts) {
   mkdirSync2(queueDir, { recursive: true });
   const queuePath = getQueuePath(queueDir, opts.sessionId);
   const inflightPath = getInflightPath(queueDir, opts.sessionId);
+  if (isSessionWriteDisabled(opts.sessionsTable, queueDir)) {
+    return existsSync3(queuePath) || existsSync3(inflightPath) ? { status: "disabled", rows: 0, batches: 0 } : { status: "empty", rows: 0, batches: 0 };
+  }
   let totalRows = 0;
   let totalBatches = 0;
   let flushedAny = false;
@@ -414,6 +424,9 @@ async function flushSessionQueue(api, opts) {
       flushedAny = flushedAny || rows > 0;
     } catch (e) {
       requeueInflight(queuePath, inflightPath);
+      if (e instanceof SessionWriteDisabledError) {
+        return { status: "disabled", rows: totalRows, batches: totalBatches };
+      }
       throw e;
     }
     if (!drainAll) {
@@ -465,22 +478,44 @@ async function flushInflightFile(api, sessionsTable, inflightPath, maxBatchRows)
   }
   let ensured = false;
   let batches = 0;
+  const queueDir = dirname(inflightPath);
   for (let i = 0; i < rows.length; i += maxBatchRows) {
     const chunk = rows.slice(i, i + maxBatchRows);
     const sql = buildSessionInsertSql(sessionsTable, chunk);
     try {
       await api.query(sql);
     } catch (e) {
+      if (isSessionWriteAuthError(e)) {
+        markSessionWriteDisabled(sessionsTable, errorMessage(e), queueDir);
+        throw new SessionWriteDisabledError(errorMessage(e));
+      }
       if (!ensured && isEnsureSessionsTableRetryable(e)) {
-        await api.ensureSessionsTable(sessionsTable);
+        try {
+          await api.ensureSessionsTable(sessionsTable);
+        } catch (ensureError) {
+          if (isSessionWriteAuthError(ensureError)) {
+            markSessionWriteDisabled(sessionsTable, errorMessage(ensureError), queueDir);
+            throw new SessionWriteDisabledError(errorMessage(ensureError));
+          }
+          throw ensureError;
+        }
         ensured = true;
-        await api.query(sql);
+        try {
+          await api.query(sql);
+        } catch (retryError) {
+          if (isSessionWriteAuthError(retryError)) {
+            markSessionWriteDisabled(sessionsTable, errorMessage(retryError), queueDir);
+            throw new SessionWriteDisabledError(errorMessage(retryError));
+          }
+          throw retryError;
+        }
       } else {
         throw e;
       }
     }
     batches += 1;
   }
+  clearSessionWriteDisabled(sessionsTable, queueDir);
   rmSync(inflightPath, { force: true });
   return { rows: rows.length, batches };
 }
@@ -523,8 +558,47 @@ function listQueuedSessionIds(queueDir, staleInflightMs) {
   return [...sessionIds].sort();
 }
 function isEnsureSessionsTableRetryable(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes("permission denied") || message.includes("does not exist");
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("does not exist") || message.includes("doesn't exist") || message.includes("relation") || message.includes("not found");
+}
+function isSessionWriteAuthError(error) {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("403") || message.includes("401") || message.includes("forbidden") || message.includes("unauthorized");
+}
+function markSessionWriteDisabled(sessionsTable, reason, queueDir = DEFAULT_QUEUE_DIR) {
+  mkdirSync2(queueDir, { recursive: true });
+  writeFileSync2(getSessionWriteDisabledPath(queueDir, sessionsTable), JSON.stringify({
+    disabledAt: (/* @__PURE__ */ new Date()).toISOString(),
+    reason,
+    sessionsTable
+  }));
+}
+function clearSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR) {
+  rmSync(getSessionWriteDisabledPath(queueDir, sessionsTable), { force: true });
+}
+function isSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR, ttlMs = DEFAULT_AUTH_FAILURE_TTL_MS) {
+  const path = getSessionWriteDisabledPath(queueDir, sessionsTable);
+  if (!existsSync3(path))
+    return false;
+  try {
+    const raw = readFileSync3(path, "utf-8");
+    const state = JSON.parse(raw);
+    const ageMs = Date.now() - new Date(state.disabledAt).getTime();
+    if (Number.isNaN(ageMs) || ageMs >= ttlMs) {
+      rmSync(path, { force: true });
+      return false;
+    }
+    return true;
+  } catch {
+    rmSync(path, { force: true });
+    return false;
+  }
+}
+function getSessionWriteDisabledPath(queueDir, sessionsTable) {
+  return join4(queueDir, `.${sessionsTable}.disabled.json`);
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 async function waitForInflightToClear(inflightPath, waitIfBusyMs) {
   const startedAt = Date.now();
@@ -538,7 +612,7 @@ function sleep2(ms) {
 
 // dist/src/hooks/version-check.js
 import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname, join as join5 } from "node:path";
+import { dirname as dirname2, join as join5 } from "node:path";
 import { homedir as homedir5 } from "node:os";
 var DEFAULT_VERSION_CACHE_PATH = join5(homedir5(), ".deeplake", ".version-check.json");
 var DEFAULT_VERSION_CACHE_TTL_MS = 60 * 60 * 1e3;
@@ -559,7 +633,7 @@ function getInstalledVersion(bundleDir, pluginManifestDir) {
         return pkg.version;
     } catch {
     }
-    const parent = dirname(dir);
+    const parent = dirname2(dir);
     if (parent === dir)
       break;
     dir = parent;
@@ -585,7 +659,7 @@ function readVersionCache(cachePath = DEFAULT_VERSION_CACHE_PATH) {
   return null;
 }
 function writeVersionCache(entry, cachePath = DEFAULT_VERSION_CACHE_PATH) {
-  mkdirSync3(dirname(cachePath), { recursive: true });
+  mkdirSync3(dirname2(cachePath), { recursive: true });
   writeFileSync3(cachePath, JSON.stringify(entry));
 }
 function readFreshCachedLatestVersion(url, ttlMs = DEFAULT_VERSION_CACHE_TTL_MS, cachePath = DEFAULT_VERSION_CACHE_PATH, nowMs = Date.now()) {
@@ -627,7 +701,7 @@ async function getLatestVersionCached(opts) {
 
 // dist/src/hooks/session-start-setup.js
 var log3 = (msg) => log("session-setup", msg);
-var __bundleDir = dirname2(fileURLToPath(import.meta.url));
+var __bundleDir = dirname3(fileURLToPath(import.meta.url));
 var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 var VERSION_CHECK_TIMEOUT = 3e3;
 var HOME = homedir6();
@@ -687,13 +761,26 @@ async function main() {
       if (config) {
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
         await api.ensureTable();
-        await api.ensureSessionsTable(config.sessionsTableName);
         if (captureEnabled) {
-          const drain = await drainSessionQueues(api, {
-            sessionsTable: config.sessionsTableName
-          });
-          if (drain.flushedSessions > 0) {
-            log3(`drained ${drain.flushedSessions} queued session(s), rows=${drain.rows}, batches=${drain.batches}`);
+          if (isSessionWriteDisabled(config.sessionsTableName)) {
+            log3(`sessions table disabled, skipping setup for "${config.sessionsTableName}"`);
+          } else {
+            try {
+              await api.ensureSessionsTable(config.sessionsTableName);
+              const drain = await drainSessionQueues(api, {
+                sessionsTable: config.sessionsTableName
+              });
+              if (drain.flushedSessions > 0) {
+                log3(`drained ${drain.flushedSessions} queued session(s), rows=${drain.rows}, batches=${drain.batches}`);
+              }
+            } catch (e) {
+              if (isSessionWriteAuthError(e)) {
+                markSessionWriteDisabled(config.sessionsTableName, e.message);
+                log3(`sessions table unavailable, skipping setup: ${e.message}`);
+              } else {
+                throw e;
+              }
+            }
           }
           await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
         }

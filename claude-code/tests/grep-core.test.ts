@@ -578,7 +578,7 @@ describe("searchDeeplakeTables", () => {
     return { query } as any;
   }
 
-  it("issues one LIKE query per table with the escaped pattern and path filter", async () => {
+  it("issues only the scoped LIKE query when the path filter is clearly memory-backed", async () => {
     const api = mockApi([], []);
     await searchDeeplakeTables(api, "memory", "sessions", {
       pathFilter: " AND (path = '/x' OR path LIKE '/x/%')",
@@ -587,13 +587,11 @@ describe("searchDeeplakeTables", () => {
       escapedPattern: "foo",
       limit: 50,
     });
-    expect(api.query).toHaveBeenCalledTimes(2);
-    const [memCall, sessCall] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(api.query).toHaveBeenCalledTimes(1);
+    const [memCall] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
     expect(memCall).toContain('FROM "memory"');
     expect(memCall).toContain("summary::text ILIKE '%foo%'");
     expect(memCall).toContain("LIMIT 50");
-    expect(sessCall).toContain('FROM "sessions"');
-    expect(sessCall).toContain("message::text ILIKE '%foo%'");
   });
 
   it("skips LIKE filter when contentScanOnly is true (regex-in-memory mode)", async () => {

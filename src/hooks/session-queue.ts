@@ -9,7 +9,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
 
@@ -269,6 +269,7 @@ async function flushInflightFile(
 
   let ensured = false;
   let batches = 0;
+  const queueDir = dirname(inflightPath);
   for (let i = 0; i < rows.length; i += maxBatchRows) {
     const chunk = rows.slice(i, i + maxBatchRows);
     const sql = buildSessionInsertSql(sessionsTable, chunk);
@@ -276,7 +277,7 @@ async function flushInflightFile(
       await api.query(sql);
     } catch (e: any) {
       if (isSessionWriteAuthError(e)) {
-        markSessionWriteDisabled(sessionsTable, errorMessage(e));
+        markSessionWriteDisabled(sessionsTable, errorMessage(e), queueDir);
         throw new SessionWriteDisabledError(errorMessage(e));
       }
       if (!ensured && isEnsureSessionsTableRetryable(e)) {
@@ -284,7 +285,7 @@ async function flushInflightFile(
           await api.ensureSessionsTable(sessionsTable);
         } catch (ensureError: unknown) {
           if (isSessionWriteAuthError(ensureError)) {
-            markSessionWriteDisabled(sessionsTable, errorMessage(ensureError));
+            markSessionWriteDisabled(sessionsTable, errorMessage(ensureError), queueDir);
             throw new SessionWriteDisabledError(errorMessage(ensureError));
           }
           throw ensureError;
@@ -294,7 +295,7 @@ async function flushInflightFile(
           await api.query(sql);
         } catch (retryError: unknown) {
           if (isSessionWriteAuthError(retryError)) {
-            markSessionWriteDisabled(sessionsTable, errorMessage(retryError));
+            markSessionWriteDisabled(sessionsTable, errorMessage(retryError), queueDir);
             throw new SessionWriteDisabledError(errorMessage(retryError));
           }
           throw retryError;
@@ -306,7 +307,7 @@ async function flushInflightFile(
     batches += 1;
   }
 
-  clearSessionWriteDisabled(sessionsTable);
+  clearSessionWriteDisabled(sessionsTable, queueDir);
   rmSync(inflightPath, { force: true });
   return { rows: rows.length, batches };
 }
