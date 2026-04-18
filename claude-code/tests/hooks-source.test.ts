@@ -261,6 +261,7 @@ describe("claude pre-tool source", () => {
     }, {
       config: baseConfig,
       handleGrepDirectFn: vi.fn(async () => "/index.md:needle") as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(grepDecision?.command).toContain("/index.md:needle");
 
@@ -283,6 +284,7 @@ describe("claude pre-tool source", () => {
       config: baseConfig,
       createApi: vi.fn(() => api as any),
       readVirtualPathContentFn: vi.fn(async () => null) as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(readDecision?.command).toContain("# Memory Index");
 
@@ -296,6 +298,7 @@ describe("claude pre-tool source", () => {
       listVirtualPathRowsFn: vi.fn(async () => [
         { path: "/summaries/alice/s1.md", size_bytes: 42 },
       ]) as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(lsDecision?.command).toContain("drwxr-xr-x");
     expect(lsDecision?.command).toContain("alice/");
@@ -308,6 +311,7 @@ describe("claude pre-tool source", () => {
     }, {
       config: baseConfig,
       findVirtualPathsFn: vi.fn(async () => ["/summaries/alice/s1.md"]) as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(findDecision?.command).toContain("/summaries/alice/s1.md");
 
@@ -334,6 +338,7 @@ describe("claude pre-tool source", () => {
     }, {
       config: baseConfig,
       readVirtualPathContentFn: contentReader as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(headDecision?.command).toContain("line1\\nline2");
 
@@ -345,6 +350,7 @@ describe("claude pre-tool source", () => {
     }, {
       config: baseConfig,
       readVirtualPathContentFn: contentReader as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(tailDecision?.command).toContain("line2\\nline3");
 
@@ -356,6 +362,7 @@ describe("claude pre-tool source", () => {
     }, {
       config: baseConfig,
       readVirtualPathContentFn: contentReader as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(wcDecision?.command).toContain("3 /index.md");
 
@@ -367,6 +374,7 @@ describe("claude pre-tool source", () => {
     }, {
       config: baseConfig,
       listVirtualPathRowsFn: vi.fn(async () => []) as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(emptyDir?.command).toContain("(empty directory)");
 
@@ -382,8 +390,24 @@ describe("claude pre-tool source", () => {
       config: baseConfig,
       handleGrepDirectFn: vi.fn(async () => { throw new Error("boom"); }) as any,
       shellBundle: "/tmp/deeplake-shell.js",
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(fallback?.description).toContain("DeepLake shell");
+  });
+
+  it("returns compiled output when the bash compiler can satisfy the command directly", async () => {
+    const decision = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "cat ~/.deeplake/memory/index.md && ls ~/.deeplake/memory/summaries" },
+      tool_use_id: "tu-11",
+    }, {
+      config: baseConfig,
+      executeCompiledBashCommandFn: vi.fn(async () => "compiled output") as any,
+    });
+
+    expect(decision?.command).toContain("compiled output");
+    expect(decision?.description).toContain("DeepLake compiled");
   });
 });
 

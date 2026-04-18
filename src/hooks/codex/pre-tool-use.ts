@@ -23,6 +23,7 @@ import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlLike } from "../../utils/sql.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
+import { executeCompiledBashCommand } from "../bash-command-compiler.js";
 import {
   findVirtualPaths,
   listVirtualPathRows,
@@ -135,6 +136,7 @@ function buildIndexContent(rows: Record<string, unknown>[]): string {
 interface CodexPreToolDeps {
   config?: ReturnType<typeof loadConfig>;
   createApi?: (table: string, config: NonNullable<ReturnType<typeof loadConfig>>) => DeeplakeApi;
+  executeCompiledBashCommandFn?: typeof executeCompiledBashCommand;
   readVirtualPathContentFn?: typeof readVirtualPathContent;
   listVirtualPathRowsFn?: typeof listVirtualPathRows;
   findVirtualPathsFn?: typeof findVirtualPaths;
@@ -157,6 +159,7 @@ export async function processCodexPreToolUse(
       activeConfig.workspaceId,
       table,
     ),
+    executeCompiledBashCommandFn = executeCompiledBashCommand,
     readVirtualPathContentFn = readVirtualPathContent,
     listVirtualPathRowsFn = listVirtualPathRows,
     findVirtualPathsFn = findVirtualPaths,
@@ -188,6 +191,11 @@ export async function processCodexPreToolUse(
     const api = createApi(table, config);
 
     try {
+      const compiled = await executeCompiledBashCommandFn(api, table, sessionsTable, rewritten);
+      if (compiled !== null) {
+        return { action: "block", output: compiled, rewrittenCommand: rewritten };
+      }
+
       let virtualPath: string | null = null;
       let lineLimit = 0;
       let fromEnd = false;

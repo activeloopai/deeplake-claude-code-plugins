@@ -6,6 +6,7 @@ import {
   renameSync,
   rmSync,
   utimesSync,
+  writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -18,6 +19,7 @@ import {
   drainSessionQueues,
   flushSessionQueue,
   isSessionWriteDisabled,
+  markSessionWriteDisabled,
   type QueuedSessionRow,
   type SessionQueueApi,
 } from "../../src/hooks/session-queue.js";
@@ -165,6 +167,57 @@ describe("session queue", () => {
     expect(api.query).toHaveBeenCalledTimes(2);
   });
 
+  it("removes empty queue files without issuing inserts", async () => {
+    const queueDir = makeQueueDir();
+    writeFileSync(join(queueDir, "session-empty-file.jsonl"), "");
+
+    const api = makeApi();
+    const result = await flushSessionQueue(api, {
+      sessionId: "session-empty-file",
+      sessionsTable: "sessions",
+      queueDir,
+    });
+
+    expect(result).toEqual({ status: "flushed", rows: 0, batches: 0 });
+    expect(api.query).not.toHaveBeenCalled();
+    expect(existsSync(join(queueDir, "session-empty-file.inflight"))).toBe(false);
+  });
+
+  it("rethrows non-auth ensureSessionsTable failures", async () => {
+    const queueDir = makeQueueDir();
+    appendQueuedSessionRow(makeRow("session-ensure-error", 1), queueDir);
+
+    const api = makeApi(async () => {
+      throw new Error("table sessions does not exist");
+    });
+    api.ensureSessionsTable.mockRejectedValueOnce(new Error("dial tcp reset"));
+
+    await expect(flushSessionQueue(api, {
+      sessionId: "session-ensure-error",
+      sessionsTable: "sessions",
+      queueDir,
+    })).rejects.toThrow("dial tcp reset");
+  });
+
+  it("rethrows non-auth retry failures after ensureSessionsTable succeeds", async () => {
+    const queueDir = makeQueueDir();
+    appendQueuedSessionRow(makeRow("session-retry-error", 1), queueDir);
+
+    let attempts = 0;
+    const api = makeApi(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("table sessions does not exist");
+      throw new Error("network blew up");
+    });
+
+    await expect(flushSessionQueue(api, {
+      sessionId: "session-retry-error",
+      sessionsTable: "sessions",
+      queueDir,
+    })).rejects.toThrow("network blew up");
+    expect(api.ensureSessionsTable).toHaveBeenCalledWith("sessions");
+  });
+
   it("re-queues failed inflight rows back into the queue", async () => {
     const queueDir = makeQueueDir();
     appendQueuedSessionRow(makeRow("session-fail", 1), queueDir);
@@ -260,6 +313,24 @@ describe("session queue", () => {
     expect(existsSync(join(queueDir, "session-stale.inflight"))).toBe(false);
   });
 
+  it("drains queued .jsonl sessions on session start replay", async () => {
+    const queueDir = makeQueueDir();
+    appendQueuedSessionRow(makeRow("session-drain-queued", 1), queueDir);
+
+    const api = makeApi();
+    const result = await drainSessionQueues(api, {
+      sessionsTable: "sessions",
+      queueDir,
+    });
+
+    expect(result).toEqual({
+      queuedSessions: 1,
+      flushedSessions: 1,
+      rows: 1,
+      batches: 1,
+    });
+  });
+
   it("marks session writes disabled on auth failures and preserves the queue", async () => {
     const queueDir = makeQueueDir();
     appendQueuedSessionRow(makeRow("session-auth", 1), queueDir);
@@ -312,5 +383,93 @@ describe("session queue", () => {
     expect(api.query).toHaveBeenCalledTimes(1);
 
     clearSessionWriteDisabled("sessions", queueDir);
+  });
+
+  it("returns empty when writes are disabled but no queue files remain", async () => {
+    const queueDir = makeQueueDir();
+    markSessionWriteDisabled("sessions", "403 Forbidden", queueDir);
+
+    const result = await flushSessionQueue(makeApi(), {
+      sessionId: "session-disabled-empty",
+      sessionsTable: "sessions",
+      queueDir,
+    });
+
+    expect(result).toEqual({ status: "empty", rows: 0, batches: 0 });
+  });
+
+  it("recovers stale inflight files during a direct flush when allowed", async () => {
+    const queueDir = makeQueueDir();
+    appendQueuedSessionRow(makeRow("session-recover", 1), queueDir);
+    renameSync(
+      join(queueDir, "session-recover.jsonl"),
+      join(queueDir, "session-recover.inflight"),
+    );
+    utimesSync(join(queueDir, "session-recover.inflight"), 0, 0);
+
+    const api = makeApi();
+    const result = await flushSessionQueue(api, {
+      sessionId: "session-recover",
+      sessionsTable: "sessions",
+      queueDir,
+      allowStaleInflight: true,
+      staleInflightMs: 1,
+    });
+
+    expect(result).toEqual({ status: "flushed", rows: 1, batches: 1 });
+    expect(api.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes expired and malformed disabled markers", () => {
+    const queueDir = makeQueueDir();
+    markSessionWriteDisabled("sessions", "403 Forbidden", queueDir);
+
+    expect(isSessionWriteDisabled("sessions", queueDir, 0)).toBe(false);
+
+    const disabledPath = join(queueDir, ".sessions.disabled.json");
+    writeFileSync(disabledPath, "{not-json");
+    expect(isSessionWriteDisabled("sessions", queueDir)).toBe(false);
+    expect(existsSync(disabledPath)).toBe(false);
+  });
+
+  it("marks writes disabled when ensureSessionsTable fails with auth", async () => {
+    const queueDir = makeQueueDir();
+    appendQueuedSessionRow(makeRow("session-ensure-auth", 1), queueDir);
+
+    const api = makeApi(async () => {
+      throw new Error("table sessions does not exist");
+    });
+    api.ensureSessionsTable.mockRejectedValueOnce(new Error("403 Forbidden"));
+
+    const result = await flushSessionQueue(api, {
+      sessionId: "session-ensure-auth",
+      sessionsTable: "sessions",
+      queueDir,
+    });
+
+    expect(result).toEqual({ status: "disabled", rows: 0, batches: 0 });
+    expect(isSessionWriteDisabled("sessions", queueDir)).toBe(true);
+  });
+
+  it("marks writes disabled when the retry after ensure fails with auth", async () => {
+    const queueDir = makeQueueDir();
+    appendQueuedSessionRow(makeRow("session-retry-auth", 1), queueDir);
+
+    let attempts = 0;
+    const api = makeApi(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("table sessions does not exist");
+      throw new Error("401 Unauthorized");
+    });
+
+    const result = await flushSessionQueue(api, {
+      sessionId: "session-retry-auth",
+      sessionsTable: "sessions",
+      queueDir,
+    });
+
+    expect(result).toEqual({ status: "disabled", rows: 0, batches: 0 });
+    expect(api.ensureSessionsTable).toHaveBeenCalledWith("sessions");
+    expect(isSessionWriteDisabled("sessions", queueDir)).toBe(true);
   });
 });

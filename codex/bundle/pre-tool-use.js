@@ -540,23 +540,31 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const filterPattern = contentScanOnly ? prefilterPattern : escapedPattern;
   const memFilter = filterPattern ? ` AND summary::text ${likeOp} '%${filterPattern}%'` : "";
   const sessFilter = filterPattern ? ` AND message::text ${likeOp} '%${filterPattern}%'` : "";
-  const memQuery = `SELECT path, summary::text AS content FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
-  const sessQuery = `SELECT path, message::text AS content FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
-  const [memRows, sessRows] = await Promise.all([
-    api.query(memQuery).catch(() => []),
-    api.query(sessQuery).catch(() => [])
-  ]);
-  const rows = [];
-  for (const r of memRows)
-    rows.push({ path: String(r.path), content: String(r.content ?? "") });
-  for (const r of sessRows)
-    rows.push({ path: String(r.path), content: String(r.content ?? "") });
-  return rows;
+  const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
+  const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
+  let rows;
+  try {
+    rows = await api.query(`SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`);
+  } catch {
+    const [memRows, sessRows] = await Promise.all([
+      api.query(memQuery).catch(() => []),
+      api.query(sessQuery).catch(() => [])
+    ]);
+    rows = [...memRows, ...sessRows];
+  }
+  return rows.map((row) => ({
+    path: String(row["path"]),
+    content: String(row["content"] ?? "")
+  }));
 }
 function buildPathFilter(targetPath) {
   if (!targetPath || targetPath === "/")
     return "";
   const clean = targetPath.replace(/\/+$/, "");
+  const base = clean.split("/").pop() ?? "";
+  if (base.includes(".")) {
+    return ` AND path = '${sqlStr(clean)}'`;
+  }
   return ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
 }
 function extractRegexLiteralPrefilter(pattern) {
@@ -779,35 +787,115 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
 }
 
 // dist/src/hooks/virtual-table-query.js
+function buildVirtualIndexContent(rows) {
+  const lines = ["# Memory Index", "", `${rows.length} sessions:`, ""];
+  for (const row of rows) {
+    const path = row["path"];
+    const project = row["project"] || "";
+    const description = (row["description"] || "").slice(0, 120);
+    const date = (row["creation_date"] || "").slice(0, 10);
+    lines.push(`- [${path}](${path}) ${date} ${project ? `[${project}]` : ""} ${description}`);
+  }
+  return lines.join("\n");
+}
+function buildUnionQuery(memoryQuery, sessionsQuery) {
+  return `SELECT path, content, size_bytes, creation_date, source_order FROM ((${memoryQuery}) UNION ALL (${sessionsQuery})) AS combined ORDER BY path, source_order, creation_date`;
+}
+function buildInList(paths) {
+  return paths.map((path) => `'${sqlStr(path)}'`).join(", ");
+}
+function buildDirFilter(dirs) {
+  const cleaned = [...new Set(dirs.map((dir) => dir.replace(/\/+$/, "") || "/"))];
+  if (cleaned.length === 0 || cleaned.includes("/"))
+    return "";
+  const clauses = cleaned.map((dir) => `path LIKE '${sqlLike(dir)}/%'`);
+  return ` WHERE ${clauses.join(" OR ")}`;
+}
+async function queryUnionRows(api, memoryQuery, sessionsQuery) {
+  const unionQuery = buildUnionQuery(memoryQuery, sessionsQuery);
+  try {
+    return await api.query(unionQuery);
+  } catch {
+    const [memoryRows, sessionRows] = await Promise.all([
+      api.query(memoryQuery).catch(() => []),
+      api.query(sessionsQuery).catch(() => [])
+    ]);
+    return [...memoryRows, ...sessionRows];
+  }
+}
+async function readVirtualPathContents(api, memoryTable, sessionsTable, virtualPaths) {
+  const uniquePaths = [...new Set(virtualPaths)];
+  const result = new Map(uniquePaths.map((path) => [path, null]));
+  if (uniquePaths.length === 0)
+    return result;
+  const inList = buildInList(uniquePaths);
+  const rows = await queryUnionRows(api, `SELECT path, summary::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path IN (${inList})`, `SELECT path, message::text AS content, NULL::bigint AS size_bytes, COALESCE(creation_date::text, '') AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path IN (${inList})`);
+  const memoryHits = /* @__PURE__ */ new Map();
+  const sessionHits = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const path = row["path"];
+    const content = row["content"];
+    const sourceOrder = Number(row["source_order"] ?? 0);
+    if (typeof path !== "string" || typeof content !== "string")
+      continue;
+    if (sourceOrder === 0) {
+      memoryHits.set(path, content);
+    } else {
+      const current = sessionHits.get(path) ?? [];
+      current.push(content);
+      sessionHits.set(path, current);
+    }
+  }
+  for (const path of uniquePaths) {
+    if (memoryHits.has(path)) {
+      result.set(path, memoryHits.get(path) ?? null);
+      continue;
+    }
+    const sessionParts = sessionHits.get(path) ?? [];
+    if (sessionParts.length > 0) {
+      result.set(path, sessionParts.join("\n"));
+    }
+  }
+  if (result.get("/index.md") === null && uniquePaths.includes("/index.md")) {
+    const rows2 = await api.query(`SELECT path, project, description, creation_date FROM "${memoryTable}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`).catch(() => []);
+    result.set("/index.md", buildVirtualIndexContent(rows2));
+  }
+  return result;
+}
+async function listVirtualPathRowsForDirs(api, memoryTable, sessionsTable, dirs) {
+  const uniqueDirs = [...new Set(dirs.map((dir) => dir.replace(/\/+$/, "") || "/"))];
+  const filter = buildDirFilter(uniqueDirs);
+  const rows = await queryUnionRows(api, `SELECT path, NULL::text AS content, size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}"${filter}`, `SELECT path, NULL::text AS content, size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}"${filter}`);
+  const deduped = dedupeRowsByPath(rows.map((row) => ({
+    path: row["path"],
+    size_bytes: row["size_bytes"]
+  })));
+  const byDir = /* @__PURE__ */ new Map();
+  for (const dir of uniqueDirs)
+    byDir.set(dir, []);
+  for (const row of deduped) {
+    const path = row["path"];
+    if (typeof path !== "string")
+      continue;
+    for (const dir of uniqueDirs) {
+      const prefix = dir === "/" ? "/" : `${dir}/`;
+      if (dir === "/" || path.startsWith(prefix)) {
+        byDir.get(dir)?.push(row);
+      }
+    }
+  }
+  return byDir;
+}
 async function readVirtualPathContent(api, memoryTable, sessionsTable, virtualPath) {
-  const [memoryRows, sessionRows] = await Promise.all([
-    api.query(`SELECT summary::text AS content FROM "${memoryTable}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`).catch(() => []),
-    api.query(`SELECT message::text AS content FROM "${sessionsTable}" WHERE path = '${sqlStr(virtualPath)}' ORDER BY creation_date ASC`).catch(() => [])
-  ]);
-  if (memoryRows.length > 0 && memoryRows[0]?.["content"]) {
-    return String(memoryRows[0]["content"]);
-  }
-  if (sessionRows.length > 0) {
-    const content = sessionRows.map((row) => row["content"]).filter((value) => typeof value === "string" && value.length > 0).join("\n");
-    return content || null;
-  }
-  return null;
+  return (await readVirtualPathContents(api, memoryTable, sessionsTable, [virtualPath])).get(virtualPath) ?? null;
 }
 async function listVirtualPathRows(api, memoryTable, sessionsTable, dir) {
-  const likePath = `${sqlLike(dir === "/" ? "" : dir)}/%`;
-  const [memoryRows, sessionRows] = await Promise.all([
-    api.query(`SELECT path, size_bytes FROM "${memoryTable}" WHERE path LIKE '${likePath}' ORDER BY path`).catch(() => []),
-    api.query(`SELECT path, size_bytes FROM "${sessionsTable}" WHERE path LIKE '${likePath}' ORDER BY path`).catch(() => [])
-  ]);
-  return dedupeRowsByPath([...memoryRows, ...sessionRows]);
+  return (await listVirtualPathRowsForDirs(api, memoryTable, sessionsTable, [dir])).get(dir.replace(/\/+$/, "") || "/") ?? [];
 }
 async function findVirtualPaths(api, memoryTable, sessionsTable, dir, filenamePattern) {
   const likePath = `${sqlLike(dir === "/" ? "" : dir)}/%`;
-  const [memoryRows, sessionRows] = await Promise.all([
-    api.query(`SELECT path FROM "${memoryTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}' ORDER BY path`).catch(() => []),
-    api.query(`SELECT path FROM "${sessionsTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}' ORDER BY path`).catch(() => [])
-  ]);
-  return [...new Set([...memoryRows, ...sessionRows].map((row) => row["path"]).filter((value) => typeof value === "string" && value.length > 0))];
+  const rows = await queryUnionRows(api, `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`, `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`);
+  return [...new Set(rows.map((row) => row["path"]).filter((value) => typeof value === "string" && value.length > 0))];
 }
 function dedupeRowsByPath(rows) {
   const seen = /* @__PURE__ */ new Set();
@@ -820,6 +908,379 @@ function dedupeRowsByPath(rows) {
     unique.push(row);
   }
   return unique;
+}
+
+// dist/src/hooks/bash-command-compiler.js
+function isQuoted(ch) {
+  return ch === "'" || ch === '"';
+}
+function splitTopLevel(input, operators) {
+  const parts = [];
+  let current = "";
+  let quote = null;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quote) {
+      if (ch === quote)
+        quote = null;
+      current += ch;
+      continue;
+    }
+    if (isQuoted(ch)) {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    const matched = operators.find((op) => input.startsWith(op, i));
+    if (matched) {
+      const trimmed2 = current.trim();
+      if (trimmed2)
+        parts.push(trimmed2);
+      current = "";
+      i += matched.length - 1;
+      continue;
+    }
+    current += ch;
+  }
+  if (quote)
+    return null;
+  const trimmed = current.trim();
+  if (trimmed)
+    parts.push(trimmed);
+  return parts;
+}
+function tokenizeShellWords(input) {
+  const tokens = [];
+  let current = "";
+  let quote = null;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+      } else if (ch === "\\" && quote === '"' && i + 1 < input.length) {
+        current += input[++i];
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (isQuoted(ch)) {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (quote)
+    return null;
+  if (current)
+    tokens.push(current);
+  return tokens;
+}
+function expandBraceToken(token) {
+  const match = token.match(/\{([^{}]+)\}/);
+  if (!match)
+    return [token];
+  const [expr] = match;
+  const prefix = token.slice(0, match.index);
+  const suffix = token.slice((match.index ?? 0) + expr.length);
+  let variants = [];
+  const numericRange = match[1].match(/^(-?\d+)\.\.(-?\d+)$/);
+  if (numericRange) {
+    const start = Number(numericRange[1]);
+    const end = Number(numericRange[2]);
+    const step = start <= end ? 1 : -1;
+    for (let value = start; step > 0 ? value <= end : value >= end; value += step) {
+      variants.push(String(value));
+    }
+  } else {
+    variants = match[1].split(",");
+  }
+  return variants.flatMap((variant) => expandBraceToken(`${prefix}${variant}${suffix}`));
+}
+function stripAllowedModifiers(segment) {
+  const ignoreMissing = /\s2>\/dev\/null\s*$/.test(segment);
+  const clean = segment.replace(/\s2>\/dev\/null\s*$/g, "").replace(/\s2>&1\s*/g, " ").trim();
+  return { clean, ignoreMissing };
+}
+function hasUnsupportedRedirection(segment) {
+  let quote = null;
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i];
+    if (quote) {
+      if (ch === quote)
+        quote = null;
+      continue;
+    }
+    if (isQuoted(ch)) {
+      quote = ch;
+      continue;
+    }
+    if (ch === ">" || ch === "<")
+      return true;
+  }
+  return false;
+}
+function parseHeadTailStage(stage) {
+  const tokens = tokenizeShellWords(stage);
+  if (!tokens || tokens.length === 0)
+    return null;
+  const [cmd, ...rest] = tokens;
+  if (cmd !== "head" && cmd !== "tail")
+    return null;
+  if (rest.length === 0)
+    return { lineLimit: 10, fromEnd: cmd === "tail" };
+  if (rest.length === 1) {
+    const count = Number(rest[0]);
+    if (!Number.isFinite(count)) {
+      return { lineLimit: 10, fromEnd: cmd === "tail" };
+    }
+    return { lineLimit: Math.abs(count), fromEnd: cmd === "tail" };
+  }
+  if (rest.length === 2 && /^-\d+$/.test(rest[0])) {
+    const count = Number(rest[0]);
+    if (!Number.isFinite(count))
+      return null;
+    return { lineLimit: Math.abs(count), fromEnd: cmd === "tail" };
+  }
+  if (rest.length === 2 && rest[0] === "-n") {
+    const count = Number(rest[1]);
+    if (!Number.isFinite(count))
+      return null;
+    return { lineLimit: Math.abs(count), fromEnd: cmd === "tail" };
+  }
+  if (rest.length === 3 && rest[0] === "-n") {
+    const count = Number(rest[1]);
+    if (!Number.isFinite(count))
+      return null;
+    return { lineLimit: Math.abs(count), fromEnd: cmd === "tail" };
+  }
+  return null;
+}
+function parseCompiledSegment(segment) {
+  const { clean, ignoreMissing } = stripAllowedModifiers(segment);
+  if (hasUnsupportedRedirection(clean))
+    return null;
+  const pipeline = splitTopLevel(clean, ["|"]);
+  if (!pipeline || pipeline.length === 0)
+    return null;
+  const tokens = tokenizeShellWords(pipeline[0]);
+  if (!tokens || tokens.length === 0)
+    return null;
+  if (tokens[0] === "echo" && pipeline.length === 1) {
+    const text = tokens.slice(1).join(" ");
+    return { kind: "echo", text };
+  }
+  if (tokens[0] === "cat") {
+    const paths = tokens.slice(1).flatMap(expandBraceToken);
+    if (paths.length === 0)
+      return null;
+    let lineLimit = 0;
+    let fromEnd = false;
+    let countLines2 = false;
+    if (pipeline.length > 1) {
+      if (pipeline.length !== 2)
+        return null;
+      const pipeStage = pipeline[1].trim();
+      if (/^wc\s+-l\s*$/.test(pipeStage)) {
+        if (paths.length !== 1)
+          return null;
+        countLines2 = true;
+      } else {
+        const headTail = parseHeadTailStage(pipeStage);
+        if (!headTail)
+          return null;
+        lineLimit = headTail.lineLimit;
+        fromEnd = headTail.fromEnd;
+      }
+    }
+    return { kind: "cat", paths, lineLimit, fromEnd, countLines: countLines2, ignoreMissing };
+  }
+  if (tokens[0] === "head" || tokens[0] === "tail") {
+    if (pipeline.length !== 1)
+      return null;
+    const parsed = parseHeadTailStage(clean);
+    if (!parsed)
+      return null;
+    const headTokens = tokenizeShellWords(clean);
+    if (!headTokens)
+      return null;
+    const path = headTokens[headTokens.length - 1];
+    if (path === "head" || path === "tail" || path === "-n")
+      return null;
+    return {
+      kind: "cat",
+      paths: expandBraceToken(path),
+      lineLimit: parsed.lineLimit,
+      fromEnd: parsed.fromEnd,
+      countLines: false,
+      ignoreMissing
+    };
+  }
+  if (tokens[0] === "wc" && tokens[1] === "-l" && pipeline.length === 1 && tokens[2]) {
+    return {
+      kind: "cat",
+      paths: expandBraceToken(tokens[2]),
+      lineLimit: 0,
+      fromEnd: false,
+      countLines: true,
+      ignoreMissing
+    };
+  }
+  if (tokens[0] === "ls" && pipeline.length === 1) {
+    const dirs = tokens.slice(1).filter((token) => !token.startsWith("-")).flatMap(expandBraceToken);
+    const longFormat = tokens.some((token) => token.startsWith("-") && token.includes("l"));
+    return { kind: "ls", dirs: dirs.length > 0 ? dirs : ["/"], longFormat };
+  }
+  if (tokens[0] === "find") {
+    if (pipeline.length > 2)
+      return null;
+    const dir = tokens[1];
+    if (!dir)
+      return null;
+    const nameIndex = tokens.indexOf("-name");
+    if (nameIndex === -1 || !tokens[nameIndex + 1])
+      return null;
+    const countOnly = pipeline.length === 2 && /^wc\s+-l\s*$/.test(pipeline[1].trim());
+    if (pipeline.length === 2 && !countOnly)
+      return null;
+    return { kind: "find", dir, pattern: tokens[nameIndex + 1], countOnly };
+  }
+  const grepParams = parseBashGrep(clean);
+  if (grepParams) {
+    let lineLimit = 0;
+    if (pipeline.length > 1) {
+      if (pipeline.length !== 2)
+        return null;
+      const headTail = parseHeadTailStage(pipeline[1].trim());
+      if (!headTail || headTail.fromEnd)
+        return null;
+      lineLimit = headTail.lineLimit;
+    }
+    return { kind: "grep", params: grepParams, lineLimit };
+  }
+  return null;
+}
+function parseCompiledBashCommand(cmd) {
+  if (cmd.includes("||"))
+    return null;
+  const segments = splitTopLevel(cmd, ["&&", ";", "\n"]);
+  if (!segments || segments.length === 0)
+    return null;
+  const parsed = segments.map(parseCompiledSegment);
+  if (parsed.some((segment) => segment === null))
+    return null;
+  return parsed;
+}
+function applyLineWindow(content, lineLimit, fromEnd) {
+  if (lineLimit <= 0)
+    return content;
+  const lines = content.split("\n");
+  return (fromEnd ? lines.slice(-lineLimit) : lines.slice(0, lineLimit)).join("\n");
+}
+function countLines(content) {
+  return content === "" ? 0 : content.split("\n").length;
+}
+function renderDirectoryListing(dir, rows, longFormat) {
+  const entries = /* @__PURE__ */ new Map();
+  const prefix = dir === "/" ? "/" : `${dir}/`;
+  for (const row of rows) {
+    const path = row["path"];
+    if (!path.startsWith(prefix) && dir !== "/")
+      continue;
+    const rest = dir === "/" ? path.slice(1) : path.slice(prefix.length);
+    const slash = rest.indexOf("/");
+    const name = slash === -1 ? rest : rest.slice(0, slash);
+    if (!name)
+      continue;
+    const existing = entries.get(name);
+    if (slash !== -1) {
+      if (!existing)
+        entries.set(name, { isDir: true, size: 0 });
+    } else {
+      entries.set(name, { isDir: false, size: Number(row["size_bytes"] ?? 0) });
+    }
+  }
+  if (entries.size === 0)
+    return `ls: cannot access '${dir}': No such file or directory`;
+  const lines = [];
+  for (const [name, info] of [...entries].sort((a, b) => a[0].localeCompare(b[0]))) {
+    if (longFormat) {
+      const type = info.isDir ? "drwxr-xr-x" : "-rw-r--r--";
+      const size = String(info.isDir ? 0 : info.size).padStart(6);
+      lines.push(`${type} 1 user user ${size} ${name}${info.isDir ? "/" : ""}`);
+    } else {
+      lines.push(name + (info.isDir ? "/" : ""));
+    }
+  }
+  return lines.join("\n");
+}
+async function executeCompiledBashCommand(api, memoryTable, sessionsTable, cmd, deps = {}) {
+  const { readVirtualPathContentsFn = readVirtualPathContents, listVirtualPathRowsForDirsFn = listVirtualPathRowsForDirs, findVirtualPathsFn = findVirtualPaths, handleGrepDirectFn = handleGrepDirect } = deps;
+  const plan = parseCompiledBashCommand(cmd);
+  if (!plan)
+    return null;
+  const readPaths = [...new Set(plan.flatMap((segment) => segment.kind === "cat" ? segment.paths : []))];
+  const listDirs = [...new Set(plan.flatMap((segment) => segment.kind === "ls" ? segment.dirs.map((dir) => dir.replace(/\/+$/, "") || "/") : []))];
+  const contentMap = readPaths.length > 0 ? await readVirtualPathContentsFn(api, memoryTable, sessionsTable, readPaths) : /* @__PURE__ */ new Map();
+  const dirRowsMap = listDirs.length > 0 ? await listVirtualPathRowsForDirsFn(api, memoryTable, sessionsTable, listDirs) : /* @__PURE__ */ new Map();
+  const outputs = [];
+  for (const segment of plan) {
+    if (segment.kind === "echo") {
+      outputs.push(segment.text);
+      continue;
+    }
+    if (segment.kind === "cat") {
+      const contents = [];
+      for (const path of segment.paths) {
+        const content = contentMap.get(path) ?? null;
+        if (content === null) {
+          if (segment.ignoreMissing)
+            continue;
+          return null;
+        }
+        contents.push(content);
+      }
+      const combined = contents.join("");
+      if (segment.countLines) {
+        outputs.push(`${countLines(combined)} ${segment.paths[0]}`);
+      } else {
+        outputs.push(applyLineWindow(combined, segment.lineLimit, segment.fromEnd));
+      }
+      continue;
+    }
+    if (segment.kind === "ls") {
+      for (const dir of segment.dirs) {
+        outputs.push(renderDirectoryListing(dir.replace(/\/+$/, "") || "/", dirRowsMap.get(dir.replace(/\/+$/, "") || "/") ?? [], segment.longFormat));
+      }
+      continue;
+    }
+    if (segment.kind === "find") {
+      const filenamePattern = sqlLike(segment.pattern).replace(/\*/g, "%").replace(/\?/g, "_");
+      const paths = await findVirtualPathsFn(api, memoryTable, sessionsTable, segment.dir.replace(/\/+$/, "") || "/", filenamePattern);
+      outputs.push(segment.countOnly ? String(paths.length) : paths.join("\n") || "(no matches)");
+      continue;
+    }
+    if (segment.kind === "grep") {
+      const result = await handleGrepDirectFn(api, memoryTable, sessionsTable, segment.params);
+      if (result === null)
+        return null;
+      if (segment.lineLimit > 0) {
+        outputs.push(result.split("\n").slice(0, segment.lineLimit).join("\n"));
+      } else {
+        outputs.push(result);
+      }
+      continue;
+    }
+  }
+  return outputs.join("\n");
 }
 
 // dist/src/utils/direct-run.js
@@ -982,7 +1443,7 @@ function buildIndexContent(rows) {
   return lines.join("\n");
 }
 async function processCodexPreToolUse(input, deps = {}) {
-  const { config = loadConfig(), createApi = (table, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table), readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, handleGrepDirectFn = handleGrepDirect, runVirtualShellFn = runVirtualShell, shellBundle = SHELL_BUNDLE, logFn = log3 } = deps;
+  const { config = loadConfig(), createApi = (table, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table), executeCompiledBashCommandFn = executeCompiledBashCommand, readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, handleGrepDirectFn = handleGrepDirect, runVirtualShellFn = runVirtualShell, shellBundle = SHELL_BUNDLE, logFn = log3 } = deps;
   const cmd = input.tool_input?.command ?? "";
   logFn(`hook fired: cmd=${cmd}`);
   if (!touchesMemory(cmd))
@@ -1002,6 +1463,10 @@ async function processCodexPreToolUse(input, deps = {}) {
     const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
     const api = createApi(table, config);
     try {
+      const compiled = await executeCompiledBashCommandFn(api, table, sessionsTable, rewritten);
+      if (compiled !== null) {
+        return { action: "block", output: compiled, rewrittenCommand: rewritten };
+      }
       let virtualPath = null;
       let lineLimit = 0;
       let fromEnd = false;

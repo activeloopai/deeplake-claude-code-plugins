@@ -8,16 +8,14 @@ describe("handleGrepDirect", () => {
     lineNumber: false, invertMatch: false, fixedString: false,
   };
 
-  function mockApi(mem: unknown[], sess: unknown[]) {
+  function mockApi(rows: unknown[]) {
     return {
-      query: vi.fn()
-        .mockImplementationOnce(async () => mem)
-        .mockImplementationOnce(async () => sess),
+      query: vi.fn().mockImplementationOnce(async () => rows),
     } as any;
   }
 
   it("returns null when pattern is empty", async () => {
-    const api = mockApi([], []);
+    const api = mockApi([]);
     const r = await handleGrepDirect(api, "memory", "sessions", { ...baseParams, pattern: "" });
     expect(r).toBeNull();
     expect(api.query).not.toHaveBeenCalled();
@@ -26,30 +24,29 @@ describe("handleGrepDirect", () => {
   it("delegates to grepBothTables and joins the match lines", async () => {
     const api = mockApi(
       [{ path: "/summaries/a.md", content: "foo line here\nbar line" }],
-      [],
     );
     const r = await handleGrepDirect(api, "memory", "sessions", baseParams);
     expect(r).toBe("foo line here");
   });
 
   it("emits '(no matches)' when both tables return nothing", async () => {
-    const api = mockApi([], []);
+    const api = mockApi([]);
     const r = await handleGrepDirect(api, "memory", "sessions", baseParams);
     expect(r).toBe("(no matches)");
   });
 
   it("merges results from both memory and sessions", async () => {
-    const api = mockApi(
-      [{ path: "/summaries/a.md", content: "foo in summary" }],
-      [{ path: "/sessions/b.jsonl", content: "foo in session" }],
-    );
+    const api = mockApi([
+      { path: "/summaries/a.md", content: "foo in summary" },
+      { path: "/sessions/b.jsonl", content: "foo in session" },
+    ]);
     const r = await handleGrepDirect(api, "memory", "sessions", baseParams);
     expect(r).toContain("/summaries/a.md:foo in summary");
     expect(r).toContain("/sessions/b.jsonl:foo in session");
   });
 
   it("applies ignoreCase flag at SQL level (ILIKE)", async () => {
-    const api = mockApi([{ path: "/a", content: "Foo" }], []);
+    const api = mockApi([{ path: "/a", content: "Foo" }]);
     await handleGrepDirect(api, "memory", "sessions", { ...baseParams, ignoreCase: true });
     const sql = api.query.mock.calls[0][0] as string;
     expect(sql).toContain("ILIKE");

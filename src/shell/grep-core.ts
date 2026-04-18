@@ -245,24 +245,38 @@ export async function searchDeeplakeTables(
   const memFilter = filterPattern ? ` AND summary::text ${likeOp} '%${filterPattern}%'` : "";
   const sessFilter = filterPattern ? ` AND message::text ${likeOp} '%${filterPattern}%'` : "";
 
-  const memQuery = `SELECT path, summary::text AS content FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
-  const sessQuery = `SELECT path, message::text AS content FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
+  const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
+  const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
 
-  const [memRows, sessRows] = await Promise.all([
-    api.query(memQuery).catch(() => []),
-    api.query(sessQuery).catch(() => []),
-  ]);
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await api.query(
+      `SELECT path, content, source_order, creation_date FROM (` +
+      `(${memQuery}) UNION ALL (${sessQuery})` +
+      `) AS combined ORDER BY path, source_order, creation_date`
+    );
+  } catch {
+    const [memRows, sessRows] = await Promise.all([
+      api.query(memQuery).catch(() => []),
+      api.query(sessQuery).catch(() => []),
+    ]);
+    rows = [...memRows, ...sessRows];
+  }
 
-  const rows: ContentRow[] = [];
-  for (const r of memRows) rows.push({ path: String(r.path), content: String(r.content ?? "") });
-  for (const r of sessRows) rows.push({ path: String(r.path), content: String(r.content ?? "") });
-  return rows;
+  return rows.map(row => ({
+    path: String(row["path"]),
+    content: String(row["content"] ?? ""),
+  }));
 }
 
 /** Build a LIKE pathFilter clause for a `path` column. Returns "" if targetPath is root or empty. */
 export function buildPathFilter(targetPath: string): string {
   if (!targetPath || targetPath === "/") return "";
   const clean = targetPath.replace(/\/+$/, "");
+  const base = clean.split("/").pop() ?? "";
+  if (base.includes(".")) {
+    return ` AND path = '${sqlStr(clean)}'`;
+  }
   return ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
 }
 

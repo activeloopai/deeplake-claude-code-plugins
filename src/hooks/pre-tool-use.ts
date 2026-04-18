@@ -11,6 +11,7 @@ import { sqlLike } from "../utils/sql.js";
 import { log as _log } from "../utils/debug.js";
 import { isDirectRun } from "../utils/direct-run.js";
 import { type GrepParams, parseBashGrep, handleGrepDirect } from "./grep-direct.js";
+import { executeCompiledBashCommand } from "./bash-command-compiler.js";
 import {
   findVirtualPaths,
   listVirtualPathRows,
@@ -154,6 +155,7 @@ function buildFallbackDecision(shellCmd: string, shellBundle = SHELL_BUNDLE): Cl
 interface ClaudePreToolDeps {
   config?: ReturnType<typeof loadConfig>;
   createApi?: (table: string, config: NonNullable<ReturnType<typeof loadConfig>>) => DeeplakeApi;
+  executeCompiledBashCommandFn?: typeof executeCompiledBashCommand;
   handleGrepDirectFn?: typeof handleGrepDirect;
   readVirtualPathContentFn?: typeof readVirtualPathContent;
   listVirtualPathRowsFn?: typeof listVirtualPathRows;
@@ -172,6 +174,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
       activeConfig.workspaceId,
       table,
     ),
+    executeCompiledBashCommandFn = executeCompiledBashCommand,
     handleGrepDirectFn = handleGrepDirect,
     readVirtualPathContentFn = readVirtualPathContent,
     listVirtualPathRowsFn = listVirtualPathRows,
@@ -205,6 +208,13 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
   const api = createApi(table, config);
 
   try {
+    if (input.tool_name === "Bash") {
+      const compiled = await executeCompiledBashCommandFn(api, table, sessionsTable, shellCmd);
+      if (compiled !== null) {
+        return buildAllowDecision(`echo ${JSON.stringify(compiled)}`, `[DeepLake compiled] ${shellCmd}`);
+      }
+    }
+
     const grepParams = extractGrepParams(input.tool_name, input.tool_input, shellCmd);
     if (grepParams) {
       logFn(`direct grep: pattern=${grepParams.pattern} path=${grepParams.targetPath}`);

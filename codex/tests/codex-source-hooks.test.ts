@@ -205,6 +205,7 @@ describe("codex pre-tool source", () => {
       config: baseConfig,
       createApi: vi.fn(() => api as any),
       readVirtualPathContentFn: vi.fn(async () => null) as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(readDecision.action).toBe("block");
     expect(readDecision.output).toContain("# Memory Index");
@@ -220,6 +221,7 @@ describe("codex pre-tool source", () => {
     }, {
       config: baseConfig,
       handleGrepDirectFn: vi.fn(async () => "/index.md:needle") as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(grepDecision.output).toContain("/index.md:needle");
 
@@ -256,6 +258,7 @@ describe("codex pre-tool source", () => {
     }, {
       config: baseConfig,
       readVirtualPathContentFn: contentReader as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(headDecision.output).toBe("line1\nline2");
 
@@ -270,6 +273,7 @@ describe("codex pre-tool source", () => {
     }, {
       config: baseConfig,
       readVirtualPathContentFn: contentReader as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(tailDecision.output).toBe("line2\nline3");
 
@@ -284,6 +288,7 @@ describe("codex pre-tool source", () => {
     }, {
       config: baseConfig,
       readVirtualPathContentFn: contentReader as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(wcDecision.output).toBe("3 /index.md");
 
@@ -298,6 +303,7 @@ describe("codex pre-tool source", () => {
     }, {
       config: baseConfig,
       findVirtualPathsFn: vi.fn(async () => ["/summaries/alice/s1.md", "/summaries/alice/s2.md"]) as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(findDecision.output).toBe("2");
 
@@ -312,6 +318,7 @@ describe("codex pre-tool source", () => {
     }, {
       config: baseConfig,
       listVirtualPathRowsFn: vi.fn(async () => []) as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(missingLs.output).toContain("No such file or directory");
 
@@ -328,6 +335,27 @@ describe("codex pre-tool source", () => {
       runVirtualShellFn: vi.fn(() => "") as any,
     });
     expect(emptyShell.output).toContain("Command returned empty");
+  });
+
+  it("returns compiled output when the bash compiler can satisfy the command directly", async () => {
+    const decision = await processCodexPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_use_id: "tu-10",
+      tool_input: { command: "cat ~/.deeplake/memory/index.md && ls ~/.deeplake/memory/summaries" },
+      cwd: "/repo",
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      executeCompiledBashCommandFn: vi.fn(async () => "compiled output") as any,
+    });
+
+    expect(decision).toEqual({
+      action: "block",
+      output: "compiled output",
+      rewrittenCommand: "cat /index.md && ls /summaries",
+    });
   });
 });
 

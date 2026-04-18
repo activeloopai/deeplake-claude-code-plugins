@@ -439,6 +439,11 @@ describe("buildPathFilter", () => {
     expect(f).toContain("path = '/sessions'");
     expect(f).toContain("path LIKE '/sessions/%'");
   });
+  it("uses exact matching for likely file targets", () => {
+    expect(buildPathFilter("/summaries/alice/s1.md")).toBe(
+      " AND path = '/summaries/alice/s1.md'",
+    );
+  });
 });
 
 // ── compileGrepRegex ────────────────────────────────────────────────────────
@@ -571,15 +576,14 @@ describe("refineGrepMatches", () => {
 // ── searchDeeplakeTables ─────────────────────────────────────────────────────
 
 describe("searchDeeplakeTables", () => {
-  function mockApi(memRows: unknown[], sessRows: unknown[]) {
+  function mockApi(rows: unknown[]) {
     const query = vi.fn()
-      .mockImplementationOnce(async () => memRows)
-      .mockImplementationOnce(async () => sessRows);
+      .mockImplementationOnce(async () => rows);
     return { query } as any;
   }
 
-  it("issues one LIKE query per table with the escaped pattern and path filter", async () => {
-    const api = mockApi([], []);
+  it("issues one UNION ALL query with the escaped pattern and path filter", async () => {
+    const api = mockApi([]);
     await searchDeeplakeTables(api, "memory", "sessions", {
       pathFilter: " AND (path = '/x' OR path LIKE '/x/%')",
       contentScanOnly: false,
@@ -587,30 +591,31 @@ describe("searchDeeplakeTables", () => {
       escapedPattern: "foo",
       limit: 50,
     });
-    expect(api.query).toHaveBeenCalledTimes(2);
-    const [memCall, sessCall] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(memCall).toContain('FROM "memory"');
-    expect(memCall).toContain("summary::text ILIKE '%foo%'");
-    expect(memCall).toContain("LIMIT 50");
-    expect(sessCall).toContain('FROM "sessions"');
-    expect(sessCall).toContain("message::text ILIKE '%foo%'");
+    expect(api.query).toHaveBeenCalledTimes(1);
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain('FROM "memory"');
+    expect(sql).toContain('FROM "sessions"');
+    expect(sql).toContain("summary::text ILIKE '%foo%'");
+    expect(sql).toContain("message::text ILIKE '%foo%'");
+    expect(sql).toContain("LIMIT 50");
+    expect(sql).toContain("UNION ALL");
   });
 
   it("skips LIKE filter when contentScanOnly is true (regex-in-memory mode)", async () => {
-    const api = mockApi([], []);
+    const api = mockApi([]);
     await searchDeeplakeTables(api, "m", "s", {
       pathFilter: "",
       contentScanOnly: true,
       likeOp: "LIKE",
       escapedPattern: "anything",
     });
-    const [memCall, sessCall] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(memCall).not.toContain("LIKE");
-    expect(sessCall).not.toContain("LIKE");
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).not.toContain("summary::text LIKE");
+    expect(sql).not.toContain("message::text LIKE");
   });
 
   it("uses a safe literal prefilter for regex scans when available", async () => {
-    const api = mockApi([], []);
+    const api = mockApi([]);
     await searchDeeplakeTables(api, "m", "s", {
       pathFilter: "",
       contentScanOnly: true,
@@ -618,16 +623,16 @@ describe("searchDeeplakeTables", () => {
       escapedPattern: "foo.*bar",
       prefilterPattern: "foo",
     });
-    const [memCall, sessCall] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(memCall).toContain("summary::text LIKE '%foo%'");
-    expect(sessCall).toContain("message::text LIKE '%foo%'");
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain("summary::text LIKE '%foo%'");
+    expect(sql).toContain("message::text LIKE '%foo%'");
   });
 
   it("concatenates rows from both tables into {path, content}", async () => {
-    const api = mockApi(
-      [{ path: "/summaries/a", content: "aaa" }],
-      [{ path: "/sessions/b", content: "bbb" }],
-    );
+    const api = mockApi([
+      { path: "/summaries/a", content: "aaa" },
+      { path: "/sessions/b", content: "bbb" },
+    ]);
     const rows = await searchDeeplakeTables(api, "m", "s", {
       pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
     });
@@ -638,7 +643,7 @@ describe("searchDeeplakeTables", () => {
   });
 
   it("tolerates null content on memory row (coerces to empty string)", async () => {
-    const api = mockApi([{ path: "/a", content: null }], []);
+    const api = mockApi([{ path: "/a", content: null }]);
     const rows = await searchDeeplakeTables(api, "m", "s", {
       pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
     });
@@ -646,18 +651,19 @@ describe("searchDeeplakeTables", () => {
   });
 
   it("tolerates null content on sessions row too", async () => {
-    const api = mockApi([], [{ path: "/b", content: null }]);
+    const api = mockApi([{ path: "/b", content: null }]);
     const rows = await searchDeeplakeTables(api, "m", "s", {
       pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
     });
     expect(rows[0]).toEqual({ path: "/b", content: "" });
   });
 
-  it("returns partial results when the sessions query fails", async () => {
+  it("returns partial results when the union query fails and the sessions fallback query errors", async () => {
     const api = {
       query: vi.fn()
-        .mockImplementationOnce(async () => [{ path: "/a", content: "ok" }])
-        .mockImplementationOnce(async () => { throw new Error("boom"); }),
+        .mockRejectedValueOnce(new Error("bad union"))
+        .mockResolvedValueOnce([{ path: "/a", content: "ok" }])
+        .mockRejectedValueOnce(new Error("boom")),
     } as any;
     const rows = await searchDeeplakeTables(api, "m", "s", {
       pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
@@ -665,11 +671,12 @@ describe("searchDeeplakeTables", () => {
     expect(rows).toEqual([{ path: "/a", content: "ok" }]);
   });
 
-  it("returns partial results when the memory query fails", async () => {
+  it("returns partial results when the union query fails and the memory fallback query errors", async () => {
     const api = {
       query: vi.fn()
-        .mockImplementationOnce(async () => { throw new Error("boom"); })
-        .mockImplementationOnce(async () => [{ path: "/b", content: "ok" }]),
+        .mockRejectedValueOnce(new Error("bad union"))
+        .mockRejectedValueOnce(new Error("boom"))
+        .mockResolvedValueOnce([{ path: "/b", content: "ok" }]),
     } as any;
     const rows = await searchDeeplakeTables(api, "m", "s", {
       pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
@@ -693,8 +700,7 @@ describe("grepBothTables", () => {
   function mockApi(rows: unknown[]) {
     return {
       query: vi.fn()
-        .mockResolvedValueOnce(rows)  // memory
-        .mockResolvedValueOnce([]),   // sessions (empty in these tests)
+        .mockResolvedValueOnce(rows),
     } as any;
   }
 
@@ -714,8 +720,7 @@ describe("grepBothTables", () => {
   it("deduplicates rows by path when memory and sessions return the same path", async () => {
     const api = {
       query: vi.fn()
-        .mockResolvedValueOnce([{ path: "/shared", content: "foo" }])
-        .mockResolvedValueOnce([{ path: "/shared", content: "foo" }]),
+        .mockResolvedValueOnce([{ path: "/shared", content: "foo" }, { path: "/shared", content: "foo" }]),
     } as any;
     const out = await grepBothTables(api, "m", "s", baseParams, "/");
     // only one line for the shared path
@@ -731,7 +736,6 @@ describe("grepBothTables", () => {
     });
     const api = {
       query: vi.fn()
-        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ path: "/sessions/conv_0_session_1.json", content: sessionContent }]),
     } as any;
     const out = await grepBothTables(api, "m", "s", baseParams, "/");
@@ -743,45 +747,58 @@ describe("grepBothTables", () => {
   it("uses contentScanOnly when pattern has regex metacharacters", async () => {
     const api = mockApi([{ path: "/a", content: "this is a test" }]);
     await grepBothTables(api, "m", "s", { ...baseParams, pattern: "t.*t" }, "/");
-    const [memSql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(memSql).not.toContain("ILIKE");
-    expect(memSql).not.toContain("summary::text LIKE");
+    const [sql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(sql).not.toContain("summary::text LIKE");
+    expect(sql).not.toContain("message::text LIKE");
   });
 
   it("adds a safe literal prefilter for wildcard regexes with stable anchors", async () => {
     const api = mockApi([{ path: "/a", content: "foo middle bar" }]);
     await grepBothTables(api, "m", "s", { ...baseParams, pattern: "foo.*bar" }, "/");
-    const [memSql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(memSql).toContain("summary::text LIKE '%foo%'");
+    const [sql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(sql).toContain("summary::text LIKE '%foo%'");
   });
 
   it("routes to ILIKE when ignoreCase is set", async () => {
     const api = mockApi([]);
     await grepBothTables(api, "m", "s", { ...baseParams, ignoreCase: true }, "/");
-    const [memSql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(memSql).toContain("ILIKE");
+    const [sql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(sql).toContain("ILIKE");
   });
 
-  it("keeps memory and sessions probes parallel even for scoped target paths", async () => {
+  it("uses a single union query even for scoped target paths", async () => {
     const api = mockApi([{ path: "/summaries/a.md", content: "foo line" }]);
     await grepBothTables(api, "memory", "sessions", baseParams, "/summaries");
-    expect(api.query).toHaveBeenCalledTimes(2);
-    const sqls = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(sqls.some(sql => sql.includes('FROM "memory"'))).toBe(true);
-    expect(sqls.some(sql => sql.includes('FROM "sessions"'))).toBe(true);
+    expect(api.query).toHaveBeenCalledTimes(1);
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain('FROM "memory"');
+    expect(sql).toContain('FROM "sessions"');
+    expect(sql).toContain("UNION ALL");
   });
 });
 
 describe("regex literal prefilter", () => {
+  it("returns null for an empty pattern", () => {
+    expect(extractRegexLiteralPrefilter("")).toBeNull();
+  });
+
   it("extracts a literal from simple wildcard regexes", () => {
     expect(extractRegexLiteralPrefilter("foo.*bar")).toBe("foo");
     expect(extractRegexLiteralPrefilter("prefix.*suffix")).toBe("prefix");
+    expect(extractRegexLiteralPrefilter("x.*suffix")).toBe("suffix");
   });
 
   it("returns null for complex regex features", () => {
     expect(extractRegexLiteralPrefilter("colou?r")).toBeNull();
     expect(extractRegexLiteralPrefilter("foo|bar")).toBeNull();
     expect(extractRegexLiteralPrefilter("[ab]foo")).toBeNull();
+  });
+
+  it("handles escaped literals and rejects dangling escapes or bare dots", () => {
+    expect(extractRegexLiteralPrefilter("foo\\.bar")).toBe("foo.bar");
+    expect(extractRegexLiteralPrefilter("\\d+foo")).toBeNull();
+    expect(extractRegexLiteralPrefilter("foo\\")).toBeNull();
+    expect(extractRegexLiteralPrefilter("foo.bar")).toBeNull();
   });
 
   it("builds grep search options with regex prefilter when safe", () => {
@@ -800,5 +817,22 @@ describe("regex literal prefilter", () => {
     expect(opts.likeOp).toBe("ILIKE");
     expect(opts.prefilterPattern).toBe("foo");
     expect(opts.pathFilter).toContain("/summaries");
+  });
+
+  it("keeps fixed-string searches on the SQL-filtered path even with regex metacharacters", () => {
+    const opts = buildGrepSearchOptions({
+      pattern: "foo.*bar",
+      ignoreCase: false,
+      wordMatch: false,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: true,
+    }, "/summaries/alice/s1.md");
+
+    expect(opts.contentScanOnly).toBe(false);
+    expect(opts.prefilterPattern).toBeUndefined();
+    expect(opts.pathFilter).toBe(" AND path = '/summaries/alice/s1.md'");
   });
 });

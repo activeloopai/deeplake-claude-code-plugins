@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createGrepCommand } from "../../src/shell/grep-interceptor.js";
 import { DeeplakeFs } from "../../src/shell/deeplake-fs.js";
+import * as grepCore from "../../src/shell/grep-core.js";
 
 // ── Minimal mocks ─────────────────────────────────────────────────────────────
 function makeClient(queryResults: Record<string, string>[] = []) {
@@ -30,6 +31,31 @@ function makeCtx(fs: DeeplakeFs, cwd = "/memory") {
 // cache. Tests below assert that new contract.
 
 describe("grep interceptor", () => {
+  it("returns exitCode=1 when the pattern is missing", async () => {
+    const client = makeClient();
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    client.query.mockClear();
+    const cmd = createGrepCommand(client as never, fs, "test");
+    const result = await cmd.execute([], makeCtx(fs) as never);
+    expect(result).toEqual({
+      stdout: "",
+      stderr: "grep: missing pattern\n",
+      exitCode: 1,
+    });
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
+  it("returns exitCode=1 when all target paths resolve to nothing", async () => {
+    const client = makeClient();
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    vi.spyOn(fs, "resolvePath").mockReturnValue("");
+    client.query.mockClear();
+    const cmd = createGrepCommand(client as never, fs, "test");
+    const result = await cmd.execute(["foo", "missing"], makeCtx(fs) as never);
+    expect(result).toEqual({ stdout: "", stderr: "", exitCode: 1 });
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
   it("returns exitCode=127 for paths outside mount (pass-through)", async () => {
     const client = makeClient();
     const fs = await DeeplakeFs.create(client as never, "test", "/memory");
@@ -159,5 +185,18 @@ describe("grep interceptor", () => {
     expect(prefetchSpy).toHaveBeenCalledWith(
       expect.arrayContaining(["/memory/a.txt", "/memory/b.txt"])
     );
+  });
+
+  it("falls back to the FS cache when the SQL search rejects", async () => {
+    const client = makeClient();
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    await fs.writeFile("/memory/a.txt", "hello world");
+    vi.spyOn(grepCore, "searchDeeplakeTables").mockRejectedValueOnce(new Error("timeout"));
+
+    const cmd = createGrepCommand(client as never, fs, "test");
+    const result = await cmd.execute(["hello", "/memory"], makeCtx(fs) as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("hello world");
   });
 });
