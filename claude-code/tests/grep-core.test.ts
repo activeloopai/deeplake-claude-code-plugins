@@ -870,6 +870,11 @@ describe("regex literal prefilter", () => {
     expect(extractRegexAlternationPrefilters("foo|bar.*baz")).toEqual(["foo", "bar"]);
   });
 
+  it("preserves escaped alternation characters inside a literal branch", () => {
+    expect(extractRegexAlternationPrefilters("foo\\|bar|baz")).toEqual(["foo|bar", "baz"]);
+    expect(extractRegexAlternationPrefilters("foo|bar\\.md")).toEqual(["foo", "bar.md"]);
+  });
+
   it("keeps fixed-string searches on the SQL-filtered path even with regex metacharacters", () => {
     const opts = buildGrepSearchOptions({
       pattern: "foo.*bar",

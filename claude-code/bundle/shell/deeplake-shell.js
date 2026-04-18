@@ -66758,7 +66758,7 @@ function loadConfig() {
 
 // dist/src/deeplake-api.js
 import { randomUUID } from "node:crypto";
-import { existsSync as existsSync3, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync } from "node:fs";
+import { existsSync as existsSync3, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "node:fs";
 import { join as join6 } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -66998,13 +66998,10 @@ var DeeplakeApi = class {
     try {
       const raw = JSON.parse(readFileSync2(markerPath, "utf-8"));
       const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
-      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS) {
-        rmSync(markerPath, { force: true });
+      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS)
         return false;
-      }
       return true;
     } catch {
-      rmSync(markerPath, { force: true });
       return false;
     }
   }

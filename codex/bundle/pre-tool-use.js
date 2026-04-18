@@ -62,7 +62,7 @@ function loadConfig() {
 
 // dist/src/deeplake-api.js
 import { randomUUID } from "node:crypto";
-import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync } from "node:fs";
+import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "node:fs";
 import { join as join3 } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -302,13 +302,10 @@ var DeeplakeApi = class {
     try {
       const raw = JSON.parse(readFileSync2(markerPath, "utf-8"));
       const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
-      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS) {
-        rmSync(markerPath, { force: true });
+      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS)
         return false;
-      }
       return true;
     } catch {
-      rmSync(markerPath, { force: true });
       return false;
     }
   }
@@ -1497,7 +1494,7 @@ async function executeCompiledBashCommand(api, memoryTable, sessionsTable, cmd, 
 }
 
 // dist/src/hooks/query-cache.js
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync3, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync3, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { join as join4 } from "node:path";
 import { homedir as homedir3 } from "node:os";
 var log3 = (msg) => log("query-cache", msg);

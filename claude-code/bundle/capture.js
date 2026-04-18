@@ -55,7 +55,7 @@ function loadConfig() {
 
 // dist/src/deeplake-api.js
 import { randomUUID } from "node:crypto";
-import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync } from "node:fs";
+import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "node:fs";
 import { join as join3 } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -301,13 +301,10 @@ var DeeplakeApi = class {
     try {
       const raw = JSON.parse(readFileSync2(markerPath, "utf-8"));
       const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
-      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS) {
-        rmSync(markerPath, { force: true });
+      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS)
         return false;
-      }
       return true;
     } catch {
-      rmSync(markerPath, { force: true });
       return false;
     }
   }
@@ -639,7 +636,7 @@ function bundleDirFromImportMeta(importMetaUrl) {
 }
 
 // dist/src/hooks/session-queue.js
-import { appendFileSync as appendFileSync3, existsSync as existsSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync4, readdirSync, renameSync as renameSync2, rmSync as rmSync2, statSync, writeFileSync as writeFileSync4 } from "node:fs";
+import { appendFileSync as appendFileSync3, existsSync as existsSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync4, readdirSync, renameSync as renameSync2, rmSync, statSync, writeFileSync as writeFileSync4 } from "node:fs";
 import { dirname as dirname2, join as join6 } from "node:path";
 import { homedir as homedir5 } from "node:os";
 var DEFAULT_QUEUE_DIR = join6(homedir5(), ".deeplake", "queue");
@@ -768,7 +765,7 @@ function extractSessionId(sessionPath) {
 async function flushInflightFile(api, sessionsTable, inflightPath, maxBatchRows) {
   const rows = readQueuedRows(inflightPath);
   if (rows.length === 0) {
-    rmSync2(inflightPath, { force: true });
+    rmSync(inflightPath, { force: true });
     return { rows: 0, batches: 0 };
   }
   let ensured = false;
@@ -811,7 +808,7 @@ async function flushInflightFile(api, sessionsTable, inflightPath, maxBatchRows)
     batches += 1;
   }
   clearSessionWriteDisabled(sessionsTable, queueDir);
-  rmSync2(inflightPath, { force: true });
+  rmSync(inflightPath, { force: true });
   return { rows: rows.length, batches };
 }
 function readQueuedRows(path) {
@@ -823,7 +820,7 @@ function requeueInflight(queuePath, inflightPath) {
     return;
   const inflight = readFileSync4(inflightPath, "utf-8");
   appendFileSync3(queuePath, inflight);
-  rmSync2(inflightPath, { force: true });
+  rmSync(inflightPath, { force: true });
 }
 function recoverStaleInflight(queuePath, inflightPath, staleInflightMs) {
   if (!existsSync4(inflightPath) || !isStale(inflightPath, staleInflightMs))
@@ -850,7 +847,7 @@ function markSessionWriteDisabled(sessionsTable, reason, queueDir = DEFAULT_QUEU
   }));
 }
 function clearSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR) {
-  rmSync2(getSessionWriteDisabledPath(queueDir, sessionsTable), { force: true });
+  rmSync(getSessionWriteDisabledPath(queueDir, sessionsTable), { force: true });
 }
 function isSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR, ttlMs = DEFAULT_AUTH_FAILURE_TTL_MS) {
   const path = getSessionWriteDisabledPath(queueDir, sessionsTable);
@@ -861,12 +858,12 @@ function isSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR, ttl
     const state = JSON.parse(raw);
     const ageMs = Date.now() - new Date(state.disabledAt).getTime();
     if (Number.isNaN(ageMs) || ageMs >= ttlMs) {
-      rmSync2(path, { force: true });
+      rmSync(path, { force: true });
       return false;
     }
     return true;
   } catch {
-    rmSync2(path, { force: true });
+    rmSync(path, { force: true });
     return false;
   }
 }
@@ -887,7 +884,7 @@ function sleep2(ms) {
 }
 
 // dist/src/hooks/query-cache.js
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync5, rmSync as rmSync3, writeFileSync as writeFileSync5 } from "node:fs";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync5, rmSync as rmSync2, writeFileSync as writeFileSync5 } from "node:fs";
 import { join as join7 } from "node:path";
 import { homedir as homedir6 } from "node:os";
 var log3 = (msg) => log("query-cache", msg);
@@ -899,7 +896,7 @@ function getSessionQueryCacheDir(sessionId, deps = {}) {
 function clearSessionQueryCache(sessionId, deps = {}) {
   const { logFn = log3 } = deps;
   try {
-    rmSync3(getSessionQueryCacheDir(sessionId, deps), { recursive: true, force: true });
+    rmSync2(getSessionQueryCacheDir(sessionId, deps), { recursive: true, force: true });
   } catch (e) {
     logFn(`clear failed for session=${sessionId}: ${e.message}`);
   }
