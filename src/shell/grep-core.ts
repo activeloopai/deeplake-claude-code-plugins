@@ -16,11 +16,6 @@
 
 import type { DeeplakeApi } from "../deeplake-api.js";
 import { sqlStr, sqlLike } from "../utils/sql.js";
-import {
-  getDeeplakeTableScope,
-  scopeIncludesMemory,
-  scopeIncludesSessions,
-} from "../virtual-path-scope.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -246,7 +241,6 @@ export async function searchDeeplakeTables(
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern } = opts;
   const limit = opts.limit ?? 100;
   const filterPattern = contentScanOnly ? prefilterPattern : escapedPattern;
-  const pathScope = getDeeplakeTableScope(extractScopedPath(pathFilter));
 
   const memFilter = filterPattern ? ` AND summary::text ${likeOp} '%${filterPattern}%'` : "";
   const sessFilter = filterPattern ? ` AND message::text ${likeOp} '%${filterPattern}%'` : "";
@@ -255,23 +249,14 @@ export async function searchDeeplakeTables(
   const sessQuery = `SELECT path, message::text AS content FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
 
   const [memRows, sessRows] = await Promise.all([
-    scopeIncludesMemory(pathScope)
-      ? api.query(memQuery).catch(() => [])
-      : Promise.resolve([]),
-    scopeIncludesSessions(pathScope)
-      ? api.query(sessQuery).catch(() => [])
-      : Promise.resolve([]),
+    api.query(memQuery).catch(() => []),
+    api.query(sessQuery).catch(() => []),
   ]);
 
   const rows: ContentRow[] = [];
   for (const r of memRows) rows.push({ path: String(r.path), content: String(r.content ?? "") });
   for (const r of sessRows) rows.push({ path: String(r.path), content: String(r.content ?? "") });
   return rows;
-}
-
-function extractScopedPath(pathFilter: string): string {
-  const match = pathFilter.match(/path = '([^']+)'/);
-  return match?.[1] ?? "/";
 }
 
 /** Build a LIKE pathFilter clause for a `path` column. Returns "" if targetPath is root or empty. */

@@ -326,28 +326,6 @@ var DeeplakeApi = class {
   }
 };
 
-// dist/src/virtual-path-scope.js
-function normalizeVirtualPath(path) {
-  if (!path)
-    return "/";
-  const clean = path.replace(/\/+$/, "");
-  return clean || "/";
-}
-function getDeeplakeTableScope(path) {
-  const target = normalizeVirtualPath(path);
-  if (target === "/")
-    return "both";
-  if (target === "/sessions" || target.startsWith("/sessions/"))
-    return "sessions";
-  return "memory";
-}
-function scopeIncludesMemory(scope) {
-  return scope === "memory" || scope === "both";
-}
-function scopeIncludesSessions(scope) {
-  return scope === "sessions" || scope === "both";
-}
-
 // dist/src/shell/grep-core.js
 var TOOL_INPUT_FIELDS = [
   "command",
@@ -561,14 +539,13 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern } = opts;
   const limit = opts.limit ?? 100;
   const filterPattern = contentScanOnly ? prefilterPattern : escapedPattern;
-  const pathScope = getDeeplakeTableScope(extractScopedPath(pathFilter));
   const memFilter = filterPattern ? ` AND summary::text ${likeOp} '%${filterPattern}%'` : "";
   const sessFilter = filterPattern ? ` AND message::text ${likeOp} '%${filterPattern}%'` : "";
   const memQuery = `SELECT path, summary::text AS content FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
   const sessQuery = `SELECT path, message::text AS content FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
   const [memRows, sessRows] = await Promise.all([
-    scopeIncludesMemory(pathScope) ? api.query(memQuery).catch(() => []) : Promise.resolve([]),
-    scopeIncludesSessions(pathScope) ? api.query(sessQuery).catch(() => []) : Promise.resolve([])
+    api.query(memQuery).catch(() => []),
+    api.query(sessQuery).catch(() => [])
   ]);
   const rows = [];
   for (const r of memRows)
@@ -576,10 +553,6 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   for (const r of sessRows)
     rows.push({ path: String(r.path), content: String(r.content ?? "") });
   return rows;
-}
-function extractScopedPath(pathFilter) {
-  const match = pathFilter.match(/path = '([^']+)'/);
-  return match?.[1] ?? "/";
 }
 function buildPathFilter(targetPath) {
   if (!targetPath || targetPath === "/")
@@ -806,6 +779,50 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
   return output.join("\n") || "(no matches)";
 }
 
+// dist/src/hooks/virtual-table-query.js
+async function readVirtualPathContent(api, memoryTable, sessionsTable, virtualPath) {
+  const [memoryRows, sessionRows] = await Promise.all([
+    api.query(`SELECT summary::text AS content FROM "${memoryTable}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`).catch(() => []),
+    api.query(`SELECT message::text AS content FROM "${sessionsTable}" WHERE path = '${sqlStr(virtualPath)}' ORDER BY creation_date ASC`).catch(() => [])
+  ]);
+  if (memoryRows.length > 0 && memoryRows[0]?.["content"]) {
+    return String(memoryRows[0]["content"]);
+  }
+  if (sessionRows.length > 0) {
+    const content = sessionRows.map((row) => row["content"]).filter((value) => typeof value === "string" && value.length > 0).join("\n");
+    return content || null;
+  }
+  return null;
+}
+async function listVirtualPathRows(api, memoryTable, sessionsTable, dir) {
+  const likePath = `${sqlLike(dir === "/" ? "" : dir)}/%`;
+  const [memoryRows, sessionRows] = await Promise.all([
+    api.query(`SELECT path, size_bytes FROM "${memoryTable}" WHERE path LIKE '${likePath}' ORDER BY path`).catch(() => []),
+    api.query(`SELECT path, size_bytes FROM "${sessionsTable}" WHERE path LIKE '${likePath}' ORDER BY path`).catch(() => [])
+  ]);
+  return dedupeRowsByPath([...memoryRows, ...sessionRows]);
+}
+async function findVirtualPaths(api, memoryTable, sessionsTable, dir, filenamePattern) {
+  const likePath = `${sqlLike(dir === "/" ? "" : dir)}/%`;
+  const [memoryRows, sessionRows] = await Promise.all([
+    api.query(`SELECT path FROM "${memoryTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}' ORDER BY path`).catch(() => []),
+    api.query(`SELECT path FROM "${sessionsTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}' ORDER BY path`).catch(() => [])
+  ]);
+  return [...new Set([...memoryRows, ...sessionRows].map((row) => row["path"]).filter((value) => typeof value === "string" && value.length > 0))];
+}
+function dedupeRowsByPath(rows) {
+  const seen = /* @__PURE__ */ new Set();
+  const unique = [];
+  for (const row of rows) {
+    const path = typeof row["path"] === "string" ? row["path"] : "";
+    if (!path || seen.has(path))
+      continue;
+    seen.add(path);
+    unique.push(row);
+  }
+  return unique;
+}
+
 // dist/src/hooks/codex/pre-tool-use.js
 var log3 = (msg) => log("codex-pre", msg);
 var MEMORY_PATH = join3(homedir3(), ".deeplake", "memory");
@@ -1009,29 +1026,19 @@ async function main() {
         }
         if (virtualPath && !virtualPath.endsWith("/")) {
           const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
-          const tableScope = getDeeplakeTableScope(virtualPath);
           log3(`direct read: ${virtualPath}`);
-          let content = null;
-          if (scopeIncludesSessions(tableScope) && !scopeIncludesMemory(tableScope)) {
-            const rows = await api.query(`SELECT message::text AS content FROM "${sessionsTable}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
-            if (rows.length > 0 && rows[0]["content"])
-              content = rows[0]["content"];
-          } else {
-            const rows = await api.query(`SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`);
-            if (rows.length > 0 && rows[0]["summary"]) {
-              content = rows[0]["summary"];
-            } else if (virtualPath === "/index.md") {
-              const idxRows = await api.query(`SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`);
-              const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
-              for (const r of idxRows) {
-                const p = r["path"];
-                const proj = r["project"] || "";
-                const desc = (r["description"] || "").slice(0, 120);
-                const date = (r["creation_date"] || "").slice(0, 10);
-                lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
-              }
-              content = lines.join("\n");
+          let content = await readVirtualPathContent(api, table, sessionsTable, virtualPath);
+          if (content === null && virtualPath === "/index.md") {
+            const idxRows = await api.query(`SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`);
+            const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
+            for (const r of idxRows) {
+              const p = r["path"];
+              const proj = r["project"] || "";
+              const desc = (r["description"] || "").slice(0, 120);
+              const date = (r["creation_date"] || "").slice(0, 10);
+              lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
             }
+            content = lines.join("\n");
           }
           if (content !== null) {
             if (lineLimit === -1) {
@@ -1051,11 +1058,7 @@ async function main() {
         const isLong = /\s-[a-zA-Z]*l/.test(rewritten);
         log3(`direct ls: ${dir}`);
         const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
-        const tableScope = getDeeplakeTableScope(dir);
-        const rows = (await Promise.all([
-          scopeIncludesMemory(tableScope) ? api.query(`SELECT path, size_bytes FROM "${table}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`).catch(() => []) : Promise.resolve([]),
-          scopeIncludesSessions(tableScope) ? api.query(`SELECT path, size_bytes FROM "${sessionsTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`).catch(() => []) : Promise.resolve([])
-        ])).flat();
+        const rows = await listVirtualPathRows(api, table, sessionsTable, dir);
         const entries = /* @__PURE__ */ new Map();
         const prefix = dir === "/" ? "/" : dir + "/";
         for (const row of rows) {
@@ -1097,15 +1100,11 @@ async function main() {
           const dir = findMatch[1].replace(/\/+$/, "") || "/";
           const namePattern = sqlLike(findMatch[2]).replace(/\*/g, "%").replace(/\?/g, "_");
           const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
-          const tableScope = getDeeplakeTableScope(dir);
           log3(`direct find: ${dir} -name '${findMatch[2]}'`);
-          const rows = (await Promise.all([
-            scopeIncludesMemory(tableScope) ? api.query(`SELECT path FROM "${table}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`).catch(() => []) : Promise.resolve([]),
-            scopeIncludesSessions(tableScope) ? api.query(`SELECT path FROM "${sessionsTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`).catch(() => []) : Promise.resolve([])
-          ])).flat();
-          let result2 = rows.map((r) => r["path"]).join("\n") || "";
+          const paths = await findVirtualPaths(api, table, sessionsTable, dir, namePattern);
+          let result2 = paths.join("\n") || "";
           if (/\|\s*wc\s+-l\s*$/.test(rewritten)) {
-            result2 = String(rows.length);
+            result2 = String(paths.length);
           }
           blockWithContent(result2 || "(no matches)");
         }

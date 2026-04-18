@@ -8,13 +8,13 @@ import { dirname } from "node:path";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr, sqlLike } from "../utils/sql.js";
+import { sqlLike } from "../utils/sql.js";
 import { type GrepParams, parseBashGrep, handleGrepDirect } from "./grep-direct.js";
 import {
-  getDeeplakeTableScope,
-  scopeIncludesMemory,
-  scopeIncludesSessions,
-} from "../virtual-path-scope.js";
+  findVirtualPaths,
+  listVirtualPathRows,
+  readVirtualPathContent,
+} from "./virtual-table-query.js";
 
 import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("pre", msg);
@@ -274,41 +274,21 @@ async function main(): Promise<void> {
 
         if (virtualPath && !virtualPath.endsWith("/")) {
           log(`direct read: ${virtualPath}`);
-          let content: string | null = null;
-          const tableScope = getDeeplakeTableScope(virtualPath);
-
-          if (scopeIncludesSessions(tableScope) && !scopeIncludesMemory(tableScope)) {
-            // Session files live in the sessions table — skip memory
-            try {
-              const sessionRows = await api.query(
-                `SELECT message::text AS content FROM "${sessionsTable}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
-              );
-              if (sessionRows.length > 0 && sessionRows[0]["content"]) {
-                content = sessionRows[0]["content"] as string;
-              }
-            } catch { /* fall through to shell */ }
-          } else {
-            // Memory table (summaries, notes, etc.)
-            const rows = await api.query(
-              `SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
+          let content = await readVirtualPathContent(api, table, sessionsTable, virtualPath);
+          if (content === null && virtualPath === "/index.md") {
+            // Virtual index — generate from metadata
+            const idxRows = await api.query(
+              `SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
             );
-            if (rows.length > 0 && rows[0]["summary"]) {
-              content = rows[0]["summary"] as string;
-            } else if (virtualPath === "/index.md") {
-              // Virtual index — generate from metadata
-              const idxRows = await api.query(
-                `SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
-              );
-              const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
-              for (const r of idxRows) {
-                const p = r["path"] as string;
-                const proj = r["project"] as string || "";
-                const desc = (r["description"] as string || "").slice(0, 120);
-                const date = (r["creation_date"] as string || "").slice(0, 10);
-                lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
-              }
-              content = lines.join("\n");
+            const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
+            for (const r of idxRows) {
+              const p = r["path"] as string;
+              const proj = r["project"] as string || "";
+              const desc = (r["description"] as string || "").slice(0, 120);
+              const date = (r["creation_date"] as string || "").slice(0, 10);
+              lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
             }
+            content = lines.join("\n");
           }
 
           if (content !== null) {
@@ -346,19 +326,7 @@ async function main(): Promise<void> {
         if (lsDir) {
           const dir = lsDir.replace(/\/+$/, "") || "/";
           log(`direct ls: ${dir}`);
-          const tableScope = getDeeplakeTableScope(dir);
-          const lsQueries: Promise<Record<string, unknown>[]>[] = [];
-          if (scopeIncludesMemory(tableScope)) {
-            lsQueries.push(api.query(
-              `SELECT path, size_bytes FROM "${table}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`
-            ).catch(() => []));
-          }
-          if (scopeIncludesSessions(tableScope)) {
-            lsQueries.push(api.query(
-              `SELECT path, size_bytes FROM "${sessionsTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`
-            ).catch(() => []));
-          }
-          const rows = (await Promise.all(lsQueries)).flat();
+          const rows = await listVirtualPathRows(api, table, sessionsTable, dir);
           const entries = new Map<string, { isDir: boolean; size: number }>();
           const prefix = dir === "/" ? "/" : dir + "/";
           for (const row of rows) {
@@ -397,23 +365,11 @@ async function main(): Promise<void> {
           const dir = findMatch[1].replace(/\/+$/, "") || "/";
           const namePattern = sqlLike(findMatch[2]).replace(/\*/g, "%").replace(/\?/g, "_");
           log(`direct find: ${dir} -name '${findMatch[2]}'`);
-          const tableScope = getDeeplakeTableScope(dir);
-          const queries: Promise<Record<string, unknown>[]>[] = [];
-          if (scopeIncludesMemory(tableScope)) {
-            queries.push(api.query(
-              `SELECT path FROM "${table}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`
-            ).catch(() => []));
-          }
-          if (scopeIncludesSessions(tableScope)) {
-            queries.push(api.query(
-              `SELECT path FROM "${sessionsTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`
-            ).catch(() => []));
-          }
-          const rows = (await Promise.all(queries)).flat();
-          let result = rows.map(r => r["path"] as string).join("\n") || "";
+          const paths = await findVirtualPaths(api, table, sessionsTable, dir, namePattern);
+          let result = paths.join("\n") || "";
           // Handle piped wc -l
           if (/\|\s*wc\s+-l\s*$/.test(shellCmd)) {
-            result = String(rows.length);
+            result = String(paths.length);
           }
           emitResult(`echo ${JSON.stringify(result || "(no matches)")}`, `[DeepLake direct] find ${dir}`);
           return;

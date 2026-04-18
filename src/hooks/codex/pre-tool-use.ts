@@ -26,13 +26,13 @@ import { dirname } from "node:path";
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
-import { sqlStr, sqlLike } from "../../utils/sql.js";
+import { sqlLike } from "../../utils/sql.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
 import {
-  getDeeplakeTableScope,
-  scopeIncludesMemory,
-  scopeIncludesSessions,
-} from "../../virtual-path-scope.js";
+  findVirtualPaths,
+  listVirtualPathRows,
+  readVirtualPathContent,
+} from "../virtual-table-query.js";
 
 import { log as _log } from "../../utils/debug.js";
 const log = (msg: string) => _log("codex-pre", msg);
@@ -188,36 +188,23 @@ async function main(): Promise<void> {
 
         if (virtualPath && !virtualPath.endsWith("/")) {
           const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
-          const tableScope = getDeeplakeTableScope(virtualPath);
           log(`direct read: ${virtualPath}`);
 
-          let content: string | null = null;
-          if (scopeIncludesSessions(tableScope) && !scopeIncludesMemory(tableScope)) {
-            const rows = await api.query(
-              `SELECT message::text AS content FROM "${sessionsTable}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
+          let content = await readVirtualPathContent(api, table, sessionsTable, virtualPath);
+          if (content === null && virtualPath === "/index.md") {
+            // Virtual index — generate from metadata
+            const idxRows = await api.query(
+              `SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
             );
-            if (rows.length > 0 && rows[0]["content"]) content = rows[0]["content"] as string;
-          } else {
-            const rows = await api.query(
-              `SELECT summary FROM "${table}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
-            );
-            if (rows.length > 0 && rows[0]["summary"]) {
-              content = rows[0]["summary"] as string;
-            } else if (virtualPath === "/index.md") {
-              // Virtual index — generate from metadata
-              const idxRows = await api.query(
-                `SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
-              );
-              const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
-              for (const r of idxRows) {
-                const p = r["path"] as string;
-                const proj = r["project"] as string || "";
-                const desc = (r["description"] as string || "").slice(0, 120);
-                const date = (r["creation_date"] as string || "").slice(0, 10);
-                lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
-              }
-              content = lines.join("\n");
+            const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
+            for (const r of idxRows) {
+              const p = r["path"] as string;
+              const proj = r["project"] as string || "";
+              const desc = (r["description"] as string || "").slice(0, 120);
+              const date = (r["creation_date"] as string || "").slice(0, 10);
+              lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
             }
+            content = lines.join("\n");
           }
 
           if (content !== null) {
@@ -240,19 +227,7 @@ async function main(): Promise<void> {
         const isLong = /\s-[a-zA-Z]*l/.test(rewritten);
         log(`direct ls: ${dir}`);
         const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
-        const tableScope = getDeeplakeTableScope(dir);
-        const rows = (await Promise.all([
-          scopeIncludesMemory(tableScope)
-            ? api.query(
-              `SELECT path, size_bytes FROM "${table}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`
-            ).catch(() => [])
-            : Promise.resolve([]),
-          scopeIncludesSessions(tableScope)
-            ? api.query(
-              `SELECT path, size_bytes FROM "${sessionsTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`
-            ).catch(() => [])
-            : Promise.resolve([]),
-        ])).flat();
+        const rows = await listVirtualPathRows(api, table, sessionsTable, dir);
         // Build directory listing from paths
         const entries = new Map<string, { isDir: boolean; size: number }>();
         const prefix = dir === "/" ? "/" : dir + "/";
@@ -294,23 +269,11 @@ async function main(): Promise<void> {
           const dir = findMatch[1].replace(/\/+$/, "") || "/";
           const namePattern = sqlLike(findMatch[2]).replace(/\*/g, "%").replace(/\?/g, "_");
           const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
-          const tableScope = getDeeplakeTableScope(dir);
           log(`direct find: ${dir} -name '${findMatch[2]}'`);
-          const rows = (await Promise.all([
-            scopeIncludesMemory(tableScope)
-              ? api.query(
-                `SELECT path FROM "${table}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`
-              ).catch(() => [])
-              : Promise.resolve([]),
-            scopeIncludesSessions(tableScope)
-              ? api.query(
-                `SELECT path FROM "${sessionsTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`
-              ).catch(() => [])
-              : Promise.resolve([]),
-          ])).flat();
-          let result = rows.map(r => r["path"] as string).join("\n") || "";
+          const paths = await findVirtualPaths(api, table, sessionsTable, dir, namePattern);
+          let result = paths.join("\n") || "";
           if (/\|\s*wc\s+-l\s*$/.test(rewritten)) {
-            result = String(rows.length);
+            result = String(paths.length);
           }
           blockWithContent(result || "(no matches)");
         }

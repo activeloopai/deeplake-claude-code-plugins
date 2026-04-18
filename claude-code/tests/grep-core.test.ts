@@ -578,7 +578,7 @@ describe("searchDeeplakeTables", () => {
     return { query } as any;
   }
 
-  it("issues only the scoped LIKE query when the path filter is clearly memory-backed", async () => {
+  it("issues one LIKE query per table with the escaped pattern and path filter", async () => {
     const api = mockApi([], []);
     await searchDeeplakeTables(api, "memory", "sessions", {
       pathFilter: " AND (path = '/x' OR path LIKE '/x/%')",
@@ -587,11 +587,13 @@ describe("searchDeeplakeTables", () => {
       escapedPattern: "foo",
       limit: 50,
     });
-    expect(api.query).toHaveBeenCalledTimes(1);
-    const [memCall] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(api.query).toHaveBeenCalledTimes(2);
+    const [memCall, sessCall] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
     expect(memCall).toContain('FROM "memory"');
     expect(memCall).toContain("summary::text ILIKE '%foo%'");
     expect(memCall).toContain("LIMIT 50");
+    expect(sessCall).toContain('FROM "sessions"');
+    expect(sessCall).toContain("message::text ILIKE '%foo%'");
   });
 
   it("skips LIKE filter when contentScanOnly is true (regex-in-memory mode)", async () => {
@@ -760,20 +762,13 @@ describe("grepBothTables", () => {
     expect(memSql).toContain("ILIKE");
   });
 
-  it("skips sessions-table queries when the target path is clearly memory-backed", async () => {
+  it("keeps memory and sessions probes parallel even for scoped target paths", async () => {
     const api = mockApi([{ path: "/summaries/a.md", content: "foo line" }]);
     await grepBothTables(api, "memory", "sessions", baseParams, "/summaries");
-    expect(api.query).toHaveBeenCalledTimes(1);
-    expect((api.query.mock.calls[0]?.[0] as string) ?? "").toContain('FROM "memory"');
-  });
-
-  it("skips memory-table queries when the target path is clearly session-backed", async () => {
-    const api = {
-      query: vi.fn().mockResolvedValue([{ path: "/sessions/a.jsonl", content: '{"turns":[]}' }]),
-    } as any;
-    await grepBothTables(api, "memory", "sessions", baseParams, "/sessions");
-    expect(api.query).toHaveBeenCalledTimes(1);
-    expect((api.query.mock.calls[0]?.[0] as string) ?? "").toContain('FROM "sessions"');
+    expect(api.query).toHaveBeenCalledTimes(2);
+    const sqls = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(sqls.some(sql => sql.includes('FROM "memory"'))).toBe(true);
+    expect(sqls.some(sql => sql.includes('FROM "sessions"'))).toBe(true);
   });
 });
 

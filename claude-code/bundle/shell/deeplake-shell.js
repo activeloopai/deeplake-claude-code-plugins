@@ -68575,28 +68575,6 @@ yargsParser.decamelize = decamelize;
 yargsParser.looksLikeNumber = looksLikeNumber;
 var lib_default = yargsParser;
 
-// dist/src/virtual-path-scope.js
-function normalizeVirtualPath(path2) {
-  if (!path2)
-    return "/";
-  const clean = path2.replace(/\/+$/, "");
-  return clean || "/";
-}
-function getDeeplakeTableScope(path2) {
-  const target = normalizeVirtualPath(path2);
-  if (target === "/")
-    return "both";
-  if (target === "/sessions" || target.startsWith("/sessions/"))
-    return "sessions";
-  return "memory";
-}
-function scopeIncludesMemory(scope) {
-  return scope === "memory" || scope === "both";
-}
-function scopeIncludesSessions(scope) {
-  return scope === "sessions" || scope === "both";
-}
-
 // dist/src/shell/grep-core.js
 var TOOL_INPUT_FIELDS = [
   "command",
@@ -68810,14 +68788,13 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern } = opts;
   const limit = opts.limit ?? 100;
   const filterPattern = contentScanOnly ? prefilterPattern : escapedPattern;
-  const pathScope = getDeeplakeTableScope(extractScopedPath(pathFilter));
   const memFilter = filterPattern ? ` AND summary::text ${likeOp} '%${filterPattern}%'` : "";
   const sessFilter = filterPattern ? ` AND message::text ${likeOp} '%${filterPattern}%'` : "";
   const memQuery = `SELECT path, summary::text AS content FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
   const sessQuery = `SELECT path, message::text AS content FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
   const [memRows, sessRows] = await Promise.all([
-    scopeIncludesMemory(pathScope) ? api.query(memQuery).catch(() => []) : Promise.resolve([]),
-    scopeIncludesSessions(pathScope) ? api.query(sessQuery).catch(() => []) : Promise.resolve([])
+    api.query(memQuery).catch(() => []),
+    api.query(sessQuery).catch(() => [])
   ]);
   const rows = [];
   for (const r10 of memRows)
@@ -68825,10 +68802,6 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   for (const r10 of sessRows)
     rows.push({ path: String(r10.path), content: String(r10.content ?? "") });
   return rows;
-}
-function extractScopedPath(pathFilter) {
-  const match2 = pathFilter.match(/path = '([^']+)'/);
-  return match2?.[1] ?? "/";
 }
 function buildPathFilter(targetPath) {
   if (!targetPath || targetPath === "/")

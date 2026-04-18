@@ -40,7 +40,7 @@ describe("grep interceptor", () => {
     expect(client.query).not.toHaveBeenCalled();
   });
 
-  it("routes to the memory table when the target path is clearly memory-backed", async () => {
+  it("queries both memory and sessions tables with LIKE and returns matches", async () => {
     const client = makeClient([{ path: "/memory/a.txt", content: "hello world" }]);
     const fs = await DeeplakeFs.create(client as never, "test", "/memory");
     client.query.mockClear();
@@ -51,7 +51,7 @@ describe("grep interceptor", () => {
 
     const sqls = client.query.mock.calls.map((c: unknown[]) => c[0] as string);
     expect(sqls.some(s => /FROM "test"/.test(s) && /ILIKE|LIKE/.test(s))).toBe(true);
-    expect(sqls.some(s => /FROM "sessions"/.test(s) && /ILIKE|LIKE/.test(s))).toBe(false);
+    expect(sqls.some(s => /FROM "sessions"/.test(s) && /ILIKE|LIKE/.test(s))).toBe(true);
     // No BM25 in the new path
     expect(sqls.some(s => s.includes("<#>"))).toBe(false);
     expect(result.stdout).toContain("hello world");
