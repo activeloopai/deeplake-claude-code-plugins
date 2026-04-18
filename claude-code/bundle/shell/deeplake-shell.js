@@ -68559,13 +68559,298 @@ yargsParser.decamelize = decamelize;
 yargsParser.looksLikeNumber = looksLikeNumber;
 var lib_default = yargsParser;
 
+// dist/src/shell/grep-core.js
+var TOOL_INPUT_FIELDS = [
+  "command",
+  "file_path",
+  "path",
+  "pattern",
+  "prompt",
+  "subagent_type",
+  "query",
+  "url",
+  "notebook_path",
+  "old_string",
+  "new_string",
+  "content",
+  "skill",
+  "args",
+  "taskId",
+  "status",
+  "subject",
+  "description",
+  "to",
+  "message",
+  "summary",
+  "max_results"
+];
+var TOOL_RESPONSE_DROP = /* @__PURE__ */ new Set([
+  // Note: `stderr` is intentionally NOT in this set. The `stdout` high-signal
+  // branch below already de-dupes it for the common case (appends as suffix
+  // when non-empty). If a tool response has ONLY `stderr` and no `stdout`
+  // (hard-failure on some tools), the generic cleanup preserves it so the
+  // error message reaches Claude instead of collapsing to `[ok]`.
+  "interrupted",
+  "isImage",
+  "noOutputExpected",
+  "type",
+  "structuredPatch",
+  "userModified",
+  "originalFile",
+  "replaceAll",
+  "totalDurationMs",
+  "totalTokens",
+  "totalToolUseCount",
+  "usage",
+  "toolStats",
+  "durationMs",
+  "durationSeconds",
+  "bytes",
+  "code",
+  "codeText",
+  "agentId",
+  "agentType",
+  "verificationNudgeNeeded",
+  "numLines",
+  "numFiles",
+  "truncated",
+  "statusChange",
+  "updatedFields",
+  "isAgent",
+  "success"
+]);
+function maybeParseJson(v27) {
+  if (typeof v27 !== "string")
+    return v27;
+  const s10 = v27.trim();
+  if (s10[0] !== "{" && s10[0] !== "[")
+    return v27;
+  try {
+    return JSON.parse(s10);
+  } catch {
+    return v27;
+  }
+}
+function snakeCase(k17) {
+  return k17.replace(/([A-Z])/g, "_$1").toLowerCase();
+}
+function camelCase2(k17) {
+  return k17.replace(/_([a-z])/g, (_16, c15) => c15.toUpperCase());
+}
+function formatToolInput(raw) {
+  const p22 = maybeParseJson(raw);
+  if (typeof p22 !== "object" || p22 === null)
+    return String(p22 ?? "");
+  const parts = [];
+  for (const k17 of TOOL_INPUT_FIELDS) {
+    if (p22[k17] === void 0)
+      continue;
+    const v27 = p22[k17];
+    parts.push(`${k17}: ${typeof v27 === "string" ? v27 : JSON.stringify(v27)}`);
+  }
+  for (const k17 of ["glob", "output_mode", "limit", "offset"]) {
+    if (p22[k17] !== void 0)
+      parts.push(`${k17}: ${p22[k17]}`);
+  }
+  return parts.length ? parts.join("\n") : JSON.stringify(p22);
+}
+function formatToolResponse(raw, inp, toolName) {
+  const r10 = maybeParseJson(raw);
+  if (typeof r10 !== "object" || r10 === null)
+    return String(r10 ?? "");
+  if (toolName === "Edit" || toolName === "Write" || toolName === "MultiEdit") {
+    return r10.filePath ? `[wrote ${r10.filePath}]` : "[ok]";
+  }
+  if (typeof r10.stdout === "string") {
+    const stderr = r10.stderr;
+    return r10.stdout + (stderr ? `
+stderr: ${stderr}` : "");
+  }
+  if (typeof r10.content === "string")
+    return r10.content;
+  if (r10.file && typeof r10.file === "object") {
+    const f11 = r10.file;
+    if (typeof f11.content === "string")
+      return `[${f11.filePath ?? ""}]
+${f11.content}`;
+    if (typeof f11.base64 === "string")
+      return `[binary ${f11.filePath ?? ""}: ${f11.base64.length} base64 chars]`;
+  }
+  if (Array.isArray(r10.filenames))
+    return r10.filenames.join("\n");
+  if (Array.isArray(r10.matches)) {
+    return r10.matches.map((m26) => typeof m26 === "string" ? m26 : JSON.stringify(m26)).join("\n");
+  }
+  if (Array.isArray(r10.results)) {
+    return r10.results.map((x28) => typeof x28 === "string" ? x28 : x28?.title ?? x28?.url ?? JSON.stringify(x28)).join("\n");
+  }
+  const inpObj = maybeParseJson(inp);
+  const kept = {};
+  for (const [k17, v27] of Object.entries(r10)) {
+    if (TOOL_RESPONSE_DROP.has(k17))
+      continue;
+    if (v27 === "" || v27 === false || v27 == null)
+      continue;
+    if (typeof inpObj === "object" && inpObj) {
+      const inObj = inpObj;
+      if (k17 in inObj && JSON.stringify(inObj[k17]) === JSON.stringify(v27))
+        continue;
+      const snake = snakeCase(k17);
+      if (snake in inObj && JSON.stringify(inObj[snake]) === JSON.stringify(v27))
+        continue;
+      const camel = camelCase2(k17);
+      if (camel in inObj && JSON.stringify(inObj[camel]) === JSON.stringify(v27))
+        continue;
+    }
+    kept[k17] = v27;
+  }
+  return Object.keys(kept).length ? JSON.stringify(kept) : "[ok]";
+}
+function formatToolCall(obj) {
+  return `[tool:${obj?.tool_name ?? "?"}]
+input: ${formatToolInput(obj?.tool_input)}
+response: ${formatToolResponse(obj?.tool_response, obj?.tool_input, obj?.tool_name)}`;
+}
+function normalizeContent(path2, raw) {
+  if (!path2.includes("/sessions/"))
+    return raw;
+  if (!raw || raw[0] !== "{")
+    return raw;
+  let obj;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+  if (Array.isArray(obj.turns)) {
+    const header = [];
+    if (obj.date_time)
+      header.push(`date: ${obj.date_time}`);
+    if (obj.speakers) {
+      const s10 = obj.speakers;
+      const names = [s10.speaker_a, s10.speaker_b].filter(Boolean).join(", ");
+      if (names)
+        header.push(`speakers: ${names}`);
+    }
+    const lines = obj.turns.map((t6) => {
+      const sp = String(t6?.speaker ?? t6?.name ?? "?").trim();
+      const tx = String(t6?.text ?? t6?.content ?? "").replace(/\s+/g, " ").trim();
+      const tag = t6?.dia_id ? `[${t6.dia_id}] ` : "";
+      return `${tag}${sp}: ${tx}`;
+    });
+    const out2 = [...header, ...lines].join("\n");
+    return out2.trim() ? out2 : raw;
+  }
+  const stripRecalled = (t6) => {
+    const i11 = t6.indexOf("<recalled-memories>");
+    if (i11 === -1)
+      return t6;
+    const j14 = t6.lastIndexOf("</recalled-memories>");
+    if (j14 === -1 || j14 < i11)
+      return t6;
+    const head = t6.slice(0, i11);
+    const tail = t6.slice(j14 + "</recalled-memories>".length);
+    return (head + tail).replace(/^\s+/, "").replace(/\n{3,}/g, "\n\n");
+  };
+  let out = null;
+  if (obj.type === "user_message") {
+    out = `[user] ${stripRecalled(String(obj.content ?? ""))}`;
+  } else if (obj.type === "assistant_message") {
+    const agent = obj.agent_type ? ` (agent=${obj.agent_type})` : "";
+    out = `[assistant${agent}] ${stripRecalled(String(obj.content ?? ""))}`;
+  } else if (obj.type === "tool_call") {
+    out = formatToolCall(obj);
+  }
+  if (out === null)
+    return raw;
+  const trimmed = out.trim();
+  if (!trimmed || trimmed === "[user]" || trimmed === "[assistant]" || /^\[tool:[^\]]*\]\s+input:\s+\{\}\s+response:\s+\{\}$/.test(trimmed))
+    return raw;
+  return out;
+}
+async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern } = opts;
+  const limit = opts.limit ?? 100;
+  const memFilter = contentScanOnly ? "" : ` AND summary::text ${likeOp} '%${escapedPattern}%'`;
+  const sessFilter = contentScanOnly ? "" : ` AND message::text ${likeOp} '%${escapedPattern}%'`;
+  const memQuery = `SELECT path, summary::text AS content FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
+  const sessQuery = `SELECT path, message::text AS content FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
+  const [memRows, sessRows] = await Promise.all([
+    api.query(memQuery).catch(() => []),
+    api.query(sessQuery).catch(() => [])
+  ]);
+  const rows = [];
+  for (const r10 of memRows)
+    rows.push({ path: String(r10.path), content: String(r10.content ?? "") });
+  for (const r10 of sessRows)
+    rows.push({ path: String(r10.path), content: String(r10.content ?? "") });
+  return rows;
+}
+function buildPathFilter(targetPath) {
+  if (!targetPath || targetPath === "/")
+    return "";
+  const clean = targetPath.replace(/\/+$/, "");
+  return ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+}
+function compileGrepRegex(params) {
+  let reStr = params.fixedString ? params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : params.pattern;
+  if (params.wordMatch)
+    reStr = `\\b${reStr}\\b`;
+  try {
+    return new RegExp(reStr, params.ignoreCase ? "i" : "");
+  } catch {
+    return new RegExp(params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), params.ignoreCase ? "i" : "");
+  }
+}
+function refineGrepMatches(rows, params, forceMultiFilePrefix) {
+  const re9 = compileGrepRegex(params);
+  const multi = forceMultiFilePrefix ?? rows.length > 1;
+  const output = [];
+  for (const row of rows) {
+    if (!row.content)
+      continue;
+    const lines = row.content.split("\n");
+    const matched = [];
+    for (let i11 = 0; i11 < lines.length; i11++) {
+      const hit = re9.test(lines[i11]);
+      if (hit !== !!params.invertMatch) {
+        if (params.filesOnly) {
+          output.push(row.path);
+          break;
+        }
+        const prefix = multi ? `${row.path}:` : "";
+        const ln3 = params.lineNumber ? `${i11 + 1}:` : "";
+        matched.push(`${prefix}${ln3}${lines[i11]}`);
+      }
+    }
+    if (!params.filesOnly) {
+      if (params.countOnly) {
+        output.push(`${multi ? `${row.path}:` : ""}${matched.length}`);
+      } else {
+        output.push(...matched);
+      }
+    }
+  }
+  return output;
+}
+
 // dist/src/shell/grep-interceptor.js
 var MAX_FALLBACK_CANDIDATES = 500;
 function createGrepCommand(client, fs3, table, sessionsTable) {
   return Yi2("grep", async (args, ctx) => {
     const parsed = lib_default(args, {
-      boolean: ["r", "R", "l", "i", "n", "v", "c", "F", "fixed-strings", "recursive", "ignore-case"],
-      alias: { r: "recursive", R: "recursive", F: "fixed-strings", i: "ignore-case", n: "line-number" }
+      boolean: ["r", "R", "l", "i", "n", "v", "c", "F", "w", "fixed-strings", "recursive", "ignore-case", "word-regexp"],
+      alias: {
+        r: "recursive",
+        R: "recursive",
+        F: "fixed-strings",
+        i: "ignore-case",
+        n: "line-number",
+        w: "word-regexp",
+        l: "files-with-matches",
+        c: "count",
+        v: "invert-match"
+      }
     });
     const positional = parsed._;
     if (positional.length === 0) {
@@ -68579,79 +68864,52 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
     const mount = fs3.mountPoint;
     const mountPrefix = mount === "/" ? "/" : mount + "/";
     const allUnderMount = targets.every((t6) => t6 === mount || t6.startsWith(mountPrefix));
-    if (!allUnderMount) {
+    if (!allUnderMount)
       return { stdout: "", stderr: "", exitCode: 127 };
-    }
-    let candidates = [];
+    const matchParams = {
+      pattern,
+      fixedString: Boolean(parsed.F || parsed["fixed-strings"]),
+      ignoreCase: Boolean(parsed.i || parsed["ignore-case"]),
+      wordMatch: Boolean(parsed.w || parsed["word-regexp"]),
+      lineNumber: Boolean(parsed.n || parsed["line-number"]),
+      invertMatch: Boolean(parsed.v || parsed["invert-match"]),
+      filesOnly: Boolean(parsed.l || parsed["files-with-matches"]),
+      countOnly: Boolean(parsed.c || parsed["count"])
+    };
+    const likeOp = matchParams.ignoreCase ? "ILIKE" : "LIKE";
+    const hasRegexMeta = !matchParams.fixedString && /[.*+?^${}()|[\]\\]/.test(pattern);
+    const escapedPattern = sqlLike(pattern);
+    let rows = [];
     try {
-      const queries = [
-        client.query(`SELECT path FROM "${table}" WHERE summary <#> '${sqlStr(pattern)}' LIMIT 50`)
-      ];
-      if (sessionsTable) {
-        queries.push(client.query(`SELECT path FROM "${sessionsTable}" WHERE message::text LIKE '%${sqlLike(pattern)}%' LIMIT 10`));
-      }
-      const results = await Promise.race([
-        Promise.all(queries),
+      const perTarget = await Promise.race([
+        Promise.all(targets.map((t6) => searchDeeplakeTables(client, table, sessionsTable ?? "sessions", {
+          pathFilter: buildPathFilter(t6),
+          contentScanOnly: hasRegexMeta,
+          likeOp,
+          escapedPattern,
+          limit: 100
+        }))),
         new Promise((_16, reject) => setTimeout(() => reject(new Error("timeout")), 3e3))
       ]);
-      for (const rows of results) {
-        candidates.push(...rows.map((r10) => r10["path"]).filter(Boolean));
-      }
+      for (const batch of perTarget)
+        rows.push(...batch);
     } catch {
-    }
-    const withinTargets = (p22) => targets.some((t6) => t6 === "/" || p22 === t6 || p22.startsWith(t6 + "/"));
-    if (candidates.length === 0) {
-      candidates = fs3.getAllPaths().filter((p22) => !p22.endsWith("/") && withinTargets(p22));
-      if (candidates.length > MAX_FALLBACK_CANDIDATES) {
-        candidates = candidates.slice(0, MAX_FALLBACK_CANDIDATES);
-      }
-    } else {
-      candidates = candidates.filter((c15) => withinTargets(c15));
+      rows = [];
     }
     const seen = /* @__PURE__ */ new Set();
-    candidates = candidates.filter((c15) => {
-      if (seen.has(c15))
-        return false;
-      seen.add(c15);
-      return true;
-    });
-    await fs3.prefetch(candidates);
-    const fixedString = parsed.F || parsed["fixed-strings"];
-    const ignoreCase = parsed.i || parsed["ignore-case"];
-    const showLine = parsed.n || parsed["line-number"];
-    const invertMatch = parsed.v;
-    const filesOnly = parsed.l;
-    const countOnly = parsed.c;
-    const re9 = new RegExp(fixedString ? pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : pattern, ignoreCase ? "i" : "");
-    const output = [];
-    const multipleFiles = candidates.length > 1;
-    for (const fp of candidates) {
-      const content = await fs3.readFile(fp).catch(() => null);
-      if (content === null)
-        continue;
-      const lines = content.split("\n");
-      const matchedLines = [];
-      for (let i11 = 0; i11 < lines.length; i11++) {
-        const matched = re9.test(lines[i11]);
-        if (matched !== invertMatch) {
-          if (filesOnly) {
-            output.push(fp);
-            break;
-          }
-          const prefix = multipleFiles ? `${fp}:` : "";
-          const lineNo = showLine ? `${i11 + 1}:` : "";
-          matchedLines.push(`${prefix}${lineNo}${lines[i11]}`);
-        }
-      }
-      if (!filesOnly) {
-        if (countOnly) {
-          const prefix = multipleFiles ? `${fp}:` : "";
-          output.push(`${prefix}${matchedLines.length}`);
-        } else {
-          output.push(...matchedLines);
-        }
+    rows = rows.filter((r10) => seen.has(r10.path) ? false : (seen.add(r10.path), true));
+    if (rows.length === 0) {
+      const withinTargets = (p22) => targets.some((t6) => t6 === "/" || p22 === t6 || p22.startsWith(t6 + "/"));
+      const candidates = fs3.getAllPaths().filter((p22) => !p22.endsWith("/") && withinTargets(p22)).slice(0, MAX_FALLBACK_CANDIDATES);
+      await fs3.prefetch(candidates);
+      for (const fp of candidates) {
+        const content = await fs3.readFile(fp).catch(() => null);
+        if (content !== null)
+          rows.push({ path: fp, content });
       }
     }
+    const normalized = rows.map((r10) => ({ path: r10.path, content: normalizeContent(r10.path, r10.content) }));
+    const output = refineGrepMatches(normalized, matchParams);
     return {
       stdout: output.length > 0 ? output.join("\n") + "\n" : "",
       stderr: "",
