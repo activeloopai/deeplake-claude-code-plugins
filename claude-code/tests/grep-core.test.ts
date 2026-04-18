@@ -62,6 +62,52 @@ describe("normalizeContent: LoCoMo benchmark shape", () => {
     expect(out).toContain("X: ");
   });
 
+  it("omits speakers header when both speaker fields are empty", () => {
+    const raw = JSON.stringify({
+      turns: [{ speaker: "A", text: "hi" }],
+      speakers: { speaker_a: "", speaker_b: "" },
+    });
+    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    expect(out).not.toContain("speakers:");
+    expect(out).toContain("A: hi");
+  });
+
+  it("emits only speaker_a when speaker_b is missing", () => {
+    const raw = JSON.stringify({
+      turns: [{ speaker: "A", text: "hi" }],
+      speakers: { speaker_a: "Alice" },
+    });
+    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    expect(out).toContain("speakers: Alice");
+  });
+
+  it("falls back speaker->name when speaker field is absent on a turn", () => {
+    const raw = JSON.stringify({ turns: [{ name: "Caroline", text: "hi" }] });
+    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    expect(out).toContain("Caroline: hi");
+  });
+
+  it("falls back text->content when text field is absent on a turn", () => {
+    const raw = JSON.stringify({ turns: [{ speaker: "X", content: "fallback" }] });
+    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    expect(out).toContain("X: fallback");
+  });
+
+  it("omits dia_id prefix when the turn has no dia_id", () => {
+    const raw = JSON.stringify({ turns: [{ speaker: "A", text: "hi" }] });
+    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    expect(out).toContain("A: hi");
+    expect(out).not.toMatch(/\[\]/);
+  });
+
+  it("emits turns without date/speakers when both are missing", () => {
+    const raw = JSON.stringify({ turns: [{ speaker: "A", text: "hi" }] });
+    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    expect(out).not.toContain("date:");
+    expect(out).not.toContain("speakers:");
+    expect(out).toContain("A: hi");
+  });
+
   it("returns raw when turns produce an empty serialization", () => {
     const empty = JSON.stringify({ turns: [] });
     // No header, no turns → trimmed output is empty → fallback to raw
@@ -156,6 +202,102 @@ describe("normalizeContent: production tool_call", () => {
     const out = normalizeContent("/sessions/u/x.jsonl", raw);
     expect(out).toContain("taskId: T1");
     // response collapses to [ok] — taskId dropped as dup, everything else in DROP set
+    expect(out).toContain("response: [ok]");
+  });
+
+  it("Bash stdout with no stderr does not append stderr line", () => {
+    const raw = JSON.stringify({
+      type: "tool_call",
+      tool_name: "Bash",
+      tool_input: JSON.stringify({ command: "true" }),
+      tool_response: JSON.stringify({ stdout: "hello", stderr: "", interrupted: false }),
+    });
+    const out = normalizeContent("/sessions/u/x.jsonl", raw);
+    expect(out).toContain("hello");
+    expect(out).not.toContain("stderr:");
+  });
+
+  it("extractInput falls back to JSON.stringify when no pick fields match", () => {
+    const raw = JSON.stringify({
+      type: "tool_call",
+      tool_name: "CustomTool",
+      tool_input: JSON.stringify({ weird: "payload", answer: 42 }),
+      tool_response: JSON.stringify({ stdout: "ok" }),
+    });
+    const out = normalizeContent("/sessions/u/x.jsonl", raw);
+    expect(out).toContain('weird');
+    expect(out).toContain('answer');
+  });
+
+  it("extractInput handles scalar tool_input (not object)", () => {
+    const raw = JSON.stringify({
+      type: "tool_call",
+      tool_name: "Ping",
+      tool_input: "hello",
+      tool_response: JSON.stringify({ stdout: "pong" }),
+    });
+    const out = normalizeContent("/sessions/u/x.jsonl", raw);
+    expect(out).toContain("input: hello");
+    expect(out).toContain("pong");
+  });
+
+  it("extractResponse handles scalar tool_response (not object)", () => {
+    const raw = JSON.stringify({
+      type: "tool_call",
+      tool_name: "Raw",
+      tool_input: JSON.stringify({ command: "x" }),
+      tool_response: "just a string",
+    });
+    const out = normalizeContent("/sessions/u/x.jsonl", raw);
+    expect(out).toContain("just a string");
+  });
+
+  it("uses '?' when tool_name is missing", () => {
+    const raw = JSON.stringify({
+      type: "tool_call",
+      tool_input: JSON.stringify({ x: 1 }),
+      tool_response: JSON.stringify({ stdout: "done" }),
+    });
+    const out = normalizeContent("/sessions/u/x.jsonl", raw);
+    expect(out).toContain("[tool:?]");
+  });
+
+  it("generic cleanup still works when tool_input is scalar (not an object)", () => {
+    const raw = JSON.stringify({
+      type: "tool_call",
+      tool_name: "OddTool",
+      tool_input: "plain string input",
+      tool_response: JSON.stringify({ extra: "kept-field" }),
+    });
+    const out = normalizeContent("/sessions/u/x.jsonl", raw);
+    expect(out).toContain("kept-field");
+  });
+
+  it("drops response key that is a camelCase duplicate of a snake_case input", () => {
+    const raw = JSON.stringify({
+      type: "tool_call",
+      tool_name: "Ghost",
+      tool_input: JSON.stringify({ some_field: "v" }),
+      tool_response: JSON.stringify({ someField: "v", keep: "yes" }),
+    });
+    const out = normalizeContent("/sessions/u/x.jsonl", raw);
+    expect(out).not.toMatch(/"someField":"v"/);
+    expect(out).toContain("keep");
+  });
+
+  it("collapses response to [ok] when every field is noise or duplicated", () => {
+    const raw = JSON.stringify({
+      type: "tool_call",
+      tool_name: "NoopTool",
+      tool_input: JSON.stringify({ taskId: "T" }),
+      tool_response: JSON.stringify({
+        success: true,
+        taskId: "T",
+        interrupted: false,
+        isImage: false,
+      }),
+    });
+    const out = normalizeContent("/sessions/u/x.jsonl", raw);
     expect(out).toContain("response: [ok]");
   });
 
@@ -325,6 +467,12 @@ describe("compileGrepRegex", () => {
     const re = compileGrepRegex({ ...base, pattern: "[unclosed" });
     expect(re.test("[unclosed")).toBe(true);
   });
+
+  it("fallback regex still honours ignoreCase flag", () => {
+    const re = compileGrepRegex({ ...base, pattern: "[UNCLOSED", ignoreCase: true });
+    expect(re.test("[unclosed")).toBe(true);
+    expect(re.flags).toContain("i");
+  });
 });
 
 // ── refineGrepMatches ───────────────────────────────────────────────────────
@@ -360,6 +508,14 @@ describe("refineGrepMatches", () => {
       { ...base, filesOnly: true },
     );
     expect(out).toEqual(["/a", "/b"]);
+  });
+
+  it("countOnly on a single-file input omits the path prefix", () => {
+    const out = refineGrepMatches(
+      [{ path: "/only", content: "foo\nfoo\nbar" }],
+      { ...base, countOnly: true },
+    );
+    expect(out).toEqual(["2"]);
   });
 
   it("countOnly emits a count per file with multi-file prefix", () => {
@@ -465,7 +621,7 @@ describe("searchDeeplakeTables", () => {
     ]);
   });
 
-  it("tolerates null content (coerces to empty string)", async () => {
+  it("tolerates null content on memory row (coerces to empty string)", async () => {
     const api = mockApi([{ path: "/a", content: null }], []);
     const rows = await searchDeeplakeTables(api, "m", "s", {
       pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
@@ -473,7 +629,15 @@ describe("searchDeeplakeTables", () => {
     expect(rows[0]).toEqual({ path: "/a", content: "" });
   });
 
-  it("returns partial results when one table query fails", async () => {
+  it("tolerates null content on sessions row too", async () => {
+    const api = mockApi([], [{ path: "/b", content: null }]);
+    const rows = await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
+    });
+    expect(rows[0]).toEqual({ path: "/b", content: "" });
+  });
+
+  it("returns partial results when the sessions query fails", async () => {
     const api = {
       query: vi.fn()
         .mockImplementationOnce(async () => [{ path: "/a", content: "ok" }])
@@ -483,6 +647,27 @@ describe("searchDeeplakeTables", () => {
       pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
     });
     expect(rows).toEqual([{ path: "/a", content: "ok" }]);
+  });
+
+  it("returns partial results when the memory query fails", async () => {
+    const api = {
+      query: vi.fn()
+        .mockImplementationOnce(async () => { throw new Error("boom"); })
+        .mockImplementationOnce(async () => [{ path: "/b", content: "ok" }]),
+    } as any;
+    const rows = await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
+    });
+    expect(rows).toEqual([{ path: "/b", content: "ok" }]);
+  });
+
+  it("defaults limit to 100 when omitted", async () => {
+    const api = { query: vi.fn().mockResolvedValue([]) } as any;
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
+    });
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain("LIMIT 100");
   });
 });
 
@@ -545,5 +730,12 @@ describe("grepBothTables", () => {
     const [memSql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
     expect(memSql).not.toContain("ILIKE");
     expect(memSql).not.toContain("summary::text LIKE");
+  });
+
+  it("routes to ILIKE when ignoreCase is set", async () => {
+    const api = mockApi([]);
+    await grepBothTables(api, "m", "s", { ...baseParams, ignoreCase: true }, "/");
+    const [memSql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(memSql).toContain("ILIKE");
   });
 });

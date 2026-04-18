@@ -141,13 +141,20 @@ jobs:
               out.push(`| ${icon(p)} | ${label} | ${fmtPct(p)} (🎯 ${THRESHOLD}%) | ${agg[key].covered} / ${agg[key].total} |`);
             }
             out.push('');
-            out.push('### File Coverage');
+            // File-level breakdown inside a <details> dropdown so a PR that
+            // touches dozens/hundreds of files does not produce an endless
+            // comment. Summary text shows the file count so you can see at
+            // a glance how much is inside before expanding.
+            out.push('<details>');
+            out.push(`<summary><strong>File Coverage</strong> — ${perFile.length} file${perFile.length === 1 ? '' : 's'} changed</summary>`);
             out.push('');
             out.push('| File | Stmts | Branches | Functions | Lines |');
             out.push('|------|------:|---------:|----------:|------:|');
             for (const { f, c } of perFile) {
               out.push(`| \`${f}\` | ${fmtCell(c, 'statements')} | ${fmtCell(c, 'branches')} | ${fmtCell(c, 'functions')} | ${fmtCell(c, 'lines')} |`);
             }
+            out.push('');
+            out.push('</details>');
           }
           out.push('');
           out.push(`<sub>Generated for commit ${(process.env.GITHUB_SHA || '?').slice(0,7)}.</sub>`);

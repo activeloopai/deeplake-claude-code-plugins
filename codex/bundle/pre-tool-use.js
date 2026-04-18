@@ -562,15 +562,11 @@ function refineGrepMatches(rows, params, forceMultiFilePrefix) {
       continue;
     const lines = row.content.split("\n");
     const matched = [];
-    let fileEmitted = false;
     for (let i = 0; i < lines.length; i++) {
       const hit = re.test(lines[i]);
       if (hit !== !!params.invertMatch) {
         if (params.filesOnly) {
-          if (!fileEmitted) {
-            output.push(row.path);
-            fileEmitted = true;
-          }
+          output.push(row.path);
           break;
         }
         const prefix = multi ? `${row.path}:` : "";

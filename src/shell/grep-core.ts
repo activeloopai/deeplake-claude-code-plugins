@@ -298,15 +298,11 @@ export function refineGrepMatches(
     if (!row.content) continue;
     const lines = row.content.split("\n");
     const matched: string[] = [];
-    let fileEmitted = false;
 
     for (let i = 0; i < lines.length; i++) {
       const hit = re.test(lines[i]);
       if (hit !== !!params.invertMatch) {
-        if (params.filesOnly) {
-          if (!fileEmitted) { output.push(row.path); fileEmitted = true; }
-          break;
-        }
+        if (params.filesOnly) { output.push(row.path); break; }
         const prefix = multi ? `${row.path}:` : "";
         const ln = params.lineNumber ? `${i + 1}:` : "";
         matched.push(`${prefix}${ln}${lines[i]}`);
