@@ -164,7 +164,8 @@ export async function findVirtualPaths(
   dir: string,
   filenamePattern: string,
 ): Promise<string[]> {
-  const likePath = `${sqlLike(dir === "/" ? "" : dir)}/%`;
+  const normalizedDir = dir.replace(/\/+$/, "") || "/";
+  const likePath = `${sqlLike(normalizedDir === "/" ? "" : normalizedDir)}/%`;
   const rows = await queryUnionRows(
     api,
     `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`,

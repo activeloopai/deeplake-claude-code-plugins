@@ -31,6 +31,10 @@ describe("bash-command-compiler parsing", () => {
       "again",
       "plain",
     ]);
+    expect(tokenizeShellWords("echo \"hello \\\"world\\\"\"")).toEqual([
+      "echo",
+      "hello \"world\"",
+    ]);
   });
 
   it("expands numeric and comma brace expressions", () => {
@@ -193,6 +197,23 @@ describe("bash-command-compiler parsing", () => {
       },
       lineLimit: 5,
     });
+    expect(parseCompiledSegment("find /summaries -type f -name '*.md' | xargs -r grep -l launch | head -1")).toEqual({
+      kind: "find_grep",
+      dir: "/summaries",
+      patterns: ["*.md"],
+      params: {
+        pattern: "launch",
+        targetPath: "/",
+        ignoreCase: false,
+        wordMatch: false,
+        filesOnly: true,
+        countOnly: false,
+        lineNumber: false,
+        invertMatch: false,
+        fixedString: false,
+      },
+      lineLimit: 1,
+    });
   });
 
   it("rejects unsupported segments and command shapes", () => {
@@ -203,6 +224,8 @@ describe("bash-command-compiler parsing", () => {
     expect(parseCompiledSegment("find /summaries -name '*.md' | sort")).toBeNull();
     expect(parseCompiledSegment("find /summaries -name '*.md' -o -name '*.json'")).toBeNull();
     expect(parseCompiledSegment("find /summaries -name '*.md' -o -name '*.json' | wc -l")).toBeNull();
+    expect(parseCompiledSegment("find /summaries -name '*.md' | xargs -z grep -l foo")).toBeNull();
+    expect(parseCompiledSegment("find /summaries -name '*.md' | xargs grep -l foo | tail -2")).toBeNull();
     expect(parseCompiledSegment("grep foo /a | tail -2")).toBeNull();
     expect(parseCompiledBashCommand("cat /a || cat /b")).toBeNull();
     expect(parseCompiledBashCommand("cat /a && echo ok > /x")).toBeNull();
@@ -270,6 +293,22 @@ describe("bash-command-compiler execution", () => {
       },
     );
     expect(output).toBe("");
+  });
+
+  it("ignores only the missing cat inputs and keeps present content", async () => {
+    const output = await executeCompiledBashCommand(
+      { query: vi.fn() } as any,
+      "memory",
+      "sessions",
+      "cat /missing.md /present.md 2>/dev/null",
+      {
+        readVirtualPathContentsFn: vi.fn(async () => new Map([
+          ["/missing.md", null],
+          ["/present.md", "ok"],
+        ])) as any,
+      },
+    );
+    expect(output).toBe("ok");
   });
 
   it("renders missing directories and supports line-counting", async () => {

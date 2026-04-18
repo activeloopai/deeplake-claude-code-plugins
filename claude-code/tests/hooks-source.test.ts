@@ -204,6 +204,46 @@ describe("claude capture source", () => {
     expect(flushed).toMatchObject({ status: "queued", flushStatus: "flushed" });
     expect(flush).toHaveBeenCalledTimes(1);
   });
+
+  it("suppresses periodic summaries when skipped or when the helper throws", () => {
+    const spawn = vi.fn();
+    maybeTriggerPeriodicSummary("s1", "/repo", baseConfig, {
+      wikiWorker: true,
+      spawnWikiWorkerFn: spawn as any,
+    });
+    maybeTriggerPeriodicSummary("s1", "/repo", baseConfig, {
+      bumpTotalCountFn: vi.fn(() => { throw new Error("boom"); }) as any,
+      spawnWikiWorkerFn: spawn as any,
+      logFn: vi.fn(),
+    });
+    maybeTriggerPeriodicSummary("s1", "/repo", baseConfig, {
+      bumpTotalCountFn: vi.fn(() => ({ totalCount: 1, lastSummaryCount: 1 })) as any,
+      loadTriggerConfigFn: vi.fn(() => ({ everyNMessages: 5, everyHours: 24 })) as any,
+      shouldTriggerFn: vi.fn(() => false) as any,
+      spawnWikiWorkerFn: spawn as any,
+    });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("queues assistant events with fallback project and description metadata", async () => {
+    const append = vi.fn();
+    const build = vi.fn((row) => row);
+    const result = await runCaptureHook({
+      session_id: "s1",
+      last_assistant_message: "done",
+    }, {
+      config: baseConfig,
+      appendQueuedSessionRowFn: append as any,
+      buildQueuedSessionRowFn: build as any,
+      maybeTriggerPeriodicSummaryFn: vi.fn() as any,
+      now: () => "2026-01-01T00:00:00.000Z",
+    });
+    expect(result.status).toBe("queued");
+    expect(build).toHaveBeenCalledWith(expect.objectContaining({
+      projectName: "unknown",
+      description: "",
+    }));
+  });
 });
 
 describe("claude pre-tool source", () => {
@@ -471,6 +511,18 @@ describe("claude session start source", () => {
     expect(result?.hookSpecificOutput.additionalContext).toContain("Not logged in to Deeplake");
     expect(logFn).toHaveBeenCalledWith(expect.stringContaining("no credentials"));
   });
+
+  it("falls back to org id and default workspace when names are missing", () => {
+    const context = buildSessionStartAdditionalContext({
+      authCommand: "/tmp/auth-login.js",
+      creds: { ...baseCreds, orgName: undefined, workspaceId: undefined } as any,
+      currentVersion: null,
+      latestVersion: null,
+    });
+    expect(context).toContain("org-1");
+    expect(context).toContain("workspace: default");
+    expect(context).not.toContain("Hivemind v");
+  });
 });
 
 describe("claude session start setup source", () => {
@@ -584,6 +636,53 @@ describe("claude session start setup source", () => {
     });
     expect(logFn).toHaveBeenCalledWith(expect.stringContaining("setup failed: boom"));
     expect(logFn).toHaveBeenCalledWith(expect.stringContaining("version check failed: offline"));
+    expect(wikiLogFn).toHaveBeenCalledWith(expect.stringContaining("failed for s1: boom"));
+  });
+
+  it("handles capture-disabled, successful autoupdate, and skipped setup work", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true as any);
+    const execSyncFn = vi.fn();
+    const createPlaceholderFn = vi.fn();
+    await runSessionStartSetup({ session_id: "s1", cwd: "/repo" }, {
+      creds: baseCreds,
+      config: baseConfig,
+      captureEnabled: false,
+      createApi: vi.fn(() => ({
+        ensureTable: vi.fn(async () => undefined),
+      }) as any),
+      createPlaceholderFn: createPlaceholderFn as any,
+      getInstalledVersionFn: vi.fn(() => "0.6.0") as any,
+      getLatestVersionCachedFn: vi.fn(async () => "0.7.0") as any,
+      execSyncFn: execSyncFn as any,
+    });
+    expect(createPlaceholderFn).not.toHaveBeenCalled();
+    expect(execSyncFn).toHaveBeenCalledTimes(1);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("auto-updated"));
+
+    await expect(runSessionStartSetup({ session_id: "", cwd: "/repo" }, {
+      creds: baseCreds,
+      config: baseConfig,
+      getInstalledVersionFn: vi.fn(() => null) as any,
+    })).resolves.toEqual({ status: "complete" });
+  });
+
+  it("treats non-auth session setup errors as setup failures", async () => {
+    const wikiLogFn = vi.fn();
+    const createPlaceholderFn = vi.fn();
+    await runSessionStartSetup({ session_id: "s1", cwd: "/repo" }, {
+      creds: baseCreds,
+      config: baseConfig,
+      createApi: vi.fn(() => ({
+        ensureTable: vi.fn(async () => undefined),
+        ensureSessionsTable: vi.fn(async () => { throw new Error("boom"); }),
+      }) as any),
+      isSessionWriteDisabledFn: vi.fn(() => false) as any,
+      isSessionWriteAuthErrorFn: vi.fn(() => false) as any,
+      createPlaceholderFn: createPlaceholderFn as any,
+      getInstalledVersionFn: vi.fn(() => null) as any,
+      wikiLogFn,
+    });
+    expect(createPlaceholderFn).not.toHaveBeenCalled();
     expect(wikiLogFn).toHaveBeenCalledWith(expect.stringContaining("failed for s1: boom"));
   });
 });

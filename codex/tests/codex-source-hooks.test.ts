@@ -145,6 +145,26 @@ describe("codex capture source", () => {
       config: baseConfig,
     })).toEqual({ status: "ignored" });
   });
+
+  it("suppresses periodic summaries when skipped or when the helper throws", () => {
+    const spawn = vi.fn();
+    maybeTriggerPeriodicSummary("s1", "/repo", baseConfig, {
+      wikiWorker: true,
+      spawnCodexWikiWorkerFn: spawn as any,
+    });
+    maybeTriggerPeriodicSummary("s1", "/repo", baseConfig, {
+      bumpTotalCountFn: vi.fn(() => { throw new Error("boom"); }) as any,
+      spawnCodexWikiWorkerFn: spawn as any,
+      logFn: vi.fn(),
+    });
+    maybeTriggerPeriodicSummary("s1", "/repo", baseConfig, {
+      bumpTotalCountFn: vi.fn(() => ({ totalCount: 1, lastSummaryCount: 1 })) as any,
+      loadTriggerConfigFn: vi.fn(() => ({ everyNMessages: 5, everyHours: 24 })) as any,
+      shouldTriggerFn: vi.fn(() => false) as any,
+      spawnCodexWikiWorkerFn: spawn as any,
+    });
+    expect(spawn).not.toHaveBeenCalled();
+  });
 });
 
 describe("codex pre-tool source", () => {
@@ -357,6 +377,115 @@ describe("codex pre-tool source", () => {
       rewrittenCommand: "cat /index.md && ls /summaries",
     });
   });
+
+  it("covers plain cat, directory listings, non-count find, grep fallback, and direct-query exceptions", async () => {
+    const plainCat = await processCodexPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_use_id: "tu-11",
+      tool_input: { command: "cat ~/.deeplake/memory/index.md" },
+      cwd: "/repo",
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      readVirtualPathContentFn: vi.fn(async () => "line1\nline2") as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+    });
+    expect(plainCat).toEqual({
+      action: "block",
+      output: "line1\nline2",
+      rewrittenCommand: "cat /index.md",
+    });
+
+    const listed = await processCodexPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_use_id: "tu-12",
+      tool_input: { command: "ls ~/.deeplake/memory/summaries" },
+      cwd: "/repo",
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      listVirtualPathRowsFn: vi.fn(async () => [
+        { path: "/other/place.md", size_bytes: 1 },
+        { path: "/summaries/", size_bytes: 0 },
+        { path: "/summaries/alice/s1.md", size_bytes: 10 },
+        { path: "/summaries/bob/nested/file.md", size_bytes: 20 },
+      ]) as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+    });
+    expect(listed.output).toContain("alice/");
+    expect(listed.output).toContain("bob/");
+    expect(listed.output).not.toContain("other");
+
+    const rootLs = await processCodexPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_use_id: "tu-13",
+      tool_input: { command: "ls ~/.deeplake/memory" },
+      cwd: "/repo",
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      listVirtualPathRowsFn: vi.fn(async () => [
+        { path: "/", size_bytes: 0 },
+        { path: "/root.md", size_bytes: 5 },
+        { path: "/summaries/alice/s1.md", size_bytes: 10 },
+      ]) as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+    });
+    expect(rootLs.output).toContain("root.md");
+    expect(rootLs.output).toContain("summaries/");
+
+    const findNoMatches = await processCodexPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_use_id: "tu-14",
+      tool_input: { command: "find ~/.deeplake/memory/summaries -name '*.md'" },
+      cwd: "/repo",
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      findVirtualPathsFn: vi.fn(async () => []) as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+    });
+    expect(findNoMatches.output).toBe("(no matches)");
+
+    const grepFallback = await processCodexPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_use_id: "tu-15",
+      tool_input: { command: "grep needle ~/.deeplake/memory/index.md" },
+      cwd: "/repo",
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      handleGrepDirectFn: vi.fn(async () => null) as any,
+      runVirtualShellFn: vi.fn(() => "shell fallback") as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+    });
+    expect(grepFallback.output).toBe("shell fallback");
+
+    const errorFallback = await processCodexPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_use_id: "tu-16",
+      tool_input: { command: "cat ~/.deeplake/memory/index.md" },
+      cwd: "/repo",
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      executeCompiledBashCommandFn: vi.fn(async () => { throw new Error("boom"); }) as any,
+      runVirtualShellFn: vi.fn(() => "fallback after error") as any,
+    });
+    expect(errorFallback.output).toBe("fallback after error");
+  });
 });
 
 describe("codex session start source", () => {
@@ -430,6 +559,17 @@ describe("codex session start source", () => {
 
     expect(result).toContain("Not logged in to Deeplake");
     expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it("falls back to org id and default workspace when names are missing", () => {
+    const context = buildCodexSessionStartContext({
+      creds: { ...baseCreds, orgName: undefined, workspaceId: undefined } as any,
+      currentVersion: null,
+      authCommand: "/tmp/auth-login.js",
+    });
+    expect(context).toContain("org-1");
+    expect(context).toContain("workspace: default");
+    expect(context).not.toContain("Hivemind v");
   });
 });
 
@@ -513,6 +653,68 @@ describe("codex session start setup source", () => {
     expect(logFn).toHaveBeenCalledWith(expect.stringContaining("setup failed: boom"));
     expect(logFn).toHaveBeenCalledWith(expect.stringContaining("version check failed: offline"));
     expect(wikiLogFn).toHaveBeenCalledWith(expect.stringContaining("failed for s1: boom"));
+  });
+
+  it("handles capture-disabled and successful autoupdate flows", async () => {
+    const placeholder = vi.fn();
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true as any);
+    const execSyncFn = vi.fn();
+    await runCodexSessionStartSetup({
+      session_id: "s1",
+      cwd: "/repo",
+      hook_event_name: "SessionStart",
+      model: "gpt-5.2",
+    }, {
+      creds: baseCreds,
+      config: baseConfig,
+      captureEnabled: false,
+      createApi: vi.fn(() => ({
+        ensureTable: vi.fn(async () => undefined),
+      }) as any),
+      createPlaceholderFn: placeholder as any,
+      getInstalledVersionFn: vi.fn(() => "0.6.0") as any,
+      getLatestVersionCachedFn: vi.fn(async () => "0.7.0") as any,
+      execSyncFn: execSyncFn as any,
+    });
+    expect(placeholder).not.toHaveBeenCalled();
+    expect(execSyncFn).toHaveBeenCalledTimes(1);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("auto-updated"));
+  });
+
+  it("handles non-auth setup errors and skips setup when session metadata is absent", async () => {
+    const wikiLogFn = vi.fn();
+    const createPlaceholderFn = vi.fn();
+    await runCodexSessionStartSetup({
+      session_id: "s1",
+      cwd: "/repo",
+      hook_event_name: "SessionStart",
+      model: "gpt-5.2",
+    }, {
+      creds: baseCreds,
+      config: baseConfig,
+      createApi: vi.fn(() => ({
+        ensureTable: vi.fn(async () => undefined),
+        ensureSessionsTable: vi.fn(async () => { throw new Error("boom"); }),
+      }) as any),
+      isSessionWriteDisabledFn: vi.fn(() => false) as any,
+      isSessionWriteAuthErrorFn: vi.fn(() => false) as any,
+      createPlaceholderFn: createPlaceholderFn as any,
+      getInstalledVersionFn: vi.fn(() => null) as any,
+      wikiLogFn,
+    });
+    expect(createPlaceholderFn).not.toHaveBeenCalled();
+    expect(wikiLogFn).toHaveBeenCalledWith(expect.stringContaining("failed for s1: boom"));
+
+    await expect(runCodexSessionStartSetup({
+      session_id: "",
+      cwd: "/repo",
+      hook_event_name: "SessionStart",
+      model: "gpt-5.2",
+    }, {
+      creds: baseCreds,
+      config: baseConfig,
+      getInstalledVersionFn: vi.fn(() => null) as any,
+    })).resolves.toEqual({ status: "complete" });
   });
 });
 
@@ -640,5 +842,44 @@ describe("codex stop source", () => {
 
     expect(result.flushStatus).toBe("flushed");
     expect(flush).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns empty when assistant blocks have no text and keeps going after capture failures", async () => {
+    expect(extractLastAssistantMessage([
+      "{\"role\":\"assistant\",\"content\":[{\"type\":\"image\",\"url\":\"x\"}]}",
+      "{\"role\":\"user\",\"content\":\"hi\"}",
+    ].join("\n"))).toBe("");
+
+    const spawn = vi.fn();
+    const logFn = vi.fn();
+    const result = await runCodexStopHook({
+      session_id: "s1",
+      transcript_path: "/tmp/missing.jsonl",
+      cwd: undefined as any,
+      hook_event_name: "Stop",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      transcriptExists: vi.fn(() => false) as any,
+      appendQueuedSessionRowFn: vi.fn() as any,
+      flushSessionQueueFn: vi.fn(async () => { throw new Error("flush boom"); }) as any,
+      spawnCodexWikiWorkerFn: spawn as any,
+      wikiLogFn: vi.fn() as any,
+      logFn,
+      bundleDir: "/tmp/bundle",
+    });
+
+    expect(result).toMatchObject({
+      status: "complete",
+      entry: expect.objectContaining({ type: "assistant_stop" }),
+    });
+    expect(logFn).toHaveBeenCalledWith(expect.stringContaining("capture failed: flush boom"));
+    expect(spawn).toHaveBeenCalledWith({
+      config: baseConfig,
+      sessionId: "s1",
+      cwd: "",
+      bundleDir: "/tmp/bundle",
+      reason: "Stop",
+    });
   });
 });

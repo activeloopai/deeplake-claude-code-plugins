@@ -22,6 +22,16 @@ describe("virtual-table-query", () => {
     expect(content).toContain("/summaries/alice/s1.md");
   });
 
+  it("builds index rows when project metadata is missing", () => {
+    const content = buildVirtualIndexContent([
+      {
+        path: "/summaries/alice/s2.md",
+      },
+    ]);
+    expect(content).toContain("/summaries/alice/s2.md");
+    expect(content).toContain("# Memory Index");
+  });
+
   it("prefers a memory-table hit for exact path reads", async () => {
     const api = {
       query: vi.fn().mockResolvedValueOnce([
@@ -78,6 +88,20 @@ describe("virtual-table-query", () => {
     expect(content.get("/summaries/a.md")).toBe("summary body");
     expect(content.get("/index.md")).toContain("# Memory Index");
     expect(api.query).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores invalid exact-read rows before merging content", async () => {
+    const api = {
+      query: vi.fn().mockResolvedValueOnce([
+        { path: 42, content: "bad", source_order: 0 },
+        { path: "/summaries/a.md", content: 7, source_order: 0 },
+        { path: "/summaries/a.md", content: "summary body", source_order: 0 },
+      ]),
+    } as any;
+
+    const content = await readVirtualPathContents(api, "memory", "sessions", ["/summaries/a.md"]);
+
+    expect(content.get("/summaries/a.md")).toBe("summary body");
   });
 
   it("merges and de-duplicates rows for directory listings", async () => {
@@ -183,5 +207,15 @@ describe("virtual-table-query", () => {
     const paths = await findVirtualPaths(api, "memory", "sessions", "/", "%.md");
 
     expect(paths).toEqual(["/summaries/a.md"]);
+  });
+
+  it("normalizes non-root find directories before building the LIKE path", async () => {
+    const api = {
+      query: vi.fn().mockResolvedValueOnce([]),
+    } as any;
+
+    await findVirtualPaths(api, "memory", "sessions", "/summaries/a///", "%.md");
+
+    expect(String(api.query.mock.calls[0]?.[0])).toContain("path LIKE '/summaries/a/%'");
   });
 });
