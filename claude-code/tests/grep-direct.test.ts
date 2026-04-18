@@ -224,4 +224,53 @@ describe("parseBashGrep", () => {
     expect(r!.pattern).toBe("pattern");
     expect(r!.targetPath).toBe("/dir");
   });
+
+  it("does not split on alternation pipes inside quotes", () => {
+    const r = parseBashGrep("grep 'book|read' /dir | head -5");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("book|read");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("keeps escaped spaces inside unquoted patterns", () => {
+    const r = parseBashGrep("grep Melanie\\ sunrise /dir");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("Melanie sunrise");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("consumes -A numeric values without treating them as paths", () => {
+    const r = parseBashGrep("grep -A 5 'Caroline' /summaries/");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("Caroline");
+    expect(r!.targetPath).toBe("/summaries/");
+  });
+
+  it("consumes attached -B numeric values without shifting the target path", () => {
+    const r = parseBashGrep("grep -B5 'friends' /sessions/");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("friends");
+    expect(r!.targetPath).toBe("/sessions/");
+  });
+
+  it("consumes -m values without shifting the target path", () => {
+    const r = parseBashGrep("grep -m 1 'single' /dir");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("single");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("uses -e as the explicit pattern source", () => {
+    const r = parseBashGrep("grep -e 'book|read' /dir");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("book|read");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("uses --regexp= as the explicit pattern source", () => {
+    const r = parseBashGrep("grep --regexp=book\\|read /dir");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("book|read");
+    expect(r!.targetPath).toBe("/dir");
+  });
 });

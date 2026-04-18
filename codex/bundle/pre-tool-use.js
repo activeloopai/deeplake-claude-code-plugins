@@ -782,67 +782,157 @@ async function grepBothTables(api, memoryTable, sessionsTable, params, targetPat
 }
 
 // dist/src/hooks/grep-direct.js
+function splitFirstPipelineStage(cmd) {
+  const input = cmd.trim();
+  let quote = null;
+  let escaped = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+        continue;
+      }
+      if (ch === "\\" && quote === '"') {
+        escaped = true;
+      }
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === "|")
+      return input.slice(0, i).trim();
+  }
+  return quote ? null : input;
+}
+function tokenizeGrepStage(input) {
+  const tokens = [];
+  let current = "";
+  let quote = null;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+      } else if (ch === "\\" && quote === '"' && i + 1 < input.length) {
+        current += input[++i];
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < input.length) {
+      current += input[++i];
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (quote)
+    return null;
+  if (current)
+    tokens.push(current);
+  return tokens;
+}
 function parseBashGrep(cmd) {
-  const first = cmd.trim().split(/\s*\|\s*/)[0];
+  const first = splitFirstPipelineStage(cmd);
+  if (!first)
+    return null;
   if (!/^(grep|egrep|fgrep)\b/.test(first))
     return null;
   const isFixed = first.startsWith("fgrep");
-  const tokens = [];
-  let pos = 0;
-  while (pos < first.length) {
-    if (first[pos] === " " || first[pos] === "	") {
-      pos++;
-      continue;
-    }
-    if (first[pos] === "'" || first[pos] === '"') {
-      const q = first[pos];
-      let end = pos + 1;
-      while (end < first.length && first[end] !== q)
-        end++;
-      tokens.push(first.slice(pos + 1, end));
-      pos = end + 1;
-    } else {
-      let end = pos;
-      while (end < first.length && first[end] !== " " && first[end] !== "	")
-        end++;
-      tokens.push(first.slice(pos, end));
-      pos = end;
-    }
-  }
+  const tokens = tokenizeGrepStage(first);
+  if (!tokens || tokens.length === 0)
+    return null;
   let ignoreCase = false, wordMatch = false, filesOnly = false, countOnly = false, lineNumber = false, invertMatch = false, fixedString = isFixed;
+  const explicitPatterns = [];
   let ti = 1;
-  while (ti < tokens.length && tokens[ti].startsWith("-") && tokens[ti] !== "--") {
-    const flag = tokens[ti];
-    if (flag.startsWith("--")) {
+  while (ti < tokens.length) {
+    const token = tokens[ti];
+    if (token === "--") {
+      ti++;
+      break;
+    }
+    if (!token.startsWith("-") || token === "-")
+      break;
+    if (token.startsWith("--")) {
+      const [flag, inlineValue] = token.split("=", 2);
       const handlers = {
         "--ignore-case": () => {
           ignoreCase = true;
+          return false;
         },
         "--word-regexp": () => {
           wordMatch = true;
+          return false;
         },
         "--files-with-matches": () => {
           filesOnly = true;
+          return false;
         },
         "--count": () => {
           countOnly = true;
+          return false;
         },
         "--line-number": () => {
           lineNumber = true;
+          return false;
         },
         "--invert-match": () => {
           invertMatch = true;
+          return false;
         },
         "--fixed-strings": () => {
           fixedString = true;
+          return false;
+        },
+        "--after-context": () => inlineValue === void 0,
+        "--before-context": () => inlineValue === void 0,
+        "--context": () => inlineValue === void 0,
+        "--max-count": () => inlineValue === void 0,
+        "--regexp": () => {
+          if (inlineValue !== void 0) {
+            explicitPatterns.push(inlineValue);
+            return false;
+          }
+          return true;
         }
       };
-      handlers[flag]?.();
+      const consumeNext = handlers[flag]?.() ?? false;
+      if (consumeNext) {
+        ti++;
+        if (ti >= tokens.length)
+          return null;
+        if (flag === "--regexp")
+          explicitPatterns.push(tokens[ti]);
+      }
       ti++;
       continue;
     }
-    for (const c of flag.slice(1)) {
-      switch (c) {
+    const shortFlags = token.slice(1);
+    for (let i = 0; i < shortFlags.length; i++) {
+      const flag = shortFlags[i];
+      switch (flag) {
         case "i":
           ignoreCase = true;
           break;
@@ -864,19 +954,48 @@ function parseBashGrep(cmd) {
         case "F":
           fixedString = true;
           break;
+        case "r":
+        case "R":
+        case "E":
+          break;
+        case "A":
+        case "B":
+        case "C":
+        case "m":
+          if (i === shortFlags.length - 1) {
+            ti++;
+            if (ti >= tokens.length)
+              return null;
+          }
+          i = shortFlags.length;
+          break;
+        case "e": {
+          const inlineValue = shortFlags.slice(i + 1);
+          if (inlineValue) {
+            explicitPatterns.push(inlineValue);
+          } else {
+            ti++;
+            if (ti >= tokens.length)
+              return null;
+            explicitPatterns.push(tokens[ti]);
+          }
+          i = shortFlags.length;
+          break;
+        }
+        default:
+          break;
       }
     }
     ti++;
   }
-  if (ti < tokens.length && tokens[ti] === "--")
-    ti++;
-  if (ti >= tokens.length)
+  const pattern = explicitPatterns.length > 0 ? explicitPatterns[0] : tokens[ti];
+  if (!pattern)
     return null;
-  let target = tokens[ti + 1] ?? "/";
+  let target = explicitPatterns.length > 0 ? tokens[ti] ?? "/" : tokens[ti + 1] ?? "/";
   if (target === "." || target === "./")
     target = "/";
   return {
-    pattern: tokens[ti],
+    pattern,
     targetPath: target,
     ignoreCase,
     wordMatch,
