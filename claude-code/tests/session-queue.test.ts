@@ -19,9 +19,11 @@ import {
   drainSessionQueues,
   flushSessionQueue,
   isSessionWriteDisabled,
+  isSessionWriteAuthError,
   markSessionWriteDisabled,
   type QueuedSessionRow,
   type SessionQueueApi,
+  tryAcquireSessionDrainLock,
 } from "../../src/hooks/session-queue.js";
 
 const tempDirs: string[] = [];
@@ -117,6 +119,10 @@ describe("session queue", () => {
     expect(sql).toContain(`"type":"raw_message"`);
     expect(sql).toContain(`"content":"{not-json"`);
     expect(sql).toContain("::jsonb");
+  });
+
+  it("rejects empty INSERT batches", () => {
+    expect(() => buildSessionInsertSql("sessions", [])).toThrow("rows must not be empty");
   });
 
   it("returns empty when there is nothing to flush", async () => {
@@ -342,6 +348,24 @@ describe("session queue", () => {
     });
   });
 
+  it("counts queued sessions even when local auth-disable prevents flushing", async () => {
+    const queueDir = makeQueueDir();
+    appendQueuedSessionRow(makeRow("session-drain-disabled", 1), queueDir);
+    markSessionWriteDisabled("sessions", "403 Forbidden", queueDir);
+
+    const result = await drainSessionQueues(makeApi(), {
+      sessionsTable: "sessions",
+      queueDir,
+    });
+
+    expect(result).toEqual({
+      queuedSessions: 1,
+      flushedSessions: 0,
+      rows: 0,
+      batches: 0,
+    });
+  });
+
   it("marks session writes disabled on auth failures and preserves the queue", async () => {
     const queueDir = makeQueueDir();
     appendQueuedSessionRow(makeRow("session-auth", 1), queueDir);
@@ -431,6 +455,52 @@ describe("session queue", () => {
     expect(api.query).toHaveBeenCalledTimes(1);
   });
 
+  it("recovers stale inflight files after waiting on a busy session", async () => {
+    const queueDir = makeQueueDir();
+    appendQueuedSessionRow(makeRow("session-wait-stale", 1), queueDir);
+    renameSync(
+      join(queueDir, "session-wait-stale.jsonl"),
+      join(queueDir, "session-wait-stale.inflight"),
+    );
+    utimesSync(join(queueDir, "session-wait-stale.inflight"), 0, 0);
+
+    const api = makeApi();
+    const result = await flushSessionQueue(api, {
+      sessionId: "session-wait-stale",
+      sessionsTable: "sessions",
+      queueDir,
+      allowStaleInflight: true,
+      staleInflightMs: 1,
+      waitIfBusyMs: 1,
+    });
+
+    expect(result).toEqual({ status: "flushed", rows: 1, batches: 1 });
+    expect(api.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores fresh inflight files during drain replay", async () => {
+    const queueDir = makeQueueDir();
+    appendQueuedSessionRow(makeRow("session-fresh-inflight", 1), queueDir);
+    renameSync(
+      join(queueDir, "session-fresh-inflight.jsonl"),
+      join(queueDir, "session-fresh-inflight.inflight"),
+    );
+
+    const result = await drainSessionQueues(makeApi(), {
+      sessionsTable: "sessions",
+      queueDir,
+      staleInflightMs: 60_000,
+    });
+
+    expect(result).toEqual({
+      queuedSessions: 0,
+      flushedSessions: 0,
+      rows: 0,
+      batches: 0,
+    });
+    expect(existsSync(join(queueDir, "session-fresh-inflight.inflight"))).toBe(true);
+  });
+
   it("removes expired and malformed disabled markers", () => {
     const queueDir = makeQueueDir();
     markSessionWriteDisabled("sessions", "403 Forbidden", queueDir);
@@ -482,5 +552,28 @@ describe("session queue", () => {
     expect(result).toEqual({ status: "disabled", rows: 0, batches: 0 });
     expect(api.ensureSessionsTable).toHaveBeenCalledWith("sessions");
     expect(isSessionWriteDisabled("sessions", queueDir)).toBe(true);
+  });
+
+  it("treats string auth errors as auth failures and ignores unrelated errors", () => {
+    expect(isSessionWriteAuthError("401 Unauthorized")).toBe(true);
+    expect(isSessionWriteAuthError("something else")).toBe(false);
+  });
+
+  it("acquires, releases, and reclaims stale drain locks", () => {
+    const queueDir = makeQueueDir();
+
+    const release = tryAcquireSessionDrainLock("sessions", queueDir, 60_000);
+    expect(release).toBeTypeOf("function");
+    expect(existsSync(join(queueDir, ".sessions.drain.lock"))).toBe(true);
+
+    expect(tryAcquireSessionDrainLock("sessions", queueDir, 60_000)).toBeNull();
+
+    utimesSync(join(queueDir, ".sessions.drain.lock"), 0, 0);
+    const reclaimed = tryAcquireSessionDrainLock("sessions", queueDir, 1);
+    expect(reclaimed).toBeTypeOf("function");
+
+    reclaimed?.();
+    expect(existsSync(join(queueDir, ".sessions.drain.lock"))).toBe(false);
+    release?.();
   });
 });

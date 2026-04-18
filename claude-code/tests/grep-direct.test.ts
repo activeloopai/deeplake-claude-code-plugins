@@ -90,6 +90,13 @@ describe("parseBashGrep: long options", () => {
     expect(r).not.toBeNull();
     expect(r!.pattern).toBe("foo");
   });
+
+  it("accepts grep no-op long options that take inline numeric values", () => {
+    const r = parseBashGrep("grep --after-context=2 --before-context=3 --context=4 --max-count=1 foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+    expect(r!.targetPath).toBe("/x");
+  });
 });
 
 
@@ -135,6 +142,10 @@ describe("parseBashGrep", () => {
   it("returns null when no pattern given", () => {
     expect(parseBashGrep("grep")).toBeNull();
     expect(parseBashGrep("grep -r")).toBeNull();
+  });
+
+  it("returns null for unterminated quoted commands", () => {
+    expect(parseBashGrep('grep "unterminated /dir')).toBeNull();
   });
 
   // ── Flag parsing ──
@@ -267,10 +278,57 @@ describe("parseBashGrep", () => {
     expect(r!.targetPath).toBe("/dir");
   });
 
+  it("uses inline -e values as the explicit pattern source", () => {
+    const r = parseBashGrep("grep -ebook /dir");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("book");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
   it("uses --regexp= as the explicit pattern source", () => {
     const r = parseBashGrep("grep --regexp=book\\|read /dir");
     expect(r).not.toBeNull();
     expect(r!.pattern).toBe("book|read");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("defaults explicit -e searches to / when no target path is given", () => {
+    const r = parseBashGrep("grep -e 'book|read'");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("book|read");
+    expect(r!.targetPath).toBe("/");
+  });
+
+  it("returns null when a value-taking long option is missing its value", () => {
+    expect(parseBashGrep("grep --after-context")).toBeNull();
+  });
+
+  it("returns null when -A is missing its value", () => {
+    expect(parseBashGrep("grep -A")).toBeNull();
+  });
+
+  it("returns null when -e is missing its value", () => {
+    expect(parseBashGrep("grep -e")).toBeNull();
+  });
+
+  it("tolerates unknown short flags without crashing", () => {
+    const r = parseBashGrep("grep -Z foo /dir");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("preserves escaped pipes outside quotes as part of the pattern", () => {
+    const r = parseBashGrep("grep foo\\|bar /dir | head -5");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo|bar");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("preserves escaped quotes inside double-quoted patterns", () => {
+    const r = parseBashGrep('grep "foo\\"bar" /dir');
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe('foo"bar');
     expect(r!.targetPath).toBe("/dir");
   });
 });
