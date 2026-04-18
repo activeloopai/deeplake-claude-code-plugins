@@ -5,6 +5,7 @@ import type {
   IFileSystem, FsStat, MkdirOptions, RmOptions, CpOptions,
   FileContent, BufferEncoding,
 } from "just-bash";
+import { normalizeContent } from "./grep-core.js";
 
 interface ReadFileOptions { encoding?: BufferEncoding }
 interface WriteFileOptions { encoding?: BufferEncoding }
@@ -37,6 +38,15 @@ export function guessMime(filename: string): string {
       css: "text/css",
     } as Record<string, string>)[ext] ?? "text/plain"
   );
+}
+
+function normalizeSessionMessage(path: string, message: unknown): string {
+  const raw = typeof message === "string" ? message : JSON.stringify(message);
+  return normalizeContent(path, raw);
+}
+
+function joinSessionMessages(path: string, messages: unknown[]): string {
+  return messages.map((message) => normalizeSessionMessage(path, message)).join("\n");
 }
 
 function fsErr(code: string, msg: string, path: string): Error {
@@ -334,9 +344,8 @@ export class DeeplakeFs implements IFileSystem {
       const grouped = new Map<string, string[]>();
       for (const row of rows) {
         const p = row["path"] as string;
-        const message = typeof row["message"] === "string" ? row["message"] : JSON.stringify(row["message"]);
         const current = grouped.get(p) ?? [];
-        current.push(message);
+        current.push(normalizeSessionMessage(p, row["message"]));
         grouped.set(p, current);
       }
       for (const [p, parts] of grouped) {
@@ -366,7 +375,7 @@ export class DeeplakeFs implements IFileSystem {
         `SELECT message FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC`
       );
       if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
-      const text = rows.map(r => typeof r["message"] === "string" ? r["message"] : JSON.stringify(r["message"])).join("\n");
+      const text = joinSessionMessages(p, rows.map((row) => row["message"]));
       const buf = Buffer.from(text, "utf-8");
       this.files.set(p, buf);
       return buf;
@@ -418,7 +427,7 @@ export class DeeplakeFs implements IFileSystem {
         `SELECT message FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC`
       );
       if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
-      const text = rows.map(r => typeof r["message"] === "string" ? r["message"] : JSON.stringify(r["message"])).join("\n");
+      const text = joinSessionMessages(p, rows.map((row) => row["message"]));
       const buf = Buffer.from(text, "utf-8");
       this.files.set(p, buf);
       return text;

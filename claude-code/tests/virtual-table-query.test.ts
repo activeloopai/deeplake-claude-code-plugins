@@ -54,17 +54,17 @@ describe("virtual-table-query", () => {
     expect(api.query).not.toHaveBeenCalled();
   });
 
-  it("concatenates session rows for exact path reads", async () => {
+  it("normalizes session rows for exact path reads", async () => {
     const api = {
       query: vi.fn().mockResolvedValueOnce([
-        { path: "/sessions/a.jsonl", content: "{\"a\":1}", source_order: 1 },
-        { path: "/sessions/a.jsonl", content: "{\"b\":2}", source_order: 1 },
+        { path: "/sessions/a.jsonl", content: "{\"type\":\"user_message\",\"content\":\"hello\"}", source_order: 1 },
+        { path: "/sessions/a.jsonl", content: "{\"type\":\"assistant_message\",\"content\":\"hi\"}", source_order: 1 },
       ]),
     } as any;
 
     const content = await readVirtualPathContent(api, "memory", "sessions", "/sessions/a.jsonl");
 
-    expect(content).toBe("{\"a\":1}\n{\"b\":2}");
+    expect(content).toBe("[user] hello\n[assistant] hi");
   });
 
   it("reads multiple exact paths in a single query and synthesizes /index.md when needed", async () => {

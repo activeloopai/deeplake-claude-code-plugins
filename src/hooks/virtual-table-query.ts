@@ -1,7 +1,12 @@
 import type { DeeplakeApi } from "../deeplake-api.js";
 import { sqlLike, sqlStr } from "../utils/sql.js";
+import { normalizeContent } from "../shell/grep-core.js";
 
 type Row = Record<string, unknown>;
+
+function normalizeSessionPart(path: string, content: string): string {
+  return normalizeContent(path, content);
+}
 
 export function buildVirtualIndexContent(rows: Row[]): string {
   const lines = ["# Memory Index", "", `${rows.length} sessions:`, ""];
@@ -79,7 +84,7 @@ export async function readVirtualPathContents(
       memoryHits.set(path, content);
     } else {
       const current = sessionHits.get(path) ?? [];
-      current.push(content);
+      current.push(normalizeSessionPart(path, content));
       sessionHits.set(path, current);
     }
   }

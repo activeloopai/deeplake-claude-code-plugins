@@ -590,11 +590,11 @@ describe("prefetch", () => {
   it("prefetches session-backed files in batches instead of one query per path", async () => {
     const sessionMessages = new Map<string, { message: string; creation_date: string }[]>([
       ["/sessions/alice/a.json", [
-        { message: "{\"speaker\":\"a\",\"text\":\"hello\"}", creation_date: "2026-01-01T00:00:00.000Z" },
-        { message: "{\"speaker\":\"b\",\"text\":\"hi\"}", creation_date: "2026-01-01T00:00:01.000Z" },
+        { message: "{\"type\":\"user_message\",\"content\":\"hello\"}", creation_date: "2026-01-01T00:00:00.000Z" },
+        { message: "{\"type\":\"assistant_message\",\"content\":\"hi\"}", creation_date: "2026-01-01T00:00:01.000Z" },
       ]],
       ["/sessions/alice/b.json", [
-        { message: "{\"speaker\":\"a\",\"text\":\"bye\"}", creation_date: "2026-01-01T00:00:02.000Z" },
+        { message: "{\"type\":\"user_message\",\"content\":\"bye\"}", creation_date: "2026-01-01T00:00:02.000Z" },
       ]],
     ]);
 
@@ -639,8 +639,8 @@ describe("prefetch", () => {
     expect(prefetchCalls[0][0]).toContain("/sessions/alice/b.json");
 
     client.query.mockClear();
-    expect(await fs.readFile("/sessions/alice/a.json")).toContain("\"text\":\"hello\"");
-    expect(await fs.readFile("/sessions/alice/b.json")).toContain("\"text\":\"bye\"");
+    expect(await fs.readFile("/sessions/alice/a.json")).toBe("[user] hello\n[assistant] hi");
+    expect(await fs.readFile("/sessions/alice/b.json")).toBe("[user] bye");
     expect(client.query).not.toHaveBeenCalled();
   });
 });

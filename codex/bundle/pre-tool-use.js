@@ -897,6 +897,9 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
 }
 
 // dist/src/hooks/virtual-table-query.js
+function normalizeSessionPart(path, content) {
+  return normalizeContent(path, content);
+}
 function buildVirtualIndexContent(rows) {
   const lines = ["# Memory Index", "", `${rows.length} sessions:`, ""];
   for (const row of rows) {
@@ -952,7 +955,7 @@ async function readVirtualPathContents(api, memoryTable, sessionsTable, virtualP
       memoryHits.set(path, content);
     } else {
       const current = sessionHits.get(path) ?? [];
-      current.push(content);
+      current.push(normalizeSessionPart(path, content));
       sessionHits.set(path, current);
     }
   }
