@@ -525,6 +525,7 @@ describe("claude session start setup source", () => {
         rows: 3,
         batches: 1,
       })) as any,
+      isSessionWriteDisabledFn: vi.fn(() => false) as any,
       createPlaceholderFn: vi.fn(async () => undefined) as any,
       getInstalledVersionFn: vi.fn(() => "0.6.0") as any,
       getLatestVersionCachedFn: vi.fn(async () => "0.6.0") as any,
