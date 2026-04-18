@@ -1,17 +1,15 @@
 #!/usr/bin/env node
 
 /**
- * Capture hook — writes each session event as a separate row in the sessions table.
- * One INSERT per event, no concat, no race conditions.
+ * Capture hook — appends session events to a local queue on the hot path.
+ * Stop/SubagentStop flush that queue to the sessions table in batched INSERTs.
  *
  * Used by: UserPromptSubmit, PostToolUse (async), Stop, SubagentStop
  */
 
-import { homedir } from "node:os";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig, type Config } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr } from "../utils/sql.js";
 import { log as _log } from "../utils/debug.js";
 import {
   bumpTotalCount,
@@ -20,6 +18,13 @@ import {
   tryAcquireLock,
 } from "./summary-state.js";
 import { bundleDirFromImportMeta, spawnWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
+import {
+  appendQueuedSessionRow,
+  buildQueuedSessionRow,
+  buildSessionPath,
+  flushSessionQueue,
+} from "./session-queue.js";
+
 const log = (msg: string) => _log("capture", msg);
 
 interface HookInput {
@@ -45,24 +50,11 @@ interface HookInput {
 
 const CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
 
-/** Build the session path matching the CLI convention:
- *  /sessions/<username>/<username>_<org>_<workspace>_<slug>.jsonl */
-function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
-  const userName = config.userName;
-  const orgName = config.orgName;
-  const workspace = config.workspaceId ?? "default";
-
-  return `/sessions/${userName}/${userName}_${orgName}_${workspace}_${sessionId}.jsonl`;
-}
-
 async function main(): Promise<void> {
   if (!CAPTURE) return;
   const input = await readStdin<HookInput>();
   const config = loadConfig();
   if (!config) { log("no config"); return; }
-
-  const sessionsTable = config.sessionsTableName;
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
 
   // Build the event entry
   const ts = new Date().toISOString();
@@ -114,38 +106,35 @@ async function main(): Promise<void> {
 
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);
-  log(`writing to ${sessionPath}`);
-
-  // Simple INSERT — one row per event, no concat, no race conditions.
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-  const filename = sessionPath.split("/").pop() ?? "";
-
-  // For JSONB: only escape single quotes for the SQL literal, keep JSON structure intact.
-  // sqlStr() would also escape backslashes and strip control chars, corrupting the JSON.
-  const jsonForSql = line.replace(/'/g, "''");
-
-  const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'claude_code', '${ts}', '${ts}')`;
-
-  try {
-    await api.query(insertSql);
-  } catch (e: any) {
-    // Fallback: table might not exist (session-start failed or org switched mid-session).
-    // Create it and retry once.
-    if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
-      log("table missing, creating and retrying");
-      await api.ensureSessionsTable(sessionsTable);
-      await api.query(insertSql);
-    } else {
-      throw e;
-    }
-  }
-
-  log("capture ok → cloud");
+  appendQueuedSessionRow(buildQueuedSessionRow({
+    sessionPath,
+    line,
+    userName: config.userName,
+    projectName,
+    description: input.hook_event_name ?? "",
+    agent: "claude_code",
+    timestamp: ts,
+  }));
+  log(`queued ${input.hook_event_name ?? "event"} for ${sessionPath}`);
 
   maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
+
+  if (input.hook_event_name === "Stop" || input.hook_event_name === "SubagentStop") {
+    const api = new DeeplakeApi(
+      config.token,
+      config.apiUrl,
+      config.orgId,
+      config.workspaceId,
+      config.sessionsTableName,
+    );
+    const result = await flushSessionQueue(api, {
+      sessionId: input.session_id,
+      sessionsTable: config.sessionsTableName,
+      drainAll: true,
+    });
+    log(`flush ${result.status}: rows=${result.rows} batches=${result.batches}`);
+  }
 }
 
 /** Increment the event counter and, if the threshold is crossed, spawn a background wiki worker. */

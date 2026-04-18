@@ -13,10 +13,11 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { readFileSync } from "node:fs";
 import { loadCredentials } from "../../commands/auth.js";
 import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
+import { getInstalledVersion } from "../version-check.js";
+
 const log = (msg: string) => _log("codex-session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -25,29 +26,12 @@ const AUTH_CMD = join(__bundleDir, "commands", "auth-login.js");
 const context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
 
 Structure: index.md (start here) → summaries/*.md → sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
+When index.md identifies a likely match, read that exact summary or session path directly before broader grep variants.
+For LoCoMo-style names like conv_0_session_*.json, prefer opening the exact file from index.md instead of synonym-grepping relationship terms.
+Do NOT probe unrelated local paths such as ~/.claude/projects/, arbitrary home directories, or guessed summary roots for Deeplake recall tasks.
 Search: grep -r "keyword" ~/.deeplake/memory/
 IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem.
 Do NOT spawn subagents to read deeplake memory.`;
-
-function getInstalledVersion(): string | null {
-  try {
-    const pluginJson = join(__bundleDir, "..", ".codex-plugin", "plugin.json");
-    const plugin = JSON.parse(readFileSync(pluginJson, "utf-8"));
-    if (plugin.version) return plugin.version;
-  } catch { /* fall through */ }
-  let dir = __bundleDir;
-  for (let i = 0; i < 5; i++) {
-    const candidate = join(dir, "package.json");
-    try {
-      const pkg = JSON.parse(readFileSync(candidate, "utf-8"));
-      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version) return pkg.version;
-    } catch { /* not here, keep looking */ }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
 
 interface CodexSessionStartInput {
   session_id: string;
@@ -88,7 +72,7 @@ async function main(): Promise<void> {
   }
 
   let versionNotice = "";
-  const current = getInstalledVersion();
+  const current = getInstalledVersion(__bundleDir, ".codex-plugin");
   if (current) {
     versionNotice = `\nHivemind v${current}`;
   }

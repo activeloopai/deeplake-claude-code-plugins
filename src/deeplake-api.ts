@@ -62,6 +62,7 @@ export interface WriteRow {
 export class DeeplakeApi {
   private _pendingRows: WriteRow[] = [];
   private _sem = new Semaphore(MAX_CONCURRENCY);
+  private _tablesCache: string[] | null = null;
 
   constructor(
     private token: string,
@@ -200,7 +201,15 @@ export class DeeplakeApi {
   }
 
   /** List all tables in the workspace (with retry). */
-  async listTables(): Promise<string[]> {
+  async listTables(forceRefresh = false): Promise<string[]> {
+    if (!forceRefresh && this._tablesCache) return [...this._tablesCache];
+
+    const { tables, cacheable } = await this._fetchTables();
+    if (cacheable) this._tablesCache = [...tables];
+    return tables;
+  }
+
+  private async _fetchTables(): Promise<{ tables: string[]; cacheable: boolean }> {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
@@ -211,22 +220,25 @@ export class DeeplakeApi {
         });
         if (resp.ok) {
           const data = await resp.json() as { tables?: { table_name: string }[] };
-          return (data.tables ?? []).map(t => t.table_name);
+          return {
+            tables: (data.tables ?? []).map(t => t.table_name),
+            cacheable: true,
+          };
         }
         if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
           await sleep(BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200);
           continue;
         }
-        return [];
+        return { tables: [], cacheable: false };
       } catch {
         if (attempt < MAX_RETRIES) {
           await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
           continue;
         }
-        return [];
+        return { tables: [], cacheable: false };
       }
     }
-    return [];
+    return { tables: [], cacheable: false };
   }
 
   /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
@@ -252,6 +264,7 @@ export class DeeplakeApi {
         `) USING deeplake`,
       );
       log(`table "${tbl}" created`);
+      if (!tables.includes(tbl)) this._tablesCache = [...tables, tbl];
     }
     // BM25 index disabled — CREATE INDEX causes intermittent oid errors on fresh tables.
     // See bm25-oid-bug.sh for reproduction. Re-enable once Deeplake fixes the oid invalidation.
@@ -284,6 +297,7 @@ export class DeeplakeApi {
         `) USING deeplake`,
       );
       log(`table "${name}" created`);
+      if (!tables.includes(name)) this._tablesCache = [...tables, name];
     }
   }
 }

@@ -8,14 +8,27 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdirSync, appendFileSync, readFileSync } from "node:fs";
+import { mkdirSync, appendFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials } from "../commands/auth.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
+import { sqlStr } from "../utils/sql.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log, utcTimestamp } from "../utils/debug.js";
+import {
+  drainSessionQueues,
+  isSessionWriteAuthError,
+  isSessionWriteDisabled,
+  markSessionWriteDisabled,
+} from "./session-queue.js";
+import {
+  getInstalledVersion,
+  getLatestVersionCached,
+  isNewer,
+} from "./version-check.js";
+
 const log = (msg: string) => _log("session-setup", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -33,47 +46,42 @@ function wikiLog(msg: string): void {
   } catch { /* ignore */ }
 }
 
-function getInstalledVersion(): string | null {
-  try {
-    const pluginJson = join(__bundleDir, "..", ".claude-plugin", "plugin.json");
-    const plugin = JSON.parse(readFileSync(pluginJson, "utf-8"));
-    if (plugin.version) return plugin.version;
-  } catch { /* fall through */ }
-  let dir = __bundleDir;
-  for (let i = 0; i < 5; i++) {
-    const candidate = join(dir, "package.json");
-    try {
-      const pkg = JSON.parse(readFileSync(candidate, "utf-8"));
-      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version) return pkg.version;
-    } catch { /* not here, keep looking */ }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
-async function getLatestVersion(): Promise<string | null> {
-  try {
-    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(VERSION_CHECK_TIMEOUT) });
-    if (!res.ok) return null;
-    const pkg = await res.json();
-    return pkg.version ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function isNewer(latest: string, current: string): boolean {
-  const parse = (v: string) => v.split(".").map(Number);
-  const [la, lb, lc] = parse(latest);
-  const [ca, cb, cc] = parse(current);
-  return la > ca || (la === ca && lb > cb) || (la === ca && lb === cb && lc > cc);
-}
-
 interface SessionStartInput {
   session_id: string;
   cwd?: string;
+}
+
+async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
+  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
+
+  const existing = await api.query(
+    `SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`
+  );
+  if (existing.length > 0) {
+    wikiLog(`SessionSetup: summary exists for ${sessionId} (resumed)`);
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const projectName = cwd.split("/").pop() ?? "unknown";
+  const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
+  const content = [
+    `# Session ${sessionId}`,
+    `- **Source**: ${sessionSource}`,
+    `- **Started**: ${now}`,
+    `- **Project**: ${projectName}`,
+    `- **Status**: in-progress`,
+    "",
+  ].join("\n");
+  const filename = `${sessionId}.md`;
+
+  await api.query(
+    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
+    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${now}', '${now}')`
+  );
+
+  wikiLog(`SessionSetup: created placeholder for ${sessionId} (${cwd})`);
 }
 
 async function main(): Promise<void> {
@@ -93,13 +101,36 @@ async function main(): Promise<void> {
     } catch { /* non-fatal */ }
   }
 
+  const captureEnabled = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
   if (input.session_id) {
     try {
       const config = loadConfig();
       if (config) {
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
         await api.ensureTable();
-        await api.ensureSessionsTable(config.sessionsTableName);
+        if (captureEnabled) {
+          if (isSessionWriteDisabled(config.sessionsTableName)) {
+            log(`sessions table disabled, skipping setup for "${config.sessionsTableName}"`);
+          } else {
+            try {
+              await api.ensureSessionsTable(config.sessionsTableName);
+              const drain = await drainSessionQueues(api, {
+                sessionsTable: config.sessionsTableName,
+              });
+              if (drain.flushedSessions > 0) {
+                log(`drained ${drain.flushedSessions} queued session(s), rows=${drain.rows}, batches=${drain.batches}`);
+              }
+            } catch (e: any) {
+              if (isSessionWriteAuthError(e)) {
+                markSessionWriteDisabled(config.sessionsTableName, e.message);
+                log(`sessions table unavailable, skipping setup: ${e.message}`);
+              } else {
+                throw e;
+              }
+            }
+          }
+          await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
+        }
         log("setup complete");
       }
     } catch (e: any) {
@@ -111,9 +142,12 @@ async function main(): Promise<void> {
   // Version check + auto-update
   const autoupdate = creds.autoupdate !== false;
   try {
-    const current = getInstalledVersion();
+    const current = getInstalledVersion(__bundleDir, ".claude-plugin");
     if (current) {
-      const latest = await getLatestVersion();
+      const latest = await getLatestVersionCached({
+        url: GITHUB_RAW_PKG,
+        timeoutMs: VERSION_CHECK_TIMEOUT,
+      });
       if (latest && isNewer(latest, current)) {
         if (autoupdate) {
           log(`autoupdate: updating ${current} → ${latest}`);

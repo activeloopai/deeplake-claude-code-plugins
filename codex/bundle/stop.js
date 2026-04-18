@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/codex/stop.js
-import { readFileSync as readFileSync2, existsSync as existsSync2 } from "node:fs";
+import { readFileSync as readFileSync3, existsSync as existsSync3 } from "node:fs";
 
 // dist/src/utils/stdin.js
 function readStdin() {
@@ -76,6 +76,12 @@ function log(tag, msg) {
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
+function sqlIdent(name) {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
+    throw new Error(`Invalid SQL identifier: ${JSON.stringify(name)}`);
+  }
+  return name;
+}
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
@@ -131,6 +137,7 @@ var DeeplakeApi = class {
   tableName;
   _pendingRows = [];
   _sem = new Semaphore(MAX_CONCURRENCY);
+  _tablesCache = null;
   constructor(token, apiUrl, orgId, workspaceId, tableName) {
     this.token = token;
     this.apiUrl = apiUrl;
@@ -253,7 +260,15 @@ var DeeplakeApi = class {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
   /** List all tables in the workspace (with retry). */
-  async listTables() {
+  async listTables(forceRefresh = false) {
+    if (!forceRefresh && this._tablesCache)
+      return [...this._tablesCache];
+    const { tables, cacheable } = await this._fetchTables();
+    if (cacheable)
+      this._tablesCache = [...tables];
+    return tables;
+  }
+  async _fetchTables() {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
@@ -264,22 +279,25 @@ var DeeplakeApi = class {
         });
         if (resp.ok) {
           const data = await resp.json();
-          return (data.tables ?? []).map((t) => t.table_name);
+          return {
+            tables: (data.tables ?? []).map((t) => t.table_name),
+            cacheable: true
+          };
         }
         if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
           await sleep(BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200);
           continue;
         }
-        return [];
+        return { tables: [], cacheable: false };
       } catch {
         if (attempt < MAX_RETRIES) {
           await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
           continue;
         }
-        return [];
+        return { tables: [], cacheable: false };
       }
     }
-    return [];
+    return { tables: [], cacheable: false };
   }
   /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
   async ensureTable(name) {
@@ -289,6 +307,8 @@ var DeeplakeApi = class {
       log2(`table "${tbl}" not found, creating`);
       await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${tbl}" created`);
+      if (!tables.includes(tbl))
+        this._tablesCache = [...tables, tbl];
     }
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
@@ -298,6 +318,8 @@ var DeeplakeApi = class {
       log2(`table "${name}" not found, creating`);
       await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${name}" created`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
     }
   }
 };
@@ -408,12 +430,178 @@ function bundleDirFromImportMeta(importMetaUrl) {
   return dirname(fileURLToPath(importMetaUrl));
 }
 
-// dist/src/hooks/codex/stop.js
-var log3 = (msg) => log("codex-stop", msg);
-var CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
+// dist/src/hooks/session-queue.js
+import { appendFileSync as appendFileSync3, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, readdirSync, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join4 } from "node:path";
+import { homedir as homedir4 } from "node:os";
+var DEFAULT_QUEUE_DIR = join4(homedir4(), ".deeplake", "queue");
+var DEFAULT_MAX_BATCH_ROWS = 50;
+var DEFAULT_STALE_INFLIGHT_MS = 6e4;
+var BUSY_WAIT_STEP_MS = 100;
 function buildSessionPath(config, sessionId) {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
 }
+function buildQueuedSessionRow(args) {
+  return {
+    id: crypto.randomUUID(),
+    path: args.sessionPath,
+    filename: args.sessionPath.split("/").pop() ?? "",
+    message: args.line,
+    author: args.userName,
+    sizeBytes: Buffer.byteLength(args.line, "utf-8"),
+    project: args.projectName,
+    description: args.description,
+    agent: args.agent,
+    creationDate: args.timestamp,
+    lastUpdateDate: args.timestamp
+  };
+}
+function appendQueuedSessionRow(row, queueDir = DEFAULT_QUEUE_DIR) {
+  mkdirSync2(queueDir, { recursive: true });
+  const sessionId = extractSessionId(row.path);
+  const queuePath = getQueuePath(queueDir, sessionId);
+  appendFileSync3(queuePath, `${JSON.stringify(row)}
+`);
+  return queuePath;
+}
+function buildSessionInsertSql(sessionsTable, rows) {
+  if (rows.length === 0)
+    throw new Error("buildSessionInsertSql: rows must not be empty");
+  const table = sqlIdent(sessionsTable);
+  const values = rows.map((row) => {
+    const jsonForSql = row.message.replace(/'/g, "''");
+    return `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, '${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', '${sqlStr(row.agent)}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`;
+  }).join(", ");
+  return `INSERT INTO "${table}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ${values}`;
+}
+async function flushSessionQueue(api, opts) {
+  const queueDir = opts.queueDir ?? DEFAULT_QUEUE_DIR;
+  const maxBatchRows = opts.maxBatchRows ?? DEFAULT_MAX_BATCH_ROWS;
+  const staleInflightMs = opts.staleInflightMs ?? DEFAULT_STALE_INFLIGHT_MS;
+  const waitIfBusyMs = opts.waitIfBusyMs ?? 0;
+  const drainAll = opts.drainAll ?? false;
+  mkdirSync2(queueDir, { recursive: true });
+  const queuePath = getQueuePath(queueDir, opts.sessionId);
+  const inflightPath = getInflightPath(queueDir, opts.sessionId);
+  let totalRows = 0;
+  let totalBatches = 0;
+  let flushedAny = false;
+  while (true) {
+    if (opts.allowStaleInflight)
+      recoverStaleInflight(queuePath, inflightPath, staleInflightMs);
+    if (existsSync2(inflightPath)) {
+      if (waitIfBusyMs > 0) {
+        await waitForInflightToClear(inflightPath, waitIfBusyMs);
+        if (opts.allowStaleInflight)
+          recoverStaleInflight(queuePath, inflightPath, staleInflightMs);
+      }
+      if (existsSync2(inflightPath)) {
+        return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "busy", rows: 0, batches: 0 };
+      }
+    }
+    if (!existsSync2(queuePath)) {
+      return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "empty", rows: 0, batches: 0 };
+    }
+    try {
+      renameSync(queuePath, inflightPath);
+    } catch (e) {
+      if (e?.code === "ENOENT") {
+        return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "empty", rows: 0, batches: 0 };
+      }
+      throw e;
+    }
+    try {
+      const { rows, batches } = await flushInflightFile(api, opts.sessionsTable, inflightPath, maxBatchRows);
+      totalRows += rows;
+      totalBatches += batches;
+      flushedAny = flushedAny || rows > 0;
+    } catch (e) {
+      requeueInflight(queuePath, inflightPath);
+      throw e;
+    }
+    if (!drainAll) {
+      return { status: "flushed", rows: totalRows, batches: totalBatches };
+    }
+  }
+}
+function getQueuePath(queueDir, sessionId) {
+  return join4(queueDir, `${sessionId}.jsonl`);
+}
+function getInflightPath(queueDir, sessionId) {
+  return join4(queueDir, `${sessionId}.inflight`);
+}
+function extractSessionId(sessionPath) {
+  const filename = sessionPath.split("/").pop() ?? "";
+  return filename.replace(/\.jsonl$/, "").split("_").pop() ?? filename;
+}
+async function flushInflightFile(api, sessionsTable, inflightPath, maxBatchRows) {
+  const rows = readQueuedRows(inflightPath);
+  if (rows.length === 0) {
+    rmSync(inflightPath, { force: true });
+    return { rows: 0, batches: 0 };
+  }
+  let ensured = false;
+  let batches = 0;
+  for (let i = 0; i < rows.length; i += maxBatchRows) {
+    const chunk = rows.slice(i, i + maxBatchRows);
+    const sql = buildSessionInsertSql(sessionsTable, chunk);
+    try {
+      await api.query(sql);
+    } catch (e) {
+      if (!ensured && isEnsureSessionsTableRetryable(e)) {
+        await api.ensureSessionsTable(sessionsTable);
+        ensured = true;
+        await api.query(sql);
+      } else {
+        throw e;
+      }
+    }
+    batches += 1;
+  }
+  rmSync(inflightPath, { force: true });
+  return { rows: rows.length, batches };
+}
+function readQueuedRows(path) {
+  const raw = readFileSync2(path, "utf-8");
+  return raw.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
+}
+function requeueInflight(queuePath, inflightPath) {
+  if (!existsSync2(inflightPath))
+    return;
+  if (!existsSync2(queuePath)) {
+    renameSync(inflightPath, queuePath);
+    return;
+  }
+  const inflight = readFileSync2(inflightPath, "utf-8");
+  const queued = readFileSync2(queuePath, "utf-8");
+  writeFileSync2(queuePath, `${inflight}${queued}`);
+  rmSync(inflightPath, { force: true });
+}
+function recoverStaleInflight(queuePath, inflightPath, staleInflightMs) {
+  if (!existsSync2(inflightPath) || !isStale(inflightPath, staleInflightMs))
+    return;
+  requeueInflight(queuePath, inflightPath);
+}
+function isStale(path, staleInflightMs) {
+  return Date.now() - statSync(path).mtimeMs >= staleInflightMs;
+}
+function isEnsureSessionsTableRetryable(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("permission denied") || message.includes("does not exist");
+}
+async function waitForInflightToClear(inflightPath, waitIfBusyMs) {
+  const startedAt = Date.now();
+  while (existsSync2(inflightPath) && Date.now() - startedAt < waitIfBusyMs) {
+    await sleep2(BUSY_WAIT_STEP_MS);
+  }
+}
+function sleep2(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// dist/src/hooks/codex/stop.js
+var log3 = (msg) => log("codex-stop", msg);
+var CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
 async function main() {
   if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1")
     return;
@@ -428,15 +616,13 @@ async function main() {
   }
   if (CAPTURE) {
     try {
-      const sessionsTable = config.sessionsTableName;
-      const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
       const ts = (/* @__PURE__ */ new Date()).toISOString();
       let lastAssistantMessage = "";
       if (input.transcript_path) {
         try {
           const transcriptPath = input.transcript_path;
-          if (existsSync2(transcriptPath)) {
-            const transcript = readFileSync2(transcriptPath, "utf-8");
+          if (existsSync3(transcriptPath)) {
+            const transcript = readFileSync3(transcriptPath, "utf-8");
             const lines = transcript.trim().split("\n").reverse();
             for (const line2 of lines) {
               try {
@@ -473,11 +659,22 @@ async function main() {
       const line = JSON.stringify(entry);
       const sessionPath = buildSessionPath(config, sessionId);
       const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-      const filename = sessionPath.split("/").pop() ?? "";
-      const jsonForSql = sqlStr(line);
-      const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', 'Stop', 'codex', '${ts}', '${ts}')`;
-      await api.query(insertSql);
-      log3("stop event captured");
+      appendQueuedSessionRow(buildQueuedSessionRow({
+        sessionPath,
+        line,
+        userName: config.userName,
+        projectName,
+        description: "Stop",
+        agent: "codex",
+        timestamp: ts
+      }));
+      const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.sessionsTableName);
+      const flush = await flushSessionQueue(api, {
+        sessionId,
+        sessionsTable: config.sessionsTableName,
+        drainAll: true
+      });
+      log3(`stop flush ${flush.status}: rows=${flush.rows} batches=${flush.batches}`);
     } catch (e) {
       log3(`capture failed: ${e.message}`);
     }

@@ -115,6 +115,17 @@ describe("codex integration: session-start", () => {
     });
     expect(raw).toContain("Do NOT jump straight to JSONL");
   });
+
+  it("context steers recall tasks to index-first exact file reads", () => {
+    const raw = runHook("session-start.js", {
+      session_id: "test-session-004b",
+      cwd: "/tmp",
+      hook_event_name: "SessionStart",
+      model: "gpt-5.2",
+    });
+    expect(raw).toContain("read that exact summary or session path directly");
+    expect(raw).toContain("Do NOT probe unrelated local paths");
+  });
 });
 
 // ── Capture (UserPromptSubmit) ───────────────────────────────────────────────

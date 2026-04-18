@@ -15,9 +15,14 @@ import { readFileSync, existsSync } from "node:fs";
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
-import { sqlStr } from "../../utils/sql.js";
 import { log as _log } from "../../utils/debug.js";
 import { bundleDirFromImportMeta, spawnCodexWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
+import {
+  appendQueuedSessionRow,
+  buildQueuedSessionRow,
+  buildSessionPath,
+  flushSessionQueue,
+} from "../session-queue.js";
 
 const log = (msg: string) => _log("codex-stop", msg);
 
@@ -30,10 +35,6 @@ interface CodexStopInput {
 }
 
 const CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
-
-function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
-  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
-}
 
 async function main(): Promise<void> {
   if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1") return;
@@ -48,8 +49,6 @@ async function main(): Promise<void> {
   // 1. Capture the stop event (try to extract last assistant message from transcript)
   if (CAPTURE) {
     try {
-      const sessionsTable = config.sessionsTableName;
-      const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
       const ts = new Date().toISOString();
 
       // Codex Stop doesn't include last_assistant_message, but it provides
@@ -102,16 +101,29 @@ async function main(): Promise<void> {
       const line = JSON.stringify(entry);
       const sessionPath = buildSessionPath(config, sessionId);
       const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-      const filename = sessionPath.split("/").pop() ?? "";
-      const jsonForSql = sqlStr(line);
+      appendQueuedSessionRow(buildQueuedSessionRow({
+        sessionPath,
+        line,
+        userName: config.userName,
+        projectName,
+        description: "Stop",
+        agent: "codex",
+        timestamp: ts,
+      }));
 
-      const insertSql =
-        `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
-        `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ` +
-        `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', 'Stop', 'codex', '${ts}', '${ts}')`;
-
-      await api.query(insertSql);
-      log("stop event captured");
+      const api = new DeeplakeApi(
+        config.token,
+        config.apiUrl,
+        config.orgId,
+        config.workspaceId,
+        config.sessionsTableName,
+      );
+      const flush = await flushSessionQueue(api, {
+        sessionId,
+        sessionsTable: config.sessionsTableName,
+        drainAll: true,
+      });
+      log(`stop flush ${flush.status}: rows=${flush.rows} batches=${flush.batches}`);
     } catch (e: any) {
       log(`capture failed: ${e.message}`);
     }

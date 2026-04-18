@@ -328,6 +328,19 @@ describe("DeeplakeApi.listTables", () => {
     const api = makeApi();
     expect(await api.listTables()).toEqual([]);
   });
+
+  it("caches successful results per api instance", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ tables: [{ table_name: "memory" }, { table_name: "sessions" }] }),
+    });
+    const api = makeApi();
+
+    expect(await api.listTables()).toEqual(["memory", "sessions"]);
+    expect(await api.listTables()).toEqual(["memory", "sessions"]);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ── ensureTable ─────────────────────────────────────────────────────────────
@@ -370,6 +383,23 @@ describe("DeeplakeApi.ensureTable", () => {
     await api.ensureTable("custom_table");
     const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
     expect(createSql).toContain("custom_table");
+  });
+
+  it("reuses cached listTables across ensureTable and ensureSessionsTable", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [{ table_name: "memory" }] }),
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    const api = makeApi("memory");
+
+    await api.ensureTable();
+    await api.ensureSessionsTable("sessions");
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    expect(createSql).toContain("CREATE TABLE IF NOT EXISTS");
+    expect(createSql).toContain("sessions");
   });
 });
 

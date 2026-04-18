@@ -16,6 +16,11 @@
 
 import type { DeeplakeApi } from "../deeplake-api.js";
 import { sqlStr, sqlLike } from "../utils/sql.js";
+import {
+  getDeeplakeTableScope,
+  scopeIncludesMemory,
+  scopeIncludesSessions,
+} from "../virtual-path-scope.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -44,6 +49,8 @@ export interface SearchOptions {
   likeOp: "LIKE" | "ILIKE";
   /** LIKE-escaped pattern (via sqlLike). */
   escapedPattern: string;
+  /** Optional safe literal anchor for regex searches (e.g. foo.*bar → foo). */
+  prefilterPattern?: string;
   /** Per-table row cap. */
   limit?: number;
 }
@@ -236,18 +243,24 @@ export async function searchDeeplakeTables(
   sessionsTable: string,
   opts: SearchOptions,
 ): Promise<ContentRow[]> {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern } = opts;
   const limit = opts.limit ?? 100;
+  const filterPattern = contentScanOnly ? prefilterPattern : escapedPattern;
+  const pathScope = getDeeplakeTableScope(extractScopedPath(pathFilter));
 
-  const memFilter = contentScanOnly ? "" : ` AND summary::text ${likeOp} '%${escapedPattern}%'`;
-  const sessFilter = contentScanOnly ? "" : ` AND message::text ${likeOp} '%${escapedPattern}%'`;
+  const memFilter = filterPattern ? ` AND summary::text ${likeOp} '%${filterPattern}%'` : "";
+  const sessFilter = filterPattern ? ` AND message::text ${likeOp} '%${filterPattern}%'` : "";
 
   const memQuery = `SELECT path, summary::text AS content FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
   const sessQuery = `SELECT path, message::text AS content FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
 
   const [memRows, sessRows] = await Promise.all([
-    api.query(memQuery).catch(() => []),
-    api.query(sessQuery).catch(() => []),
+    scopeIncludesMemory(pathScope)
+      ? api.query(memQuery).catch(() => [])
+      : Promise.resolve([]),
+    scopeIncludesSessions(pathScope)
+      ? api.query(sessQuery).catch(() => [])
+      : Promise.resolve([]),
   ]);
 
   const rows: ContentRow[] = [];
@@ -256,11 +269,66 @@ export async function searchDeeplakeTables(
   return rows;
 }
 
+function extractScopedPath(pathFilter: string): string {
+  const match = pathFilter.match(/path = '([^']+)'/);
+  return match?.[1] ?? "/";
+}
+
 /** Build a LIKE pathFilter clause for a `path` column. Returns "" if targetPath is root or empty. */
 export function buildPathFilter(targetPath: string): string {
   if (!targetPath || targetPath === "/") return "";
   const clean = targetPath.replace(/\/+$/, "");
   return ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+}
+
+/**
+ * Extract a safe literal substring from a regex-like grep pattern.
+ * Only patterns composed of plain text plus `.*` wildcards qualify.
+ * Example: `foo.*bar` → `foo` (or `bar`), `colou?r` → null.
+ */
+export function extractRegexLiteralPrefilter(pattern: string): string | null {
+  if (!pattern) return null;
+
+  const parts: string[] = [];
+  let current = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === "\\") {
+      const next = pattern[i + 1];
+      if (!next) return null;
+      if (/[dDsSwWbBAZzGkKpP]/.test(next)) return null;
+      current += next;
+      i++;
+      continue;
+    }
+    if (ch === ".") {
+      if (pattern[i + 1] === "*") {
+        if (current) parts.push(current);
+        current = "";
+        i++;
+        continue;
+      }
+      return null;
+    }
+    if ("|()[]{}+?^$".includes(ch) || ch === "*") return null;
+    current += ch;
+  }
+  if (current) parts.push(current);
+
+  const literal = parts.reduce((best, part) => part.length > best.length ? part : best, "");
+  return literal.length >= 2 ? literal : null;
+}
+
+export function buildGrepSearchOptions(params: GrepMatchParams, targetPath: string): SearchOptions {
+  const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
+  const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
+  return {
+    pathFilter: buildPathFilter(targetPath),
+    contentScanOnly: hasRegexMeta,
+    likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
+    escapedPattern: sqlLike(params.pattern),
+    prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : undefined,
+  };
 }
 
 // ── Regex refinement (line-by-line grep) ────────────────────────────────────
@@ -329,13 +397,7 @@ export async function grepBothTables(
   params: GrepMatchParams,
   targetPath: string,
 ): Promise<string[]> {
-  const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
-  const rows = await searchDeeplakeTables(api, memoryTable, sessionsTable, {
-    pathFilter: buildPathFilter(targetPath),
-    contentScanOnly: hasRegexMeta,
-    likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
-    escapedPattern: sqlLike(params.pattern),
-  });
+  const rows = await searchDeeplakeTables(api, memoryTable, sessionsTable, buildGrepSearchOptions(params, targetPath));
   // Defensive path dedup — memory and sessions tables use disjoint path
   // prefixes in every schema we ship (/summaries/… vs /sessions/…), so the
   // overlap is theoretical, but we dedupe to match grep-interceptor.ts and

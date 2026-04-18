@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Codex Capture hook — writes each session event as a row in the sessions table.
+ * Codex Capture hook — appends session events to a local queue on the hot path.
  *
  * Used by: UserPromptSubmit, PostToolUse
  *
@@ -14,8 +14,6 @@
 
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig, type Config } from "../../config.js";
-import { DeeplakeApi } from "../../deeplake-api.js";
-import { sqlStr } from "../../utils/sql.js";
 import { log as _log } from "../../utils/debug.js";
 import {
   bumpTotalCount,
@@ -24,6 +22,12 @@ import {
   tryAcquireLock,
 } from "../summary-state.js";
 import { bundleDirFromImportMeta, spawnCodexWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
+import {
+  appendQueuedSessionRow,
+  buildQueuedSessionRow,
+  buildSessionPath,
+} from "../session-queue.js";
+
 const log = (msg: string) => _log("codex-capture", msg);
 
 interface CodexHookInput {
@@ -44,18 +48,11 @@ interface CodexHookInput {
 
 const CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
 
-function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
-  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
-}
-
 async function main(): Promise<void> {
   if (!CAPTURE) return;
   const input = await readStdin<CodexHookInput>();
   const config = loadConfig();
   if (!config) { log("no config"); return; }
-
-  const sessionsTable = config.sessionsTableName;
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
 
   const ts = new Date().toISOString();
   const meta = {
@@ -96,30 +93,17 @@ async function main(): Promise<void> {
 
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);
-  log(`writing to ${sessionPath}`);
-
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-  const filename = sessionPath.split("/").pop() ?? "";
-  const jsonForSql = sqlStr(line);
-
-  const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'codex', '${ts}', '${ts}')`;
-
-  try {
-    await api.query(insertSql);
-  } catch (e: any) {
-    if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
-      log("table missing, creating and retrying");
-      await api.ensureSessionsTable(sessionsTable);
-      await api.query(insertSql);
-    } else {
-      throw e;
-    }
-  }
-
-  log("capture ok");
+  appendQueuedSessionRow(buildQueuedSessionRow({
+    sessionPath,
+    line,
+    userName: config.userName,
+    projectName,
+    description: input.hook_event_name ?? "",
+    agent: "codex",
+    timestamp: ts,
+  }));
+  log(`queued ${input.hook_event_name} for ${sessionPath}`);
 
   maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
 }

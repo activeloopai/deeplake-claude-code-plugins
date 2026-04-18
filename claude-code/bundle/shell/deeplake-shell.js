@@ -66834,6 +66834,7 @@ var DeeplakeApi = class {
   tableName;
   _pendingRows = [];
   _sem = new Semaphore(MAX_CONCURRENCY);
+  _tablesCache = null;
   constructor(token, apiUrl, orgId, workspaceId, tableName) {
     this.token = token;
     this.apiUrl = apiUrl;
@@ -66956,7 +66957,15 @@ var DeeplakeApi = class {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
   /** List all tables in the workspace (with retry). */
-  async listTables() {
+  async listTables(forceRefresh = false) {
+    if (!forceRefresh && this._tablesCache)
+      return [...this._tablesCache];
+    const { tables, cacheable } = await this._fetchTables();
+    if (cacheable)
+      this._tablesCache = [...tables];
+    return tables;
+  }
+  async _fetchTables() {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
@@ -66967,22 +66976,25 @@ var DeeplakeApi = class {
         });
         if (resp.ok) {
           const data = await resp.json();
-          return (data.tables ?? []).map((t6) => t6.table_name);
+          return {
+            tables: (data.tables ?? []).map((t6) => t6.table_name),
+            cacheable: true
+          };
         }
         if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
           await sleep(BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200);
           continue;
         }
-        return [];
+        return { tables: [], cacheable: false };
       } catch {
         if (attempt < MAX_RETRIES) {
           await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
           continue;
         }
-        return [];
+        return { tables: [], cacheable: false };
       }
     }
-    return [];
+    return { tables: [], cacheable: false };
   }
   /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
   async ensureTable(name) {
@@ -66992,6 +67004,8 @@ var DeeplakeApi = class {
       log2(`table "${tbl}" not found, creating`);
       await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${tbl}" created`);
+      if (!tables.includes(tbl))
+        this._tablesCache = [...tables, tbl];
     }
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
@@ -67001,6 +67015,8 @@ var DeeplakeApi = class {
       log2(`table "${name}" not found, creating`);
       await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${name}" created`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
     }
   }
 };
@@ -68769,10 +68785,11 @@ function normalizeContent(path2, raw) {
   return out;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern } = opts;
   const limit = opts.limit ?? 100;
-  const memFilter = contentScanOnly ? "" : ` AND summary::text ${likeOp} '%${escapedPattern}%'`;
-  const sessFilter = contentScanOnly ? "" : ` AND message::text ${likeOp} '%${escapedPattern}%'`;
+  const filterPattern = contentScanOnly ? prefilterPattern : escapedPattern;
+  const memFilter = filterPattern ? ` AND summary::text ${likeOp} '%${filterPattern}%'` : "";
+  const sessFilter = filterPattern ? ` AND message::text ${likeOp} '%${filterPattern}%'` : "";
   const memQuery = `SELECT path, summary::text AS content FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
   const sessQuery = `SELECT path, message::text AS content FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
   const [memRows, sessRows] = await Promise.all([
@@ -68791,6 +68808,53 @@ function buildPathFilter(targetPath) {
     return "";
   const clean = targetPath.replace(/\/+$/, "");
   return ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+}
+function extractRegexLiteralPrefilter(pattern) {
+  if (!pattern)
+    return null;
+  const parts = [];
+  let current = "";
+  for (let i11 = 0; i11 < pattern.length; i11++) {
+    const ch = pattern[i11];
+    if (ch === "\\") {
+      const next = pattern[i11 + 1];
+      if (!next)
+        return null;
+      if (/[dDsSwWbBAZzGkKpP]/.test(next))
+        return null;
+      current += next;
+      i11++;
+      continue;
+    }
+    if (ch === ".") {
+      if (pattern[i11 + 1] === "*") {
+        if (current)
+          parts.push(current);
+        current = "";
+        i11++;
+        continue;
+      }
+      return null;
+    }
+    if ("|()[]{}+?^$".includes(ch) || ch === "*")
+      return null;
+    current += ch;
+  }
+  if (current)
+    parts.push(current);
+  const literal = parts.reduce((best, part) => part.length > best.length ? part : best, "");
+  return literal.length >= 2 ? literal : null;
+}
+function buildGrepSearchOptions(params, targetPath) {
+  const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
+  const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
+  return {
+    pathFilter: buildPathFilter(targetPath),
+    contentScanOnly: hasRegexMeta,
+    likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
+    escapedPattern: sqlLike(params.pattern),
+    prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0
+  };
 }
 function compileGrepRegex(params) {
   let reStr = params.fixedString ? params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : params.pattern;
@@ -68876,17 +68940,11 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
       filesOnly: Boolean(parsed.l || parsed["files-with-matches"]),
       countOnly: Boolean(parsed.c || parsed["count"])
     };
-    const likeOp = matchParams.ignoreCase ? "ILIKE" : "LIKE";
-    const hasRegexMeta = !matchParams.fixedString && /[.*+?^${}()|[\]\\]/.test(pattern);
-    const escapedPattern = sqlLike(pattern);
     let rows = [];
     try {
       const perTarget = await Promise.race([
         Promise.all(targets.map((t6) => searchDeeplakeTables(client, table, sessionsTable ?? "sessions", {
-          pathFilter: buildPathFilter(t6),
-          contentScanOnly: hasRegexMeta,
-          likeOp,
-          escapedPattern,
+          ...buildGrepSearchOptions(matchParams, t6),
           limit: 100
         }))),
         new Promise((_16, reject) => setTimeout(() => reject(new Error("timeout")), 3e3))

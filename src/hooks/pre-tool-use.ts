@@ -10,6 +10,11 @@ import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { sqlStr, sqlLike } from "../utils/sql.js";
 import { type GrepParams, parseBashGrep, handleGrepDirect } from "./grep-direct.js";
+import {
+  getDeeplakeTableScope,
+  scopeIncludesMemory,
+  scopeIncludesSessions,
+} from "../virtual-path-scope.js";
 
 import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("pre", msg);
@@ -270,8 +275,9 @@ async function main(): Promise<void> {
         if (virtualPath && !virtualPath.endsWith("/")) {
           log(`direct read: ${virtualPath}`);
           let content: string | null = null;
+          const tableScope = getDeeplakeTableScope(virtualPath);
 
-          if (virtualPath.startsWith("/sessions/")) {
+          if (scopeIncludesSessions(tableScope) && !scopeIncludesMemory(tableScope)) {
             // Session files live in the sessions table — skip memory
             try {
               const sessionRows = await api.query(
@@ -340,16 +346,14 @@ async function main(): Promise<void> {
         if (lsDir) {
           const dir = lsDir.replace(/\/+$/, "") || "/";
           log(`direct ls: ${dir}`);
-          // Query the right table(s) based on path
-          const isSessionDir = dir === "/sessions" || dir.startsWith("/sessions/");
-          const isRoot = dir === "/";
+          const tableScope = getDeeplakeTableScope(dir);
           const lsQueries: Promise<Record<string, unknown>[]>[] = [];
-          if (!isSessionDir) {
+          if (scopeIncludesMemory(tableScope)) {
             lsQueries.push(api.query(
               `SELECT path, size_bytes FROM "${table}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`
             ).catch(() => []));
           }
-          if (isSessionDir || isRoot) {
+          if (scopeIncludesSessions(tableScope)) {
             lsQueries.push(api.query(
               `SELECT path, size_bytes FROM "${sessionsTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`
             ).catch(() => []));
@@ -393,11 +397,19 @@ async function main(): Promise<void> {
           const dir = findMatch[1].replace(/\/+$/, "") || "/";
           const namePattern = sqlLike(findMatch[2]).replace(/\*/g, "%").replace(/\?/g, "_");
           log(`direct find: ${dir} -name '${findMatch[2]}'`);
-          const isSessionDir = dir === "/sessions" || dir.startsWith("/sessions/");
-          const findTable = isSessionDir ? sessionsTable : table;
-          const rows = await api.query(
-            `SELECT path FROM "${findTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`
-          );
+          const tableScope = getDeeplakeTableScope(dir);
+          const queries: Promise<Record<string, unknown>[]>[] = [];
+          if (scopeIncludesMemory(tableScope)) {
+            queries.push(api.query(
+              `SELECT path FROM "${table}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`
+            ).catch(() => []));
+          }
+          if (scopeIncludesSessions(tableScope)) {
+            queries.push(api.query(
+              `SELECT path FROM "${sessionsTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`
+            ).catch(() => []));
+          }
+          const rows = (await Promise.all(queries)).flat();
           let result = rows.map(r => r["path"] as string).join("\n") || "";
           // Handle piped wc -l
           if (/\|\s*wc\s+-l\s*$/.test(shellCmd)) {

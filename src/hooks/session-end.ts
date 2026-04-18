@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 
 /**
- * SessionEnd hook — spawns a background worker that builds the session summary.
+ * SessionEnd hook — flushes any queued session rows, then spawns the summary worker.
  *
- * The hook writes a config file and spawns the bundled wiki-worker.js process.
- * It exits immediately — no API calls, no timeout risk.
- * All heavy work (fetching events, running claude -p, uploading) happens in the worker.
+ * The queue flush is synchronous so the worker sees the latest turn.
+ * All heavy summary work (fetching events, running claude -p, uploading) happens
+ * in the detached wiki-worker process.
  */
 
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
+import { DeeplakeApi } from "../deeplake-api.js";
 import { log as _log } from "../utils/debug.js";
 import { bundleDirFromImportMeta, spawnWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
+import { flushSessionQueue } from "./session-queue.js";
 
 const log = (msg: string) => _log("session-end", msg);
 
@@ -32,6 +34,21 @@ async function main(): Promise<void> {
 
   const config = loadConfig();
   if (!config) { log("no config"); return; }
+
+  const api = new DeeplakeApi(
+    config.token,
+    config.apiUrl,
+    config.orgId,
+    config.workspaceId,
+    config.sessionsTableName,
+  );
+  const flush = await flushSessionQueue(api, {
+    sessionId,
+    sessionsTable: config.sessionsTableName,
+    waitIfBusyMs: 5000,
+    drainAll: true,
+  });
+  log(`flush ${flush.status}: rows=${flush.rows} batches=${flush.batches}`);
 
   wikiLog(`SessionEnd: triggering summary for ${sessionId}`);
   spawnWikiWorker({

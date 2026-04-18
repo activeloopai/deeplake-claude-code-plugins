@@ -1,8 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  buildGrepSearchOptions,
   normalizeContent,
   buildPathFilter,
   compileGrepRegex,
+  extractRegexLiteralPrefilter,
   refineGrepMatches,
   searchDeeplakeTables,
   grepBothTables,
@@ -607,6 +609,20 @@ describe("searchDeeplakeTables", () => {
     expect(sessCall).not.toContain("LIKE");
   });
 
+  it("uses a safe literal prefilter for regex scans when available", async () => {
+    const api = mockApi([], []);
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: true,
+      likeOp: "LIKE",
+      escapedPattern: "foo.*bar",
+      prefilterPattern: "foo",
+    });
+    const [memCall, sessCall] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(memCall).toContain("summary::text LIKE '%foo%'");
+    expect(sessCall).toContain("message::text LIKE '%foo%'");
+  });
+
   it("concatenates rows from both tables into {path, content}", async () => {
     const api = mockApi(
       [{ path: "/summaries/a", content: "aaa" }],
@@ -732,10 +748,64 @@ describe("grepBothTables", () => {
     expect(memSql).not.toContain("summary::text LIKE");
   });
 
+  it("adds a safe literal prefilter for wildcard regexes with stable anchors", async () => {
+    const api = mockApi([{ path: "/a", content: "foo middle bar" }]);
+    await grepBothTables(api, "m", "s", { ...baseParams, pattern: "foo.*bar" }, "/");
+    const [memSql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(memSql).toContain("summary::text LIKE '%foo%'");
+  });
+
   it("routes to ILIKE when ignoreCase is set", async () => {
     const api = mockApi([]);
     await grepBothTables(api, "m", "s", { ...baseParams, ignoreCase: true }, "/");
     const [memSql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
     expect(memSql).toContain("ILIKE");
+  });
+
+  it("skips sessions-table queries when the target path is clearly memory-backed", async () => {
+    const api = mockApi([{ path: "/summaries/a.md", content: "foo line" }]);
+    await grepBothTables(api, "memory", "sessions", baseParams, "/summaries");
+    expect(api.query).toHaveBeenCalledTimes(1);
+    expect((api.query.mock.calls[0]?.[0] as string) ?? "").toContain('FROM "memory"');
+  });
+
+  it("skips memory-table queries when the target path is clearly session-backed", async () => {
+    const api = {
+      query: vi.fn().mockResolvedValue([{ path: "/sessions/a.jsonl", content: '{"turns":[]}' }]),
+    } as any;
+    await grepBothTables(api, "memory", "sessions", baseParams, "/sessions");
+    expect(api.query).toHaveBeenCalledTimes(1);
+    expect((api.query.mock.calls[0]?.[0] as string) ?? "").toContain('FROM "sessions"');
+  });
+});
+
+describe("regex literal prefilter", () => {
+  it("extracts a literal from simple wildcard regexes", () => {
+    expect(extractRegexLiteralPrefilter("foo.*bar")).toBe("foo");
+    expect(extractRegexLiteralPrefilter("prefix.*suffix")).toBe("prefix");
+  });
+
+  it("returns null for complex regex features", () => {
+    expect(extractRegexLiteralPrefilter("colou?r")).toBeNull();
+    expect(extractRegexLiteralPrefilter("foo|bar")).toBeNull();
+    expect(extractRegexLiteralPrefilter("[ab]foo")).toBeNull();
+  });
+
+  it("builds grep search options with regex prefilter when safe", () => {
+    const opts = buildGrepSearchOptions({
+      pattern: "foo.*bar",
+      ignoreCase: true,
+      wordMatch: false,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: false,
+    }, "/summaries");
+
+    expect(opts.contentScanOnly).toBe(true);
+    expect(opts.likeOp).toBe("ILIKE");
+    expect(opts.prefilterPattern).toBe("foo");
+    expect(opts.pathFilter).toContain("/summaries");
   });
 });

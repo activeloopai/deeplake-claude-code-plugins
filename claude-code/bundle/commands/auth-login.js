@@ -312,6 +312,7 @@ var DeeplakeApi = class {
   tableName;
   _pendingRows = [];
   _sem = new Semaphore(MAX_CONCURRENCY);
+  _tablesCache = null;
   constructor(token, apiUrl, orgId, workspaceId, tableName) {
     this.token = token;
     this.apiUrl = apiUrl;
@@ -434,7 +435,15 @@ var DeeplakeApi = class {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
   /** List all tables in the workspace (with retry). */
-  async listTables() {
+  async listTables(forceRefresh = false) {
+    if (!forceRefresh && this._tablesCache)
+      return [...this._tablesCache];
+    const { tables, cacheable } = await this._fetchTables();
+    if (cacheable)
+      this._tablesCache = [...tables];
+    return tables;
+  }
+  async _fetchTables() {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
@@ -445,22 +454,25 @@ var DeeplakeApi = class {
         });
         if (resp.ok) {
           const data = await resp.json();
-          return (data.tables ?? []).map((t) => t.table_name);
+          return {
+            tables: (data.tables ?? []).map((t) => t.table_name),
+            cacheable: true
+          };
         }
         if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
           await sleep(BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200);
           continue;
         }
-        return [];
+        return { tables: [], cacheable: false };
       } catch {
         if (attempt < MAX_RETRIES) {
           await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
           continue;
         }
-        return [];
+        return { tables: [], cacheable: false };
       }
     }
-    return [];
+    return { tables: [], cacheable: false };
   }
   /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
   async ensureTable(name) {
@@ -470,6 +482,8 @@ var DeeplakeApi = class {
       log2(`table "${tbl}" not found, creating`);
       await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${tbl}" created`);
+      if (!tables.includes(tbl))
+        this._tablesCache = [...tables, tbl];
     }
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
@@ -479,6 +493,8 @@ var DeeplakeApi = class {
       log2(`table "${name}" not found, creating`);
       await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${name}" created`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
     }
   }
 };

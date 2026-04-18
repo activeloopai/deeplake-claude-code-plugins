@@ -4,14 +4,13 @@ import yargsParser from "yargs-parser";
 import type { DeeplakeFs } from "./deeplake-fs.js";
 
 import {
+  buildGrepSearchOptions,
   searchDeeplakeTables,
-  buildPathFilter,
   normalizeContent,
   refineGrepMatches,
   type GrepMatchParams,
   type ContentRow,
 } from "./grep-core.js";
-import { sqlLike } from "../utils/sql.js";
 
 const MAX_FALLBACK_CANDIDATES = 500;
 
@@ -71,10 +70,6 @@ export function createGrepCommand(
       countOnly: Boolean(parsed.c || parsed["count"]),
     };
 
-    const likeOp = matchParams.ignoreCase ? "ILIKE" : "LIKE";
-    const hasRegexMeta = !matchParams.fixedString && /[.*+?^${}()|[\]\\]/.test(pattern);
-    const escapedPattern = sqlLike(pattern);
-
     // Targets can be multiple; we run one SQL round per distinct target so the
     // per-table pathFilter can prune server-side. In practice targets is 1-2
     // entries, so the cost is negligible and still faster than the old shell.
@@ -83,10 +78,7 @@ export function createGrepCommand(
       const perTarget = await Promise.race([
         Promise.all(targets.map(t =>
           searchDeeplakeTables(client, table, sessionsTable ?? "sessions", {
-            pathFilter: buildPathFilter(t),
-            contentScanOnly: hasRegexMeta,
-            likeOp,
-            escapedPattern,
+            ...buildGrepSearchOptions(matchParams, t),
             limit: 100,
           })
         )),

@@ -2,10 +2,10 @@
 
 // dist/src/hooks/session-start-setup.js
 import { fileURLToPath } from "node:url";
-import { dirname, join as join4 } from "node:path";
-import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2, readFileSync as readFileSync3 } from "node:fs";
+import { dirname as dirname2, join as join6 } from "node:path";
+import { mkdirSync as mkdirSync4, appendFileSync as appendFileSync3 } from "node:fs";
 import { execSync as execSync2 } from "node:child_process";
-import { homedir as homedir4 } from "node:os";
+import { homedir as homedir6 } from "node:os";
 
 // dist/src/commands/auth.js
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
@@ -88,6 +88,12 @@ function log(tag, msg) {
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
+function sqlIdent(name) {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
+    throw new Error(`Invalid SQL identifier: ${JSON.stringify(name)}`);
+  }
+  return name;
+}
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
@@ -143,6 +149,7 @@ var DeeplakeApi = class {
   tableName;
   _pendingRows = [];
   _sem = new Semaphore(MAX_CONCURRENCY);
+  _tablesCache = null;
   constructor(token, apiUrl, orgId, workspaceId, tableName) {
     this.token = token;
     this.apiUrl = apiUrl;
@@ -265,7 +272,15 @@ var DeeplakeApi = class {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
   /** List all tables in the workspace (with retry). */
-  async listTables() {
+  async listTables(forceRefresh = false) {
+    if (!forceRefresh && this._tablesCache)
+      return [...this._tablesCache];
+    const { tables, cacheable } = await this._fetchTables();
+    if (cacheable)
+      this._tablesCache = [...tables];
+    return tables;
+  }
+  async _fetchTables() {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
@@ -276,22 +291,25 @@ var DeeplakeApi = class {
         });
         if (resp.ok) {
           const data = await resp.json();
-          return (data.tables ?? []).map((t) => t.table_name);
+          return {
+            tables: (data.tables ?? []).map((t) => t.table_name),
+            cacheable: true
+          };
         }
         if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
           await sleep(BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200);
           continue;
         }
-        return [];
+        return { tables: [], cacheable: false };
       } catch {
         if (attempt < MAX_RETRIES) {
           await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
           continue;
         }
-        return [];
+        return { tables: [], cacheable: false };
       }
     }
-    return [];
+    return { tables: [], cacheable: false };
   }
   /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
   async ensureTable(name) {
@@ -301,6 +319,8 @@ var DeeplakeApi = class {
       log2(`table "${tbl}" not found, creating`);
       await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${tbl}" created`);
+      if (!tables.includes(tbl))
+        this._tablesCache = [...tables, tbl];
     }
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
@@ -310,6 +330,8 @@ var DeeplakeApi = class {
       log2(`table "${name}" not found, creating`);
       await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${name}" created`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
     }
   }
 };
@@ -331,34 +353,208 @@ function readStdin() {
   });
 }
 
-// dist/src/hooks/session-start-setup.js
-var log3 = (msg) => log("session-setup", msg);
-var __bundleDir = dirname(fileURLToPath(import.meta.url));
-var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
-var VERSION_CHECK_TIMEOUT = 3e3;
-var HOME = homedir4();
-var WIKI_LOG = join4(HOME, ".claude", "hooks", "deeplake-wiki.log");
-function wikiLog(msg) {
-  try {
-    mkdirSync2(join4(HOME, ".claude", "hooks"), { recursive: true });
-    appendFileSync2(WIKI_LOG, `[${utcTimestamp()}] ${msg}
-`);
-  } catch {
+// dist/src/hooks/session-queue.js
+import { appendFileSync as appendFileSync2, existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync3, readdirSync, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join4 } from "node:path";
+import { homedir as homedir4 } from "node:os";
+var DEFAULT_QUEUE_DIR = join4(homedir4(), ".deeplake", "queue");
+var DEFAULT_MAX_BATCH_ROWS = 50;
+var DEFAULT_STALE_INFLIGHT_MS = 6e4;
+var BUSY_WAIT_STEP_MS = 100;
+function buildSessionInsertSql(sessionsTable, rows) {
+  if (rows.length === 0)
+    throw new Error("buildSessionInsertSql: rows must not be empty");
+  const table = sqlIdent(sessionsTable);
+  const values = rows.map((row) => {
+    const jsonForSql = row.message.replace(/'/g, "''");
+    return `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, '${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', '${sqlStr(row.agent)}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`;
+  }).join(", ");
+  return `INSERT INTO "${table}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ${values}`;
+}
+async function flushSessionQueue(api, opts) {
+  const queueDir = opts.queueDir ?? DEFAULT_QUEUE_DIR;
+  const maxBatchRows = opts.maxBatchRows ?? DEFAULT_MAX_BATCH_ROWS;
+  const staleInflightMs = opts.staleInflightMs ?? DEFAULT_STALE_INFLIGHT_MS;
+  const waitIfBusyMs = opts.waitIfBusyMs ?? 0;
+  const drainAll = opts.drainAll ?? false;
+  mkdirSync2(queueDir, { recursive: true });
+  const queuePath = getQueuePath(queueDir, opts.sessionId);
+  const inflightPath = getInflightPath(queueDir, opts.sessionId);
+  let totalRows = 0;
+  let totalBatches = 0;
+  let flushedAny = false;
+  while (true) {
+    if (opts.allowStaleInflight)
+      recoverStaleInflight(queuePath, inflightPath, staleInflightMs);
+    if (existsSync3(inflightPath)) {
+      if (waitIfBusyMs > 0) {
+        await waitForInflightToClear(inflightPath, waitIfBusyMs);
+        if (opts.allowStaleInflight)
+          recoverStaleInflight(queuePath, inflightPath, staleInflightMs);
+      }
+      if (existsSync3(inflightPath)) {
+        return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "busy", rows: 0, batches: 0 };
+      }
+    }
+    if (!existsSync3(queuePath)) {
+      return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "empty", rows: 0, batches: 0 };
+    }
+    try {
+      renameSync(queuePath, inflightPath);
+    } catch (e) {
+      if (e?.code === "ENOENT") {
+        return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "empty", rows: 0, batches: 0 };
+      }
+      throw e;
+    }
+    try {
+      const { rows, batches } = await flushInflightFile(api, opts.sessionsTable, inflightPath, maxBatchRows);
+      totalRows += rows;
+      totalBatches += batches;
+      flushedAny = flushedAny || rows > 0;
+    } catch (e) {
+      requeueInflight(queuePath, inflightPath);
+      throw e;
+    }
+    if (!drainAll) {
+      return { status: "flushed", rows: totalRows, batches: totalBatches };
+    }
   }
 }
-function getInstalledVersion() {
+async function drainSessionQueues(api, opts) {
+  const queueDir = opts.queueDir ?? DEFAULT_QUEUE_DIR;
+  mkdirSync2(queueDir, { recursive: true });
+  const sessionIds = listQueuedSessionIds(queueDir, opts.staleInflightMs ?? DEFAULT_STALE_INFLIGHT_MS);
+  let flushedSessions = 0;
+  let rows = 0;
+  let batches = 0;
+  for (const sessionId of sessionIds) {
+    const result = await flushSessionQueue(api, {
+      sessionId,
+      sessionsTable: opts.sessionsTable,
+      queueDir,
+      maxBatchRows: opts.maxBatchRows,
+      allowStaleInflight: true,
+      staleInflightMs: opts.staleInflightMs,
+      drainAll: true
+    });
+    if (result.status === "flushed") {
+      flushedSessions += 1;
+      rows += result.rows;
+      batches += result.batches;
+    }
+  }
+  return {
+    queuedSessions: sessionIds.length,
+    flushedSessions,
+    rows,
+    batches
+  };
+}
+function getQueuePath(queueDir, sessionId) {
+  return join4(queueDir, `${sessionId}.jsonl`);
+}
+function getInflightPath(queueDir, sessionId) {
+  return join4(queueDir, `${sessionId}.inflight`);
+}
+async function flushInflightFile(api, sessionsTable, inflightPath, maxBatchRows) {
+  const rows = readQueuedRows(inflightPath);
+  if (rows.length === 0) {
+    rmSync(inflightPath, { force: true });
+    return { rows: 0, batches: 0 };
+  }
+  let ensured = false;
+  let batches = 0;
+  for (let i = 0; i < rows.length; i += maxBatchRows) {
+    const chunk = rows.slice(i, i + maxBatchRows);
+    const sql = buildSessionInsertSql(sessionsTable, chunk);
+    try {
+      await api.query(sql);
+    } catch (e) {
+      if (!ensured && isEnsureSessionsTableRetryable(e)) {
+        await api.ensureSessionsTable(sessionsTable);
+        ensured = true;
+        await api.query(sql);
+      } else {
+        throw e;
+      }
+    }
+    batches += 1;
+  }
+  rmSync(inflightPath, { force: true });
+  return { rows: rows.length, batches };
+}
+function readQueuedRows(path) {
+  const raw = readFileSync3(path, "utf-8");
+  return raw.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
+}
+function requeueInflight(queuePath, inflightPath) {
+  if (!existsSync3(inflightPath))
+    return;
+  if (!existsSync3(queuePath)) {
+    renameSync(inflightPath, queuePath);
+    return;
+  }
+  const inflight = readFileSync3(inflightPath, "utf-8");
+  const queued = readFileSync3(queuePath, "utf-8");
+  writeFileSync2(queuePath, `${inflight}${queued}`);
+  rmSync(inflightPath, { force: true });
+}
+function recoverStaleInflight(queuePath, inflightPath, staleInflightMs) {
+  if (!existsSync3(inflightPath) || !isStale(inflightPath, staleInflightMs))
+    return;
+  requeueInflight(queuePath, inflightPath);
+}
+function isStale(path, staleInflightMs) {
+  return Date.now() - statSync(path).mtimeMs >= staleInflightMs;
+}
+function listQueuedSessionIds(queueDir, staleInflightMs) {
+  const sessionIds = /* @__PURE__ */ new Set();
+  for (const name of readdirSync(queueDir)) {
+    if (name.endsWith(".jsonl")) {
+      sessionIds.add(name.slice(0, -".jsonl".length));
+    } else if (name.endsWith(".inflight")) {
+      const path = join4(queueDir, name);
+      if (isStale(path, staleInflightMs)) {
+        sessionIds.add(name.slice(0, -".inflight".length));
+      }
+    }
+  }
+  return [...sessionIds].sort();
+}
+function isEnsureSessionsTableRetryable(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("permission denied") || message.includes("does not exist");
+}
+async function waitForInflightToClear(inflightPath, waitIfBusyMs) {
+  const startedAt = Date.now();
+  while (existsSync3(inflightPath) && Date.now() - startedAt < waitIfBusyMs) {
+    await sleep2(BUSY_WAIT_STEP_MS);
+  }
+}
+function sleep2(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// dist/src/hooks/version-check.js
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname, join as join5 } from "node:path";
+import { homedir as homedir5 } from "node:os";
+var DEFAULT_VERSION_CACHE_PATH = join5(homedir5(), ".deeplake", ".version-check.json");
+var DEFAULT_VERSION_CACHE_TTL_MS = 60 * 60 * 1e3;
+function getInstalledVersion(bundleDir, pluginManifestDir) {
   try {
-    const pluginJson = join4(__bundleDir, "..", ".claude-plugin", "plugin.json");
-    const plugin = JSON.parse(readFileSync3(pluginJson, "utf-8"));
+    const pluginJson = join5(bundleDir, "..", pluginManifestDir, "plugin.json");
+    const plugin = JSON.parse(readFileSync4(pluginJson, "utf-8"));
     if (plugin.version)
       return plugin.version;
   } catch {
   }
-  let dir = __bundleDir;
+  let dir = bundleDir;
   for (let i = 0; i < 5; i++) {
-    const candidate = join4(dir, "package.json");
+    const candidate = join5(dir, "package.json");
     try {
-      const pkg = JSON.parse(readFileSync3(candidate, "utf-8"));
+      const pkg = JSON.parse(readFileSync4(candidate, "utf-8"));
       if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version)
         return pkg.version;
     } catch {
@@ -370,22 +566,101 @@ function getInstalledVersion() {
   }
   return null;
 }
-async function getLatestVersion() {
-  try {
-    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(VERSION_CHECK_TIMEOUT) });
-    if (!res.ok)
-      return null;
-    const pkg = await res.json();
-    return pkg.version ?? null;
-  } catch {
-    return null;
-  }
-}
 function isNewer(latest, current) {
   const parse = (v) => v.split(".").map(Number);
   const [la, lb, lc] = parse(latest);
   const [ca, cb, cc] = parse(current);
   return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
+}
+function readVersionCache(cachePath = DEFAULT_VERSION_CACHE_PATH) {
+  if (!existsSync4(cachePath))
+    return null;
+  try {
+    const parsed = JSON.parse(readFileSync4(cachePath, "utf-8"));
+    if (parsed && typeof parsed.checkedAt === "number" && typeof parsed.url === "string" && (typeof parsed.latest === "string" || parsed.latest === null)) {
+      return parsed;
+    }
+  } catch {
+  }
+  return null;
+}
+function writeVersionCache(entry, cachePath = DEFAULT_VERSION_CACHE_PATH) {
+  mkdirSync3(dirname(cachePath), { recursive: true });
+  writeFileSync3(cachePath, JSON.stringify(entry));
+}
+function readFreshCachedLatestVersion(url, ttlMs = DEFAULT_VERSION_CACHE_TTL_MS, cachePath = DEFAULT_VERSION_CACHE_PATH, nowMs = Date.now()) {
+  const cached = readVersionCache(cachePath);
+  if (!cached || cached.url !== url)
+    return void 0;
+  if (nowMs - cached.checkedAt > ttlMs)
+    return void 0;
+  return cached.latest;
+}
+async function getLatestVersionCached(opts) {
+  const ttlMs = opts.ttlMs ?? DEFAULT_VERSION_CACHE_TTL_MS;
+  const cachePath = opts.cachePath ?? DEFAULT_VERSION_CACHE_PATH;
+  const nowMs = opts.nowMs ?? Date.now();
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const fresh = readFreshCachedLatestVersion(opts.url, ttlMs, cachePath, nowMs);
+  if (fresh !== void 0)
+    return fresh;
+  const stale = readVersionCache(cachePath);
+  try {
+    const res = await fetchImpl(opts.url, { signal: AbortSignal.timeout(opts.timeoutMs) });
+    const latest = res.ok ? (await res.json()).version ?? null : stale?.latest ?? null;
+    writeVersionCache({
+      checkedAt: nowMs,
+      latest,
+      url: opts.url
+    }, cachePath);
+    return latest;
+  } catch {
+    const latest = stale?.latest ?? null;
+    writeVersionCache({
+      checkedAt: nowMs,
+      latest,
+      url: opts.url
+    }, cachePath);
+    return latest;
+  }
+}
+
+// dist/src/hooks/session-start-setup.js
+var log3 = (msg) => log("session-setup", msg);
+var __bundleDir = dirname2(fileURLToPath(import.meta.url));
+var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
+var VERSION_CHECK_TIMEOUT = 3e3;
+var HOME = homedir6();
+var WIKI_LOG = join6(HOME, ".claude", "hooks", "deeplake-wiki.log");
+function wikiLog(msg) {
+  try {
+    mkdirSync4(join6(HOME, ".claude", "hooks"), { recursive: true });
+    appendFileSync3(WIKI_LOG, `[${utcTimestamp()}] ${msg}
+`);
+  } catch {
+  }
+}
+async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, workspaceId) {
+  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
+  const existing = await api.query(`SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`);
+  if (existing.length > 0) {
+    wikiLog(`SessionSetup: summary exists for ${sessionId} (resumed)`);
+    return;
+  }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const projectName = cwd.split("/").pop() ?? "unknown";
+  const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
+  const content = [
+    `# Session ${sessionId}`,
+    `- **Source**: ${sessionSource}`,
+    `- **Started**: ${now}`,
+    `- **Project**: ${projectName}`,
+    `- **Status**: in-progress`,
+    ""
+  ].join("\n");
+  const filename = `${sessionId}.md`;
+  await api.query(`INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${now}', '${now}')`);
+  wikiLog(`SessionSetup: created placeholder for ${sessionId} (${cwd})`);
 }
 async function main() {
   if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1")
@@ -405,6 +680,7 @@ async function main() {
     } catch {
     }
   }
+  const captureEnabled = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
   if (input.session_id) {
     try {
       const config = loadConfig();
@@ -412,6 +688,15 @@ async function main() {
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
         await api.ensureTable();
         await api.ensureSessionsTable(config.sessionsTableName);
+        if (captureEnabled) {
+          const drain = await drainSessionQueues(api, {
+            sessionsTable: config.sessionsTableName
+          });
+          if (drain.flushedSessions > 0) {
+            log3(`drained ${drain.flushedSessions} queued session(s), rows=${drain.rows}, batches=${drain.batches}`);
+          }
+          await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
+        }
         log3("setup complete");
       }
     } catch (e) {
@@ -421,9 +706,12 @@ async function main() {
   }
   const autoupdate = creds.autoupdate !== false;
   try {
-    const current = getInstalledVersion();
+    const current = getInstalledVersion(__bundleDir, ".claude-plugin");
     if (current) {
-      const latest = await getLatestVersion();
+      const latest = await getLatestVersionCached({
+        url: GITHUB_RAW_PKG,
+        timeoutMs: VERSION_CHECK_TIMEOUT
+      });
       if (latest && isNewer(latest, current)) {
         if (autoupdate) {
           log3(`autoupdate: updating ${current} \u2192 ${latest}`);

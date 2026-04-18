@@ -8,7 +8,7 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdirSync, appendFileSync, readFileSync } from "node:fs";
+import { mkdirSync, appendFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials } from "../../commands/auth.js";
@@ -17,6 +17,18 @@ import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
+import {
+  drainSessionQueues,
+  isSessionWriteAuthError,
+  isSessionWriteDisabled,
+  markSessionWriteDisabled,
+} from "../session-queue.js";
+import {
+  getInstalledVersion,
+  getLatestVersionCached,
+  isNewer,
+} from "../version-check.js";
+
 const log = (msg: string) => _log("codex-session-setup", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -32,44 +44,6 @@ function wikiLog(msg: string): void {
     mkdirSync(join(HOME, ".codex", "hooks"), { recursive: true });
     appendFileSync(WIKI_LOG, `[${new Date().toISOString().replace("T", " ").slice(0, 19)}] ${msg}\n`);
   } catch { /* ignore */ }
-}
-
-function getInstalledVersion(): string | null {
-  try {
-    const pluginJson = join(__bundleDir, "..", ".codex-plugin", "plugin.json");
-    const plugin = JSON.parse(readFileSync(pluginJson, "utf-8"));
-    if (plugin.version) return plugin.version;
-  } catch { /* fall through */ }
-  let dir = __bundleDir;
-  for (let i = 0; i < 5; i++) {
-    const candidate = join(dir, "package.json");
-    try {
-      const pkg = JSON.parse(readFileSync(candidate, "utf-8"));
-      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version) return pkg.version;
-    } catch { /* not here, keep looking */ }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
-async function getLatestVersion(): Promise<string | null> {
-  try {
-    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(VERSION_CHECK_TIMEOUT) });
-    if (!res.ok) return null;
-    const pkg = await res.json();
-    return pkg.version ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function isNewer(latest: string, current: string): boolean {
-  const parse = (v: string) => v.split(".").map(Number);
-  const [la, lb, lc] = parse(latest);
-  const [ca, cb, cc] = parse(current);
-  return la > ca || (la === ca && lb > cb) || (la === ca && lb === cb && lc > cc);
 }
 
 /** Create a placeholder summary via direct SQL INSERT. */
@@ -140,8 +114,27 @@ async function main(): Promise<void> {
       if (config) {
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
         await api.ensureTable();
-        await api.ensureSessionsTable(config.sessionsTableName);
         if (captureEnabled) {
+          if (isSessionWriteDisabled(config.sessionsTableName)) {
+            log(`sessions table disabled, skipping setup for "${config.sessionsTableName}"`);
+          } else {
+            try {
+              await api.ensureSessionsTable(config.sessionsTableName);
+              const drain = await drainSessionQueues(api, {
+                sessionsTable: config.sessionsTableName,
+              });
+              if (drain.flushedSessions > 0) {
+                log(`drained ${drain.flushedSessions} queued session(s), rows=${drain.rows}, batches=${drain.batches}`);
+              }
+            } catch (e: any) {
+              if (isSessionWriteAuthError(e)) {
+                markSessionWriteDisabled(config.sessionsTableName, e.message);
+                log(`sessions table unavailable, skipping setup: ${e.message}`);
+              } else {
+                throw e;
+              }
+            }
+          }
           await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
         }
         log("setup complete");
@@ -155,9 +148,12 @@ async function main(): Promise<void> {
   // Version check + auto-update
   const autoupdate = creds.autoupdate !== false;
   try {
-    const current = getInstalledVersion();
+    const current = getInstalledVersion(__bundleDir, ".codex-plugin");
     if (current) {
-      const latest = await getLatestVersion();
+      const latest = await getLatestVersionCached({
+        url: GITHUB_RAW_PKG,
+        timeoutMs: VERSION_CHECK_TIMEOUT,
+      });
       if (latest && isNewer(latest, current)) {
         if (autoupdate) {
           log(`autoupdate: updating ${current} → ${latest}`);

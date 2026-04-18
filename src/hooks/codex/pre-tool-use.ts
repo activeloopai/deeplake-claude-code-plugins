@@ -28,6 +28,11 @@ import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr, sqlLike } from "../../utils/sql.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
+import {
+  getDeeplakeTableScope,
+  scopeIncludesMemory,
+  scopeIncludesSessions,
+} from "../../virtual-path-scope.js";
 
 import { log as _log } from "../../utils/debug.js";
 const log = (msg: string) => _log("codex-pre", msg);
@@ -183,11 +188,11 @@ async function main(): Promise<void> {
 
         if (virtualPath && !virtualPath.endsWith("/")) {
           const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
-          const isSession = virtualPath.startsWith("/sessions/");
+          const tableScope = getDeeplakeTableScope(virtualPath);
           log(`direct read: ${virtualPath}`);
 
           let content: string | null = null;
-          if (isSession) {
+          if (scopeIncludesSessions(tableScope) && !scopeIncludesMemory(tableScope)) {
             const rows = await api.query(
               `SELECT message::text AS content FROM "${sessionsTable}" WHERE path = '${sqlStr(virtualPath)}' LIMIT 1`
             );
@@ -234,9 +239,20 @@ async function main(): Promise<void> {
         const dir = (lsMatch[1] ?? "/").replace(/\/+$/, "") || "/";
         const isLong = /\s-[a-zA-Z]*l/.test(rewritten);
         log(`direct ls: ${dir}`);
-        const rows = await api.query(
-          `SELECT path, size_bytes FROM "${table}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`
-        );
+        const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
+        const tableScope = getDeeplakeTableScope(dir);
+        const rows = (await Promise.all([
+          scopeIncludesMemory(tableScope)
+            ? api.query(
+              `SELECT path, size_bytes FROM "${table}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`
+            ).catch(() => [])
+            : Promise.resolve([]),
+          scopeIncludesSessions(tableScope)
+            ? api.query(
+              `SELECT path, size_bytes FROM "${sessionsTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' ORDER BY path`
+            ).catch(() => [])
+            : Promise.resolve([]),
+        ])).flat();
         // Build directory listing from paths
         const entries = new Map<string, { isDir: boolean; size: number }>();
         const prefix = dir === "/" ? "/" : dir + "/";
@@ -278,12 +294,20 @@ async function main(): Promise<void> {
           const dir = findMatch[1].replace(/\/+$/, "") || "/";
           const namePattern = sqlLike(findMatch[2]).replace(/\*/g, "%").replace(/\?/g, "_");
           const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
-          const isSessionDir = dir === "/sessions" || dir.startsWith("/sessions/");
-          const findTable = isSessionDir ? sessionsTable : table;
+          const tableScope = getDeeplakeTableScope(dir);
           log(`direct find: ${dir} -name '${findMatch[2]}'`);
-          const rows = await api.query(
-            `SELECT path FROM "${findTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`
-          );
+          const rows = (await Promise.all([
+            scopeIncludesMemory(tableScope)
+              ? api.query(
+                `SELECT path FROM "${table}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`
+              ).catch(() => [])
+              : Promise.resolve([]),
+            scopeIncludesSessions(tableScope)
+              ? api.query(
+                `SELECT path FROM "${sessionsTable}" WHERE path LIKE '${sqlLike(dir === "/" ? "" : dir)}/%' AND filename LIKE '${namePattern}' ORDER BY path`
+              ).catch(() => [])
+              : Promise.resolve([]),
+          ])).flat();
           let result = rows.map(r => r["path"] as string).join("\n") || "";
           if (/\|\s*wc\s+-l\s*$/.test(rewritten)) {
             result = String(rows.length);
