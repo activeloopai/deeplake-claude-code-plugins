@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { loadCredentials, saveCredentials } from "../commands/auth.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
+import { isDirectRun } from "../utils/direct-run.js";
 import {
   DEFAULT_VERSION_CACHE_TTL_MS,
   getInstalledVersion,
@@ -26,7 +27,7 @@ const log = (msg: string) => _log("session-start", msg);
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
 const AUTH_CMD = join(__bundleDir, "commands", "auth-login.js");
 
-const context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
+export const CLAUDE_SESSION_START_CONTEXT = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
 
 1. Your built-in memory (~/.claude/) — personal per-project notes
 2. Deeplake global memory (~/.deeplake/memory/) — global memory shared across all sessions, users, and agents in the org
@@ -62,51 +63,92 @@ Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-de
 
 const GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 
-async function main(): Promise<void> {
-  // Skip if this is a sub-session spawned by the wiki worker
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1") return;
+export function buildSessionStartAdditionalContext(args: {
+  authCommand: string;
+  creds: ReturnType<typeof loadCredentials>;
+  currentVersion: string | null;
+  latestVersion: string | null;
+}): string {
+  const resolvedContext = CLAUDE_SESSION_START_CONTEXT.replace(/HIVEMIND_AUTH_CMD/g, args.authCommand);
 
-  await readStdin<Record<string, unknown>>();
+  let updateNotice = "";
+  if (args.currentVersion) {
+    if (args.latestVersion && isNewer(args.latestVersion, args.currentVersion)) {
+      updateNotice = `\n\n⬆️ Hivemind update available: ${args.currentVersion} → ${args.latestVersion}.`;
+    } else {
+      updateNotice = `\n\n✅ Hivemind v${args.currentVersion}`;
+    }
+  }
 
-  let creds = loadCredentials();
+  return args.creds?.token
+    ? `${resolvedContext}\n\nLogged in to Deeplake as org: ${args.creds.orgName ?? args.creds.orgId} (workspace: ${args.creds.workspaceId ?? "default"})${updateNotice}`
+    : `${resolvedContext}\n\n⚠️ Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${updateNotice}`;
+}
+
+interface SessionStartHookDeps {
+  wikiWorker?: boolean;
+  creds?: ReturnType<typeof loadCredentials>;
+  saveCredentialsFn?: typeof saveCredentials;
+  currentVersion?: string | null;
+  latestVersion?: string | null;
+  authCommand?: string;
+  bundleDir?: string;
+  logFn?: (msg: string) => void;
+}
+
+export async function runSessionStartHook(_input: Record<string, unknown>, deps: SessionStartHookDeps = {}): Promise<{
+  hookSpecificOutput: {
+    hookEventName: "SessionStart";
+    additionalContext: string;
+  };
+} | null> {
+  const {
+    wikiWorker = (process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1",
+    creds = loadCredentials(),
+    saveCredentialsFn = saveCredentials,
+    currentVersion = getInstalledVersion(__bundleDir, ".claude-plugin"),
+    latestVersion = currentVersion
+      ? readFreshCachedLatestVersion(GITHUB_RAW_PKG, DEFAULT_VERSION_CACHE_TTL_MS) ?? null
+      : null,
+    authCommand = AUTH_CMD,
+    logFn = log,
+  } = deps;
+
+  if (wikiWorker) return null;
 
   if (!creds?.token) {
-    log("no credentials found — run /hivemind:login to authenticate");
+    logFn("no credentials found — run /hivemind:login to authenticate");
   } else {
-    log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
-    // Backfill userName if missing (for users who logged in before this field was added)
+    logFn(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
     if (creds.token && !creds.userName) {
       try {
         const { userInfo } = await import("node:os");
         creds.userName = userInfo().username ?? "unknown";
-        saveCredentials(creds);
-        log(`backfilled and persisted userName: ${creds.userName}`);
+        saveCredentialsFn(creds);
+        logFn(`backfilled and persisted userName: ${creds.userName}`);
       } catch { /* non-fatal */ }
     }
   }
 
-  let updateNotice = "";
-  const current = getInstalledVersion(__bundleDir, ".claude-plugin");
-  if (current) {
-    const latest = readFreshCachedLatestVersion(GITHUB_RAW_PKG, DEFAULT_VERSION_CACHE_TTL_MS);
-    if (latest && isNewer(latest, current)) {
-      updateNotice = `\n\n⬆️ Hivemind update available: ${current} → ${latest}.`;
-    } else {
-      updateNotice = `\n\n✅ Hivemind v${current}`;
-    }
-  }
-
-  const resolvedContext = context.replace(/HIVEMIND_AUTH_CMD/g, AUTH_CMD);
-  const additionalContext = creds?.token
-    ? `${resolvedContext}\n\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}`
-    : `${resolvedContext}\n\n⚠️ Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${updateNotice}`;
-
-  console.log(JSON.stringify({
+  return {
     hookSpecificOutput: {
       hookEventName: "SessionStart",
-      additionalContext,
+      additionalContext: buildSessionStartAdditionalContext({
+        authCommand,
+        creds,
+        currentVersion,
+        latestVersion,
+      }),
     },
-  }));
+  };
 }
 
-main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
+async function main(): Promise<void> {
+  await readStdin<Record<string, unknown>>();
+  const result = await runSessionStartHook({});
+  if (result) console.log(JSON.stringify(result));
+}
+
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
+}

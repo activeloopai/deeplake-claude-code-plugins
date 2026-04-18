@@ -4,60 +4,90 @@
  * SessionEnd hook — flushes any queued session rows, then spawns the summary worker.
  *
  * The queue flush is synchronous so the worker sees the latest turn.
- * All heavy summary work (fetching events, running claude -p, uploading) happens
- * in the detached wiki-worker process.
+ * All heavy summary work happens in the detached wiki-worker process.
  */
 
 import { readStdin } from "../utils/stdin.js";
-import { loadConfig } from "../config.js";
+import { loadConfig, type Config } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { log as _log } from "../utils/debug.js";
+import { isDirectRun } from "../utils/direct-run.js";
 import { bundleDirFromImportMeta, spawnWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 import { flushSessionQueue } from "./session-queue.js";
 
 const log = (msg: string) => _log("session-end", msg);
 
-interface StopInput {
+export interface StopInput {
   session_id: string;
   cwd?: string;
   hook_event_name?: string;
 }
 
-async function main(): Promise<void> {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1") return;
-  if ((process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) === "false") return;
+interface SessionEndDeps {
+  wikiWorker?: boolean;
+  captureEnabled?: boolean;
+  config?: Config | null;
+  createApi?: (config: Config) => DeeplakeApi;
+  flushSessionQueueFn?: typeof flushSessionQueue;
+  spawnWikiWorkerFn?: typeof spawnWikiWorker;
+  wikiLogFn?: typeof wikiLog;
+  bundleDir?: string;
+  logFn?: (msg: string) => void;
+}
 
-  const input = await readStdin<StopInput>();
-  const sessionId = input.session_id;
-  const cwd = input.cwd ?? "";
-  if (!sessionId) return;
+export async function runSessionEndHook(input: StopInput, deps: SessionEndDeps = {}): Promise<{
+  status: "skipped" | "no_config" | "flushed";
+  flushStatus?: string;
+}> {
+  const {
+    wikiWorker = (process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1",
+    captureEnabled = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false",
+    config = loadConfig(),
+    createApi = (activeConfig) => new DeeplakeApi(
+      activeConfig.token,
+      activeConfig.apiUrl,
+      activeConfig.orgId,
+      activeConfig.workspaceId,
+      activeConfig.sessionsTableName,
+    ),
+    flushSessionQueueFn = flushSessionQueue,
+    spawnWikiWorkerFn = spawnWikiWorker,
+    wikiLogFn = wikiLog,
+    bundleDir = bundleDirFromImportMeta(import.meta.url),
+    logFn = log,
+  } = deps;
 
-  const config = loadConfig();
-  if (!config) { log("no config"); return; }
+  if (wikiWorker || !captureEnabled || !input.session_id) return { status: "skipped" };
+  if (!config) {
+    logFn("no config");
+    return { status: "no_config" };
+  }
 
-  const api = new DeeplakeApi(
-    config.token,
-    config.apiUrl,
-    config.orgId,
-    config.workspaceId,
-    config.sessionsTableName,
-  );
-  const flush = await flushSessionQueue(api, {
-    sessionId,
+  const flush = await flushSessionQueueFn(createApi(config), {
+    sessionId: input.session_id,
     sessionsTable: config.sessionsTableName,
     waitIfBusyMs: 5000,
     drainAll: true,
   });
-  log(`flush ${flush.status}: rows=${flush.rows} batches=${flush.batches}`);
+  logFn(`flush ${flush.status}: rows=${flush.rows} batches=${flush.batches}`);
 
-  wikiLog(`SessionEnd: triggering summary for ${sessionId}`);
-  spawnWikiWorker({
+  wikiLogFn(`SessionEnd: triggering summary for ${input.session_id}`);
+  spawnWikiWorkerFn({
     config,
-    sessionId,
-    cwd,
-    bundleDir: bundleDirFromImportMeta(import.meta.url),
+    sessionId: input.session_id,
+    cwd: input.cwd ?? "",
+    bundleDir,
     reason: "SessionEnd",
   });
+
+  return { status: "flushed", flushStatus: flush.status };
 }
 
-main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
+async function main(): Promise<void> {
+  const input = await readStdin<StopInput>();
+  await runSessionEndHook(input);
+}
+
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
+}

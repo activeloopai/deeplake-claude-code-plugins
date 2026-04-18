@@ -1,0 +1,466 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Config } from "../../src/config.js";
+import type { Credentials } from "../../src/commands/auth.js";
+import {
+  buildCaptureEntry,
+  maybeTriggerPeriodicSummary,
+  runCaptureHook,
+} from "../../src/hooks/capture.js";
+import {
+  extractGrepParams,
+  getShellCommand,
+  isSafe,
+  processPreToolUse,
+  rewritePaths,
+  touchesMemory,
+} from "../../src/hooks/pre-tool-use.js";
+import {
+  buildSessionStartAdditionalContext,
+  runSessionStartHook,
+} from "../../src/hooks/session-start.js";
+import {
+  createPlaceholder,
+  runSessionStartSetup,
+} from "../../src/hooks/session-start-setup.js";
+import { runSessionEndHook } from "../../src/hooks/session-end.js";
+import { isDirectRun } from "../../src/utils/direct-run.js";
+
+const baseConfig: Config = {
+  token: "token",
+  orgId: "org-1",
+  orgName: "Acme",
+  userName: "alice",
+  workspaceId: "default",
+  apiUrl: "https://api.example.com",
+  tableName: "memory",
+  sessionsTableName: "sessions",
+  memoryPath: "/tmp/.deeplake/memory",
+};
+
+const baseCreds: Credentials = {
+  token: "token",
+  orgId: "org-1",
+  orgName: "Acme",
+  userName: "alice",
+  workspaceId: "default",
+  apiUrl: "https://api.example.com",
+  savedAt: "2026-01-01T00:00:00.000Z",
+};
+
+let originalArgv1: string | undefined;
+
+beforeEach(() => {
+  originalArgv1 = process.argv[1];
+});
+
+afterEach(() => {
+  if (originalArgv1 === undefined) delete process.argv[1];
+  else process.argv[1] = originalArgv1;
+  vi.restoreAllMocks();
+});
+
+describe("direct-run", () => {
+  it("returns true when the current entry matches the module path", () => {
+    process.argv[1] = "/tmp/hook.js";
+    expect(isDirectRun("file:///tmp/hook.js")).toBe(true);
+  });
+
+  it("returns false when the current entry differs", () => {
+    process.argv[1] = "/tmp/other.js";
+    expect(isDirectRun("file:///tmp/hook.js")).toBe(false);
+  });
+});
+
+describe("claude capture source", () => {
+  it("builds user, tool, and assistant entries", () => {
+    const user = buildCaptureEntry({
+      session_id: "s1",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "hello",
+    }, "2026-01-01T00:00:00.000Z");
+    const tool = buildCaptureEntry({
+      session_id: "s1",
+      hook_event_name: "PostToolUse",
+      tool_name: "Read",
+      tool_input: { file_path: "/tmp/a.ts" },
+      tool_response: { content: "ok" },
+      tool_use_id: "tu-1",
+    }, "2026-01-01T00:00:01.000Z");
+    const assistant = buildCaptureEntry({
+      session_id: "s1",
+      hook_event_name: "Stop",
+      last_assistant_message: "done",
+      agent_transcript_path: "/tmp/agent.jsonl",
+    }, "2026-01-01T00:00:02.000Z");
+
+    expect(user?.type).toBe("user_message");
+    expect(user?.content).toBe("hello");
+    expect(tool?.type).toBe("tool_call");
+    expect(tool?.tool_name).toBe("Read");
+    expect(JSON.parse(tool?.tool_input as string)).toEqual({ file_path: "/tmp/a.ts" });
+    expect(assistant?.type).toBe("assistant_message");
+    expect(assistant?.agent_transcript_path).toBe("/tmp/agent.jsonl");
+    expect(buildCaptureEntry({ session_id: "s1" }, "2026-01-01T00:00:00.000Z")).toBeNull();
+  });
+
+  it("triggers periodic summaries only when the threshold is met and the lock is acquired", () => {
+    const bump = vi.fn(() => ({ totalCount: 10, lastSummaryCount: 4 }));
+    const load = vi.fn(() => ({ everyNMessages: 5, everyHours: 24 }));
+    const should = vi.fn(() => true);
+    const lock = vi.fn(() => true);
+    const spawn = vi.fn();
+    const wiki = vi.fn();
+
+    maybeTriggerPeriodicSummary("s1", "/repo", baseConfig, {
+      bumpTotalCountFn: bump as any,
+      loadTriggerConfigFn: load as any,
+      shouldTriggerFn: should as any,
+      tryAcquireLockFn: lock as any,
+      spawnWikiWorkerFn: spawn as any,
+      wikiLogFn: wiki as any,
+      bundleDir: "/tmp/bundle",
+    });
+
+    expect(spawn).toHaveBeenCalledWith({
+      config: baseConfig,
+      sessionId: "s1",
+      cwd: "/repo",
+      bundleDir: "/tmp/bundle",
+      reason: "Periodic",
+    });
+    expect(wiki).toHaveBeenCalled();
+  });
+
+  it("suppresses periodic summaries when the lock is held", () => {
+    const spawn = vi.fn();
+    const logFn = vi.fn();
+
+    maybeTriggerPeriodicSummary("s1", "/repo", baseConfig, {
+      bumpTotalCountFn: vi.fn(() => ({ totalCount: 10, lastSummaryCount: 4 })) as any,
+      loadTriggerConfigFn: vi.fn(() => ({ everyNMessages: 5, everyHours: 24 })) as any,
+      shouldTriggerFn: vi.fn(() => true) as any,
+      tryAcquireLockFn: vi.fn(() => false) as any,
+      spawnWikiWorkerFn: spawn as any,
+      logFn,
+    });
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(logFn).toHaveBeenCalledWith(expect.stringContaining("lock held"));
+  });
+
+  it("returns disabled, no_config, ignored, queued, and flushed states", async () => {
+    expect(await runCaptureHook({ session_id: "s1", prompt: "hi" }, {
+      captureEnabled: false,
+      config: baseConfig,
+    })).toEqual({ status: "disabled" });
+
+    expect(await runCaptureHook({ session_id: "s1", prompt: "hi" }, {
+      config: null,
+    })).toEqual({ status: "no_config" });
+
+    expect(await runCaptureHook({ session_id: "s1" }, {
+      config: baseConfig,
+    })).toEqual({ status: "ignored" });
+
+    const append = vi.fn();
+    const maybe = vi.fn();
+    const queued = await runCaptureHook({
+      session_id: "s1",
+      cwd: "/repo",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "hi",
+    }, {
+      config: baseConfig,
+      now: () => "2026-01-01T00:00:00.000Z",
+      appendQueuedSessionRowFn: append as any,
+      maybeTriggerPeriodicSummaryFn: maybe as any,
+    });
+    expect(queued.status).toBe("queued");
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(maybe).toHaveBeenCalledWith("s1", "/repo", baseConfig);
+
+    const flush = vi.fn(async () => ({ status: "flushed", rows: 2, batches: 1 }));
+    const flushed = await runCaptureHook({
+      session_id: "s1",
+      cwd: "/repo",
+      hook_event_name: "Stop",
+      last_assistant_message: "done",
+    }, {
+      config: baseConfig,
+      now: () => "2026-01-01T00:00:01.000Z",
+      appendQueuedSessionRowFn: vi.fn() as any,
+      flushSessionQueueFn: flush as any,
+    });
+    expect(flushed).toMatchObject({ status: "queued", flushStatus: "flushed" });
+    expect(flush).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("claude pre-tool source", () => {
+  it("detects, rewrites, and validates memory commands", () => {
+    expect(touchesMemory("cat ~/.deeplake/memory/index.md")).toBe(true);
+    expect(rewritePaths("cat ~/.deeplake/memory/index.md")).toBe("cat /index.md");
+    expect(isSafe("cat /index.md | head -20")).toBe(true);
+    expect(isSafe("python3 -c 'print(1)' /index.md")).toBe(false);
+  });
+
+  it("builds shell commands and grep params for supported tools", () => {
+    expect(getShellCommand("Read", { file_path: "~/.deeplake/memory/index.md" })).toBe("cat /index.md");
+    expect(getShellCommand("Glob", { path: "~/.deeplake/memory/summaries" })).toBe("ls /");
+    expect(getShellCommand("Bash", { command: "cat ~/.deeplake/memory/index.md" })).toBe("cat /index.md");
+    expect(getShellCommand("Bash", { command: "python3 ~/.deeplake/memory/index.md" })).toBeNull();
+
+    const grep = extractGrepParams("Grep", {
+      pattern: "needle",
+      path: "~/.deeplake/memory/index.md",
+      output_mode: "count",
+      "-i": true,
+      "-n": true,
+    }, "grep -r needle /");
+    expect(grep).toMatchObject({
+      pattern: "needle",
+      targetPath: "/index.md",
+      ignoreCase: true,
+      countOnly: true,
+      lineNumber: true,
+    });
+  });
+
+  it("returns guidance for unsupported memory commands and passthrough for non-memory commands", async () => {
+    const guidance = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "python3 -c 'print(1)' ~/.deeplake/memory" },
+      tool_use_id: "tu-1",
+    }, {
+      config: baseConfig,
+    });
+    expect(guidance?.command).toContain("RETRY REQUIRED");
+
+    const passthrough = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "ls -la /tmp" },
+      tool_use_id: "tu-2",
+    }, {
+      config: baseConfig,
+    });
+    expect(passthrough).toBeNull();
+  });
+
+  it("uses direct grep, direct reads, listings, finds, and shell fallback", async () => {
+    const grepDecision = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Grep",
+      tool_input: {
+        pattern: "needle",
+        path: "~/.deeplake/memory/index.md",
+        output_mode: "files_with_matches",
+      },
+      tool_use_id: "tu-1",
+    }, {
+      config: baseConfig,
+      handleGrepDirectFn: vi.fn(async () => "/index.md:needle") as any,
+    });
+    expect(grepDecision?.command).toContain("/index.md:needle");
+
+    const api = {
+      query: vi.fn(async () => [
+        {
+          path: "/summaries/alice/s1.md",
+          project: "repo",
+          description: "session summary",
+          creation_date: "2026-01-01T00:00:00.000Z",
+        },
+      ]),
+    };
+    const readDecision = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Read",
+      tool_input: { file_path: "~/.deeplake/memory/index.md" },
+      tool_use_id: "tu-2",
+    }, {
+      config: baseConfig,
+      createApi: vi.fn(() => api as any),
+      readVirtualPathContentFn: vi.fn(async () => null) as any,
+    });
+    expect(readDecision?.command).toContain("# Memory Index");
+
+    const lsDecision = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "ls -la ~/.deeplake/memory/summaries" },
+      tool_use_id: "tu-3",
+    }, {
+      config: baseConfig,
+      listVirtualPathRowsFn: vi.fn(async () => [
+        { path: "/summaries/alice/s1.md", size_bytes: 42 },
+      ]) as any,
+    });
+    expect(lsDecision?.command).toContain("drwxr-xr-x");
+    expect(lsDecision?.command).toContain("alice/");
+
+    const findDecision = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "find ~/.deeplake/memory/summaries -name '*.md'" },
+      tool_use_id: "tu-4",
+    }, {
+      config: baseConfig,
+      findVirtualPathsFn: vi.fn(async () => ["/summaries/alice/s1.md"]) as any,
+    });
+    expect(findDecision?.command).toContain("/summaries/alice/s1.md");
+
+    const fallback = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "echo hi > ~/.deeplake/memory/test.md" },
+      tool_use_id: "tu-5",
+    }, {
+      config: null,
+      shellBundle: "/tmp/deeplake-shell.js",
+    });
+    expect(fallback?.command).toContain('node "/tmp/deeplake-shell.js"');
+  });
+});
+
+describe("claude session start source", () => {
+  it("builds logged-in and logged-out context with update notices", () => {
+    const loggedIn = buildSessionStartAdditionalContext({
+      authCommand: "/tmp/auth-login.js",
+      creds: baseCreds,
+      currentVersion: "0.6.0",
+      latestVersion: "0.6.0",
+    });
+    const loggedOut = buildSessionStartAdditionalContext({
+      authCommand: "/tmp/auth-login.js",
+      creds: null,
+      currentVersion: "0.6.0",
+      latestVersion: "0.7.0",
+    });
+
+    expect(loggedIn).toContain("Logged in to Deeplake");
+    expect(loggedIn).toContain("Hivemind v0.6.0");
+    expect(loggedOut).toContain("Not logged in to Deeplake");
+    expect(loggedOut).toContain("update available");
+  });
+
+  it("skips in wiki-worker mode and backfills usernames when needed", async () => {
+    expect(await runSessionStartHook({}, { wikiWorker: true })).toBeNull();
+
+    const save = vi.fn();
+    const result = await runSessionStartHook({}, {
+      creds: { ...baseCreds, userName: undefined },
+      saveCredentialsFn: save as any,
+      currentVersion: "0.6.0",
+      latestVersion: "0.6.0",
+      authCommand: "/tmp/auth-login.js",
+    });
+
+    expect(result?.hookSpecificOutput.additionalContext).toContain("Logged in to Deeplake");
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("claude session start setup source", () => {
+  it("creates placeholders only when summaries do not already exist", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.startsWith("SELECT path")) return [];
+      return [];
+    });
+    const api = { query } as any;
+
+    await createPlaceholder(api, "memory", "s1", "/repo", "alice", "Acme", "default");
+
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(String(query.mock.calls[1]?.[0])).toContain('INSERT INTO "memory"');
+    expect(String(query.mock.calls[1]?.[0])).toContain("/summaries/alice/s1.md");
+    expect(String(query.mock.calls[1]?.[0])).toContain("/sessions/alice/alice_Acme_default_s1.jsonl");
+
+    query.mockReset();
+    query.mockResolvedValueOnce([{ path: "/summaries/alice/s1.md" }]);
+    await createPlaceholder(api, "memory", "s1", "/repo", "alice", "Acme", "default");
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it("handles no credentials, disabled session writes, auth failures, and update notices", async () => {
+    expect(await runSessionStartSetup({ session_id: "s1" }, {
+      creds: null,
+    })).toEqual({ status: "no_credentials" });
+
+    const createApi = vi.fn(() => ({
+      ensureTable: vi.fn(async () => undefined),
+      ensureSessionsTable: vi.fn(async () => undefined),
+      query: vi.fn(async () => []),
+    }) as any);
+    const placeholder = vi.fn(async () => undefined);
+
+    await runSessionStartSetup({ session_id: "s1", cwd: "/repo" }, {
+      creds: baseCreds,
+      config: baseConfig,
+      createApi,
+      isSessionWriteDisabledFn: vi.fn(() => true) as any,
+      createPlaceholderFn: placeholder as any,
+      getInstalledVersionFn: vi.fn(() => "0.6.0") as any,
+      getLatestVersionCachedFn: vi.fn(async () => "0.7.0") as any,
+      execSyncFn: vi.fn() as any,
+    });
+    expect(placeholder).toHaveBeenCalledTimes(1);
+    expect(createApi).toHaveBeenCalledTimes(1);
+
+    const markDisabled = vi.fn();
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true as any);
+    await runSessionStartSetup({ session_id: "s1", cwd: "/repo" }, {
+      creds: { ...baseCreds, autoupdate: false },
+      config: baseConfig,
+      createApi: vi.fn(() => ({
+        ensureTable: vi.fn(async () => undefined),
+        ensureSessionsTable: vi.fn(async () => { throw new Error("403 Forbidden"); }),
+        query: vi.fn(async () => []),
+      }) as any),
+      isSessionWriteDisabledFn: vi.fn(() => false) as any,
+      isSessionWriteAuthErrorFn: vi.fn(() => true) as any,
+      markSessionWriteDisabledFn: markDisabled as any,
+      createPlaceholderFn: vi.fn(async () => undefined) as any,
+      getInstalledVersionFn: vi.fn(() => "0.6.0") as any,
+      getLatestVersionCachedFn: vi.fn(async () => "0.7.0") as any,
+    });
+    expect(markDisabled).toHaveBeenCalledTimes(1);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("update available"));
+  });
+});
+
+describe("claude session end source", () => {
+  it("skips when disabled, returns no_config, and flushes when active", async () => {
+    expect(await runSessionEndHook({ session_id: "s1" }, {
+      captureEnabled: false,
+      config: baseConfig,
+    })).toEqual({ status: "skipped" });
+
+    expect(await runSessionEndHook({ session_id: "s1" }, {
+      config: null,
+    })).toEqual({ status: "no_config" });
+
+    const flush = vi.fn(async () => ({ status: "flushed", rows: 3, batches: 1 }));
+    const spawn = vi.fn();
+    const wiki = vi.fn();
+    const result = await runSessionEndHook({ session_id: "s1", cwd: "/repo" }, {
+      config: baseConfig,
+      flushSessionQueueFn: flush as any,
+      spawnWikiWorkerFn: spawn as any,
+      wikiLogFn: wiki as any,
+      bundleDir: "/tmp/bundle",
+    });
+
+    expect(result).toEqual({ status: "flushed", flushStatus: "flushed" });
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(spawn).toHaveBeenCalledWith({
+      config: baseConfig,
+      sessionId: "s1",
+      cwd: "/repo",
+      bundleDir: "/tmp/bundle",
+      reason: "SessionEnd",
+    });
+    expect(wiki).toHaveBeenCalled();
+  });
+});

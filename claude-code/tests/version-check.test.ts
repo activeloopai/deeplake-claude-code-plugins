@@ -48,6 +48,14 @@ describe("getInstalledVersion", () => {
 
     expect(getInstalledVersion(bundleDir, ".codex-plugin")).toBe("0.6.40");
   });
+
+  it("returns null when neither plugin.json nor a matching package.json exists", () => {
+    const bundleDir = join(root, "bundle");
+    mkdirSync(bundleDir, { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "other-package", version: "1.0.0" }));
+
+    expect(getInstalledVersion(bundleDir, ".claude-plugin")).toBeNull();
+  });
 });
 
 describe("version cache", () => {
@@ -76,6 +84,12 @@ describe("version cache", () => {
     writeVersionCache({ checkedAt: 1_000, latest: "0.6.38", url: "https://example.com/pkg.json" }, cachePath);
     expect(readFreshCachedLatestVersion("https://example.com/pkg.json", 500, cachePath, 1_400)).toBe("0.6.38");
     expect(readFreshCachedLatestVersion("https://example.com/pkg.json", 500, cachePath, 1_600)).toBeUndefined();
+  });
+
+  it("returns null for invalid cache files and url mismatches", () => {
+    writeFileSync(cachePath, JSON.stringify({ checkedAt: "bad", latest: 42, url: 123 }));
+    expect(readVersionCache(cachePath)).toBeNull();
+    expect(readFreshCachedLatestVersion("https://other.example.com/pkg.json", 500, cachePath, 1_200)).toBeUndefined();
   });
 
   it("uses cached value without fetching when cache is fresh", async () => {
@@ -116,6 +130,26 @@ describe("version cache", () => {
     expect(readVersionCache(cachePath)?.latest).toBe("0.6.40");
   });
 
+  it("falls back to stale cached value on non-ok fetch responses", async () => {
+    writeVersionCache({ checkedAt: 1_000, latest: "0.6.38", url: "https://example.com/pkg.json" }, cachePath);
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      json: async () => ({ version: "0.6.40" }),
+    }));
+
+    const latest = await getLatestVersionCached({
+      url: "https://example.com/pkg.json",
+      timeoutMs: 3000,
+      ttlMs: 100,
+      cachePath,
+      nowMs: 2_000,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(latest).toBe("0.6.38");
+    expect(readVersionCache(cachePath)?.latest).toBe("0.6.38");
+  });
+
   it("reuses stale cached value on fetch failure and refreshes checkedAt", async () => {
     writeVersionCache({ checkedAt: 1_000, latest: "0.6.38", url: "https://example.com/pkg.json" }, cachePath);
     const fetchImpl = vi.fn(async () => { throw new Error("network down"); });
@@ -131,5 +165,25 @@ describe("version cache", () => {
 
     expect(latest).toBe("0.6.38");
     expect(readVersionCache(cachePath)?.checkedAt).toBe(2_000);
+  });
+
+  it("returns null and still writes cache state when fetch fails without stale cache", async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error("network down"); });
+
+    const latest = await getLatestVersionCached({
+      url: "https://example.com/pkg.json",
+      timeoutMs: 3000,
+      ttlMs: 100,
+      cachePath,
+      nowMs: 2_000,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(latest).toBeNull();
+    expect(readVersionCache(cachePath)).toEqual({
+      checkedAt: 2_000,
+      latest: null,
+      url: "https://example.com/pkg.json",
+    });
   });
 });
