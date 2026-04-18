@@ -34,31 +34,31 @@ describe("normalizeContent: passthrough for non-session paths", () => {
   });
 });
 
-describe("normalizeContent: LoCoMo benchmark shape", () => {
+describe("normalizeContent: turn-array session shape", () => {
   const raw = JSON.stringify({
     date_time: "1:56 pm on 8 May, 2023",
-    speakers: { speaker_a: "Caroline", speaker_b: "Melanie" },
+    speakers: { speaker_a: "Avery", speaker_b: "Jordan" },
     turns: [
-      { dia_id: "D1:1", speaker: "Caroline", text: "Hey Mel!" },
-      { dia_id: "D1:2", speaker: "Melanie", text: "Hi Caroline." },
+      { dia_id: "D1:1", speaker: "Avery", text: "Hey Jordan!" },
+      { dia_id: "D1:2", speaker: "Jordan", text: "Hi Avery." },
     ],
   });
 
   it("emits date and speakers header", () => {
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
     expect(out).toContain("date: 1:56 pm on 8 May, 2023");
-    expect(out).toContain("speakers: Caroline, Melanie");
+    expect(out).toContain("speakers: Avery, Jordan");
   });
 
   it("emits one line per turn with dia_id tag", () => {
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
-    expect(out).toContain("[D1:1] Caroline: Hey Mel!");
-    expect(out).toContain("[D1:2] Melanie: Hi Caroline.");
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
+    expect(out).toContain("[D1:1] Avery: Hey Jordan!");
+    expect(out).toContain("[D1:2] Jordan: Hi Avery.");
   });
 
   it("falls back gracefully on turns without speaker/text", () => {
     const weird = JSON.stringify({ turns: [{}, { speaker: "X" }] });
-    const out = normalizeContent("/sessions/conv_0_session_1.json", weird);
+    const out = normalizeContent("/sessions/alice/chat_1.json", weird);
     // Must not crash; includes placeholder `?` for missing speaker
     expect(out).toContain("?: ");
     expect(out).toContain("X: ");
@@ -69,7 +69,7 @@ describe("normalizeContent: LoCoMo benchmark shape", () => {
       turns: [{ speaker: "A", text: "hi" }],
       speakers: { speaker_a: "", speaker_b: "" },
     });
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
     expect(out).not.toContain("speakers:");
     expect(out).toContain("A: hi");
   });
@@ -79,32 +79,32 @@ describe("normalizeContent: LoCoMo benchmark shape", () => {
       turns: [{ speaker: "A", text: "hi" }],
       speakers: { speaker_a: "Alice" },
     });
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
     expect(out).toContain("speakers: Alice");
   });
 
   it("falls back speaker->name when speaker field is absent on a turn", () => {
-    const raw = JSON.stringify({ turns: [{ name: "Caroline", text: "hi" }] });
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
-    expect(out).toContain("Caroline: hi");
+    const raw = JSON.stringify({ turns: [{ name: "Avery", text: "hi" }] });
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
+    expect(out).toContain("Avery: hi");
   });
 
   it("falls back text->content when text field is absent on a turn", () => {
     const raw = JSON.stringify({ turns: [{ speaker: "X", content: "fallback" }] });
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
     expect(out).toContain("X: fallback");
   });
 
   it("omits dia_id prefix when the turn has no dia_id", () => {
     const raw = JSON.stringify({ turns: [{ speaker: "A", text: "hi" }] });
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
     expect(out).toContain("A: hi");
     expect(out).not.toMatch(/\[\]/);
   });
 
   it("emits turns without date/speakers when both are missing", () => {
     const raw = JSON.stringify({ turns: [{ speaker: "A", text: "hi" }] });
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
     expect(out).not.toContain("date:");
     expect(out).not.toContain("speakers:");
     expect(out).toContain("A: hi");
@@ -113,7 +113,7 @@ describe("normalizeContent: LoCoMo benchmark shape", () => {
   it("returns raw when turns produce an empty serialization", () => {
     const empty = JSON.stringify({ turns: [] });
     // No header, no turns → trimmed output is empty → fallback to raw
-    const out = normalizeContent("/sessions/conv_0_session_1.json", empty);
+    const out = normalizeContent("/sessions/alice/chat_1.json", empty);
     expect(out).toBe(empty);
   });
 });
@@ -430,9 +430,9 @@ describe("buildPathFilter", () => {
     expect(buildPathFilter("")).toBe("");
   });
   it("emits equality + prefix match for subpaths", () => {
-    const f = buildPathFilter("/summaries/locomo");
-    expect(f).toContain("path = '/summaries/locomo'");
-    expect(f).toContain("path LIKE '/summaries/locomo/%'");
+    const f = buildPathFilter("/summaries/projects");
+    expect(f).toContain("path = '/summaries/projects'");
+    expect(f).toContain("path LIKE '/summaries/projects/%'");
   });
   it("strips trailing slashes", () => {
     const f = buildPathFilter("/sessions///");
@@ -445,13 +445,11 @@ describe("buildPathFilter", () => {
     );
   });
   it("uses LIKE matching for glob targets instead of exact file matching", () => {
-    expect(buildPathFilter("/summaries/locomo/*.md")).toBe(
-      " AND path LIKE '/summaries/locomo/%.md'",
+    expect(buildPathFilter("/summaries/projects/*.md")).toBe(
+      " AND path LIKE '/summaries/projects/%.md'",
     );
-    const filter = buildPathFilter("/sessions/conv_?_session_*.json");
-    expect(filter).toContain("AND path LIKE '/sessions/conv");
-    expect(filter).toContain("session");
-    expect(filter).toContain("%.json'");
+    const filter = buildPathFilter("/sessions/alice/chat_?.json");
+    expect(filter).toMatch(/^ AND path LIKE '\/sessions\/alice\/chat.*\.json'$/);
   });
 });
 
@@ -736,20 +734,20 @@ describe("grepBothTables", () => {
     expect(out.length).toBe(1);
   });
 
-  it("normalizes session JSON before refinement (LoCoMo turns)", async () => {
+  it("normalizes session JSON before refinement (turn-array sessions)", async () => {
     const sessionContent = JSON.stringify({
       turns: [
-        { dia_id: "D1:1", speaker: "Alice", text: "greeting foo here" },
+        { dia_id: "D1:1", speaker: "Alice", text: "project foo update" },
         { dia_id: "D1:2", speaker: "Bob", text: "unrelated" },
       ],
     });
     const api = {
       query: vi.fn()
-        .mockResolvedValueOnce([{ path: "/sessions/conv_0_session_1.json", content: sessionContent }]),
+        .mockResolvedValueOnce([{ path: "/sessions/alice/chat_1.json", content: sessionContent }]),
     } as any;
     const out = await grepBothTables(api, "m", "s", baseParams, "/");
     // Only the matching turn is returned, not the whole JSON blob
-    expect(out.some(l => l.includes("[D1:1] Alice: greeting foo here"))).toBe(true);
+    expect(out.some(l => l.includes("[D1:1] Alice: project foo update"))).toBe(true);
     expect(out.some(l => l.includes("unrelated"))).toBe(false);
   });
 

@@ -171,7 +171,7 @@ export function normalizeContent(path: string, raw: string): string {
   let obj: any;
   try { obj = JSON.parse(raw); } catch { return raw; }
 
-  // ── LoCoMo benchmark shape: { turns: [...] } ─────────────────────────────
+  // ── Turn-array session shape: { turns: [...] } ───────────────────────────
   if (Array.isArray(obj.turns)) {
     const header: string[] = [];
     if (obj.date_time) header.push(`date: ${obj.date_time}`);

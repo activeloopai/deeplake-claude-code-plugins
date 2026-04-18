@@ -243,7 +243,7 @@ export class DeeplakeFs implements IFileSystem {
     // Build a lookup: key → session path from sessionPaths
     // Supports two formats:
     //   1. /sessions/<user>/<user>_<org>_<ws>_<sessionId>.jsonl  → key = sessionId
-    //   2. /sessions/<filename>.json (e.g. conv_0_session_1.json) → key = filename stem
+    //   2. /sessions/<author>/<filename>.json or .jsonl         → key = filename stem
     const sessionPathsByKey = new Map<string, string>();
     for (const sp of this.sessionPaths) {
       const hivemind = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);

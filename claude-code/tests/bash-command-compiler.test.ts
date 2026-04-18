@@ -34,20 +34,20 @@ describe("bash-command-compiler parsing", () => {
   });
 
   it("expands numeric and comma brace expressions", () => {
-    expect(expandBraceToken("/conv_{1..3}.md")).toEqual([
-      "/conv_1.md",
-      "/conv_2.md",
-      "/conv_3.md",
+    expect(expandBraceToken("/part_{1..3}.md")).toEqual([
+      "/part_1.md",
+      "/part_2.md",
+      "/part_3.md",
     ]);
     expect(expandBraceToken("/file_{a,b}.md")).toEqual([
       "/file_a.md",
       "/file_b.md",
     ]);
     expect(expandBraceToken("/plain.md")).toEqual(["/plain.md"]);
-    expect(expandBraceToken("/conv_{3..1}.md")).toEqual([
-      "/conv_3.md",
-      "/conv_2.md",
-      "/conv_1.md",
+    expect(expandBraceToken("/part_{3..1}.md")).toEqual([
+      "/part_3.md",
+      "/part_2.md",
+      "/part_1.md",
     ]);
   });
 
@@ -176,12 +176,12 @@ describe("bash-command-compiler parsing", () => {
       },
       lineLimit: 10,
     });
-    expect(parseCompiledSegment("find /summaries -type f -name '*.md' -o -name '*.json' | xargs grep -l 'Caroline' | head -5")).toEqual({
+    expect(parseCompiledSegment("find /summaries -type f -name '*.md' -o -name '*.json' | xargs grep -l 'launch' | head -5")).toEqual({
       kind: "find_grep",
       dir: "/summaries",
       patterns: ["*.md", "*.json"],
       params: {
-        pattern: "Caroline",
+        pattern: "launch",
         targetPath: "/",
         ignoreCase: false,
         wordMatch: false,
@@ -325,8 +325,8 @@ describe("bash-command-compiler execution", () => {
       .mockResolvedValueOnce(["/summaries/a.md", "/summaries/shared.json"])
       .mockResolvedValueOnce(["/summaries/b.json", "/summaries/shared.json"]);
     const readVirtualPathContentsFn = vi.fn(async () => new Map([
-      ["/summaries/a.md", "Caroline gave the speech"],
-      ["/summaries/shared.json", "{\"turns\":[{\"speaker\":\"Caroline\",\"text\":\"school speech\"}]}"],
+      ["/summaries/a.md", "launch timeline and notes"],
+      ["/summaries/shared.json", "{\"turns\":[{\"speaker\":\"Alice\",\"text\":\"launch update\"}]}"],
       ["/summaries/b.json", "No match here"],
     ]));
 
@@ -334,7 +334,7 @@ describe("bash-command-compiler execution", () => {
       { query: vi.fn() } as any,
       "memory",
       "sessions",
-      "find /summaries -type f -name '*.md' -o -name '*.json' | xargs grep -l 'Caroline' | head -1",
+      "find /summaries -type f -name '*.md' -o -name '*.json' | xargs grep -l 'launch' | head -1",
       {
         findVirtualPathsFn: findVirtualPathsFn as any,
         readVirtualPathContentsFn: readVirtualPathContentsFn as any,

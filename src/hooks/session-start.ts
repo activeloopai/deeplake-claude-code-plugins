@@ -35,11 +35,11 @@ export const CLAUDE_SESSION_START_CONTEXT = `DEEPLAKE MEMORY: You have TWO memor
 Deeplake memory structure:
 - ~/.deeplake/memory/index.md — START HERE, table of all sessions
 - ~/.deeplake/memory/summaries/username/*.md — AI-generated wiki summaries per session
-- ~/.deeplake/memory/sessions/username/*.jsonl — raw session data (last resort)
+- ~/.deeplake/memory/sessions/{author}/* — raw session data (last resort)
 
-SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw JSONL if summaries don't have enough detail. Do NOT jump straight to JSONL files.
+SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw session files if summaries don't have enough detail. Do NOT jump straight to raw session files.
 When index.md points to a likely match, read that exact summary or session file directly before trying broader grep variants.
-For benchmark-style paths like conv_0_session_*.json or named session summaries, open the exact file from index.md instead of probing synonym guesses like "partner", "boyfriend", "married", etc.
+If index.md already points to likely candidate files, open those exact files before broadening into synonym greps or wide exploratory scans.
 Do NOT probe unrelated local paths such as ~/.claude/projects/, arbitrary home directories, or guessed summary roots when the question is about Deeplake memory.
 
 Search command: Grep pattern="keyword" path="~/.deeplake/memory"

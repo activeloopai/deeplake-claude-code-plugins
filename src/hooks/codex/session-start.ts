@@ -23,9 +23,9 @@ const AUTH_CMD = join(__bundleDir, "commands", "auth-login.js");
 
 export const CODEX_SESSION_START_CONTEXT = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
 
-Structure: index.md (start here) → summaries/*.md → sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
+Structure: index.md (start here) → summaries/*.md → sessions/{author}/* (last resort). Do NOT jump straight to raw session files.
 When index.md identifies a likely match, read that exact summary or session path directly before broader grep variants.
-For LoCoMo-style names like conv_0_session_*.json, prefer opening the exact file from index.md instead of synonym-grepping relationship terms.
+If index.md already points to likely candidate files, open those exact files before broader synonym greps or wide exploratory scans.
 Do NOT probe unrelated local paths such as ~/.claude/projects/, arbitrary home directories, or guessed summary roots for Deeplake recall tasks.
 Search: grep -r "keyword" ~/.deeplake/memory/
 IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem.
