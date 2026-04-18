@@ -586,6 +586,63 @@ describe("prefetch", () => {
 
     expect(client.query).not.toHaveBeenCalled();
   });
+
+  it("prefetches session-backed files in batches instead of one query per path", async () => {
+    const sessionMessages = new Map<string, { message: string; creation_date: string }[]>([
+      ["/sessions/alice/a.json", [
+        { message: "{\"speaker\":\"a\",\"text\":\"hello\"}", creation_date: "2026-01-01T00:00:00.000Z" },
+        { message: "{\"speaker\":\"b\",\"text\":\"hi\"}", creation_date: "2026-01-01T00:00:01.000Z" },
+      ]],
+      ["/sessions/alice/b.json", [
+        { message: "{\"speaker\":\"a\",\"text\":\"bye\"}", creation_date: "2026-01-01T00:00:02.000Z" },
+      ]],
+    ]);
+
+    const client = {
+      ensureTable: vi.fn().mockResolvedValue(undefined),
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("SELECT path, size_bytes, mime_type")) return [];
+        if (sql.includes("SELECT path, SUM(size_bytes) as total_size")) {
+          return [...sessionMessages.entries()].map(([path, rows]) => ({
+            path,
+            total_size: rows.reduce((sum, row) => sum + Buffer.byteLength(row.message, "utf-8"), 0),
+          }));
+        }
+        if (sql.includes("SELECT path, message, creation_date")) {
+          const inMatch = sql.match(/IN \(([^)]+)\)/);
+          const paths = inMatch
+            ? inMatch[1].split(",").map((value) => value.trim().replace(/^'|'$/g, ""))
+            : [];
+          return paths.flatMap((path) =>
+            (sessionMessages.get(path) ?? []).map((row) => ({
+              path,
+              message: row.message,
+              creation_date: row.creation_date,
+            })),
+          );
+        }
+        if (sql.includes("SELECT message FROM")) return [];
+        return [];
+      }),
+    };
+
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+    client.query.mockClear();
+
+    await fs.prefetch(["/sessions/alice/a.json", "/sessions/alice/b.json"]);
+
+    const prefetchCalls = (client.query.mock.calls as [string][]).filter(
+      ([sql]) => sql.includes("SELECT path, message, creation_date") && sql.includes("IN ("),
+    );
+    expect(prefetchCalls).toHaveLength(1);
+    expect(prefetchCalls[0][0]).toContain("/sessions/alice/a.json");
+    expect(prefetchCalls[0][0]).toContain("/sessions/alice/b.json");
+
+    client.query.mockClear();
+    expect(await fs.readFile("/sessions/alice/a.json")).toContain("\"text\":\"hello\"");
+    expect(await fs.readFile("/sessions/alice/b.json")).toContain("\"text\":\"bye\"");
+    expect(client.query).not.toHaveBeenCalled();
+  });
 });
 
 // ── Upsert: id stability & dates ─────────────────────────────────────────────

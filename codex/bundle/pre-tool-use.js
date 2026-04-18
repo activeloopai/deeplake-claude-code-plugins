@@ -2,8 +2,8 @@
 
 // dist/src/hooks/codex/pre-tool-use.js
 import { execFileSync } from "node:child_process";
-import { existsSync as existsSync2 } from "node:fs";
-import { join as join4, dirname } from "node:path";
+import { existsSync as existsSync3 } from "node:fs";
+import { join as join5, dirname } from "node:path";
 import { homedir as homedir4 } from "node:os";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
@@ -62,6 +62,9 @@ function loadConfig() {
 
 // dist/src/deeplake-api.js
 import { randomUUID } from "node:crypto";
+import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync } from "node:fs";
+import { join as join3 } from "node:path";
+import { tmpdir } from "node:os";
 
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
@@ -105,6 +108,7 @@ var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
 var QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 1e4);
+var INDEX_MARKER_TTL_MS = Number(process.env["HIVEMIND_INDEX_MARKER_TTL_MS"] ?? 6 * 60 * 6e4);
 function sleep(ms) {
   return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
@@ -112,6 +116,13 @@ function isTimeoutError(error) {
   const name = error instanceof Error ? error.name.toLowerCase() : "";
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   return name.includes("timeout") || name === "aborterror" || message.includes("timeout") || message.includes("timed out");
+}
+function isDuplicateIndexError(error) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return message.includes("duplicate key value violates unique constraint") || message.includes("pg_class_relname_nsp_index") || message.includes("already exists");
+}
+function getIndexMarkerDir() {
+  return process.env["HIVEMIND_INDEX_MARKER_DIR"] ?? join3(tmpdir(), "hivemind-deeplake-indexes");
 }
 var Semaphore = class {
   max;
@@ -275,11 +286,48 @@ var DeeplakeApi = class {
   buildLookupIndexName(table, suffix) {
     return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
   }
+  getLookupIndexMarkerPath(table, suffix) {
+    const markerKey = [
+      this.workspaceId,
+      this.orgId,
+      table,
+      suffix
+    ].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
+    return join3(getIndexMarkerDir(), `${markerKey}.json`);
+  }
+  hasFreshLookupIndexMarker(table, suffix) {
+    const markerPath = this.getLookupIndexMarkerPath(table, suffix);
+    if (!existsSync2(markerPath))
+      return false;
+    try {
+      const raw = JSON.parse(readFileSync2(markerPath, "utf-8"));
+      const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
+      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS) {
+        rmSync(markerPath, { force: true });
+        return false;
+      }
+      return true;
+    } catch {
+      rmSync(markerPath, { force: true });
+      return false;
+    }
+  }
+  markLookupIndexReady(table, suffix) {
+    mkdirSync(getIndexMarkerDir(), { recursive: true });
+    writeFileSync(this.getLookupIndexMarkerPath(table, suffix), JSON.stringify({ updatedAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf-8");
+  }
   async ensureLookupIndex(table, suffix, columnsSql) {
+    if (this.hasFreshLookupIndexMarker(table, suffix))
+      return;
     const indexName = this.buildLookupIndexName(table, suffix);
     try {
       await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
+      this.markLookupIndexReady(table, suffix);
     } catch (e) {
+      if (isDuplicateIndexError(e)) {
+        this.markLookupIndexReady(table, suffix);
+        return;
+      }
       log2(`index "${indexName}" skipped: ${e.message}`);
     }
   }
@@ -559,11 +607,11 @@ function normalizeContent(path, raw) {
   return out;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
   const limit = opts.limit ?? 100;
-  const filterPattern = contentScanOnly ? prefilterPattern : escapedPattern;
-  const memFilter = filterPattern ? ` AND summary::text ${likeOp} '%${filterPattern}%'` : "";
-  const sessFilter = filterPattern ? ` AND message::text ${likeOp} '%${filterPattern}%'` : "";
+  const filterPatterns = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : [escapedPattern];
+  const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
+  const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
   const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
   const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
   let rows;
@@ -631,16 +679,59 @@ function extractRegexLiteralPrefilter(pattern) {
   const literal = parts.reduce((best, part) => part.length > best.length ? part : best, "");
   return literal.length >= 2 ? literal : null;
 }
+function extractRegexAlternationPrefilters(pattern) {
+  if (!pattern.includes("|"))
+    return null;
+  const parts = [];
+  let current = "";
+  let escaped = false;
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (escaped) {
+      current += `\\${ch}`;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === "|") {
+      if (!current)
+        return null;
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    if ("()[]{}^$".includes(ch))
+      return null;
+    current += ch;
+  }
+  if (escaped || !current)
+    return null;
+  parts.push(current);
+  const literals = [...new Set(parts.map((part) => extractRegexLiteralPrefilter(part)).filter((part) => typeof part === "string" && part.length >= 2))];
+  return literals.length > 0 ? literals : null;
+}
 function buildGrepSearchOptions(params, targetPath) {
   const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
   const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
+  const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
     likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
     escapedPattern: sqlLike(params.pattern),
-    prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0
+    prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0,
+    prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal))
   };
+}
+function buildContentFilter(column, likeOp, patterns) {
+  if (patterns.length === 0)
+    return "";
+  if (patterns.length === 1)
+    return ` AND ${column} ${likeOp} '%${patterns[0]}%'`;
+  return ` AND (${patterns.map((pattern) => `${column} ${likeOp} '%${pattern}%'`).join(" OR ")})`;
 }
 function compileGrepRegex(params) {
   let reStr = params.fixedString ? params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : params.pattern;
@@ -1093,6 +1184,18 @@ function parseHeadTailStage(stage) {
   }
   return null;
 }
+function isValidPipelineHeadTailStage(stage) {
+  const tokens = tokenizeShellWords(stage);
+  if (!tokens || tokens[0] !== "head" && tokens[0] !== "tail")
+    return false;
+  if (tokens.length === 1)
+    return true;
+  if (tokens.length === 2)
+    return /^-\d+$/.test(tokens[1]);
+  if (tokens.length === 3)
+    return tokens[1] === "-n" && /^-?\d+$/.test(tokens[2]);
+  return false;
+}
 function parseFindNamePatterns(tokens) {
   const patterns = [];
   for (let i = 2; i < tokens.length; i++) {
@@ -1145,6 +1248,8 @@ function parseCompiledSegment(segment) {
           return null;
         countLines2 = true;
       } else {
+        if (!isValidPipelineHeadTailStage(pipeStage))
+          return null;
         const headTail = parseHeadTailStage(pipeStage);
         if (!headTail)
           return null;
@@ -1225,7 +1330,10 @@ function parseCompiledSegment(segment) {
         return null;
       let lineLimit = 0;
       if (pipeline.length === 3) {
-        const headTail = parseHeadTailStage(pipeline[2].trim());
+        const headStage = pipeline[2].trim();
+        if (!isValidPipelineHeadTailStage(headStage))
+          return null;
+        const headTail = parseHeadTailStage(headStage);
         if (!headTail || headTail.fromEnd)
           return null;
         lineLimit = headTail.lineLimit;
@@ -1242,7 +1350,10 @@ function parseCompiledSegment(segment) {
     if (pipeline.length > 1) {
       if (pipeline.length !== 2)
         return null;
-      const headTail = parseHeadTailStage(pipeline[1].trim());
+      const headStage = pipeline[1].trim();
+      if (!isValidPipelineHeadTailStage(headStage))
+        return null;
+      const headTail = parseHeadTailStage(headStage);
       if (!headTail || headTail.fromEnd)
         return null;
       lineLimit = headTail.lineLimit;
@@ -1386,20 +1497,20 @@ async function executeCompiledBashCommand(api, memoryTable, sessionsTable, cmd, 
 }
 
 // dist/src/hooks/query-cache.js
-import { mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync } from "node:fs";
-import { join as join3 } from "node:path";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync3, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join4 } from "node:path";
 import { homedir as homedir3 } from "node:os";
 var log3 = (msg) => log("query-cache", msg);
-var DEFAULT_CACHE_ROOT = join3(homedir3(), ".deeplake", "query-cache");
+var DEFAULT_CACHE_ROOT = join4(homedir3(), ".deeplake", "query-cache");
 var INDEX_CACHE_FILE = "index.md";
 function getSessionQueryCacheDir(sessionId, deps = {}) {
   const { cacheRoot = DEFAULT_CACHE_ROOT } = deps;
-  return join3(cacheRoot, sessionId);
+  return join4(cacheRoot, sessionId);
 }
 function readCachedIndexContent(sessionId, deps = {}) {
   const { logFn = log3 } = deps;
   try {
-    return readFileSync2(join3(getSessionQueryCacheDir(sessionId, deps), INDEX_CACHE_FILE), "utf-8");
+    return readFileSync3(join4(getSessionQueryCacheDir(sessionId, deps), INDEX_CACHE_FILE), "utf-8");
   } catch (e) {
     if (e?.code === "ENOENT")
       return null;
@@ -1411,8 +1522,8 @@ function writeCachedIndexContent(sessionId, content, deps = {}) {
   const { logFn = log3 } = deps;
   try {
     const dir = getSessionQueryCacheDir(sessionId, deps);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join3(dir, INDEX_CACHE_FILE), content, "utf-8");
+    mkdirSync2(dir, { recursive: true });
+    writeFileSync2(join4(dir, INDEX_CACHE_FILE), content, "utf-8");
   } catch (e) {
     logFn(`write failed for session=${sessionId}: ${e.message}`);
   }
@@ -1434,11 +1545,11 @@ function isDirectRun(metaUrl) {
 
 // dist/src/hooks/codex/pre-tool-use.js
 var log4 = (msg) => log("codex-pre", msg);
-var MEMORY_PATH = join4(homedir4(), ".deeplake", "memory");
+var MEMORY_PATH = join5(homedir4(), ".deeplake", "memory");
 var TILDE_PATH = "~/.deeplake/memory";
 var HOME_VAR_PATH = "$HOME/.deeplake/memory";
 var __bundleDir = dirname(fileURLToPath2(import.meta.url));
-var SHELL_BUNDLE = existsSync2(join4(__bundleDir, "shell", "deeplake-shell.js")) ? join4(__bundleDir, "shell", "deeplake-shell.js") : join4(__bundleDir, "..", "shell", "deeplake-shell.js");
+var SHELL_BUNDLE = existsSync3(join5(__bundleDir, "shell", "deeplake-shell.js")) ? join5(__bundleDir, "shell", "deeplake-shell.js") : join5(__bundleDir, "..", "shell", "deeplake-shell.js");
 var SAFE_BUILTINS = /* @__PURE__ */ new Set([
   "cat",
   "ls",

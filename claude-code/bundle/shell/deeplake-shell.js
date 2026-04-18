@@ -46081,14 +46081,14 @@ var require_turndown_cjs = __commonJS({
         } else if (node.nodeType === 1) {
           replacement = replacementForNode.call(self2, node);
         }
-        return join6(output, replacement);
+        return join7(output, replacement);
       }, "");
     }
     function postProcess(output) {
       var self2 = this;
       this.rules.forEach(function(rule) {
         if (typeof rule.append === "function") {
-          output = join6(output, rule.append(self2.options));
+          output = join7(output, rule.append(self2.options));
         }
       });
       return output.replace(/^[\t\r\n]+/, "").replace(/[\t\r\n\s]+$/, "");
@@ -46100,7 +46100,7 @@ var require_turndown_cjs = __commonJS({
       if (whitespace.leading || whitespace.trailing) content = content.trim();
       return whitespace.leading + rule.replacement(content, node, this.options) + whitespace.trailing;
     }
-    function join6(output, replacement) {
+    function join7(output, replacement) {
       var s12 = trimTrailingNewlines(output);
       var s22 = trimLeadingNewlines(replacement);
       var nls = Math.max(output.length - s12.length, replacement.length - s22.length);
@@ -66758,6 +66758,9 @@ function loadConfig() {
 
 // dist/src/deeplake-api.js
 import { randomUUID } from "node:crypto";
+import { existsSync as existsSync3, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync } from "node:fs";
+import { join as join6 } from "node:path";
+import { tmpdir } from "node:os";
 
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
@@ -66801,6 +66804,7 @@ var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
 var QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 1e4);
+var INDEX_MARKER_TTL_MS = Number(process.env["HIVEMIND_INDEX_MARKER_TTL_MS"] ?? 6 * 60 * 6e4);
 function sleep(ms3) {
   return new Promise((resolve5) => setTimeout(resolve5, ms3));
 }
@@ -66808,6 +66812,13 @@ function isTimeoutError(error) {
   const name = error instanceof Error ? error.name.toLowerCase() : "";
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   return name.includes("timeout") || name === "aborterror" || message.includes("timeout") || message.includes("timed out");
+}
+function isDuplicateIndexError(error) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return message.includes("duplicate key value violates unique constraint") || message.includes("pg_class_relname_nsp_index") || message.includes("already exists");
+}
+function getIndexMarkerDir() {
+  return process.env["HIVEMIND_INDEX_MARKER_DIR"] ?? join6(tmpdir(), "hivemind-deeplake-indexes");
 }
 var Semaphore = class {
   max;
@@ -66971,11 +66982,48 @@ var DeeplakeApi = class {
   buildLookupIndexName(table, suffix) {
     return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
   }
+  getLookupIndexMarkerPath(table, suffix) {
+    const markerKey = [
+      this.workspaceId,
+      this.orgId,
+      table,
+      suffix
+    ].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
+    return join6(getIndexMarkerDir(), `${markerKey}.json`);
+  }
+  hasFreshLookupIndexMarker(table, suffix) {
+    const markerPath = this.getLookupIndexMarkerPath(table, suffix);
+    if (!existsSync3(markerPath))
+      return false;
+    try {
+      const raw = JSON.parse(readFileSync2(markerPath, "utf-8"));
+      const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
+      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS) {
+        rmSync(markerPath, { force: true });
+        return false;
+      }
+      return true;
+    } catch {
+      rmSync(markerPath, { force: true });
+      return false;
+    }
+  }
+  markLookupIndexReady(table, suffix) {
+    mkdirSync(getIndexMarkerDir(), { recursive: true });
+    writeFileSync(this.getLookupIndexMarkerPath(table, suffix), JSON.stringify({ updatedAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf-8");
+  }
   async ensureLookupIndex(table, suffix, columnsSql) {
+    if (this.hasFreshLookupIndexMarker(table, suffix))
+      return;
     const indexName = this.buildLookupIndexName(table, suffix);
     try {
       await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
+      this.markLookupIndexReady(table, suffix);
     } catch (e6) {
+      if (isDuplicateIndexError(e6)) {
+        this.markLookupIndexReady(table, suffix);
+        return;
+      }
       log2(`index "${indexName}" skipped: ${e6.message}`);
     }
   }
@@ -67049,6 +67097,7 @@ var DeeplakeApi = class {
 import { basename as basename4, posix } from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
 var BATCH_SIZE = 10;
+var PREFETCH_BATCH_SIZE = 50;
 var FLUSH_DEBOUNCE_MS = 200;
 function normPath(p22) {
   const r10 = posix.normalize(p22.startsWith("/") ? p22 : "/" + p22);
@@ -67277,26 +67326,48 @@ var DeeplakeFs = class _DeeplakeFs {
    */
   async prefetch(paths) {
     const uncached = [];
+    const uncachedSessions = [];
     for (const raw of paths) {
       const p22 = normPath(raw);
       if (this.files.get(p22) !== null && this.files.get(p22) !== void 0)
         continue;
       if (this.pending.has(p22))
         continue;
-      if (this.sessionPaths.has(p22))
-        continue;
       if (!this.files.has(p22))
         continue;
-      uncached.push(p22);
+      if (this.sessionPaths.has(p22)) {
+        uncachedSessions.push(p22);
+      } else {
+        uncached.push(p22);
+      }
     }
-    if (uncached.length === 0)
+    for (let i11 = 0; i11 < uncached.length; i11 += PREFETCH_BATCH_SIZE) {
+      const chunk = uncached.slice(i11, i11 + PREFETCH_BATCH_SIZE);
+      const inList = chunk.map((p22) => `'${sqlStr(p22)}'`).join(", ");
+      const rows = await this.client.query(`SELECT path, summary FROM "${this.table}" WHERE path IN (${inList})`);
+      for (const row of rows) {
+        const p22 = row["path"];
+        const text = row["summary"] ?? "";
+        this.files.set(p22, Buffer.from(text, "utf-8"));
+      }
+    }
+    if (!this.sessionsTable)
       return;
-    const inList = uncached.map((p22) => `'${sqlStr(p22)}'`).join(", ");
-    const rows = await this.client.query(`SELECT path, summary FROM "${this.table}" WHERE path IN (${inList})`);
-    for (const row of rows) {
-      const p22 = row["path"];
-      const text = row["summary"] ?? "";
-      this.files.set(p22, Buffer.from(text, "utf-8"));
+    for (let i11 = 0; i11 < uncachedSessions.length; i11 += PREFETCH_BATCH_SIZE) {
+      const chunk = uncachedSessions.slice(i11, i11 + PREFETCH_BATCH_SIZE);
+      const inList = chunk.map((p22) => `'${sqlStr(p22)}'`).join(", ");
+      const rows = await this.client.query(`SELECT path, message, creation_date FROM "${this.sessionsTable}" WHERE path IN (${inList}) ORDER BY path, creation_date ASC`);
+      const grouped = /* @__PURE__ */ new Map();
+      for (const row of rows) {
+        const p22 = row["path"];
+        const message = typeof row["message"] === "string" ? row["message"] : JSON.stringify(row["message"]);
+        const current = grouped.get(p22) ?? [];
+        current.push(message);
+        grouped.set(p22, current);
+      }
+      for (const [p22, parts] of grouped) {
+        this.files.set(p22, Buffer.from(parts.join("\n"), "utf-8"));
+      }
     }
   }
   // ── IFileSystem: reads ────────────────────────────────────────────────────
@@ -68554,7 +68625,7 @@ function stripQuotes(val) {
 }
 
 // node_modules/yargs-parser/build/lib/index.js
-import { readFileSync as readFileSync2 } from "fs";
+import { readFileSync as readFileSync3 } from "fs";
 import { createRequire } from "node:module";
 var _a3;
 var _b;
@@ -68581,7 +68652,7 @@ var parser = new YargsParser({
     if (typeof require2 !== "undefined") {
       return require2(path2);
     } else if (path2.match(/\.json$/)) {
-      return JSON.parse(readFileSync2(path2, "utf8"));
+      return JSON.parse(readFileSync3(path2, "utf8"));
     } else {
       throw Error("only .json config files are supported in ESM");
     }
@@ -68809,11 +68880,11 @@ function normalizeContent(path2, raw) {
   return out;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
   const limit = opts.limit ?? 100;
-  const filterPattern = contentScanOnly ? prefilterPattern : escapedPattern;
-  const memFilter = filterPattern ? ` AND summary::text ${likeOp} '%${filterPattern}%'` : "";
-  const sessFilter = filterPattern ? ` AND message::text ${likeOp} '%${filterPattern}%'` : "";
+  const filterPatterns = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : [escapedPattern];
+  const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
+  const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
   const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
   const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
   let rows;
@@ -68881,16 +68952,59 @@ function extractRegexLiteralPrefilter(pattern) {
   const literal = parts.reduce((best, part) => part.length > best.length ? part : best, "");
   return literal.length >= 2 ? literal : null;
 }
+function extractRegexAlternationPrefilters(pattern) {
+  if (!pattern.includes("|"))
+    return null;
+  const parts = [];
+  let current = "";
+  let escaped = false;
+  for (let i11 = 0; i11 < pattern.length; i11++) {
+    const ch = pattern[i11];
+    if (escaped) {
+      current += `\\${ch}`;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === "|") {
+      if (!current)
+        return null;
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    if ("()[]{}^$".includes(ch))
+      return null;
+    current += ch;
+  }
+  if (escaped || !current)
+    return null;
+  parts.push(current);
+  const literals = [...new Set(parts.map((part) => extractRegexLiteralPrefilter(part)).filter((part) => typeof part === "string" && part.length >= 2))];
+  return literals.length > 0 ? literals : null;
+}
 function buildGrepSearchOptions(params, targetPath) {
   const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
   const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
+  const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
     likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
     escapedPattern: sqlLike(params.pattern),
-    prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0
+    prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0,
+    prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal))
   };
+}
+function buildContentFilter(column, likeOp, patterns) {
+  if (patterns.length === 0)
+    return "";
+  if (patterns.length === 1)
+    return ` AND ${column} ${likeOp} '%${patterns[0]}%'`;
+  return ` AND (${patterns.map((pattern) => `${column} ${likeOp} '%${pattern}%'`).join(" OR ")})`;
 }
 function compileGrepRegex(params) {
   let reStr = params.fixedString ? params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : params.pattern;

@@ -12,6 +12,7 @@ interface DirentEntry { name: string; isFile: boolean; isDirectory: boolean; isS
 
 // ── constants ─────────────────────────────────────────────────────────────────
 const BATCH_SIZE = 10;
+const PREFETCH_BATCH_SIZE = 50;
 const FLUSH_DEBOUNCE_MS = 200;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -296,24 +297,51 @@ export class DeeplakeFs implements IFileSystem {
    */
   async prefetch(paths: string[]): Promise<void> {
     const uncached: string[] = [];
+    const uncachedSessions: string[] = [];
     for (const raw of paths) {
       const p = normPath(raw);
       if (this.files.get(p) !== null && this.files.get(p) !== undefined) continue;
       if (this.pending.has(p)) continue;
-      if (this.sessionPaths.has(p)) continue;
       if (!this.files.has(p)) continue; // unknown path
-      uncached.push(p);
+      if (this.sessionPaths.has(p)) {
+        uncachedSessions.push(p);
+      } else {
+        uncached.push(p);
+      }
     }
-    if (uncached.length === 0) return;
 
-    const inList = uncached.map(p => `'${esc(p)}'`).join(", ");
-    const rows = await this.client.query(
-      `SELECT path, summary FROM "${this.table}" WHERE path IN (${inList})`
-    );
-    for (const row of rows) {
-      const p = row["path"] as string;
-      const text = (row["summary"] as string) ?? "";
-      this.files.set(p, Buffer.from(text, "utf-8"));
+    for (let i = 0; i < uncached.length; i += PREFETCH_BATCH_SIZE) {
+      const chunk = uncached.slice(i, i + PREFETCH_BATCH_SIZE);
+      const inList = chunk.map(p => `'${esc(p)}'`).join(", ");
+      const rows = await this.client.query(
+        `SELECT path, summary FROM "${this.table}" WHERE path IN (${inList})`
+      );
+      for (const row of rows) {
+        const p = row["path"] as string;
+        const text = (row["summary"] as string) ?? "";
+        this.files.set(p, Buffer.from(text, "utf-8"));
+      }
+    }
+
+    if (!this.sessionsTable) return;
+
+    for (let i = 0; i < uncachedSessions.length; i += PREFETCH_BATCH_SIZE) {
+      const chunk = uncachedSessions.slice(i, i + PREFETCH_BATCH_SIZE);
+      const inList = chunk.map(p => `'${esc(p)}'`).join(", ");
+      const rows = await this.client.query(
+        `SELECT path, message, creation_date FROM "${this.sessionsTable}" WHERE path IN (${inList}) ORDER BY path, creation_date ASC`
+      );
+      const grouped = new Map<string, string[]>();
+      for (const row of rows) {
+        const p = row["path"] as string;
+        const message = typeof row["message"] === "string" ? row["message"] : JSON.stringify(row["message"]);
+        const current = grouped.get(p) ?? [];
+        current.push(message);
+        grouped.set(p, current);
+      }
+      for (const [p, parts] of grouped) {
+        this.files.set(p, Buffer.from(parts.join("\n"), "utf-8"));
+      }
     }
   }
 

@@ -4,6 +4,7 @@ import {
   normalizeContent,
   buildPathFilter,
   compileGrepRegex,
+  extractRegexAlternationPrefilters,
   extractRegexLiteralPrefilter,
   refineGrepMatches,
   searchDeeplakeTables,
@@ -635,6 +636,22 @@ describe("searchDeeplakeTables", () => {
     expect(sql).toContain("message::text LIKE '%foo%'");
   });
 
+  it("expands alternation prefilters into OR clauses instead of literal pipes", async () => {
+    const api = mockApi([]);
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: true,
+      likeOp: "LIKE",
+      escapedPattern: "relationship|partner|married",
+      prefilterPatterns: ["relationship", "partner", "married"],
+    });
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain("summary::text LIKE '%relationship%'");
+    expect(sql).toContain("summary::text LIKE '%partner%'");
+    expect(sql).toContain("summary::text LIKE '%married%'");
+    expect(sql).not.toContain("relationship|partner|married");
+  });
+
   it("concatenates rows from both tables into {path, content}", async () => {
     const api = mockApi([
       { path: "/summaries/a", content: "aaa" },
@@ -824,6 +841,33 @@ describe("regex literal prefilter", () => {
     expect(opts.likeOp).toBe("ILIKE");
     expect(opts.prefilterPattern).toBe("foo");
     expect(opts.pathFilter).toContain("/summaries");
+  });
+
+  it("extracts safe alternation anchors and carries them into grep search options", () => {
+    expect(extractRegexAlternationPrefilters("relationship|partner|married")).toEqual([
+      "relationship",
+      "partner",
+      "married",
+    ]);
+
+    const opts = buildGrepSearchOptions({
+      pattern: "relationship|partner|married",
+      ignoreCase: false,
+      wordMatch: false,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: false,
+    }, "/summaries");
+
+    expect(opts.contentScanOnly).toBe(true);
+    expect(opts.prefilterPatterns).toEqual(["relationship", "partner", "married"]);
+  });
+
+  it("rejects alternation prefilters when grouping makes them unsafe", () => {
+    expect(extractRegexAlternationPrefilters("(foo|bar)")).toBeNull();
+    expect(extractRegexAlternationPrefilters("foo|bar.*baz")).toEqual(["foo", "bar"]);
   });
 
   it("keeps fixed-string searches on the SQL-filtered path even with regex metacharacters", () => {

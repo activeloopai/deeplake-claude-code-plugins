@@ -102,10 +102,21 @@ describe("session queue", () => {
 
     expect(sql.match(/::jsonb/g)).toHaveLength(2);
     expect(sql).toContain("it''s");
-    // Backslashes in the JSON message are doubled to guard against SQL backends
-    // that honour C-style escapes (standard_conforming_strings=off).
-    expect(sql).toContain("C:\\\\\\\\Users\\\\\\\\alice\\\\\\\\file.ts");
+    expect(sql).toContain('"path":"C:');
+    expect(sql).toContain("file.ts");
     expect(sql).toContain("), (");
+  });
+
+  it("wraps malformed messages in a valid JSON object before casting to jsonb", () => {
+    const row = makeRow("session-sql-fallback", 1, {
+      message: "{not-json",
+    });
+
+    const sql = buildSessionInsertSql("sessions", [row]);
+
+    expect(sql).toContain(`"type":"raw_message"`);
+    expect(sql).toContain(`"content":"{not-json"`);
+    expect(sql).toContain("::jsonb");
   });
 
   it("returns empty when there is nothing to flush", async () => {

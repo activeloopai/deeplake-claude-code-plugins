@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { DeeplakeApi, WriteRow } from "../../src/deeplake-api.js";
 
 // ��─ Mock fetch ──────────────────────────────────────────────────────────────
@@ -20,6 +23,11 @@ function makeApi(table = "test_table") {
 
 beforeEach(() => {
   mockFetch.mockReset();
+  process.env.HIVEMIND_INDEX_MARKER_DIR = mkdtempSync(join(tmpdir(), "hivemind-index-marker-"));
+});
+
+afterEach(() => {
+  delete process.env.HIVEMIND_INDEX_MARKER_DIR;
 });
 
 // ── query() ─────────────────────────────────────────────────────────────────
@@ -473,5 +481,21 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
 
     await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
     expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats duplicate concurrent index creation errors as success and records a local marker", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [{ table_name: "sessions" }] }),
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse("duplicate key value violates unique constraint \"pg_class_relname_nsp_index\"", 400));
+
+    const api = makeApi();
+    await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
+
+    mockFetch.mockReset();
+    await api.ensureSessionsTable("sessions");
+
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });

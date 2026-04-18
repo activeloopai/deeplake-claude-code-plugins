@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { log as _log } from "./utils/debug.js";
 import { sqlStr } from "./utils/sql.js";
 
@@ -24,6 +27,7 @@ const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 500;
 const MAX_CONCURRENCY = 5;
 const QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 10_000);
+const INDEX_MARKER_TTL_MS = Number(process.env["HIVEMIND_INDEX_MARKER_TTL_MS"] ?? 6 * 60 * 60_000);
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -36,6 +40,17 @@ function isTimeoutError(error: unknown): boolean {
     name === "aborterror" ||
     message.includes("timeout") ||
     message.includes("timed out");
+}
+
+function isDuplicateIndexError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return message.includes("duplicate key value violates unique constraint") ||
+    message.includes("pg_class_relname_nsp_index") ||
+    message.includes("already exists");
+}
+
+function getIndexMarkerDir(): string {
+  return process.env["HIVEMIND_INDEX_MARKER_DIR"] ?? join(tmpdir(), "hivemind-deeplake-indexes");
 }
 
 class Semaphore {
@@ -220,11 +235,49 @@ export class DeeplakeApi {
     return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
   }
 
+  private getLookupIndexMarkerPath(table: string, suffix: string): string {
+    const markerKey = [
+      this.workspaceId,
+      this.orgId,
+      table,
+      suffix,
+    ].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
+    return join(getIndexMarkerDir(), `${markerKey}.json`);
+  }
+
+  private hasFreshLookupIndexMarker(table: string, suffix: string): boolean {
+    const markerPath = this.getLookupIndexMarkerPath(table, suffix);
+    if (!existsSync(markerPath)) return false;
+    try {
+      const raw = JSON.parse(readFileSync(markerPath, "utf-8")) as { updatedAt?: string };
+      const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
+      if (!Number.isFinite(updatedAt) || (Date.now() - updatedAt) > INDEX_MARKER_TTL_MS) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private markLookupIndexReady(table: string, suffix: string): void {
+    mkdirSync(getIndexMarkerDir(), { recursive: true });
+    writeFileSync(
+      this.getLookupIndexMarkerPath(table, suffix),
+      JSON.stringify({ updatedAt: new Date().toISOString() }),
+      "utf-8",
+    );
+  }
+
   private async ensureLookupIndex(table: string, suffix: string, columnsSql: string): Promise<void> {
+    if (this.hasFreshLookupIndexMarker(table, suffix)) return;
     const indexName = this.buildLookupIndexName(table, suffix);
     try {
       await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
+      this.markLookupIndexReady(table, suffix);
     } catch (e: any) {
+      if (isDuplicateIndexError(e)) {
+        this.markLookupIndexReady(table, suffix);
+        return;
+      }
       log(`index "${indexName}" skipped: ${e.message}`);
     }
   }

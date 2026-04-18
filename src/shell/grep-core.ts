@@ -46,6 +46,8 @@ export interface SearchOptions {
   escapedPattern: string;
   /** Optional safe literal anchor for regex searches (e.g. foo.*bar → foo). */
   prefilterPattern?: string;
+  /** Optional safe literal alternation anchors for regex searches (e.g. foo|bar). */
+  prefilterPatterns?: string[];
   /** Per-table row cap. */
   limit?: number;
 }
@@ -238,12 +240,13 @@ export async function searchDeeplakeTables(
   sessionsTable: string,
   opts: SearchOptions,
 ): Promise<ContentRow[]> {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
   const limit = opts.limit ?? 100;
-  const filterPattern = contentScanOnly ? prefilterPattern : escapedPattern;
-
-  const memFilter = filterPattern ? ` AND summary::text ${likeOp} '%${filterPattern}%'` : "";
-  const sessFilter = filterPattern ? ` AND message::text ${likeOp} '%${filterPattern}%'` : "";
+  const filterPatterns = contentScanOnly
+    ? (prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : (prefilterPattern ? [prefilterPattern] : []))
+    : [escapedPattern];
+  const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
+  const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
 
   const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
   const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
@@ -322,16 +325,67 @@ export function extractRegexLiteralPrefilter(pattern: string): string | null {
   return literal.length >= 2 ? literal : null;
 }
 
+export function extractRegexAlternationPrefilters(pattern: string): string[] | null {
+  if (!pattern.includes("|")) return null;
+
+  const parts: string[] = [];
+  let current = "";
+  let escaped = false;
+
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (escaped) {
+      current += `\\${ch}`;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === "|") {
+      if (!current) return null;
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    if ("()[]{}^$".includes(ch)) return null;
+    current += ch;
+  }
+
+  if (escaped || !current) return null;
+  parts.push(current);
+
+  const literals = [...new Set(
+    parts
+      .map((part) => extractRegexLiteralPrefilter(part))
+      .filter((part): part is string => typeof part === "string" && part.length >= 2),
+  )];
+  return literals.length > 0 ? literals : null;
+}
+
 export function buildGrepSearchOptions(params: GrepMatchParams, targetPath: string): SearchOptions {
   const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
   const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
+  const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
     likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
     escapedPattern: sqlLike(params.pattern),
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : undefined,
+    prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
   };
+}
+
+function buildContentFilter(
+  column: string,
+  likeOp: "LIKE" | "ILIKE",
+  patterns: string[],
+): string {
+  if (patterns.length === 0) return "";
+  if (patterns.length === 1) return ` AND ${column} ${likeOp} '%${patterns[0]}%'`;
+  return ` AND (${patterns.map((pattern) => `${column} ${likeOp} '%${pattern}%'`).join(" OR ")})`;
 }
 
 // ── Regex refinement (line-by-line grep) ────────────────────────────────────

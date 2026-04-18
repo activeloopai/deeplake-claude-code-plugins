@@ -2,8 +2,8 @@
 
 // dist/src/hooks/codex/session-start-setup.js
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-import { dirname as dirname3, join as join6 } from "node:path";
-import { mkdirSync as mkdirSync4, appendFileSync as appendFileSync3 } from "node:fs";
+import { dirname as dirname3, join as join7 } from "node:path";
+import { mkdirSync as mkdirSync5, appendFileSync as appendFileSync3 } from "node:fs";
 import { execSync as execSync2 } from "node:child_process";
 import { homedir as homedir6 } from "node:os";
 
@@ -67,6 +67,9 @@ function loadConfig() {
 
 // dist/src/deeplake-api.js
 import { randomUUID } from "node:crypto";
+import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync3, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join4 } from "node:path";
+import { tmpdir } from "node:os";
 
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
@@ -113,6 +116,7 @@ var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
 var QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 1e4);
+var INDEX_MARKER_TTL_MS = Number(process.env["HIVEMIND_INDEX_MARKER_TTL_MS"] ?? 6 * 60 * 6e4);
 function sleep(ms) {
   return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
@@ -120,6 +124,13 @@ function isTimeoutError(error) {
   const name = error instanceof Error ? error.name.toLowerCase() : "";
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   return name.includes("timeout") || name === "aborterror" || message.includes("timeout") || message.includes("timed out");
+}
+function isDuplicateIndexError(error) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return message.includes("duplicate key value violates unique constraint") || message.includes("pg_class_relname_nsp_index") || message.includes("already exists");
+}
+function getIndexMarkerDir() {
+  return process.env["HIVEMIND_INDEX_MARKER_DIR"] ?? join4(tmpdir(), "hivemind-deeplake-indexes");
 }
 var Semaphore = class {
   max;
@@ -283,11 +294,48 @@ var DeeplakeApi = class {
   buildLookupIndexName(table, suffix) {
     return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
   }
+  getLookupIndexMarkerPath(table, suffix) {
+    const markerKey = [
+      this.workspaceId,
+      this.orgId,
+      table,
+      suffix
+    ].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
+    return join4(getIndexMarkerDir(), `${markerKey}.json`);
+  }
+  hasFreshLookupIndexMarker(table, suffix) {
+    const markerPath = this.getLookupIndexMarkerPath(table, suffix);
+    if (!existsSync3(markerPath))
+      return false;
+    try {
+      const raw = JSON.parse(readFileSync3(markerPath, "utf-8"));
+      const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
+      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS) {
+        rmSync(markerPath, { force: true });
+        return false;
+      }
+      return true;
+    } catch {
+      rmSync(markerPath, { force: true });
+      return false;
+    }
+  }
+  markLookupIndexReady(table, suffix) {
+    mkdirSync2(getIndexMarkerDir(), { recursive: true });
+    writeFileSync2(this.getLookupIndexMarkerPath(table, suffix), JSON.stringify({ updatedAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf-8");
+  }
   async ensureLookupIndex(table, suffix, columnsSql) {
+    if (this.hasFreshLookupIndexMarker(table, suffix))
+      return;
     const indexName = this.buildLookupIndexName(table, suffix);
     try {
       await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
+      this.markLookupIndexReady(table, suffix);
     } catch (e) {
+      if (isDuplicateIndexError(e)) {
+        this.markLookupIndexReady(table, suffix);
+        return;
+      }
       log2(`index "${indexName}" skipped: ${e.message}`);
     }
   }
@@ -389,10 +437,10 @@ function isDirectRun(metaUrl) {
 }
 
 // dist/src/hooks/session-queue.js
-import { appendFileSync as appendFileSync2, existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync3, readdirSync, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname, join as join4 } from "node:path";
+import { appendFileSync as appendFileSync2, existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync4, readdirSync, renameSync, rmSync as rmSync2, statSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname, join as join5 } from "node:path";
 import { homedir as homedir4 } from "node:os";
-var DEFAULT_QUEUE_DIR = join4(homedir4(), ".deeplake", "queue");
+var DEFAULT_QUEUE_DIR = join5(homedir4(), ".deeplake", "queue");
 var DEFAULT_MAX_BATCH_ROWS = 50;
 var DEFAULT_STALE_INFLIGHT_MS = 6e4;
 var DEFAULT_AUTH_FAILURE_TTL_MS = 5 * 6e4;
@@ -408,10 +456,20 @@ function buildSessionInsertSql(sessionsTable, rows) {
     throw new Error("buildSessionInsertSql: rows must not be empty");
   const table = sqlIdent(sessionsTable);
   const values = rows.map((row) => {
-    const jsonForSql = row.message.replace(/\\/g, "\\\\").replace(/'/g, "''");
+    const jsonForSql = sqlStr(coerceJsonbPayload(row.message));
     return `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, '${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', '${sqlStr(row.agent)}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`;
   }).join(", ");
   return `INSERT INTO "${table}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ${values}`;
+}
+function coerceJsonbPayload(message) {
+  try {
+    return JSON.stringify(JSON.parse(message));
+  } catch {
+    return JSON.stringify({
+      type: "raw_message",
+      content: message
+    });
+  }
 }
 async function flushSessionQueue(api, opts) {
   const queueDir = opts.queueDir ?? DEFAULT_QUEUE_DIR;
@@ -419,11 +477,11 @@ async function flushSessionQueue(api, opts) {
   const staleInflightMs = opts.staleInflightMs ?? DEFAULT_STALE_INFLIGHT_MS;
   const waitIfBusyMs = opts.waitIfBusyMs ?? 0;
   const drainAll = opts.drainAll ?? false;
-  mkdirSync2(queueDir, { recursive: true });
+  mkdirSync3(queueDir, { recursive: true });
   const queuePath = getQueuePath(queueDir, opts.sessionId);
   const inflightPath = getInflightPath(queueDir, opts.sessionId);
   if (isSessionWriteDisabled(opts.sessionsTable, queueDir)) {
-    return existsSync3(queuePath) || existsSync3(inflightPath) ? { status: "disabled", rows: 0, batches: 0 } : { status: "empty", rows: 0, batches: 0 };
+    return existsSync4(queuePath) || existsSync4(inflightPath) ? { status: "disabled", rows: 0, batches: 0 } : { status: "empty", rows: 0, batches: 0 };
   }
   let totalRows = 0;
   let totalBatches = 0;
@@ -431,17 +489,17 @@ async function flushSessionQueue(api, opts) {
   while (true) {
     if (opts.allowStaleInflight)
       recoverStaleInflight(queuePath, inflightPath, staleInflightMs);
-    if (existsSync3(inflightPath)) {
+    if (existsSync4(inflightPath)) {
       if (waitIfBusyMs > 0) {
         await waitForInflightToClear(inflightPath, waitIfBusyMs);
         if (opts.allowStaleInflight)
           recoverStaleInflight(queuePath, inflightPath, staleInflightMs);
       }
-      if (existsSync3(inflightPath)) {
+      if (existsSync4(inflightPath)) {
         return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "busy", rows: 0, batches: 0 };
       }
     }
-    if (!existsSync3(queuePath)) {
+    if (!existsSync4(queuePath)) {
       return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "empty", rows: 0, batches: 0 };
     }
     try {
@@ -471,7 +529,7 @@ async function flushSessionQueue(api, opts) {
 }
 async function drainSessionQueues(api, opts) {
   const queueDir = opts.queueDir ?? DEFAULT_QUEUE_DIR;
-  mkdirSync2(queueDir, { recursive: true });
+  mkdirSync3(queueDir, { recursive: true });
   const sessionIds = listQueuedSessionIds(queueDir, opts.staleInflightMs ?? DEFAULT_STALE_INFLIGHT_MS);
   let flushedSessions = 0;
   let rows = 0;
@@ -500,15 +558,15 @@ async function drainSessionQueues(api, opts) {
   };
 }
 function getQueuePath(queueDir, sessionId) {
-  return join4(queueDir, `${sessionId}.jsonl`);
+  return join5(queueDir, `${sessionId}.jsonl`);
 }
 function getInflightPath(queueDir, sessionId) {
-  return join4(queueDir, `${sessionId}.inflight`);
+  return join5(queueDir, `${sessionId}.inflight`);
 }
 async function flushInflightFile(api, sessionsTable, inflightPath, maxBatchRows) {
   const rows = readQueuedRows(inflightPath);
   if (rows.length === 0) {
-    rmSync(inflightPath, { force: true });
+    rmSync2(inflightPath, { force: true });
     return { rows: 0, batches: 0 };
   }
   let ensured = false;
@@ -551,22 +609,22 @@ async function flushInflightFile(api, sessionsTable, inflightPath, maxBatchRows)
     batches += 1;
   }
   clearSessionWriteDisabled(sessionsTable, queueDir);
-  rmSync(inflightPath, { force: true });
+  rmSync2(inflightPath, { force: true });
   return { rows: rows.length, batches };
 }
 function readQueuedRows(path) {
-  const raw = readFileSync3(path, "utf-8");
+  const raw = readFileSync4(path, "utf-8");
   return raw.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
 }
 function requeueInflight(queuePath, inflightPath) {
-  if (!existsSync3(inflightPath))
+  if (!existsSync4(inflightPath))
     return;
-  const inflight = readFileSync3(inflightPath, "utf-8");
+  const inflight = readFileSync4(inflightPath, "utf-8");
   appendFileSync2(queuePath, inflight);
-  rmSync(inflightPath, { force: true });
+  rmSync2(inflightPath, { force: true });
 }
 function recoverStaleInflight(queuePath, inflightPath, staleInflightMs) {
-  if (!existsSync3(inflightPath) || !isStale(inflightPath, staleInflightMs))
+  if (!existsSync4(inflightPath) || !isStale(inflightPath, staleInflightMs))
     return;
   requeueInflight(queuePath, inflightPath);
 }
@@ -579,7 +637,7 @@ function listQueuedSessionIds(queueDir, staleInflightMs) {
     if (name.endsWith(".jsonl")) {
       sessionIds.add(name.slice(0, -".jsonl".length));
     } else if (name.endsWith(".inflight")) {
-      const path = join4(queueDir, name);
+      const path = join5(queueDir, name);
       if (isStale(path, staleInflightMs)) {
         sessionIds.add(name.slice(0, -".inflight".length));
       }
@@ -596,43 +654,43 @@ function isSessionWriteAuthError(error) {
   return message.includes("403") || message.includes("401") || message.includes("forbidden") || message.includes("unauthorized");
 }
 function markSessionWriteDisabled(sessionsTable, reason, queueDir = DEFAULT_QUEUE_DIR) {
-  mkdirSync2(queueDir, { recursive: true });
-  writeFileSync2(getSessionWriteDisabledPath(queueDir, sessionsTable), JSON.stringify({
+  mkdirSync3(queueDir, { recursive: true });
+  writeFileSync3(getSessionWriteDisabledPath(queueDir, sessionsTable), JSON.stringify({
     disabledAt: (/* @__PURE__ */ new Date()).toISOString(),
     reason,
     sessionsTable
   }));
 }
 function clearSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR) {
-  rmSync(getSessionWriteDisabledPath(queueDir, sessionsTable), { force: true });
+  rmSync2(getSessionWriteDisabledPath(queueDir, sessionsTable), { force: true });
 }
 function isSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR, ttlMs = DEFAULT_AUTH_FAILURE_TTL_MS) {
   const path = getSessionWriteDisabledPath(queueDir, sessionsTable);
-  if (!existsSync3(path))
+  if (!existsSync4(path))
     return false;
   try {
-    const raw = readFileSync3(path, "utf-8");
+    const raw = readFileSync4(path, "utf-8");
     const state = JSON.parse(raw);
     const ageMs = Date.now() - new Date(state.disabledAt).getTime();
     if (Number.isNaN(ageMs) || ageMs >= ttlMs) {
-      rmSync(path, { force: true });
+      rmSync2(path, { force: true });
       return false;
     }
     return true;
   } catch {
-    rmSync(path, { force: true });
+    rmSync2(path, { force: true });
     return false;
   }
 }
 function getSessionWriteDisabledPath(queueDir, sessionsTable) {
-  return join4(queueDir, `.${sessionsTable}.disabled.json`);
+  return join5(queueDir, `.${sessionsTable}.disabled.json`);
 }
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 async function waitForInflightToClear(inflightPath, waitIfBusyMs) {
   const startedAt = Date.now();
-  while (existsSync3(inflightPath) && Date.now() - startedAt < waitIfBusyMs) {
+  while (existsSync4(inflightPath) && Date.now() - startedAt < waitIfBusyMs) {
     await sleep2(BUSY_WAIT_STEP_MS);
   }
 }
@@ -641,24 +699,24 @@ function sleep2(ms) {
 }
 
 // dist/src/hooks/version-check.js
-import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname2, join as join5 } from "node:path";
+import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "node:fs";
+import { dirname as dirname2, join as join6 } from "node:path";
 import { homedir as homedir5 } from "node:os";
-var DEFAULT_VERSION_CACHE_PATH = join5(homedir5(), ".deeplake", ".version-check.json");
+var DEFAULT_VERSION_CACHE_PATH = join6(homedir5(), ".deeplake", ".version-check.json");
 var DEFAULT_VERSION_CACHE_TTL_MS = 60 * 60 * 1e3;
 function getInstalledVersion(bundleDir, pluginManifestDir) {
   try {
-    const pluginJson = join5(bundleDir, "..", pluginManifestDir, "plugin.json");
-    const plugin = JSON.parse(readFileSync4(pluginJson, "utf-8"));
+    const pluginJson = join6(bundleDir, "..", pluginManifestDir, "plugin.json");
+    const plugin = JSON.parse(readFileSync5(pluginJson, "utf-8"));
     if (plugin.version)
       return plugin.version;
   } catch {
   }
   let dir = bundleDir;
   for (let i = 0; i < 5; i++) {
-    const candidate = join5(dir, "package.json");
+    const candidate = join6(dir, "package.json");
     try {
-      const pkg = JSON.parse(readFileSync4(candidate, "utf-8"));
+      const pkg = JSON.parse(readFileSync5(candidate, "utf-8"));
       if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version)
         return pkg.version;
     } catch {
@@ -677,10 +735,10 @@ function isNewer(latest, current) {
   return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
 }
 function readVersionCache(cachePath = DEFAULT_VERSION_CACHE_PATH) {
-  if (!existsSync4(cachePath))
+  if (!existsSync5(cachePath))
     return null;
   try {
-    const parsed = JSON.parse(readFileSync4(cachePath, "utf-8"));
+    const parsed = JSON.parse(readFileSync5(cachePath, "utf-8"));
     if (parsed && typeof parsed.checkedAt === "number" && typeof parsed.url === "string" && (typeof parsed.latest === "string" || parsed.latest === null)) {
       return parsed;
     }
@@ -689,8 +747,8 @@ function readVersionCache(cachePath = DEFAULT_VERSION_CACHE_PATH) {
   return null;
 }
 function writeVersionCache(entry, cachePath = DEFAULT_VERSION_CACHE_PATH) {
-  mkdirSync3(dirname2(cachePath), { recursive: true });
-  writeFileSync3(cachePath, JSON.stringify(entry));
+  mkdirSync4(dirname2(cachePath), { recursive: true });
+  writeFileSync4(cachePath, JSON.stringify(entry));
 }
 function readFreshCachedLatestVersion(url, ttlMs = DEFAULT_VERSION_CACHE_TTL_MS, cachePath = DEFAULT_VERSION_CACHE_PATH, nowMs = Date.now()) {
   const cached = readVersionCache(cachePath);
@@ -735,10 +793,10 @@ var __bundleDir = dirname3(fileURLToPath2(import.meta.url));
 var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 var VERSION_CHECK_TIMEOUT = 3e3;
 var HOME = homedir6();
-var WIKI_LOG = join6(HOME, ".codex", "hooks", "deeplake-wiki.log");
+var WIKI_LOG = join7(HOME, ".codex", "hooks", "deeplake-wiki.log");
 function wikiLog(msg) {
   try {
-    mkdirSync4(join6(HOME, ".codex", "hooks"), { recursive: true });
+    mkdirSync5(join7(HOME, ".codex", "hooks"), { recursive: true });
     appendFileSync3(WIKI_LOG, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] ${msg}
 `);
   } catch {

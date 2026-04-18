@@ -122,7 +122,7 @@ export function buildSessionInsertSql(sessionsTable: string, rows: QueuedSession
   if (rows.length === 0) throw new Error("buildSessionInsertSql: rows must not be empty");
   const table = sqlIdent(sessionsTable);
   const values = rows.map((row) => {
-    const jsonForSql = row.message.replace(/\\/g, "\\\\").replace(/'/g, "''");
+    const jsonForSql = sqlStr(coerceJsonbPayload(row.message));
     return (
       `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, ` +
       `'${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', ` +
@@ -135,6 +135,17 @@ export function buildSessionInsertSql(sessionsTable: string, rows: QueuedSession
     `(id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
     `VALUES ${values}`
   );
+}
+
+function coerceJsonbPayload(message: string): string {
+  try {
+    return JSON.stringify(JSON.parse(message));
+  } catch {
+    return JSON.stringify({
+      type: "raw_message",
+      content: message,
+    });
+  }
 }
 
 export async function flushSessionQueue(api: SessionQueueApi, opts: FlushSessionQueueOptions): Promise<FlushSessionQueueResult> {
