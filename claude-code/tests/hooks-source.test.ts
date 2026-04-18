@@ -69,6 +69,16 @@ describe("direct-run", () => {
     process.argv[1] = "/tmp/other.js";
     expect(isDirectRun("file:///tmp/hook.js")).toBe(false);
   });
+
+  it("returns false when there is no entry script", () => {
+    delete process.argv[1];
+    expect(isDirectRun("file:///tmp/hook.js")).toBe(false);
+  });
+
+  it("returns false when the meta url cannot be converted to a file path", () => {
+    process.argv[1] = "/tmp/hook.js";
+    expect(isDirectRun("not-a-valid-file-url")).toBe(false);
+  });
 });
 
 describe("claude capture source", () => {

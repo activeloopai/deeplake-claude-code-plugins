@@ -35,6 +35,15 @@ describe("virtual-table-query", () => {
     expect(api.query).toHaveBeenCalledTimes(1);
   });
 
+  it("returns an empty map when no virtual paths are requested", async () => {
+    const api = { query: vi.fn() } as any;
+
+    const content = await readVirtualPathContents(api, "memory", "sessions", []);
+
+    expect(content).toEqual(new Map());
+    expect(api.query).not.toHaveBeenCalled();
+  });
+
   it("concatenates session rows for exact path reads", async () => {
     const api = {
       query: vi.fn().mockResolvedValueOnce([
@@ -105,6 +114,20 @@ describe("virtual-table-query", () => {
     expect(api.query).toHaveBeenCalledTimes(1);
   });
 
+  it("lists root directories without adding a path filter and ignores invalid row paths", async () => {
+    const api = {
+      query: vi.fn().mockResolvedValueOnce([
+        { path: "/summaries/a/file1.md", size_bytes: 10, source_order: 0 },
+        { path: 42, size_bytes: 20, source_order: 0 },
+      ]),
+    } as any;
+
+    const rows = await listVirtualPathRowsForDirs(api, "memory", "sessions", ["/"]);
+
+    expect(rows.get("/")).toEqual([{ path: "/summaries/a/file1.md", size_bytes: 10 }]);
+    expect((api.query.mock.calls[0]?.[0] as string) ?? "").not.toContain("WHERE path LIKE");
+  });
+
   it("merges and de-duplicates path search results", async () => {
     const api = {
       query: vi.fn().mockResolvedValueOnce([
@@ -132,5 +155,33 @@ describe("virtual-table-query", () => {
 
     expect(content).toBe("summary body");
     expect(api.query).toHaveBeenCalledTimes(3);
+  });
+
+  it("returns null when union and fallback queries all fail", async () => {
+    const api = {
+      query: vi.fn()
+        .mockRejectedValueOnce(new Error("bad union"))
+        .mockRejectedValueOnce(new Error("memory down"))
+        .mockRejectedValueOnce(new Error("sessions down")),
+    } as any;
+
+    const content = await readVirtualPathContent(api, "memory", "sessions", "/summaries/a.md");
+
+    expect(content).toBeNull();
+    expect(api.query).toHaveBeenCalledTimes(3);
+  });
+
+  it("filters invalid paths from find results", async () => {
+    const api = {
+      query: vi.fn().mockResolvedValueOnce([
+        { path: "/summaries/a.md", source_order: 0 },
+        { path: "", source_order: 0 },
+        { path: 123, source_order: 1 },
+      ]),
+    } as any;
+
+    const paths = await findVirtualPaths(api, "memory", "sessions", "/", "%.md");
+
+    expect(paths).toEqual(["/summaries/a.md"]);
   });
 });

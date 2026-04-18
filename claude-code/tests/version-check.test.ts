@@ -41,6 +41,16 @@ describe("getInstalledVersion", () => {
     expect(getInstalledVersion(bundleDir, ".claude-plugin")).toBe("0.6.37");
   });
 
+  it("falls back to package.json when plugin manifest has no version", () => {
+    const bundleDir = join(root, "claude-code", "bundle");
+    mkdirSync(join(root, "claude-code", ".claude-plugin"), { recursive: true });
+    mkdirSync(bundleDir, { recursive: true });
+    writeFileSync(join(root, "claude-code", ".claude-plugin", "plugin.json"), JSON.stringify({ name: "hivemind" }));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "hivemind", version: "0.6.41" }));
+
+    expect(getInstalledVersion(bundleDir, ".claude-plugin")).toBe("0.6.41");
+  });
+
   it("walks up to package.json when plugin manifest is absent", () => {
     const bundleDir = join(root, "codex", "bundle");
     mkdirSync(bundleDir, { recursive: true });
@@ -53,6 +63,15 @@ describe("getInstalledVersion", () => {
     const bundleDir = join(root, "bundle");
     mkdirSync(bundleDir, { recursive: true });
     writeFileSync(join(root, "package.json"), JSON.stringify({ name: "other-package", version: "1.0.0" }));
+
+    expect(getInstalledVersion(bundleDir, ".claude-plugin")).toBeNull();
+  });
+
+  it("returns null when the plugin manifest is invalid json and no package matches", () => {
+    const bundleDir = join(root, "claude-code", "bundle");
+    mkdirSync(join(root, "claude-code", ".claude-plugin"), { recursive: true });
+    mkdirSync(bundleDir, { recursive: true });
+    writeFileSync(join(root, "claude-code", ".claude-plugin", "plugin.json"), "{bad-json");
 
     expect(getInstalledVersion(bundleDir, ".claude-plugin")).toBeNull();
   });
@@ -83,6 +102,7 @@ describe("version cache", () => {
   it("returns fresh cached version within ttl", () => {
     writeVersionCache({ checkedAt: 1_000, latest: "0.6.38", url: "https://example.com/pkg.json" }, cachePath);
     expect(readFreshCachedLatestVersion("https://example.com/pkg.json", 500, cachePath, 1_400)).toBe("0.6.38");
+    expect(readFreshCachedLatestVersion("https://example.com/pkg.json", 500, cachePath, 1_500)).toBe("0.6.38");
     expect(readFreshCachedLatestVersion("https://example.com/pkg.json", 500, cachePath, 1_600)).toBeUndefined();
   });
 
@@ -128,6 +148,24 @@ describe("version cache", () => {
     expect(latest).toBe("0.6.40");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(readVersionCache(cachePath)?.latest).toBe("0.6.40");
+  });
+
+  it("writes null when a successful fetch returns no version field", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ name: "hivemind" }),
+    }));
+
+    const latest = await getLatestVersionCached({
+      url: "https://example.com/pkg.json",
+      timeoutMs: 3000,
+      cachePath,
+      nowMs: 2_000,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(latest).toBeNull();
+    expect(readVersionCache(cachePath)?.latest).toBeNull();
   });
 
   it("falls back to stale cached value on non-ok fetch responses", async () => {

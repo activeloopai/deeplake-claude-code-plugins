@@ -44,6 +44,11 @@ describe("bash-command-compiler parsing", () => {
       "/file_b.md",
     ]);
     expect(expandBraceToken("/plain.md")).toEqual(["/plain.md"]);
+    expect(expandBraceToken("/conv_{3..1}.md")).toEqual([
+      "/conv_3.md",
+      "/conv_2.md",
+      "/conv_1.md",
+    ]);
   });
 
   it("strips allowed stderr modifiers and detects unsupported redirection", () => {
@@ -93,7 +98,31 @@ describe("bash-command-compiler parsing", () => {
       countLines: false,
       ignoreMissing: false,
     });
+    expect(parseCompiledSegment("tail -2 /a")).toEqual({
+      kind: "cat",
+      paths: ["/a"],
+      lineLimit: 2,
+      fromEnd: true,
+      countLines: false,
+      ignoreMissing: false,
+    });
+    expect(parseCompiledSegment("head -n 2 /a")).toEqual({
+      kind: "cat",
+      paths: ["/a"],
+      lineLimit: 2,
+      fromEnd: false,
+      countLines: false,
+      ignoreMissing: false,
+    });
     expect(parseCompiledSegment("wc -l /a")).toEqual({
+      kind: "cat",
+      paths: ["/a"],
+      lineLimit: 0,
+      fromEnd: false,
+      countLines: true,
+      ignoreMissing: false,
+    });
+    expect(parseCompiledSegment("cat /a | wc -l")).toEqual({
       kind: "cat",
       paths: ["/a"],
       lineLimit: 0,
@@ -104,6 +133,11 @@ describe("bash-command-compiler parsing", () => {
     expect(parseCompiledSegment("ls -la /summaries/{a,b}")).toEqual({
       kind: "ls",
       dirs: ["/summaries/a", "/summaries/b"],
+      longFormat: true,
+    });
+    expect(parseCompiledSegment("ls -l")).toEqual({
+      kind: "ls",
+      dirs: ["/"],
       longFormat: true,
     });
     expect(parseCompiledSegment("find /summaries -name '*.md' | wc -l")).toEqual({
@@ -127,11 +161,29 @@ describe("bash-command-compiler parsing", () => {
       },
       lineLimit: 5,
     });
+    expect(parseCompiledSegment("grep foo /summaries | head")).toEqual({
+      kind: "grep",
+      params: {
+        pattern: "foo",
+        targetPath: "/summaries",
+        ignoreCase: false,
+        wordMatch: false,
+        filesOnly: false,
+        countOnly: false,
+        lineNumber: false,
+        invertMatch: false,
+        fixedString: false,
+      },
+      lineLimit: 10,
+    });
   });
 
   it("rejects unsupported segments and command shapes", () => {
     expect(parseCompiledSegment("echo ok > /x")).toBeNull();
     expect(parseCompiledSegment("cat /a | jq '.x'")).toBeNull();
+    expect(parseCompiledSegment("cat /a /b | wc -l")).toBeNull();
+    expect(parseCompiledSegment("cat /a | head -n nope")).toBeNull();
+    expect(parseCompiledSegment("find /summaries -name '*.md' | sort")).toBeNull();
     expect(parseCompiledSegment("grep foo /a | tail -2")).toBeNull();
     expect(parseCompiledBashCommand("cat /a || cat /b")).toBeNull();
     expect(parseCompiledBashCommand("cat /a && echo ok > /x")).toBeNull();
