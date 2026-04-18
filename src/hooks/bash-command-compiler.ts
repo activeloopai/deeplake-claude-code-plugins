@@ -1,6 +1,7 @@
 import type { DeeplakeApi } from "../deeplake-api.js";
 import { sqlLike } from "../utils/sql.js";
 import { type GrepParams, handleGrepDirect, parseBashGrep } from "./grep-direct.js";
+import { normalizeContent, refineGrepMatches } from "../shell/grep-core.js";
 import {
   listVirtualPathRowsForDirs,
   readVirtualPathContents,
@@ -14,6 +15,7 @@ export type CompiledSegment =
   | { kind: "cat"; paths: string[]; lineLimit: number; fromEnd: boolean; countLines: boolean; ignoreMissing: boolean }
   | { kind: "ls"; dirs: string[]; longFormat: boolean }
   | { kind: "find"; dir: string; pattern: string; countOnly: boolean }
+  | { kind: "find_grep"; dir: string; patterns: string[]; params: GrepParams; lineLimit: number }
   | { kind: "grep"; params: GrepParams; lineLimit: number };
 
 interface ParsedModifier {
@@ -181,6 +183,27 @@ function parseHeadTailStage(stage: string): { lineLimit: number; fromEnd: boolea
   return null;
 }
 
+function parseFindNamePatterns(tokens: string[]): string[] | null {
+  const patterns: string[] = [];
+  for (let i = 2; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "-type") {
+      i += 1;
+      continue;
+    }
+    if (token === "-o") continue;
+    if (token === "-name") {
+      const pattern = tokens[i + 1];
+      if (!pattern) return null;
+      patterns.push(pattern);
+      i += 1;
+      continue;
+    }
+    return null;
+  }
+  return patterns.length > 0 ? patterns : null;
+}
+
 export function parseCompiledSegment(segment: string): CompiledSegment | null {
   const { clean, ignoreMissing } = stripAllowedModifiers(segment);
   if (hasUnsupportedRedirection(clean)) return null;
@@ -256,14 +279,43 @@ export function parseCompiledSegment(segment: string): CompiledSegment | null {
   }
 
   if (tokens[0] === "find") {
-    if (pipeline.length > 2) return null;
+    if (pipeline.length > 3) return null;
     const dir = tokens[1];
     if (!dir) return null;
-    const nameIndex = tokens.indexOf("-name");
-    if (nameIndex === -1 || !tokens[nameIndex + 1]) return null;
+    const patterns = parseFindNamePatterns(tokens);
+    if (!patterns) return null;
     const countOnly = pipeline.length === 2 && /^wc\s+-l\s*$/.test(pipeline[1].trim());
     if (pipeline.length === 2 && !countOnly) return null;
-    return { kind: "find", dir, pattern: tokens[nameIndex + 1], countOnly };
+    if (countOnly) {
+      if (patterns.length !== 1) return null;
+      return { kind: "find", dir, pattern: patterns[0], countOnly };
+    }
+
+    if (pipeline.length >= 2) {
+      const xargsTokens = tokenizeShellWords(pipeline[1].trim());
+      if (!xargsTokens || xargsTokens[0] !== "xargs") return null;
+      const xargsArgs = xargsTokens.slice(1);
+      while (xargsArgs[0] && xargsArgs[0].startsWith("-")) {
+        if (xargsArgs[0] === "-r") {
+          xargsArgs.shift();
+          continue;
+        }
+        return null;
+      }
+      const grepCmd = xargsArgs.join(" ");
+      const grepParams = parseBashGrep(grepCmd);
+      if (!grepParams) return null;
+      let lineLimit = 0;
+      if (pipeline.length === 3) {
+        const headTail = parseHeadTailStage(pipeline[2].trim());
+        if (!headTail || headTail.fromEnd) return null;
+        lineLimit = headTail.lineLimit;
+      }
+      return { kind: "find_grep", dir, patterns, params: grepParams, lineLimit };
+    }
+
+    if (patterns.length !== 1) return null;
+    return { kind: "find", dir, pattern: patterns[0], countOnly };
   }
 
   const grepParams = parseBashGrep(clean);
@@ -403,6 +455,38 @@ export async function executeCompiledBashCommand(
       const filenamePattern = sqlLike(segment.pattern).replace(/\*/g, "%").replace(/\?/g, "_");
       const paths = await findVirtualPathsFn(api, memoryTable, sessionsTable, segment.dir.replace(/\/+$/, "") || "/", filenamePattern);
       outputs.push(segment.countOnly ? String(paths.length) : (paths.join("\n") || "(no matches)"));
+      continue;
+    }
+
+    if (segment.kind === "find_grep") {
+      const dir = segment.dir.replace(/\/+$/, "") || "/";
+      const candidateBatches = await Promise.all(
+        segment.patterns.map((pattern) =>
+          findVirtualPathsFn(
+            api,
+            memoryTable,
+            sessionsTable,
+            dir,
+            sqlLike(pattern).replace(/\*/g, "%").replace(/\?/g, "_"),
+          ),
+        ),
+      );
+      const candidatePaths = [...new Set(candidateBatches.flat())];
+      if (candidatePaths.length === 0) {
+        outputs.push("(no matches)");
+        continue;
+      }
+      const candidateContents = await readVirtualPathContentsFn(api, memoryTable, sessionsTable, candidatePaths);
+      const matched = refineGrepMatches(
+        candidatePaths.flatMap((path) => {
+          const content = candidateContents.get(path);
+          if (content === null || content === undefined) return [];
+          return [{ path, content: normalizeContent(path, content) }];
+        }),
+        segment.params,
+      );
+      const limited = segment.lineLimit > 0 ? matched.slice(0, segment.lineLimit) : matched;
+      outputs.push(limited.join("\n") || "(no matches)");
       continue;
     }
 

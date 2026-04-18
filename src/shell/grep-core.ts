@@ -273,6 +273,10 @@ export async function searchDeeplakeTables(
 export function buildPathFilter(targetPath: string): string {
   if (!targetPath || targetPath === "/") return "";
   const clean = targetPath.replace(/\/+$/, "");
+  if (/[*?]/.test(clean)) {
+    const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
+    return ` AND path LIKE '${likePattern}'`;
+  }
   const base = clean.split("/").pop() ?? "";
   if (base.includes(".")) {
     return ` AND path = '${sqlStr(clean)}'`;

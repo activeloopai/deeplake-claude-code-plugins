@@ -444,6 +444,15 @@ describe("buildPathFilter", () => {
       " AND path = '/summaries/alice/s1.md'",
     );
   });
+  it("uses LIKE matching for glob targets instead of exact file matching", () => {
+    expect(buildPathFilter("/summaries/locomo/*.md")).toBe(
+      " AND path LIKE '/summaries/locomo/%.md'",
+    );
+    const filter = buildPathFilter("/sessions/conv_?_session_*.json");
+    expect(filter).toContain("AND path LIKE '/sessions/conv");
+    expect(filter).toContain("session");
+    expect(filter).toContain("%.json'");
+  });
 });
 
 // ── compileGrepRegex ────────────────────────────────────────────────────────

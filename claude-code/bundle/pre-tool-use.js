@@ -103,8 +103,14 @@ var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
+var QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 1e4);
 function sleep(ms) {
   return new Promise((resolve2) => setTimeout(resolve2, ms));
+}
+function isTimeoutError(error) {
+  const name = error instanceof Error ? error.name.toLowerCase() : "";
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return name.includes("timeout") || name === "aborterror" || message.includes("timeout") || message.includes("timed out");
 }
 var Semaphore = class {
   max;
@@ -168,6 +174,7 @@ var DeeplakeApi = class {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       let resp;
       try {
+        const signal = AbortSignal.timeout(QUERY_TIMEOUT_MS);
         resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
           method: "POST",
           headers: {
@@ -175,9 +182,14 @@ var DeeplakeApi = class {
             "Content-Type": "application/json",
             "X-Activeloop-Org-Id": this.orgId
           },
+          signal,
           body: JSON.stringify({ query: sql })
         });
       } catch (e) {
+        if (isTimeoutError(e)) {
+          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
+          throw lastError;
+        }
         lastError = e instanceof Error ? e : new Error(String(e));
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
@@ -574,6 +586,10 @@ function buildPathFilter(targetPath) {
   if (!targetPath || targetPath === "/")
     return "";
   const clean = targetPath.replace(/\/+$/, "");
+  if (/[*?]/.test(clean)) {
+    const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
+    return ` AND path LIKE '${likePattern}'`;
+  }
   const base = clean.split("/").pop() ?? "";
   if (base.includes(".")) {
     return ` AND path = '${sqlStr(clean)}'`;
@@ -1077,6 +1093,28 @@ function parseHeadTailStage(stage) {
   }
   return null;
 }
+function parseFindNamePatterns(tokens) {
+  const patterns = [];
+  for (let i = 2; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "-type") {
+      i += 1;
+      continue;
+    }
+    if (token === "-o")
+      continue;
+    if (token === "-name") {
+      const pattern = tokens[i + 1];
+      if (!pattern)
+        return null;
+      patterns.push(pattern);
+      i += 1;
+      continue;
+    }
+    return null;
+  }
+  return patterns.length > 0 ? patterns : null;
+}
 function parseCompiledSegment(segment) {
   const { clean, ignoreMissing } = stripAllowedModifiers(segment);
   if (hasUnsupportedRedirection(clean))
@@ -1153,18 +1191,50 @@ function parseCompiledSegment(segment) {
     return { kind: "ls", dirs: dirs.length > 0 ? dirs : ["/"], longFormat };
   }
   if (tokens[0] === "find") {
-    if (pipeline.length > 2)
+    if (pipeline.length > 3)
       return null;
     const dir = tokens[1];
     if (!dir)
       return null;
-    const nameIndex = tokens.indexOf("-name");
-    if (nameIndex === -1 || !tokens[nameIndex + 1])
+    const patterns = parseFindNamePatterns(tokens);
+    if (!patterns)
       return null;
     const countOnly = pipeline.length === 2 && /^wc\s+-l\s*$/.test(pipeline[1].trim());
     if (pipeline.length === 2 && !countOnly)
       return null;
-    return { kind: "find", dir, pattern: tokens[nameIndex + 1], countOnly };
+    if (countOnly) {
+      if (patterns.length !== 1)
+        return null;
+      return { kind: "find", dir, pattern: patterns[0], countOnly };
+    }
+    if (pipeline.length >= 2) {
+      const xargsTokens = tokenizeShellWords(pipeline[1].trim());
+      if (!xargsTokens || xargsTokens[0] !== "xargs")
+        return null;
+      const xargsArgs = xargsTokens.slice(1);
+      while (xargsArgs[0] && xargsArgs[0].startsWith("-")) {
+        if (xargsArgs[0] === "-r") {
+          xargsArgs.shift();
+          continue;
+        }
+        return null;
+      }
+      const grepCmd = xargsArgs.join(" ");
+      const grepParams2 = parseBashGrep(grepCmd);
+      if (!grepParams2)
+        return null;
+      let lineLimit = 0;
+      if (pipeline.length === 3) {
+        const headTail = parseHeadTailStage(pipeline[2].trim());
+        if (!headTail || headTail.fromEnd)
+          return null;
+        lineLimit = headTail.lineLimit;
+      }
+      return { kind: "find_grep", dir, patterns, params: grepParams2, lineLimit };
+    }
+    if (patterns.length !== 1)
+      return null;
+    return { kind: "find", dir, pattern: patterns[0], countOnly };
   }
   const grepParams = parseBashGrep(clean);
   if (grepParams) {
@@ -1279,6 +1349,25 @@ async function executeCompiledBashCommand(api, memoryTable, sessionsTable, cmd, 
       const filenamePattern = sqlLike(segment.pattern).replace(/\*/g, "%").replace(/\?/g, "_");
       const paths = await findVirtualPathsFn(api, memoryTable, sessionsTable, segment.dir.replace(/\/+$/, "") || "/", filenamePattern);
       outputs.push(segment.countOnly ? String(paths.length) : paths.join("\n") || "(no matches)");
+      continue;
+    }
+    if (segment.kind === "find_grep") {
+      const dir = segment.dir.replace(/\/+$/, "") || "/";
+      const candidateBatches = await Promise.all(segment.patterns.map((pattern) => findVirtualPathsFn(api, memoryTable, sessionsTable, dir, sqlLike(pattern).replace(/\*/g, "%").replace(/\?/g, "_"))));
+      const candidatePaths = [...new Set(candidateBatches.flat())];
+      if (candidatePaths.length === 0) {
+        outputs.push("(no matches)");
+        continue;
+      }
+      const candidateContents = await readVirtualPathContentsFn(api, memoryTable, sessionsTable, candidatePaths);
+      const matched = refineGrepMatches(candidatePaths.flatMap((path) => {
+        const content = candidateContents.get(path);
+        if (content === null || content === void 0)
+          return [];
+        return [{ path, content: normalizeContent(path, content) }];
+      }), segment.params);
+      const limited = segment.lineLimit > 0 ? matched.slice(0, segment.lineLimit) : matched;
+      outputs.push(limited.join("\n") || "(no matches)");
       continue;
     }
     if (segment.kind === "grep") {

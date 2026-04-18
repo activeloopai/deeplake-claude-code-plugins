@@ -120,6 +120,25 @@ describe("DeeplakeApi.query", () => {
     await expect(api.query("SELECT 1")).rejects.toThrow("DNS_FAIL");
   });
 
+  it("fails fast on timeout-like fetch errors without retrying", async () => {
+    const timeoutError = new Error("request timed out");
+    timeoutError.name = "TimeoutError";
+    mockFetch.mockRejectedValueOnce(timeoutError);
+    const api = makeApi();
+
+    await expect(api.query("SELECT 1")).rejects.toThrow("Query timeout after 10000ms");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes an abort signal to query fetches", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["x"], rows: [["ok"]] }));
+    const api = makeApi();
+    await api.query("SELECT 1");
+
+    const opts = mockFetch.mock.calls[0][1];
+    expect(opts.signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("wraps non-Error fetch exceptions", async () => {
     mockFetch.mockRejectedValue("string error");
     const api = makeApi();

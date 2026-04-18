@@ -66800,8 +66800,14 @@ var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
+var QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 1e4);
 function sleep(ms3) {
   return new Promise((resolve5) => setTimeout(resolve5, ms3));
+}
+function isTimeoutError(error) {
+  const name = error instanceof Error ? error.name.toLowerCase() : "";
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return name.includes("timeout") || name === "aborterror" || message.includes("timeout") || message.includes("timed out");
 }
 var Semaphore = class {
   max;
@@ -66865,6 +66871,7 @@ var DeeplakeApi = class {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       let resp;
       try {
+        const signal = AbortSignal.timeout(QUERY_TIMEOUT_MS);
         resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
           method: "POST",
           headers: {
@@ -66872,9 +66879,14 @@ var DeeplakeApi = class {
             "Content-Type": "application/json",
             "X-Activeloop-Org-Id": this.orgId
           },
+          signal,
           body: JSON.stringify({ query: sql })
         });
       } catch (e6) {
+        if (isTimeoutError(e6)) {
+          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
+          throw lastError;
+        }
         lastError = e6 instanceof Error ? e6 : new Error(String(e6));
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
@@ -68811,6 +68823,10 @@ function buildPathFilter(targetPath) {
   if (!targetPath || targetPath === "/")
     return "";
   const clean = targetPath.replace(/\/+$/, "");
+  if (/[*?]/.test(clean)) {
+    const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
+    return ` AND path LIKE '${likePattern}'`;
+  }
   const base = clean.split("/").pop() ?? "";
   if (base.includes(".")) {
     return ` AND path = '${sqlStr(clean)}'`;

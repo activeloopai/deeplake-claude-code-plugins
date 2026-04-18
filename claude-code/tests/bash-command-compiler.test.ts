@@ -176,6 +176,23 @@ describe("bash-command-compiler parsing", () => {
       },
       lineLimit: 10,
     });
+    expect(parseCompiledSegment("find /summaries -type f -name '*.md' -o -name '*.json' | xargs grep -l 'Caroline' | head -5")).toEqual({
+      kind: "find_grep",
+      dir: "/summaries",
+      patterns: ["*.md", "*.json"],
+      params: {
+        pattern: "Caroline",
+        targetPath: "/",
+        ignoreCase: false,
+        wordMatch: false,
+        filesOnly: true,
+        countOnly: false,
+        lineNumber: false,
+        invertMatch: false,
+        fixedString: false,
+      },
+      lineLimit: 5,
+    });
   });
 
   it("rejects unsupported segments and command shapes", () => {
@@ -184,6 +201,8 @@ describe("bash-command-compiler parsing", () => {
     expect(parseCompiledSegment("cat /a /b | wc -l")).toBeNull();
     expect(parseCompiledSegment("cat /a | head -n nope")).toBeNull();
     expect(parseCompiledSegment("find /summaries -name '*.md' | sort")).toBeNull();
+    expect(parseCompiledSegment("find /summaries -name '*.md' -o -name '*.json'")).toBeNull();
+    expect(parseCompiledSegment("find /summaries -name '*.md' -o -name '*.json' | wc -l")).toBeNull();
     expect(parseCompiledSegment("grep foo /a | tail -2")).toBeNull();
     expect(parseCompiledBashCommand("cat /a || cat /b")).toBeNull();
     expect(parseCompiledBashCommand("cat /a && echo ok > /x")).toBeNull();
@@ -299,5 +318,36 @@ describe("bash-command-compiler execution", () => {
       },
     );
     expect(output).toBeNull();
+  });
+
+  it("compiles find | xargs grep -l | head into batched path reads", async () => {
+    const findVirtualPathsFn = vi.fn()
+      .mockResolvedValueOnce(["/summaries/a.md", "/summaries/shared.json"])
+      .mockResolvedValueOnce(["/summaries/b.json", "/summaries/shared.json"]);
+    const readVirtualPathContentsFn = vi.fn(async () => new Map([
+      ["/summaries/a.md", "Caroline gave the speech"],
+      ["/summaries/shared.json", "{\"turns\":[{\"speaker\":\"Caroline\",\"text\":\"school speech\"}]}"],
+      ["/summaries/b.json", "No match here"],
+    ]));
+
+    const output = await executeCompiledBashCommand(
+      { query: vi.fn() } as any,
+      "memory",
+      "sessions",
+      "find /summaries -type f -name '*.md' -o -name '*.json' | xargs grep -l 'Caroline' | head -1",
+      {
+        findVirtualPathsFn: findVirtualPathsFn as any,
+        readVirtualPathContentsFn: readVirtualPathContentsFn as any,
+      },
+    );
+
+    expect(findVirtualPathsFn).toHaveBeenCalledTimes(2);
+    expect(readVirtualPathContentsFn).toHaveBeenCalledWith(
+      expect.anything(),
+      "memory",
+      "sessions",
+      ["/summaries/a.md", "/summaries/shared.json", "/summaries/b.json"],
+    );
+    expect(output).toBe("/summaries/a.md");
   });
 });

@@ -23,9 +23,19 @@ const RETRYABLE_CODES = new Set([429, 500, 502, 503, 504]);
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 500;
 const MAX_CONCURRENCY = 5;
+const QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 10_000);
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isTimeoutError(error: unknown): boolean {
+  const name = error instanceof Error ? error.name.toLowerCase() : "";
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return name.includes("timeout") ||
+    name === "aborterror" ||
+    message.includes("timeout") ||
+    message.includes("timed out");
 }
 
 class Semaphore {
@@ -96,6 +106,7 @@ export class DeeplakeApi {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       let resp: Response;
       try {
+        const signal = AbortSignal.timeout(QUERY_TIMEOUT_MS);
         resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
           method: "POST",
           headers: {
@@ -103,10 +114,15 @@ export class DeeplakeApi {
             "Content-Type": "application/json",
             "X-Activeloop-Org-Id": this.orgId,
           },
+          signal,
           body: JSON.stringify({ query: sql }),
         });
       } catch (e: unknown) {
         // Network-level failure (DNS, TCP reset, timeout, etc.)
+        if (isTimeoutError(e)) {
+          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
+          throw lastError;
+        }
         lastError = e instanceof Error ? e : new Error(String(e));
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
