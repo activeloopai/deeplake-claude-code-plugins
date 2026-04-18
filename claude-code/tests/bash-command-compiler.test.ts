@@ -17,6 +17,7 @@ describe("bash-command-compiler parsing", () => {
       "echo 'x && y'",
       "ls /b",
     ]);
+    expect(splitTopLevel(" && echo hi ; ", ["&&", ";"])).toEqual(["echo hi"]);
   });
 
   it("returns null on unterminated quotes", () => {
@@ -144,6 +145,11 @@ describe("bash-command-compiler parsing", () => {
       dirs: ["/"],
       longFormat: true,
     });
+    expect(parseCompiledSegment("ls -a")).toEqual({
+      kind: "ls",
+      dirs: ["/"],
+      longFormat: false,
+    });
     expect(parseCompiledSegment("find /summaries -name '*.md' | wc -l")).toEqual({
       kind: "find",
       dir: "/summaries",
@@ -179,6 +185,21 @@ describe("bash-command-compiler parsing", () => {
         fixedString: false,
       },
       lineLimit: 10,
+    });
+    expect(parseCompiledSegment("grep foo /summaries")).toEqual({
+      kind: "grep",
+      params: {
+        pattern: "foo",
+        targetPath: "/summaries",
+        ignoreCase: false,
+        wordMatch: false,
+        filesOnly: false,
+        countOnly: false,
+        lineNumber: false,
+        invertMatch: false,
+        fixedString: false,
+      },
+      lineLimit: 0,
     });
     expect(parseCompiledSegment("find /summaries -type f -name '*.md' -o -name '*.json' | xargs grep -l 'launch' | head -5")).toEqual({
       kind: "find_grep",
@@ -217,16 +238,25 @@ describe("bash-command-compiler parsing", () => {
   });
 
   it("rejects unsupported segments and command shapes", () => {
+    expect(parseCompiledSegment("cat")).toBeNull();
     expect(parseCompiledSegment("echo ok > /x")).toBeNull();
     expect(parseCompiledSegment("cat /a | jq '.x'")).toBeNull();
     expect(parseCompiledSegment("cat /a /b | wc -l")).toBeNull();
     expect(parseCompiledSegment("cat /a | head -n nope")).toBeNull();
+    expect(parseCompiledSegment("head -n nope /a")).toBeNull();
+    expect(parseCompiledSegment("head -n 2")).toBeNull();
+    expect(parseCompiledSegment("wc -l")).toBeNull();
+    expect(parseCompiledSegment("find")).toBeNull();
+    expect(parseCompiledSegment("find /summaries -name")).toBeNull();
     expect(parseCompiledSegment("find /summaries -name '*.md' | sort")).toBeNull();
     expect(parseCompiledSegment("find /summaries -name '*.md' -o -name '*.json'")).toBeNull();
     expect(parseCompiledSegment("find /summaries -name '*.md' -o -name '*.json' | wc -l")).toBeNull();
+    expect(parseCompiledSegment("find /summaries -name '*.md' | xargs")).toBeNull();
+    expect(parseCompiledSegment("find /summaries -name '*.md' | xargs grep -l foo | head nope")).toBeNull();
     expect(parseCompiledSegment("find /summaries -name '*.md' | xargs -z grep -l foo")).toBeNull();
     expect(parseCompiledSegment("find /summaries -name '*.md' | xargs grep -l foo | tail -2")).toBeNull();
     expect(parseCompiledSegment("grep foo /a | tail -2")).toBeNull();
+    expect(parseCompiledSegment("grep foo /a | head nope")).toBeNull();
     expect(parseCompiledBashCommand("cat /a || cat /b")).toBeNull();
     expect(parseCompiledBashCommand("cat /a && echo ok > /x")).toBeNull();
   });
@@ -344,6 +374,41 @@ describe("bash-command-compiler execution", () => {
     expect(output).toContain("file1.md");
     expect(output).toContain("(no matches)");
     expect(output).toContain("/summaries/a/file1.md:needle");
+  });
+
+  it("returns joined find results, line-limited grep, and no-match compiled find+grep output", async () => {
+    const joinedFind = await executeCompiledBashCommand(
+      { query: vi.fn() } as any,
+      "memory",
+      "sessions",
+      "find /summaries/a -name '*.md'",
+      {
+        findVirtualPathsFn: vi.fn(async () => ["/summaries/a/file1.md", "/summaries/a/file2.md"]) as any,
+      },
+    );
+    expect(joinedFind).toBe("/summaries/a/file1.md\n/summaries/a/file2.md");
+
+    const grepLimited = await executeCompiledBashCommand(
+      { query: vi.fn() } as any,
+      "memory",
+      "sessions",
+      "grep needle /summaries/a | head -1",
+      {
+        handleGrepDirectFn: vi.fn(async () => "/summaries/a/file1.md:needle\n/summaries/a/file2.md:needle") as any,
+      },
+    );
+    expect(grepLimited).toBe("/summaries/a/file1.md:needle");
+
+    const noMatchFindGrep = await executeCompiledBashCommand(
+      { query: vi.fn() } as any,
+      "memory",
+      "sessions",
+      "find /summaries -name '*.md' | xargs grep -l launch",
+      {
+        findVirtualPathsFn: vi.fn(async () => []) as any,
+      },
+    );
+    expect(noMatchFindGrep).toBe("(no matches)");
   });
 
   it("returns null when a compiled grep returns null", async () => {

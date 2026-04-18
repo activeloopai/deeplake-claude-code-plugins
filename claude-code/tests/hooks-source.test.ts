@@ -523,6 +523,21 @@ describe("claude session start source", () => {
     expect(context).toContain("workspace: default");
     expect(context).not.toContain("Hivemind v");
   });
+
+  it("logs authenticated startup without backfilling when the username is already present", async () => {
+    const logFn = vi.fn();
+    const save = vi.fn();
+    await runSessionStartHook({}, {
+      creds: { ...baseCreds, orgName: undefined },
+      saveCredentialsFn: save as any,
+      currentVersion: "0.6.0",
+      latestVersion: null,
+      authCommand: "/tmp/auth-login.js",
+      logFn,
+    });
+    expect(save).not.toHaveBeenCalled();
+    expect(logFn).toHaveBeenCalledWith(expect.stringContaining("org=org-1"));
+  });
 });
 
 describe("claude session start setup source", () => {
@@ -684,6 +699,32 @@ describe("claude session start setup source", () => {
     });
     expect(createPlaceholderFn).not.toHaveBeenCalled();
     expect(wikiLogFn).toHaveBeenCalledWith(expect.stringContaining("failed for s1: boom"));
+  });
+
+  it("skips in wiki-worker mode and handles zero-drain session writes", async () => {
+    expect(await runSessionStartSetup({ session_id: "s1" }, {
+      wikiWorker: true,
+    })).toEqual({ status: "skipped" });
+
+    const createPlaceholderFn = vi.fn(async () => undefined);
+    await runSessionStartSetup({ session_id: "s1", cwd: undefined as any }, {
+      creds: baseCreds,
+      config: baseConfig,
+      createApi: vi.fn(() => ({
+        ensureTable: vi.fn(async () => undefined),
+        ensureSessionsTable: vi.fn(async () => undefined),
+      }) as any),
+      drainSessionQueuesFn: vi.fn(async () => ({
+        queuedSessions: 0,
+        flushedSessions: 0,
+        rows: 0,
+        batches: 0,
+      })) as any,
+      isSessionWriteDisabledFn: vi.fn(() => false) as any,
+      createPlaceholderFn: createPlaceholderFn as any,
+      getInstalledVersionFn: vi.fn(() => null) as any,
+    });
+    expect(createPlaceholderFn).toHaveBeenCalledWith(expect.anything(), "memory", "s1", "", "alice", "Acme", "default");
   });
 });
 

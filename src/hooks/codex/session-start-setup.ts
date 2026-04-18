@@ -75,7 +75,7 @@ export async function createPlaceholder(
   }
 
   const now = new Date().toISOString();
-  const projectName = cwd.split("/").pop() ?? "unknown";
+  const projectName = cwd.split("/").pop() || "unknown";
   const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
   const content = [
     `# Session ${sessionId}`,

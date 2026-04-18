@@ -173,6 +173,7 @@ describe("codex pre-tool source", () => {
     expect(rewritePaths("cat $HOME/.deeplake/memory/index.md")).toBe("cat /index.md");
     expect(isSafe("grep -r needle /")).toBe(true);
     expect(isSafe("node -e '1' /")).toBe(false);
+    expect(isSafe("echo $(uname)")).toBe(false);
     expect(buildUnsupportedGuidance()).toContain("Do NOT use python");
   });
 
@@ -455,6 +456,22 @@ describe("codex pre-tool source", () => {
     });
     expect(findNoMatches.output).toBe("(no matches)");
 
+    const findRoot = await processCodexPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_use_id: "tu-14b",
+      tool_input: { command: "find ~/.deeplake/memory -name '*.md'" },
+      cwd: "/repo",
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      findVirtualPathsFn: vi.fn(async () => ["/summaries/a.md", "/notes.md"]) as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+    });
+    expect(findRoot.output).toContain("/summaries/a.md");
+    expect(findRoot.output).toContain("/notes.md");
+
     const grepFallback = await processCodexPreToolUse({
       session_id: "s1",
       tool_name: "Bash",
@@ -485,6 +502,78 @@ describe("codex pre-tool source", () => {
       runVirtualShellFn: vi.fn(() => "fallback after error") as any,
     });
     expect(errorFallback.output).toBe("fallback after error");
+  });
+
+  it("covers default head/tail forms, synthetic index rows, and long ls formatting", async () => {
+    const headDecision = await processCodexPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_use_id: "tu-17",
+      tool_input: { command: "head ~/.deeplake/memory/index.md" },
+      cwd: "/repo",
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      readVirtualPathContentFn: vi.fn(async () => "a\nb\nc") as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+    });
+    expect(headDecision.output).toBe("a\nb\nc");
+
+    const tailDecision = await processCodexPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_use_id: "tu-18",
+      tool_input: { command: "tail ~/.deeplake/memory/index.md" },
+      cwd: "/repo",
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      readVirtualPathContentFn: vi.fn(async () => "a\nb\nc") as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+    });
+    expect(tailDecision.output).toBe("a\nb\nc");
+
+    const api = {
+      query: vi.fn(async () => [{ path: "/summaries/alice/s1.md" }]),
+    };
+    const syntheticIndex = await processCodexPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_use_id: "tu-19",
+      tool_input: { command: "cat ~/.deeplake/memory/index.md" },
+      cwd: "/repo",
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      createApi: vi.fn(() => api as any),
+      readVirtualPathContentFn: vi.fn(async () => null) as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+    });
+    expect(syntheticIndex.output).toContain("# Memory Index");
+
+    const longLs = await processCodexPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_use_id: "tu-20",
+      tool_input: { command: "ls -l ~/.deeplake/memory/summaries" },
+      cwd: "/repo",
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.2",
+    }, {
+      config: baseConfig,
+      listVirtualPathRowsFn: vi.fn(async () => [
+        { path: "/summaries/alice/file.md" },
+        { path: "/summaries/alice/another.md", size_bytes: 3 },
+        { path: "/summaries/team/nested/file.md", size_bytes: 5 },
+      ]) as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+    });
+    expect(longLs.output).toContain("alice/");
+    expect(longLs.output).toContain("team/");
+    expect(longLs.output).toContain("drwxr-xr-x");
   });
 });
 
@@ -715,6 +804,37 @@ describe("codex session start setup source", () => {
       config: baseConfig,
       getInstalledVersionFn: vi.fn(() => null) as any,
     })).resolves.toEqual({ status: "complete" });
+  });
+
+  it("backfills missing usernames, handles auth-disabled session writes, and treats missing cwd as unknown", async () => {
+    const save = vi.fn();
+    const placeholder = vi.fn(async () => undefined);
+    await runCodexSessionStartSetup({
+      session_id: "s1",
+      cwd: undefined as any,
+      hook_event_name: "SessionStart",
+      model: "gpt-5.2",
+    }, {
+      creds: { ...baseCreds, userName: undefined },
+      saveCredentialsFn: save as any,
+      config: baseConfig,
+      createApi: vi.fn(() => ({
+        ensureTable: vi.fn(async () => undefined),
+        ensureSessionsTable: vi.fn(async () => { throw new Error("403 Forbidden"); }),
+      }) as any),
+      isSessionWriteDisabledFn: vi.fn(() => false) as any,
+      isSessionWriteAuthErrorFn: vi.fn(() => true) as any,
+      markSessionWriteDisabledFn: vi.fn() as any,
+      createPlaceholderFn: placeholder as any,
+      getInstalledVersionFn: vi.fn(() => "0.6.0") as any,
+      getLatestVersionCachedFn: vi.fn(async () => "0.6.0") as any,
+    });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(placeholder).toHaveBeenCalledWith(expect.anything(), "memory", "s1", "", "alice", "Acme", "default");
+
+    const query = vi.fn(async () => []);
+    await createPlaceholder({ query } as any, "memory", "s2", "", "alice", "Acme", "default");
+    expect(String(query.mock.calls[1]?.[0])).toContain("'unknown'");
   });
 });
 
