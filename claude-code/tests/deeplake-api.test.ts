@@ -87,6 +87,23 @@ describe("DeeplakeApi.query", () => {
     expect(rows).toEqual([{ x: "ok" }]);
   });
 
+  it("retries transient HTML 403s for session inserts", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        json: async () => ({}),
+        text: async () => "<html><head><title>403 Forbidden</title></head><body>nginx</body></html>",
+      })
+      .mockResolvedValueOnce(jsonResponse({}));
+    const api = makeApi();
+    const rows = await api.query(
+      'INSERT INTO "sessions" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES (\'id\', \'/p\', \'f\', \'{}\'::jsonb, \'u\', 2, \'p\', \'Stop\', \'claude_code\', \'t\', \'t\')',
+    );
+    expect(rows).toEqual([]);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
   it("retries on 502/503/504", async () => {
     mockFetch
       .mockResolvedValueOnce(jsonResponse("", 502))

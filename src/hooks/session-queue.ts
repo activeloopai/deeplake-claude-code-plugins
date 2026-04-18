@@ -1,7 +1,9 @@
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -67,6 +69,7 @@ const DEFAULT_QUEUE_DIR = join(homedir(), ".deeplake", "queue");
 const DEFAULT_MAX_BATCH_ROWS = 50;
 const DEFAULT_STALE_INFLIGHT_MS = 60_000;
 const DEFAULT_AUTH_FAILURE_TTL_MS = 5 * 60_000;
+const DEFAULT_DRAIN_LOCK_STALE_MS = 30_000;
 const BUSY_WAIT_STEP_MS = 100;
 
 interface SessionWriteDisabledState {
@@ -253,6 +256,32 @@ export async function drainSessionQueues(api: SessionQueueApi, opts: DrainSessio
   };
 }
 
+export function tryAcquireSessionDrainLock(
+  sessionsTable: string,
+  queueDir = DEFAULT_QUEUE_DIR,
+  staleMs = DEFAULT_DRAIN_LOCK_STALE_MS,
+): (() => void) | null {
+  mkdirSync(queueDir, { recursive: true });
+  const lockPath = getSessionDrainLockPath(queueDir, sessionsTable);
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(lockPath, "wx");
+      closeSync(fd);
+      return () => rmSync(lockPath, { force: true });
+    } catch (e: any) {
+      if (e?.code !== "EEXIST") throw e;
+      if (existsSync(lockPath) && isStale(lockPath, staleMs)) {
+        rmSync(lockPath, { force: true });
+        continue;
+      }
+      return null;
+    }
+  }
+
+  return null;
+}
+
 function getQueuePath(queueDir: string, sessionId: string): string {
   return join(queueDir, `${sessionId}.jsonl`);
 }
@@ -426,6 +455,10 @@ export function isSessionWriteDisabled(
 
 function getSessionWriteDisabledPath(queueDir: string, sessionsTable: string): string {
   return join(queueDir, `.${sessionsTable}.disabled.json`);
+}
+
+function getSessionDrainLockPath(queueDir: string, sessionsTable: string): string {
+  return join(queueDir, `.${sessionsTable}.drain.lock`);
 }
 
 function errorMessage(error: unknown): string {

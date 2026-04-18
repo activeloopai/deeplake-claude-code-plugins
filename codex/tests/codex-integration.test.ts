@@ -125,6 +125,8 @@ describe("codex integration: session-start", () => {
     });
     expect(raw).toContain("read that exact summary or session path directly");
     expect(raw).toContain("Do NOT probe unrelated local paths");
+    expect(raw).toContain("answer with the smallest exact phrase supported by memory");
+    expect(raw).toContain("convert the final answer into an absolute month/date/year");
   });
 });
 

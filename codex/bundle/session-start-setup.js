@@ -129,6 +129,13 @@ function isDuplicateIndexError(error) {
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   return message.includes("duplicate key value violates unique constraint") || message.includes("pg_class_relname_nsp_index") || message.includes("already exists");
 }
+function isSessionInsertQuery(sql) {
+  return /^\s*insert\s+into\s+"[^"]+"\s*\(\s*id\s*,\s*path\s*,\s*filename\s*,\s*message\s*,/i.test(sql);
+}
+function isTransientHtml403(text) {
+  const body = text.toLowerCase();
+  return body.includes("<html") || body.includes("403 forbidden") || body.includes("cloudflare") || body.includes("nginx");
+}
 function getIndexMarkerDir() {
   return process.env["HIVEMIND_INDEX_MARKER_DIR"] ?? join4(tmpdir(), "hivemind-deeplake-indexes");
 }
@@ -226,7 +233,8 @@ var DeeplakeApi = class {
         return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i) => [col, row[i]])));
       }
       const text = await resp.text().catch(() => "");
-      if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
+      const retryable403 = isSessionInsertQuery(sql) && (resp.status === 401 || resp.status === 403 && (text.length === 0 || isTransientHtml403(text)));
+      if (attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
         log2(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
         await sleep(delay);
@@ -434,13 +442,14 @@ function isDirectRun(metaUrl) {
 }
 
 // dist/src/hooks/session-queue.js
-import { appendFileSync as appendFileSync2, existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync4, readdirSync, renameSync, rmSync, statSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { appendFileSync as appendFileSync2, closeSync, existsSync as existsSync4, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync4, readdirSync, renameSync, rmSync, statSync, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname, join as join5 } from "node:path";
 import { homedir as homedir4 } from "node:os";
 var DEFAULT_QUEUE_DIR = join5(homedir4(), ".deeplake", "queue");
 var DEFAULT_MAX_BATCH_ROWS = 50;
 var DEFAULT_STALE_INFLIGHT_MS = 6e4;
 var DEFAULT_AUTH_FAILURE_TTL_MS = 5 * 6e4;
+var DEFAULT_DRAIN_LOCK_STALE_MS = 3e4;
 var BUSY_WAIT_STEP_MS = 100;
 var SessionWriteDisabledError = class extends Error {
   constructor(message) {
@@ -553,6 +562,26 @@ async function drainSessionQueues(api, opts) {
     rows,
     batches
   };
+}
+function tryAcquireSessionDrainLock(sessionsTable, queueDir = DEFAULT_QUEUE_DIR, staleMs = DEFAULT_DRAIN_LOCK_STALE_MS) {
+  mkdirSync3(queueDir, { recursive: true });
+  const lockPath = getSessionDrainLockPath(queueDir, sessionsTable);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(lockPath, "wx");
+      closeSync(fd);
+      return () => rmSync(lockPath, { force: true });
+    } catch (e) {
+      if (e?.code !== "EEXIST")
+        throw e;
+      if (existsSync4(lockPath) && isStale(lockPath, staleMs)) {
+        rmSync(lockPath, { force: true });
+        continue;
+      }
+      return null;
+    }
+  }
+  return null;
 }
 function getQueuePath(queueDir, sessionId) {
   return join5(queueDir, `${sessionId}.jsonl`);
@@ -681,6 +710,9 @@ function isSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR, ttl
 }
 function getSessionWriteDisabledPath(queueDir, sessionsTable) {
   return join5(queueDir, `.${sessionsTable}.disabled.json`);
+}
+function getSessionDrainLockPath(queueDir, sessionsTable) {
+  return join5(queueDir, `.${sessionsTable}.drain.lock`);
 }
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
@@ -822,7 +854,7 @@ async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, 
   wikiLog(`SessionSetup: created placeholder for ${sessionId} (${cwd})`);
 }
 async function runCodexSessionStartSetup(input, deps = {}) {
-  const { wikiWorker = (process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1", creds = loadCredentials(), saveCredentialsFn = saveCredentials, config = loadConfig(), createApi = (activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, activeConfig.tableName), captureEnabled = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false", drainSessionQueuesFn = drainSessionQueues, isSessionWriteDisabledFn = isSessionWriteDisabled, isSessionWriteAuthErrorFn = isSessionWriteAuthError, markSessionWriteDisabledFn = markSessionWriteDisabled, createPlaceholderFn = createPlaceholder, getInstalledVersionFn = getInstalledVersion, getLatestVersionCachedFn = getLatestVersionCached, isNewerFn = isNewer, execSyncFn = execSync2, logFn = log3, wikiLogFn = wikiLog } = deps;
+  const { wikiWorker = (process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1", creds = loadCredentials(), saveCredentialsFn = saveCredentials, config = loadConfig(), createApi = (activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, activeConfig.tableName), captureEnabled = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false", drainSessionQueuesFn = drainSessionQueues, isSessionWriteDisabledFn = isSessionWriteDisabled, isSessionWriteAuthErrorFn = isSessionWriteAuthError, markSessionWriteDisabledFn = markSessionWriteDisabled, tryAcquireSessionDrainLockFn = tryAcquireSessionDrainLock, createPlaceholderFn = createPlaceholder, getInstalledVersionFn = getInstalledVersion, getLatestVersionCachedFn = getLatestVersionCached, isNewerFn = isNewer, execSyncFn = execSync2, logFn = log3, wikiLogFn = wikiLog } = deps;
   if (wikiWorker)
     return { status: "skipped" };
   if (!creds?.token) {
@@ -846,20 +878,27 @@ async function runCodexSessionStartSetup(input, deps = {}) {
         if (isSessionWriteDisabledFn(config.sessionsTableName)) {
           logFn(`sessions table disabled, skipping setup for "${config.sessionsTableName}"`);
         } else {
-          try {
-            await api.ensureSessionsTable(config.sessionsTableName);
-            const drain = await drainSessionQueuesFn(api, {
-              sessionsTable: config.sessionsTableName
-            });
-            if (drain.flushedSessions > 0) {
-              logFn(`drained ${drain.flushedSessions} queued session(s), rows=${drain.rows}, batches=${drain.batches}`);
-            }
-          } catch (e) {
-            if (isSessionWriteAuthErrorFn(e)) {
-              markSessionWriteDisabledFn(config.sessionsTableName, e.message);
-              logFn(`sessions table unavailable, skipping setup: ${e.message}`);
-            } else {
-              throw e;
+          const releaseDrainLock = tryAcquireSessionDrainLockFn(config.sessionsTableName);
+          if (!releaseDrainLock) {
+            logFn(`sessions drain already in progress, skipping duplicate setup for "${config.sessionsTableName}"`);
+          } else {
+            try {
+              await api.ensureSessionsTable(config.sessionsTableName);
+              const drain = await drainSessionQueuesFn(api, {
+                sessionsTable: config.sessionsTableName
+              });
+              if (drain.flushedSessions > 0) {
+                logFn(`drained ${drain.flushedSessions} queued session(s), rows=${drain.rows}, batches=${drain.batches}`);
+              }
+            } catch (e) {
+              if (isSessionWriteAuthErrorFn(e)) {
+                markSessionWriteDisabledFn(config.sessionsTableName, e.message);
+                logFn(`sessions table unavailable, skipping setup: ${e.message}`);
+              } else {
+                throw e;
+              }
+            } finally {
+              releaseDrainLock();
             }
           }
         }

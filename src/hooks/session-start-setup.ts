@@ -23,6 +23,7 @@ import {
   isSessionWriteAuthError,
   isSessionWriteDisabled,
   markSessionWriteDisabled,
+  tryAcquireSessionDrainLock,
 } from "./session-queue.js";
 import {
   getInstalledVersion,
@@ -103,6 +104,7 @@ interface SessionStartSetupDeps {
   isSessionWriteDisabledFn?: typeof isSessionWriteDisabled;
   isSessionWriteAuthErrorFn?: typeof isSessionWriteAuthError;
   markSessionWriteDisabledFn?: typeof markSessionWriteDisabled;
+  tryAcquireSessionDrainLockFn?: typeof tryAcquireSessionDrainLock;
   createPlaceholderFn?: typeof createPlaceholder;
   getInstalledVersionFn?: typeof getInstalledVersion;
   getLatestVersionCachedFn?: typeof getLatestVersionCached;
@@ -132,6 +134,7 @@ export async function runSessionStartSetup(input: SessionStartInput, deps: Sessi
     isSessionWriteDisabledFn = isSessionWriteDisabled,
     isSessionWriteAuthErrorFn = isSessionWriteAuthError,
     markSessionWriteDisabledFn = markSessionWriteDisabled,
+    tryAcquireSessionDrainLockFn = tryAcquireSessionDrainLock,
     createPlaceholderFn = createPlaceholder,
     getInstalledVersionFn = getInstalledVersion,
     getLatestVersionCachedFn = getLatestVersionCached,
@@ -164,20 +167,27 @@ export async function runSessionStartSetup(input: SessionStartInput, deps: Sessi
         if (isSessionWriteDisabledFn(config.sessionsTableName)) {
           logFn(`sessions table disabled, skipping setup for "${config.sessionsTableName}"`);
         } else {
-          try {
-            await api.ensureSessionsTable(config.sessionsTableName);
-            const drain = await drainSessionQueuesFn(api, {
-              sessionsTable: config.sessionsTableName,
-            });
-            if (drain.flushedSessions > 0) {
-              logFn(`drained ${drain.flushedSessions} queued session(s), rows=${drain.rows}, batches=${drain.batches}`);
-            }
-          } catch (e: any) {
-            if (isSessionWriteAuthErrorFn(e)) {
-              markSessionWriteDisabledFn(config.sessionsTableName, e.message);
-              logFn(`sessions table unavailable, skipping setup: ${e.message}`);
-            } else {
-              throw e;
+          const releaseDrainLock = tryAcquireSessionDrainLockFn(config.sessionsTableName);
+          if (!releaseDrainLock) {
+            logFn(`sessions drain already in progress, skipping duplicate setup for "${config.sessionsTableName}"`);
+          } else {
+            try {
+              await api.ensureSessionsTable(config.sessionsTableName);
+              const drain = await drainSessionQueuesFn(api, {
+                sessionsTable: config.sessionsTableName,
+              });
+              if (drain.flushedSessions > 0) {
+                logFn(`drained ${drain.flushedSessions} queued session(s), rows=${drain.rows}, batches=${drain.batches}`);
+              }
+            } catch (e: any) {
+              if (isSessionWriteAuthErrorFn(e)) {
+                markSessionWriteDisabledFn(config.sessionsTableName, e.message);
+                logFn(`sessions table unavailable, skipping setup: ${e.message}`);
+              } else {
+                throw e;
+              }
+            } finally {
+              releaseDrainLock();
             }
           }
         }

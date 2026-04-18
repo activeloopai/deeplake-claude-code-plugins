@@ -49,6 +49,18 @@ function isDuplicateIndexError(error: unknown): boolean {
     message.includes("already exists");
 }
 
+function isSessionInsertQuery(sql: string): boolean {
+  return /^\s*insert\s+into\s+"[^"]+"\s*\(\s*id\s*,\s*path\s*,\s*filename\s*,\s*message\s*,/i.test(sql);
+}
+
+function isTransientHtml403(text: string): boolean {
+  const body = text.toLowerCase();
+  return body.includes("<html") ||
+    body.includes("403 forbidden") ||
+    body.includes("cloudflare") ||
+    body.includes("nginx");
+}
+
 function getIndexMarkerDir(): string {
   return process.env["HIVEMIND_INDEX_MARKER_DIR"] ?? join(tmpdir(), "hivemind-deeplake-indexes");
 }
@@ -155,7 +167,10 @@ export class DeeplakeApi {
         );
       }
       const text = await resp.text().catch(() => "");
-      if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
+      const retryable403 =
+        isSessionInsertQuery(sql) &&
+        (resp.status === 401 || (resp.status === 403 && (text.length === 0 || isTransientHtml403(text))));
+      if (attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
         log(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
         await sleep(delay);

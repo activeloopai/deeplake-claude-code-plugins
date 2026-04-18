@@ -144,6 +144,8 @@ describe("claude-code integration: session-start.js (sync hook)", () => {
     expect(ctx).toContain("Always read index.md first");
     expect(ctx).toContain("read that exact summary or session file directly");
     expect(ctx).toContain("Do NOT probe unrelated local paths");
+    expect(ctx).toContain("answer with the smallest exact phrase supported by memory");
+    expect(ctx).toContain("convert the final answer into an absolute month/date/year");
   });
 
   it("completes within 3s with no credentials (no server calls)", () => {

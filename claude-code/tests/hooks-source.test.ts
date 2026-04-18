@@ -546,6 +546,8 @@ describe("claude session start source", () => {
     expect(loggedIn).toContain("Logged in to Deeplake");
     expect(loggedIn).toContain("Hivemind v0.6.0");
     expect(loggedIn).toContain("resolve it against that session's own date/date_time metadata");
+    expect(loggedIn).toContain("convert the final answer into an absolute month/date/year");
+    expect(loggedIn).toContain("answer with the smallest exact phrase supported by memory");
     expect(loggedIn).toContain('Do NOT answer "not found"');
     expect(loggedOut).toContain("Not logged in to Deeplake");
     expect(loggedOut).toContain("update available");
@@ -668,6 +670,7 @@ describe("claude session start setup source", () => {
       isSessionWriteDisabledFn: vi.fn(() => false) as any,
       isSessionWriteAuthErrorFn: vi.fn(() => true) as any,
       markSessionWriteDisabledFn: markDisabled as any,
+      tryAcquireSessionDrainLockFn: vi.fn(() => (() => undefined)) as any,
       createPlaceholderFn: vi.fn(async () => undefined) as any,
       getInstalledVersionFn: vi.fn(() => "0.6.0") as any,
       getLatestVersionCachedFn: vi.fn(async () => "0.7.0") as any,
@@ -696,6 +699,7 @@ describe("claude session start setup source", () => {
         batches: 1,
       })) as any,
       isSessionWriteDisabledFn: vi.fn(() => false) as any,
+      tryAcquireSessionDrainLockFn: vi.fn(() => (() => undefined)) as any,
       createPlaceholderFn: vi.fn(async () => undefined) as any,
       getInstalledVersionFn: vi.fn(() => "0.6.0") as any,
       getLatestVersionCachedFn: vi.fn(async () => "0.6.0") as any,
@@ -721,6 +725,39 @@ describe("claude session start setup source", () => {
     expect(logFn).toHaveBeenCalledWith(expect.stringContaining("setup failed: boom"));
     expect(logFn).toHaveBeenCalledWith(expect.stringContaining("version check failed: offline"));
     expect(wikiLogFn).toHaveBeenCalledWith(expect.stringContaining("failed for s1: boom"));
+  });
+
+  it("skips duplicate queue drains while another session-start setup is already handling sessions", async () => {
+    const logFn = vi.fn();
+    const createPlaceholderFn = vi.fn(async () => undefined);
+    const ensureSessionsTable = vi.fn(async () => undefined);
+    const drainSessionQueuesFn = vi.fn(async () => ({
+      queuedSessions: 1,
+      flushedSessions: 1,
+      rows: 1,
+      batches: 1,
+    }));
+
+    await runSessionStartSetup({ session_id: "s1", cwd: "/repo" }, {
+      creds: baseCreds,
+      config: baseConfig,
+      createApi: vi.fn(() => ({
+        ensureTable: vi.fn(async () => undefined),
+        ensureSessionsTable,
+        query: vi.fn(async () => []),
+      }) as any),
+      isSessionWriteDisabledFn: vi.fn(() => false) as any,
+      tryAcquireSessionDrainLockFn: vi.fn(() => null) as any,
+      drainSessionQueuesFn: drainSessionQueuesFn as any,
+      createPlaceholderFn: createPlaceholderFn as any,
+      getInstalledVersionFn: vi.fn(() => null) as any,
+      logFn,
+    });
+
+    expect(ensureSessionsTable).not.toHaveBeenCalled();
+    expect(drainSessionQueuesFn).not.toHaveBeenCalled();
+    expect(createPlaceholderFn).toHaveBeenCalledTimes(1);
+    expect(logFn).toHaveBeenCalledWith(expect.stringContaining("sessions drain already in progress"));
   });
 
   it("handles capture-disabled, successful autoupdate, and skipped setup work", async () => {
@@ -762,6 +799,7 @@ describe("claude session start setup source", () => {
       }) as any),
       isSessionWriteDisabledFn: vi.fn(() => false) as any,
       isSessionWriteAuthErrorFn: vi.fn(() => false) as any,
+      tryAcquireSessionDrainLockFn: vi.fn(() => (() => undefined)) as any,
       createPlaceholderFn: createPlaceholderFn as any,
       getInstalledVersionFn: vi.fn(() => null) as any,
       wikiLogFn,
@@ -790,6 +828,7 @@ describe("claude session start setup source", () => {
         batches: 0,
       })) as any,
       isSessionWriteDisabledFn: vi.fn(() => false) as any,
+      tryAcquireSessionDrainLockFn: vi.fn(() => (() => undefined)) as any,
       createPlaceholderFn: createPlaceholderFn as any,
       getInstalledVersionFn: vi.fn(() => null) as any,
     });

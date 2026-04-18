@@ -306,7 +306,7 @@ function bundleDirFromImportMeta(importMetaUrl) {
 }
 
 // dist/src/hooks/session-queue.js
-import { appendFileSync as appendFileSync3, existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync3, readdirSync, renameSync as renameSync2, rmSync, statSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { appendFileSync as appendFileSync3, closeSync as closeSync2, existsSync as existsSync3, mkdirSync as mkdirSync3, openSync as openSync2, readFileSync as readFileSync3, readdirSync, renameSync as renameSync2, rmSync, statSync, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname2, join as join5 } from "node:path";
 import { homedir as homedir5 } from "node:os";
 var DEFAULT_QUEUE_DIR = join5(homedir5(), ".deeplake", "queue");

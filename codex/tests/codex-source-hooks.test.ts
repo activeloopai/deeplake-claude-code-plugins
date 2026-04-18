@@ -670,6 +670,8 @@ describe("codex session start source", () => {
     expect(loggedIn).toContain("Logged in to Deeplake");
     expect(loggedIn).toContain("Hivemind v0.6.0");
     expect(loggedIn).toContain("resolve it against that session's own date/date_time metadata");
+    expect(loggedIn).toContain("convert the final answer into an absolute month/date/year");
+    expect(loggedIn).toContain("answer with the smallest exact phrase supported by memory");
     expect(loggedIn).toContain('Do NOT answer "not found"');
     expect(loggedOut).toContain('Run: node "/tmp/auth-login.js" login');
   });
@@ -866,6 +868,7 @@ describe("codex session start setup source", () => {
       }) as any),
       isSessionWriteDisabledFn: vi.fn(() => false) as any,
       isSessionWriteAuthErrorFn: vi.fn(() => false) as any,
+      tryAcquireSessionDrainLockFn: vi.fn(() => (() => undefined)) as any,
       createPlaceholderFn: createPlaceholderFn as any,
       getInstalledVersionFn: vi.fn(() => null) as any,
       wikiLogFn,
@@ -904,6 +907,7 @@ describe("codex session start setup source", () => {
       isSessionWriteDisabledFn: vi.fn(() => false) as any,
       isSessionWriteAuthErrorFn: vi.fn(() => true) as any,
       markSessionWriteDisabledFn: vi.fn() as any,
+      tryAcquireSessionDrainLockFn: vi.fn(() => (() => undefined)) as any,
       createPlaceholderFn: placeholder as any,
       getInstalledVersionFn: vi.fn(() => "0.6.0") as any,
       getLatestVersionCachedFn: vi.fn(async () => "0.6.0") as any,
@@ -914,6 +918,44 @@ describe("codex session start setup source", () => {
     const query = vi.fn(async () => []);
     await createPlaceholder({ query } as any, "memory", "s2", "", "alice", "Acme", "default");
     expect(String(query.mock.calls[1]?.[0])).toContain("'unknown'");
+  });
+
+  it("skips duplicate queue drains while another codex session-start setup is already handling sessions", async () => {
+    const logFn = vi.fn();
+    const createPlaceholderFn = vi.fn(async () => undefined);
+    const ensureSessionsTable = vi.fn(async () => undefined);
+    const drainSessionQueuesFn = vi.fn(async () => ({
+      queuedSessions: 1,
+      flushedSessions: 1,
+      rows: 1,
+      batches: 1,
+    }));
+
+    await runCodexSessionStartSetup({
+      session_id: "s1",
+      cwd: "/repo",
+      hook_event_name: "SessionStart",
+      model: "gpt-5.2",
+    }, {
+      creds: baseCreds,
+      config: baseConfig,
+      createApi: vi.fn(() => ({
+        ensureTable: vi.fn(async () => undefined),
+        ensureSessionsTable,
+        query: vi.fn(async () => []),
+      }) as any),
+      isSessionWriteDisabledFn: vi.fn(() => false) as any,
+      tryAcquireSessionDrainLockFn: vi.fn(() => null) as any,
+      drainSessionQueuesFn: drainSessionQueuesFn as any,
+      createPlaceholderFn: createPlaceholderFn as any,
+      getInstalledVersionFn: vi.fn(() => null) as any,
+      logFn,
+    });
+
+    expect(ensureSessionsTable).not.toHaveBeenCalled();
+    expect(drainSessionQueuesFn).not.toHaveBeenCalled();
+    expect(createPlaceholderFn).toHaveBeenCalledTimes(1);
+    expect(logFn).toHaveBeenCalledWith(expect.stringContaining("sessions drain already in progress"));
   });
 });
 

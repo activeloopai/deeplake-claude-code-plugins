@@ -120,6 +120,13 @@ function isDuplicateIndexError(error) {
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   return message.includes("duplicate key value violates unique constraint") || message.includes("pg_class_relname_nsp_index") || message.includes("already exists");
 }
+function isSessionInsertQuery(sql) {
+  return /^\s*insert\s+into\s+"[^"]+"\s*\(\s*id\s*,\s*path\s*,\s*filename\s*,\s*message\s*,/i.test(sql);
+}
+function isTransientHtml403(text) {
+  const body = text.toLowerCase();
+  return body.includes("<html") || body.includes("403 forbidden") || body.includes("cloudflare") || body.includes("nginx");
+}
 function getIndexMarkerDir() {
   return process.env["HIVEMIND_INDEX_MARKER_DIR"] ?? join3(tmpdir(), "hivemind-deeplake-indexes");
 }
@@ -217,7 +224,8 @@ var DeeplakeApi = class {
         return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i) => [col, row[i]])));
       }
       const text = await resp.text().catch(() => "");
-      if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
+      const retryable403 = isSessionInsertQuery(sql) && (resp.status === 401 || resp.status === 403 && (text.length === 0 || isTransientHtml403(text)));
+      if (attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
         log2(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
         await sleep(delay);
@@ -517,7 +525,7 @@ function bundleDirFromImportMeta(importMetaUrl) {
 }
 
 // dist/src/hooks/session-queue.js
-import { appendFileSync as appendFileSync3, existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync3, readdirSync, renameSync, rmSync, statSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { appendFileSync as appendFileSync3, closeSync, existsSync as existsSync3, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync3, readdirSync, renameSync, rmSync, statSync, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname2, join as join5 } from "node:path";
 import { homedir as homedir4 } from "node:os";
 var DEFAULT_QUEUE_DIR = join5(homedir4(), ".deeplake", "queue");
