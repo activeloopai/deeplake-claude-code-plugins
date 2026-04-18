@@ -322,6 +322,69 @@ describe("claude pre-tool source", () => {
     });
     expect(fallback?.command).toContain('node "/tmp/deeplake-shell.js"');
   });
+
+  it("supports head, tail, wc -l, empty directories, and shell fallback after direct-query errors", async () => {
+    const contentReader = vi.fn(async () => "line1\nline2\nline3");
+
+    const headDecision = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "head -2 ~/.deeplake/memory/index.md" },
+      tool_use_id: "tu-6",
+    }, {
+      config: baseConfig,
+      readVirtualPathContentFn: contentReader as any,
+    });
+    expect(headDecision?.command).toContain("line1\\nline2");
+
+    const tailDecision = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "tail -2 ~/.deeplake/memory/index.md" },
+      tool_use_id: "tu-7",
+    }, {
+      config: baseConfig,
+      readVirtualPathContentFn: contentReader as any,
+    });
+    expect(tailDecision?.command).toContain("line2\\nline3");
+
+    const wcDecision = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "wc -l ~/.deeplake/memory/index.md" },
+      tool_use_id: "tu-8",
+    }, {
+      config: baseConfig,
+      readVirtualPathContentFn: contentReader as any,
+    });
+    expect(wcDecision?.command).toContain("3 /index.md");
+
+    const emptyDir = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Glob",
+      tool_input: { path: "~/.deeplake/memory/empty" },
+      tool_use_id: "tu-9",
+    }, {
+      config: baseConfig,
+      listVirtualPathRowsFn: vi.fn(async () => []) as any,
+    });
+    expect(emptyDir?.command).toContain("(empty directory)");
+
+    const fallback = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Grep",
+      tool_input: {
+        pattern: "needle",
+        path: "~/.deeplake/memory/index.md",
+      },
+      tool_use_id: "tu-10",
+    }, {
+      config: baseConfig,
+      handleGrepDirectFn: vi.fn(async () => { throw new Error("boom"); }) as any,
+      shellBundle: "/tmp/deeplake-shell.js",
+    });
+    expect(fallback?.description).toContain("DeepLake shell");
+  });
 });
 
 describe("claude session start source", () => {
@@ -359,6 +422,20 @@ describe("claude session start source", () => {
 
     expect(result?.hookSpecificOutput.additionalContext).toContain("Logged in to Deeplake");
     expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs unauthenticated startup and still returns context", async () => {
+    const logFn = vi.fn();
+    const result = await runSessionStartHook({}, {
+      creds: null,
+      currentVersion: null,
+      latestVersion: null,
+      authCommand: "/tmp/auth-login.js",
+      logFn,
+    });
+
+    expect(result?.hookSpecificOutput.additionalContext).toContain("Not logged in to Deeplake");
+    expect(logFn).toHaveBeenCalledWith(expect.stringContaining("no credentials"));
   });
 });
 
@@ -427,6 +504,52 @@ describe("claude session start setup source", () => {
     });
     expect(markDisabled).toHaveBeenCalledTimes(1);
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining("update available"));
+  });
+
+  it("backfills usernames, logs drained queues, and handles setup/version failures", async () => {
+    const save = vi.fn();
+    const logFn = vi.fn();
+    const wikiLogFn = vi.fn();
+    await runSessionStartSetup({ session_id: "s1", cwd: "/repo" }, {
+      creds: { ...baseCreds, userName: undefined, autoupdate: true },
+      saveCredentialsFn: save as any,
+      config: baseConfig,
+      createApi: vi.fn(() => ({
+        ensureTable: vi.fn(async () => undefined),
+        ensureSessionsTable: vi.fn(async () => undefined),
+        query: vi.fn(async () => []),
+      }) as any),
+      drainSessionQueuesFn: vi.fn(async () => ({
+        queuedSessions: 1,
+        flushedSessions: 1,
+        rows: 3,
+        batches: 1,
+      })) as any,
+      createPlaceholderFn: vi.fn(async () => undefined) as any,
+      getInstalledVersionFn: vi.fn(() => "0.6.0") as any,
+      getLatestVersionCachedFn: vi.fn(async () => "0.6.0") as any,
+      logFn,
+      wikiLogFn,
+    });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(logFn).toHaveBeenCalledWith(expect.stringContaining("drained 1 queued session"));
+    expect(logFn).toHaveBeenCalledWith("version up to date: 0.6.0");
+    expect(wikiLogFn).not.toHaveBeenCalledWith(expect.stringContaining("failed"));
+
+    await runSessionStartSetup({ session_id: "s1", cwd: "/repo" }, {
+      creds: baseCreds,
+      config: baseConfig,
+      createApi: vi.fn(() => ({
+        ensureTable: vi.fn(async () => { throw new Error("boom"); }),
+      }) as any),
+      getInstalledVersionFn: vi.fn(() => "0.6.0") as any,
+      getLatestVersionCachedFn: vi.fn(async () => { throw new Error("offline"); }) as any,
+      logFn,
+      wikiLogFn,
+    });
+    expect(logFn).toHaveBeenCalledWith(expect.stringContaining("setup failed: boom"));
+    expect(logFn).toHaveBeenCalledWith(expect.stringContaining("version check failed: offline"));
+    expect(wikiLogFn).toHaveBeenCalledWith(expect.stringContaining("failed for s1: boom"));
   });
 });
 

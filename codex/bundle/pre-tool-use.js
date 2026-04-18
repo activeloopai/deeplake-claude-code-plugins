@@ -1,22 +1,21 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/codex/pre-tool-use.js
-import { existsSync as existsSync2 } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join as join3 } from "node:path";
+import { existsSync as existsSync2 } from "node:fs";
+import { join as join3, dirname } from "node:path";
 import { homedir as homedir3 } from "node:os";
-import { fileURLToPath } from "node:url";
-import { dirname } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // dist/src/utils/stdin.js
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let data = "";
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => data += chunk);
     process.stdin.on("end", () => {
       try {
-        resolve(JSON.parse(data));
+        resolve2(JSON.parse(data));
       } catch (err) {
         reject(new Error(`Failed to parse hook input: ${err}`));
       }
@@ -106,7 +105,7 @@ var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 var Semaphore = class {
   max;
@@ -120,7 +119,7 @@ var Semaphore = class {
       this.active++;
       return;
     }
-    await new Promise((resolve) => this.waiting.push(resolve));
+    await new Promise((resolve2) => this.waiting.push(resolve2));
   }
   release() {
     this.active--;
@@ -823,12 +822,26 @@ function dedupeRowsByPath(rows) {
   return unique;
 }
 
+// dist/src/utils/direct-run.js
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+function isDirectRun(metaUrl) {
+  const entry = process.argv[1];
+  if (!entry)
+    return false;
+  try {
+    return resolve(fileURLToPath(metaUrl)) === resolve(entry);
+  } catch {
+    return false;
+  }
+}
+
 // dist/src/hooks/codex/pre-tool-use.js
 var log3 = (msg) => log("codex-pre", msg);
 var MEMORY_PATH = join3(homedir3(), ".deeplake", "memory");
 var TILDE_PATH = "~/.deeplake/memory";
 var HOME_VAR_PATH = "$HOME/.deeplake/memory";
-var __bundleDir = dirname(fileURLToPath(import.meta.url));
+var __bundleDir = dirname(fileURLToPath2(import.meta.url));
 var SHELL_BUNDLE = existsSync2(join3(__bundleDir, "shell", "deeplake-shell.js")) ? join3(__bundleDir, "shell", "deeplake-shell.js") : join3(__bundleDir, "..", "shell", "deeplake-shell.js");
 var SAFE_BUILTINS = /* @__PURE__ */ new Set([
   "cat",
@@ -941,131 +954,131 @@ function touchesMemory(cmd) {
 function rewritePaths(cmd) {
   return cmd.replace(new RegExp(MEMORY_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?", "g"), "/").replace(/~\/.deeplake\/memory\/?/g, "/").replace(/\$HOME\/.deeplake\/memory\/?/g, "/").replace(/"\$HOME\/.deeplake\/memory\/?"/g, '"/"');
 }
-function blockWithContent(content) {
-  process.stderr.write(content);
-  process.exit(2);
+function buildUnsupportedGuidance() {
+  return "This command is not supported for ~/.deeplake/memory/ operations. Only bash builtins are available: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. Do NOT use python, python3, node, curl, or other interpreters. Rewrite your command using only bash tools and retry.";
 }
-function runVirtualShell(cmd) {
+function runVirtualShell(cmd, shellBundle = SHELL_BUNDLE, logFn = log3) {
   try {
-    return execFileSync("node", [SHELL_BUNDLE, "-c", cmd], {
+    return execFileSync("node", [shellBundle, "-c", cmd], {
       encoding: "utf-8",
       timeout: 1e4,
       env: { ...process.env },
       stdio: ["pipe", "pipe", "pipe"]
-      // capture stderr instead of inheriting
     }).trim();
   } catch (e) {
-    log3(`virtual shell failed: ${e.message}`);
+    logFn(`virtual shell failed: ${e.message}`);
     return "";
   }
 }
-async function main() {
-  const input = await readStdin();
+function buildIndexContent(rows) {
+  const lines = ["# Memory Index", "", `${rows.length} sessions:`, ""];
+  for (const row of rows) {
+    const path = row["path"];
+    const project = row["project"] || "";
+    const description = (row["description"] || "").slice(0, 120);
+    const date = (row["creation_date"] || "").slice(0, 10);
+    lines.push(`- [${path}](${path}) ${date} ${project ? `[${project}]` : ""} ${description}`);
+  }
+  return lines.join("\n");
+}
+async function processCodexPreToolUse(input, deps = {}) {
+  const { config = loadConfig(), createApi = (table, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table), readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, handleGrepDirectFn = handleGrepDirect, runVirtualShellFn = runVirtualShell, shellBundle = SHELL_BUNDLE, logFn = log3 } = deps;
   const cmd = input.tool_input?.command ?? "";
-  log3(`hook fired: cmd=${cmd}`);
+  logFn(`hook fired: cmd=${cmd}`);
   if (!touchesMemory(cmd))
-    return;
+    return { action: "pass" };
   const rewritten = rewritePaths(cmd);
   if (!isSafe(rewritten)) {
-    const guidance = "This command is not supported for ~/.deeplake/memory/ operations. Only bash builtins are available: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. Do NOT use python, python3, node, curl, or other interpreters. Rewrite your command using only bash tools and retry.";
-    log3(`unsupported command, returning guidance: ${rewritten}`);
-    process.stdout.write(guidance);
-    process.exit(0);
+    const guidance = buildUnsupportedGuidance();
+    logFn(`unsupported command, returning guidance: ${rewritten}`);
+    return {
+      action: "guide",
+      output: guidance,
+      rewrittenCommand: rewritten
+    };
   }
-  const config = loadConfig();
   if (config) {
     const table = process.env["HIVEMIND_TABLE"] ?? "memory";
-    const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
+    const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
+    const api = createApi(table, config);
     try {
-      {
-        let virtualPath = null;
-        let lineLimit = 0;
-        let fromEnd = false;
-        const catCmd = rewritten.replace(/\s+2>\S+/g, "").trim();
-        const catPipeHead = catCmd.match(/^cat\s+(\S+?)\s*(?:\|[^|]*)*\|\s*head\s+(?:-n?\s*)?(-?\d+)\s*$/);
-        if (catPipeHead) {
-          virtualPath = catPipeHead[1];
-          lineLimit = Math.abs(parseInt(catPipeHead[2], 10));
-        }
-        if (!virtualPath) {
-          const catMatch = catCmd.match(/^cat\s+(\S+)\s*$/);
-          if (catMatch)
-            virtualPath = catMatch[1];
-        }
-        if (!virtualPath) {
-          const headMatch = rewritten.match(/^head\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ?? rewritten.match(/^head\s+(\S+)\s*$/);
-          if (headMatch) {
-            if (headMatch[2]) {
-              virtualPath = headMatch[2];
-              lineLimit = Math.abs(parseInt(headMatch[1], 10));
-            } else {
-              virtualPath = headMatch[1];
-              lineLimit = 10;
-            }
+      let virtualPath = null;
+      let lineLimit = 0;
+      let fromEnd = false;
+      const catCmd = rewritten.replace(/\s+2>\S+/g, "").trim();
+      const catPipeHead = catCmd.match(/^cat\s+(\S+?)\s*(?:\|[^|]*)*\|\s*head\s+(?:-n?\s*)?(-?\d+)\s*$/);
+      if (catPipeHead) {
+        virtualPath = catPipeHead[1];
+        lineLimit = Math.abs(parseInt(catPipeHead[2], 10));
+      }
+      if (!virtualPath) {
+        const catMatch = catCmd.match(/^cat\s+(\S+)\s*$/);
+        if (catMatch)
+          virtualPath = catMatch[1];
+      }
+      if (!virtualPath) {
+        const headMatch = rewritten.match(/^head\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ?? rewritten.match(/^head\s+(\S+)\s*$/);
+        if (headMatch) {
+          if (headMatch[2]) {
+            virtualPath = headMatch[2];
+            lineLimit = Math.abs(parseInt(headMatch[1], 10));
+          } else {
+            virtualPath = headMatch[1];
+            lineLimit = 10;
           }
         }
-        if (!virtualPath) {
-          const tailMatch = rewritten.match(/^tail\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ?? rewritten.match(/^tail\s+(\S+)\s*$/);
-          if (tailMatch) {
-            fromEnd = true;
-            if (tailMatch[2]) {
-              virtualPath = tailMatch[2];
-              lineLimit = Math.abs(parseInt(tailMatch[1], 10));
-            } else {
-              virtualPath = tailMatch[1];
-              lineLimit = 10;
-            }
+      }
+      if (!virtualPath) {
+        const tailMatch = rewritten.match(/^tail\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ?? rewritten.match(/^tail\s+(\S+)\s*$/);
+        if (tailMatch) {
+          fromEnd = true;
+          if (tailMatch[2]) {
+            virtualPath = tailMatch[2];
+            lineLimit = Math.abs(parseInt(tailMatch[1], 10));
+          } else {
+            virtualPath = tailMatch[1];
+            lineLimit = 10;
           }
         }
-        if (!virtualPath) {
-          const wcMatch = rewritten.match(/^wc\s+-l\s+(\S+)\s*$/);
-          if (wcMatch) {
-            virtualPath = wcMatch[1];
-            lineLimit = -1;
-          }
+      }
+      if (!virtualPath) {
+        const wcMatch = rewritten.match(/^wc\s+-l\s+(\S+)\s*$/);
+        if (wcMatch) {
+          virtualPath = wcMatch[1];
+          lineLimit = -1;
         }
-        if (virtualPath && !virtualPath.endsWith("/")) {
-          const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
-          log3(`direct read: ${virtualPath}`);
-          let content = await readVirtualPathContent(api, table, sessionsTable, virtualPath);
-          if (content === null && virtualPath === "/index.md") {
-            const idxRows = await api.query(`SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`);
-            const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
-            for (const r of idxRows) {
-              const p = r["path"];
-              const proj = r["project"] || "";
-              const desc = (r["description"] || "").slice(0, 120);
-              const date = (r["creation_date"] || "").slice(0, 10);
-              lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
-            }
-            content = lines.join("\n");
+      }
+      if (virtualPath && !virtualPath.endsWith("/")) {
+        logFn(`direct read: ${virtualPath}`);
+        let content = await readVirtualPathContentFn(api, table, sessionsTable, virtualPath);
+        if (content === null && virtualPath === "/index.md") {
+          const idxRows = await api.query(`SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`);
+          content = buildIndexContent(idxRows);
+        }
+        if (content !== null) {
+          if (lineLimit === -1) {
+            return { action: "block", output: `${content.split("\n").length} ${virtualPath}`, rewrittenCommand: rewritten };
           }
-          if (content !== null) {
-            if (lineLimit === -1) {
-              blockWithContent(`${content.split("\n").length} ${virtualPath}`);
-            }
-            if (lineLimit > 0) {
-              const lines = content.split("\n");
-              content = fromEnd ? lines.slice(-lineLimit).join("\n") : lines.slice(0, lineLimit).join("\n");
-            }
-            blockWithContent(content);
+          if (lineLimit > 0) {
+            const lines = content.split("\n");
+            content = fromEnd ? lines.slice(-lineLimit).join("\n") : lines.slice(0, lineLimit).join("\n");
           }
+          return { action: "block", output: content, rewrittenCommand: rewritten };
         }
       }
       const lsMatch = rewritten.match(/^ls\s+(?:-[a-zA-Z]+\s+)*(\S+)?\s*$/);
       if (lsMatch) {
         const dir = (lsMatch[1] ?? "/").replace(/\/+$/, "") || "/";
         const isLong = /\s-[a-zA-Z]*l/.test(rewritten);
-        log3(`direct ls: ${dir}`);
-        const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
-        const rows = await listVirtualPathRows(api, table, sessionsTable, dir);
+        logFn(`direct ls: ${dir}`);
+        const rows = await listVirtualPathRowsFn(api, table, sessionsTable, dir);
         const entries = /* @__PURE__ */ new Map();
-        const prefix = dir === "/" ? "/" : dir + "/";
+        const prefix = dir === "/" ? "/" : `${dir}/`;
         for (const row of rows) {
-          const p = row["path"];
-          if (!p.startsWith(prefix) && dir !== "/")
+          const path = row["path"];
+          if (!path.startsWith(prefix) && dir !== "/")
             continue;
-          const rest = dir === "/" ? p.slice(1) : p.slice(prefix.length);
+          const rest = dir === "/" ? path.slice(1) : path.slice(prefix.length);
           const slash = rest.indexOf("/");
           const name = slash === -1 ? rest : rest.slice(0, slash);
           if (!name)
@@ -1089,48 +1102,74 @@ async function main() {
               lines.push(name + (info.isDir ? "/" : ""));
             }
           }
-          blockWithContent(lines.join("\n"));
-        } else {
-          blockWithContent(`ls: cannot access '${dir}': No such file or directory`);
+          return { action: "block", output: lines.join("\n"), rewrittenCommand: rewritten };
         }
+        return {
+          action: "block",
+          output: `ls: cannot access '${dir}': No such file or directory`,
+          rewrittenCommand: rewritten
+        };
       }
-      {
-        const findMatch = rewritten.match(/^find\s+(\S+)\s+(?:-type\s+\S+\s+)?-name\s+'([^']+)'/);
-        if (findMatch) {
-          const dir = findMatch[1].replace(/\/+$/, "") || "/";
-          const namePattern = sqlLike(findMatch[2]).replace(/\*/g, "%").replace(/\?/g, "_");
-          const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
-          log3(`direct find: ${dir} -name '${findMatch[2]}'`);
-          const paths = await findVirtualPaths(api, table, sessionsTable, dir, namePattern);
-          let result2 = paths.join("\n") || "";
-          if (/\|\s*wc\s+-l\s*$/.test(rewritten)) {
-            result2 = String(paths.length);
-          }
-          blockWithContent(result2 || "(no matches)");
-        }
+      const findMatch = rewritten.match(/^find\s+(\S+)\s+(?:-type\s+\S+\s+)?-name\s+'([^']+)'/);
+      if (findMatch) {
+        const dir = findMatch[1].replace(/\/+$/, "") || "/";
+        const namePattern = sqlLike(findMatch[2]).replace(/\*/g, "%").replace(/\?/g, "_");
+        logFn(`direct find: ${dir} -name '${findMatch[2]}'`);
+        const paths = await findVirtualPathsFn(api, table, sessionsTable, dir, namePattern);
+        let result2 = paths.join("\n") || "";
+        if (/\|\s*wc\s+-l\s*$/.test(rewritten))
+          result2 = String(paths.length);
+        return {
+          action: "block",
+          output: result2 || "(no matches)",
+          rewrittenCommand: rewritten
+        };
       }
       const grepParams = parseBashGrep(rewritten);
       if (grepParams) {
-        const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
-        log3(`direct grep: pattern=${grepParams.pattern} path=${grepParams.targetPath}`);
-        const result2 = await handleGrepDirect(api, table, sessionsTable, grepParams);
+        logFn(`direct grep: pattern=${grepParams.pattern} path=${grepParams.targetPath}`);
+        const result2 = await handleGrepDirectFn(api, table, sessionsTable, grepParams);
         if (result2 !== null) {
-          blockWithContent(result2);
+          return { action: "block", output: result2, rewrittenCommand: rewritten };
         }
       }
     } catch (e) {
-      log3(`direct query failed, falling back to shell: ${e.message}`);
+      logFn(`direct query failed, falling back to shell: ${e.message}`);
     }
   }
-  log3(`intercepted \u2192 running via virtual shell: ${rewritten}`);
-  const result = runVirtualShell(rewritten);
-  if (result) {
-    blockWithContent(result);
-  } else {
-    blockWithContent("[Deeplake Memory] Command returned empty or the file does not exist in cloud storage.");
-  }
+  logFn(`intercepted \u2192 running via virtual shell: ${rewritten}`);
+  const result = runVirtualShellFn(rewritten, shellBundle, logFn);
+  return {
+    action: "block",
+    output: result || "[Deeplake Memory] Command returned empty or the file does not exist in cloud storage.",
+    rewrittenCommand: rewritten
+  };
 }
-main().catch((e) => {
-  log3(`fatal: ${e.message}`);
-  process.exit(0);
-});
+async function main() {
+  const input = await readStdin();
+  const decision = await processCodexPreToolUse(input);
+  if (decision.action === "pass")
+    return;
+  if (decision.action === "guide") {
+    if (decision.output)
+      process.stdout.write(decision.output);
+    process.exit(0);
+  }
+  if (decision.output)
+    process.stderr.write(decision.output);
+  process.exit(2);
+}
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => {
+    log3(`fatal: ${e.message}`);
+    process.exit(0);
+  });
+}
+export {
+  buildUnsupportedGuidance,
+  isSafe,
+  processCodexPreToolUse,
+  rewritePaths,
+  runVirtualShell,
+  touchesMemory
+};

@@ -225,6 +225,7 @@ export async function runCaptureHook(input: HookInput, deps: CaptureHookDeps = {
   return { status: "queued", entry };
 }
 
+/* c8 ignore start */
 async function main(): Promise<void> {
   const input = await readStdin<HookInput>();
   await runCaptureHook(input);
@@ -233,3 +234,4 @@ async function main(): Promise<void> {
 if (isDirectRun(import.meta.url)) {
   main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
 }
+/* c8 ignore stop */

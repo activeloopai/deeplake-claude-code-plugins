@@ -2,13 +2,13 @@
 
 // dist/src/utils/stdin.js
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let data = "";
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => data += chunk);
     process.stdin.on("end", () => {
       try {
-        resolve(JSON.parse(data));
+        resolve2(JSON.parse(data));
       } catch (err) {
         reject(new Error(`Failed to parse hook input: ${err}`));
       }
@@ -104,7 +104,7 @@ var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 var Semaphore = class {
   max;
@@ -118,7 +118,7 @@ var Semaphore = class {
       this.active++;
       return;
     }
-    await new Promise((resolve) => this.waiting.push(resolve));
+    await new Promise((resolve2) => this.waiting.push(resolve2));
   }
   release() {
     this.active--;
@@ -324,6 +324,20 @@ var DeeplakeApi = class {
   }
 };
 
+// dist/src/utils/direct-run.js
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+function isDirectRun(metaUrl) {
+  const entry = process.argv[1];
+  if (!entry)
+    return false;
+  try {
+    return resolve(fileURLToPath(metaUrl)) === resolve(entry);
+  } catch {
+    return false;
+  }
+}
+
 // dist/src/hooks/summary-state.js
 import { readFileSync as readFileSync2, writeFileSync, writeSync, mkdirSync, renameSync, existsSync as existsSync2, unlinkSync, openSync, closeSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
@@ -445,7 +459,7 @@ function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
 
 // dist/src/hooks/spawn-wiki-worker.js
 import { spawn, execSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { dirname, join as join4 } from "node:path";
 import { writeFileSync as writeFileSync2, mkdirSync as mkdirSync2, appendFileSync as appendFileSync2 } from "node:fs";
 import { homedir as homedir4, tmpdir } from "node:os";
@@ -549,7 +563,7 @@ function spawnWikiWorker(opts) {
   wikiLog(`${reason}: spawned summary worker for ${sessionId}`);
 }
 function bundleDirFromImportMeta(importMetaUrl) {
-  return dirname(fileURLToPath(importMetaUrl));
+  return dirname(fileURLToPath2(importMetaUrl));
 }
 
 // dist/src/hooks/session-queue.js
@@ -598,7 +612,7 @@ function buildSessionInsertSql(sessionsTable, rows) {
     throw new Error("buildSessionInsertSql: rows must not be empty");
   const table = sqlIdent(sessionsTable);
   const values = rows.map((row) => {
-    const jsonForSql = row.message.replace(/'/g, "''");
+    const jsonForSql = row.message.replace(/\\/g, "\\\\").replace(/'/g, "''");
     return `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, '${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', '${sqlStr(row.agent)}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`;
   }).join(", ");
   return `INSERT INTO "${table}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ${values}`;
@@ -725,13 +739,8 @@ function readQueuedRows(path) {
 function requeueInflight(queuePath, inflightPath) {
   if (!existsSync3(inflightPath))
     return;
-  if (!existsSync3(queuePath)) {
-    renameSync2(inflightPath, queuePath);
-    return;
-  }
   const inflight = readFileSync3(inflightPath, "utf-8");
-  const queued = readFileSync3(queuePath, "utf-8");
-  writeFileSync3(queuePath, `${inflight}${queued}`);
+  appendFileSync3(queuePath, inflight);
   rmSync(inflightPath, { force: true });
 }
 function recoverStaleInflight(queuePath, inflightPath, staleInflightMs) {
@@ -792,22 +801,13 @@ async function waitForInflightToClear(inflightPath, waitIfBusyMs) {
   }
 }
 function sleep2(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 
 // dist/src/hooks/capture.js
 var log3 = (msg) => log("capture", msg);
 var CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
-async function main() {
-  if (!CAPTURE)
-    return;
-  const input = await readStdin();
-  const config = loadConfig();
-  if (!config) {
-    log3("no config");
-    return;
-  }
-  const ts = (/* @__PURE__ */ new Date()).toISOString();
+function buildCaptureEntry(input, timestamp) {
   const meta = {
     session_id: input.session_id,
     transcript_path: input.transcript_path,
@@ -816,20 +816,18 @@ async function main() {
     hook_event_name: input.hook_event_name,
     agent_id: input.agent_id,
     agent_type: input.agent_type,
-    timestamp: ts
+    timestamp
   };
-  let entry;
   if (input.prompt !== void 0) {
-    log3(`user session=${input.session_id}`);
-    entry = {
+    return {
       id: crypto.randomUUID(),
       ...meta,
       type: "user_message",
       content: input.prompt
     };
-  } else if (input.tool_name !== void 0) {
-    log3(`tool=${input.tool_name} session=${input.session_id}`);
-    entry = {
+  }
+  if (input.tool_name !== void 0) {
+    return {
       id: crypto.randomUUID(),
       ...meta,
       type: "tool_call",
@@ -838,23 +836,67 @@ async function main() {
       tool_input: JSON.stringify(input.tool_input),
       tool_response: JSON.stringify(input.tool_response)
     };
-  } else if (input.last_assistant_message !== void 0) {
-    log3(`assistant session=${input.session_id}`);
-    entry = {
+  }
+  if (input.last_assistant_message !== void 0) {
+    return {
       id: crypto.randomUUID(),
       ...meta,
       type: "assistant_message",
       content: input.last_assistant_message,
       ...input.agent_transcript_path ? { agent_transcript_path: input.agent_transcript_path } : {}
     };
-  } else {
-    log3("unknown event, skipping");
-    return;
   }
+  return null;
+}
+function maybeTriggerPeriodicSummary(sessionId, cwd, config, deps = {}) {
+  const { bundleDir = bundleDirFromImportMeta(import.meta.url), wikiWorker = process.env.HIVEMIND_WIKI_WORKER === "1", logFn = log3, bumpTotalCountFn = bumpTotalCount, loadTriggerConfigFn = loadTriggerConfig, shouldTriggerFn = shouldTrigger, tryAcquireLockFn = tryAcquireLock, wikiLogFn = wikiLog, spawnWikiWorkerFn = spawnWikiWorker } = deps;
+  if (wikiWorker)
+    return;
+  try {
+    const state = bumpTotalCountFn(sessionId);
+    const cfg = loadTriggerConfigFn();
+    if (!shouldTriggerFn(state, cfg))
+      return;
+    if (!tryAcquireLockFn(sessionId)) {
+      logFn(`periodic trigger suppressed (lock held) session=${sessionId}`);
+      return;
+    }
+    wikiLogFn(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
+    spawnWikiWorkerFn({
+      config,
+      sessionId,
+      cwd,
+      bundleDir,
+      reason: "Periodic"
+    });
+  } catch (e) {
+    logFn(`periodic trigger error: ${e.message}`);
+  }
+}
+async function runCaptureHook(input, deps = {}) {
+  const { captureEnabled = CAPTURE, config = loadConfig(), now = () => (/* @__PURE__ */ new Date()).toISOString(), createApi = (activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, activeConfig.sessionsTableName), appendQueuedSessionRowFn = appendQueuedSessionRow, buildQueuedSessionRowFn = buildQueuedSessionRow, flushSessionQueueFn = flushSessionQueue, maybeTriggerPeriodicSummaryFn = maybeTriggerPeriodicSummary, logFn = log3 } = deps;
+  if (!captureEnabled)
+    return { status: "disabled" };
+  if (!config) {
+    logFn("no config");
+    return { status: "no_config" };
+  }
+  const ts = now();
+  const entry = buildCaptureEntry(input, ts);
+  if (!entry) {
+    logFn("unknown event, skipping");
+    return { status: "ignored" };
+  }
+  if (input.prompt !== void 0)
+    logFn(`user session=${input.session_id}`);
+  else if (input.tool_name !== void 0)
+    logFn(`tool=${input.tool_name} session=${input.session_id}`);
+  else
+    logFn(`assistant session=${input.session_id}`);
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-  appendQueuedSessionRow(buildQueuedSessionRow({
+  appendQueuedSessionRowFn(buildQueuedSessionRowFn({
     sessionPath,
     line,
     userName: config.userName,
@@ -863,43 +905,31 @@ async function main() {
     agent: "claude_code",
     timestamp: ts
   }));
-  log3(`queued ${input.hook_event_name ?? "event"} for ${sessionPath}`);
-  maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
+  logFn(`queued ${input.hook_event_name ?? "event"} for ${sessionPath}`);
+  maybeTriggerPeriodicSummaryFn(input.session_id, input.cwd ?? "", config);
   if (input.hook_event_name === "Stop" || input.hook_event_name === "SubagentStop") {
-    const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.sessionsTableName);
-    const result = await flushSessionQueue(api, {
+    const result = await flushSessionQueueFn(createApi(config), {
       sessionId: input.session_id,
       sessionsTable: config.sessionsTableName,
       drainAll: true
     });
-    log3(`flush ${result.status}: rows=${result.rows} batches=${result.batches}`);
+    logFn(`flush ${result.status}: rows=${result.rows} batches=${result.batches}`);
+    return { status: "queued", entry, flushStatus: result.status };
   }
+  return { status: "queued", entry };
 }
-function maybeTriggerPeriodicSummary(sessionId, cwd, config) {
-  if (process.env.HIVEMIND_WIKI_WORKER === "1")
-    return;
-  try {
-    const state = bumpTotalCount(sessionId);
-    const cfg = loadTriggerConfig();
-    if (!shouldTrigger(state, cfg))
-      return;
-    if (!tryAcquireLock(sessionId)) {
-      log3(`periodic trigger suppressed (lock held) session=${sessionId}`);
-      return;
-    }
-    wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
-    spawnWikiWorker({
-      config,
-      sessionId,
-      cwd,
-      bundleDir: bundleDirFromImportMeta(import.meta.url),
-      reason: "Periodic"
-    });
-  } catch (e) {
-    log3(`periodic trigger error: ${e.message}`);
-  }
+async function main() {
+  const input = await readStdin();
+  await runCaptureHook(input);
 }
-main().catch((e) => {
-  log3(`fatal: ${e.message}`);
-  process.exit(0);
-});
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => {
+    log3(`fatal: ${e.message}`);
+    process.exit(0);
+  });
+}
+export {
+  buildCaptureEntry,
+  maybeTriggerPeriodicSummary,
+  runCaptureHook
+};

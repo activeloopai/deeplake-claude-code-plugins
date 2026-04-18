@@ -341,6 +341,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
   return buildFallbackDecision(shellCmd, shellBundle);
 }
 
+/* c8 ignore start */
 async function main(): Promise<void> {
   const input = await readStdin<PreToolUseInput>();
   const decision = await processPreToolUse(input);
@@ -357,3 +358,4 @@ async function main(): Promise<void> {
 if (isDirectRun(import.meta.url)) {
   main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
 }
+/* c8 ignore stop */

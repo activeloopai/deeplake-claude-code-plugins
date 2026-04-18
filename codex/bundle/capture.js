@@ -2,13 +2,13 @@
 
 // dist/src/utils/stdin.js
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let data = "";
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => data += chunk);
     process.stdin.on("end", () => {
       try {
-        resolve(JSON.parse(data));
+        resolve2(JSON.parse(data));
       } catch (err) {
         reject(new Error(`Failed to parse hook input: ${err}`));
       }
@@ -64,6 +64,20 @@ function log(tag, msg) {
     return;
   appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
 `);
+}
+
+// dist/src/utils/direct-run.js
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+function isDirectRun(metaUrl) {
+  const entry = process.argv[1];
+  if (!entry)
+    return false;
+  try {
+    return resolve(fileURLToPath(metaUrl)) === resolve(entry);
+  } catch {
+    return false;
+  }
 }
 
 // dist/src/hooks/summary-state.js
@@ -187,7 +201,7 @@ function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
 
 // dist/src/hooks/codex/spawn-wiki-worker.js
 import { spawn, execSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { dirname, join as join4 } from "node:path";
 import { writeFileSync as writeFileSync2, mkdirSync as mkdirSync2, appendFileSync as appendFileSync2 } from "node:fs";
 import { homedir as homedir4, tmpdir } from "node:os";
@@ -288,7 +302,7 @@ function spawnCodexWikiWorker(opts) {
   wikiLog(`${reason}: spawned summary worker for ${sessionId}`);
 }
 function bundleDirFromImportMeta(importMetaUrl) {
-  return dirname(fileURLToPath(importMetaUrl));
+  return dirname(fileURLToPath2(importMetaUrl));
 }
 
 // dist/src/hooks/session-queue.js
@@ -334,16 +348,7 @@ function extractSessionId(sessionPath) {
 // dist/src/hooks/codex/capture.js
 var log2 = (msg) => log("codex-capture", msg);
 var CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
-async function main() {
-  if (!CAPTURE)
-    return;
-  const input = await readStdin();
-  const config = loadConfig();
-  if (!config) {
-    log2("no config");
-    return;
-  }
-  const ts = (/* @__PURE__ */ new Date()).toISOString();
+function buildCodexCaptureEntry(input, timestamp) {
   const meta = {
     session_id: input.session_id,
     transcript_path: input.transcript_path,
@@ -351,20 +356,18 @@ async function main() {
     hook_event_name: input.hook_event_name,
     model: input.model,
     turn_id: input.turn_id,
-    timestamp: ts
+    timestamp
   };
-  let entry;
   if (input.hook_event_name === "UserPromptSubmit" && input.prompt !== void 0) {
-    log2(`user session=${input.session_id}`);
-    entry = {
+    return {
       id: crypto.randomUUID(),
       ...meta,
       type: "user_message",
       content: input.prompt
     };
-  } else if (input.hook_event_name === "PostToolUse" && input.tool_name !== void 0) {
-    log2(`tool=${input.tool_name} session=${input.session_id}`);
-    entry = {
+  }
+  if (input.hook_event_name === "PostToolUse" && input.tool_name !== void 0) {
+    return {
       id: crypto.randomUUID(),
       ...meta,
       type: "tool_call",
@@ -373,14 +376,56 @@ async function main() {
       tool_input: JSON.stringify(input.tool_input),
       tool_response: JSON.stringify(input.tool_response)
     };
-  } else {
-    log2(`unknown event: ${input.hook_event_name}, skipping`);
-    return;
   }
+  return null;
+}
+function maybeTriggerPeriodicSummary(sessionId, cwd, config, deps = {}) {
+  const { bundleDir = bundleDirFromImportMeta(import.meta.url), wikiWorker = process.env.HIVEMIND_WIKI_WORKER === "1", logFn = log2, bumpTotalCountFn = bumpTotalCount, loadTriggerConfigFn = loadTriggerConfig, shouldTriggerFn = shouldTrigger, tryAcquireLockFn = tryAcquireLock, wikiLogFn = wikiLog, spawnCodexWikiWorkerFn = spawnCodexWikiWorker } = deps;
+  if (wikiWorker)
+    return;
+  try {
+    const state = bumpTotalCountFn(sessionId);
+    const cfg = loadTriggerConfigFn();
+    if (!shouldTriggerFn(state, cfg))
+      return;
+    if (!tryAcquireLockFn(sessionId)) {
+      logFn(`periodic trigger suppressed (lock held) session=${sessionId}`);
+      return;
+    }
+    wikiLogFn(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
+    spawnCodexWikiWorkerFn({
+      config,
+      sessionId,
+      cwd,
+      bundleDir,
+      reason: "Periodic"
+    });
+  } catch (e) {
+    logFn(`periodic trigger error: ${e.message}`);
+  }
+}
+async function runCodexCaptureHook(input, deps = {}) {
+  const { captureEnabled = CAPTURE, config = loadConfig(), now = () => (/* @__PURE__ */ new Date()).toISOString(), appendQueuedSessionRowFn = appendQueuedSessionRow, buildQueuedSessionRowFn = buildQueuedSessionRow, maybeTriggerPeriodicSummaryFn = maybeTriggerPeriodicSummary, logFn = log2 } = deps;
+  if (!captureEnabled)
+    return { status: "disabled" };
+  if (!config) {
+    logFn("no config");
+    return { status: "no_config" };
+  }
+  const ts = now();
+  const entry = buildCodexCaptureEntry(input, ts);
+  if (!entry) {
+    logFn(`unknown event: ${input.hook_event_name}, skipping`);
+    return { status: "ignored" };
+  }
+  if (input.hook_event_name === "UserPromptSubmit")
+    logFn(`user session=${input.session_id}`);
+  else
+    logFn(`tool=${input.tool_name} session=${input.session_id}`);
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-  appendQueuedSessionRow(buildQueuedSessionRow({
+  appendQueuedSessionRowFn(buildQueuedSessionRowFn({
     sessionPath,
     line,
     userName: config.userName,
@@ -389,34 +434,22 @@ async function main() {
     agent: "codex",
     timestamp: ts
   }));
-  log2(`queued ${input.hook_event_name} for ${sessionPath}`);
-  maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
+  logFn(`queued ${input.hook_event_name} for ${sessionPath}`);
+  maybeTriggerPeriodicSummaryFn(input.session_id, input.cwd ?? "", config);
+  return { status: "queued", entry };
 }
-function maybeTriggerPeriodicSummary(sessionId, cwd, config) {
-  if (process.env.HIVEMIND_WIKI_WORKER === "1")
-    return;
-  try {
-    const state = bumpTotalCount(sessionId);
-    const cfg = loadTriggerConfig();
-    if (!shouldTrigger(state, cfg))
-      return;
-    if (!tryAcquireLock(sessionId)) {
-      log2(`periodic trigger suppressed (lock held) session=${sessionId}`);
-      return;
-    }
-    wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
-    spawnCodexWikiWorker({
-      config,
-      sessionId,
-      cwd,
-      bundleDir: bundleDirFromImportMeta(import.meta.url),
-      reason: "Periodic"
-    });
-  } catch (e) {
-    log2(`periodic trigger error: ${e.message}`);
-  }
+async function main() {
+  const input = await readStdin();
+  await runCodexCaptureHook(input);
 }
-main().catch((e) => {
-  log2(`fatal: ${e.message}`);
-  process.exit(0);
-});
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => {
+    log2(`fatal: ${e.message}`);
+    process.exit(0);
+  });
+}
+export {
+  buildCodexCaptureEntry,
+  maybeTriggerPeriodicSummary,
+  runCodexCaptureHook
+};

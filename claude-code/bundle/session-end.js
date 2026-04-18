@@ -2,13 +2,13 @@
 
 // dist/src/utils/stdin.js
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let data = "";
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => data += chunk);
     process.stdin.on("end", () => {
       try {
-        resolve(JSON.parse(data));
+        resolve2(JSON.parse(data));
       } catch (err) {
         reject(new Error(`Failed to parse hook input: ${err}`));
       }
@@ -104,7 +104,7 @@ var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 var Semaphore = class {
   max;
@@ -118,7 +118,7 @@ var Semaphore = class {
       this.active++;
       return;
     }
-    await new Promise((resolve) => this.waiting.push(resolve));
+    await new Promise((resolve2) => this.waiting.push(resolve2));
   }
   release() {
     this.active--;
@@ -324,9 +324,23 @@ var DeeplakeApi = class {
   }
 };
 
+// dist/src/utils/direct-run.js
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+function isDirectRun(metaUrl) {
+  const entry = process.argv[1];
+  if (!entry)
+    return false;
+  try {
+    return resolve(fileURLToPath(metaUrl)) === resolve(entry);
+  } catch {
+    return false;
+  }
+}
+
 // dist/src/hooks/spawn-wiki-worker.js
 import { spawn, execSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { dirname, join as join3 } from "node:path";
 import { writeFileSync, mkdirSync, appendFileSync as appendFileSync2 } from "node:fs";
 import { homedir as homedir3, tmpdir } from "node:os";
@@ -430,7 +444,7 @@ function spawnWikiWorker(opts) {
   wikiLog(`${reason}: spawned summary worker for ${sessionId}`);
 }
 function bundleDirFromImportMeta(importMetaUrl) {
-  return dirname(fileURLToPath(importMetaUrl));
+  return dirname(fileURLToPath2(importMetaUrl));
 }
 
 // dist/src/hooks/session-queue.js
@@ -453,7 +467,7 @@ function buildSessionInsertSql(sessionsTable, rows) {
     throw new Error("buildSessionInsertSql: rows must not be empty");
   const table = sqlIdent(sessionsTable);
   const values = rows.map((row) => {
-    const jsonForSql = row.message.replace(/'/g, "''");
+    const jsonForSql = row.message.replace(/\\/g, "\\\\").replace(/'/g, "''");
     return `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, '${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', '${sqlStr(row.agent)}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`;
   }).join(", ");
   return `INSERT INTO "${table}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ${values}`;
@@ -576,13 +590,8 @@ function readQueuedRows(path) {
 function requeueInflight(queuePath, inflightPath) {
   if (!existsSync2(inflightPath))
     return;
-  if (!existsSync2(queuePath)) {
-    renameSync(inflightPath, queuePath);
-    return;
-  }
   const inflight = readFileSync2(inflightPath, "utf-8");
-  const queued = readFileSync2(queuePath, "utf-8");
-  writeFileSync2(queuePath, `${inflight}${queued}`);
+  appendFileSync3(queuePath, inflight);
   rmSync(inflightPath, { force: true });
 }
 function recoverStaleInflight(queuePath, inflightPath, staleInflightMs) {
@@ -643,44 +652,46 @@ async function waitForInflightToClear(inflightPath, waitIfBusyMs) {
   }
 }
 function sleep2(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 
 // dist/src/hooks/session-end.js
 var log3 = (msg) => log("session-end", msg);
-async function main() {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1")
-    return;
-  if ((process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) === "false")
-    return;
-  const input = await readStdin();
-  const sessionId = input.session_id;
-  const cwd = input.cwd ?? "";
-  if (!sessionId)
-    return;
-  const config = loadConfig();
+async function runSessionEndHook(input, deps = {}) {
+  const { wikiWorker = (process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1", captureEnabled = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false", config = loadConfig(), createApi = (activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, activeConfig.sessionsTableName), flushSessionQueueFn = flushSessionQueue, spawnWikiWorkerFn = spawnWikiWorker, wikiLogFn = wikiLog, bundleDir = bundleDirFromImportMeta(import.meta.url), logFn = log3 } = deps;
+  if (wikiWorker || !captureEnabled || !input.session_id)
+    return { status: "skipped" };
   if (!config) {
-    log3("no config");
-    return;
+    logFn("no config");
+    return { status: "no_config" };
   }
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.sessionsTableName);
-  const flush = await flushSessionQueue(api, {
-    sessionId,
+  const flush = await flushSessionQueueFn(createApi(config), {
+    sessionId: input.session_id,
     sessionsTable: config.sessionsTableName,
     waitIfBusyMs: 5e3,
     drainAll: true
   });
-  log3(`flush ${flush.status}: rows=${flush.rows} batches=${flush.batches}`);
-  wikiLog(`SessionEnd: triggering summary for ${sessionId}`);
-  spawnWikiWorker({
+  logFn(`flush ${flush.status}: rows=${flush.rows} batches=${flush.batches}`);
+  wikiLogFn(`SessionEnd: triggering summary for ${input.session_id}`);
+  spawnWikiWorkerFn({
     config,
-    sessionId,
-    cwd,
-    bundleDir: bundleDirFromImportMeta(import.meta.url),
+    sessionId: input.session_id,
+    cwd: input.cwd ?? "",
+    bundleDir,
     reason: "SessionEnd"
   });
+  return { status: "flushed", flushStatus: flush.status };
 }
-main().catch((e) => {
-  log3(`fatal: ${e.message}`);
-  process.exit(0);
-});
+async function main() {
+  const input = await readStdin();
+  await runSessionEndHook(input);
+}
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => {
+    log3(`fatal: ${e.message}`);
+    process.exit(0);
+  });
+}
+export {
+  runSessionEndHook
+};

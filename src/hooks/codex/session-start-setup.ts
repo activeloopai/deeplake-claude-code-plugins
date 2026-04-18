@@ -239,6 +239,7 @@ export async function runCodexSessionStartSetup(input: CodexSessionStartInput, d
   return { status: "complete" };
 }
 
+/* c8 ignore start */
 async function main(): Promise<void> {
   const input = await readStdin<CodexSessionStartInput>();
   await runCodexSessionStartSetup(input);
@@ -247,3 +248,4 @@ async function main(): Promise<void> {
 if (isDirectRun(import.meta.url)) {
   main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
 }
+/* c8 ignore stop */

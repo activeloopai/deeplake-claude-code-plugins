@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/session-start.js
-import { fileURLToPath } from "node:url";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { dirname as dirname2, join as join4 } from "node:path";
 
 // dist/src/commands/auth.js
@@ -28,13 +28,13 @@ function saveCredentials(creds) {
 
 // dist/src/utils/stdin.js
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let data = "";
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => data += chunk);
     process.stdin.on("end", () => {
       try {
-        resolve(JSON.parse(data));
+        resolve2(JSON.parse(data));
       } catch (err) {
         reject(new Error(`Failed to parse hook input: ${err}`));
       }
@@ -54,6 +54,20 @@ function log(tag, msg) {
     return;
   appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
 `);
+}
+
+// dist/src/utils/direct-run.js
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+function isDirectRun(metaUrl) {
+  const entry = process.argv[1];
+  if (!entry)
+    return false;
+  try {
+    return resolve(fileURLToPath(metaUrl)) === resolve(entry);
+  } catch {
+    return false;
+  }
 }
 
 // dist/src/hooks/version-check.js
@@ -87,7 +101,7 @@ function getInstalledVersion(bundleDir, pluginManifestDir) {
   return null;
 }
 function isNewer(latest, current) {
-  const parse = (v) => v.split(".").map(Number);
+  const parse = (v) => v.replace(/-.*$/, "").split(".").map(Number);
   const [la, lb, lc] = parse(latest);
   const [ca, cb, cc] = parse(current);
   return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
@@ -115,9 +129,9 @@ function readFreshCachedLatestVersion(url, ttlMs = DEFAULT_VERSION_CACHE_TTL_MS,
 
 // dist/src/hooks/session-start.js
 var log2 = (msg) => log("session-start", msg);
-var __bundleDir = dirname2(fileURLToPath(import.meta.url));
+var __bundleDir = dirname2(fileURLToPath2(import.meta.url));
 var AUTH_CMD = join4(__bundleDir, "commands", "auth-login.js");
-var context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
+var CLAUDE_SESSION_START_CONTEXT = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
 
 1. Your built-in memory (~/.claude/) \u2014 personal per-project notes
 2. Deeplake global memory (~/.deeplake/memory/) \u2014 global memory shared across all sessions, users, and agents in the org
@@ -151,53 +165,70 @@ LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty 
 
 Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
 var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
-async function main() {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1")
-    return;
-  await readStdin();
-  let creds = loadCredentials();
+function buildSessionStartAdditionalContext(args) {
+  const resolvedContext = CLAUDE_SESSION_START_CONTEXT.replace(/HIVEMIND_AUTH_CMD/g, args.authCommand);
+  let updateNotice = "";
+  if (args.currentVersion) {
+    if (args.latestVersion && isNewer(args.latestVersion, args.currentVersion)) {
+      updateNotice = `
+
+\u2B06\uFE0F Hivemind update available: ${args.currentVersion} \u2192 ${args.latestVersion}.`;
+    } else {
+      updateNotice = `
+
+\u2705 Hivemind v${args.currentVersion}`;
+    }
+  }
+  return args.creds?.token ? `${resolvedContext}
+
+Logged in to Deeplake as org: ${args.creds.orgName ?? args.creds.orgId} (workspace: ${args.creds.workspaceId ?? "default"})${updateNotice}` : `${resolvedContext}
+
+\u26A0\uFE0F Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${updateNotice}`;
+}
+async function runSessionStartHook(_input, deps = {}) {
+  const { wikiWorker = (process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1", creds = loadCredentials(), saveCredentialsFn = saveCredentials, currentVersion = getInstalledVersion(__bundleDir, ".claude-plugin"), latestVersion = currentVersion ? readFreshCachedLatestVersion(GITHUB_RAW_PKG, DEFAULT_VERSION_CACHE_TTL_MS) ?? null : null, authCommand = AUTH_CMD, logFn = log2 } = deps;
+  if (wikiWorker)
+    return null;
   if (!creds?.token) {
-    log2("no credentials found \u2014 run /hivemind:login to authenticate");
+    logFn("no credentials found \u2014 run /hivemind:login to authenticate");
   } else {
-    log2(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
+    logFn(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
     if (creds.token && !creds.userName) {
       try {
         const { userInfo } = await import("node:os");
         creds.userName = userInfo().username ?? "unknown";
-        saveCredentials(creds);
-        log2(`backfilled and persisted userName: ${creds.userName}`);
+        saveCredentialsFn(creds);
+        logFn(`backfilled and persisted userName: ${creds.userName}`);
       } catch {
       }
     }
   }
-  let updateNotice = "";
-  const current = getInstalledVersion(__bundleDir, ".claude-plugin");
-  if (current) {
-    const latest = readFreshCachedLatestVersion(GITHUB_RAW_PKG, DEFAULT_VERSION_CACHE_TTL_MS);
-    if (latest && isNewer(latest, current)) {
-      updateNotice = `
-
-\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}.`;
-    } else {
-      updateNotice = `
-
-\u2705 Hivemind v${current}`;
-    }
-  }
-  const resolvedContext = context.replace(/HIVEMIND_AUTH_CMD/g, AUTH_CMD);
-  const additionalContext = creds?.token ? `${resolvedContext}
-
-Logged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}` : `${resolvedContext}
-
-\u26A0\uFE0F Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${updateNotice}`;
-  console.log(JSON.stringify({
+  return {
     hookSpecificOutput: {
       hookEventName: "SessionStart",
-      additionalContext
+      additionalContext: buildSessionStartAdditionalContext({
+        authCommand,
+        creds,
+        currentVersion,
+        latestVersion
+      })
     }
-  }));
+  };
 }
-main().catch((e) => {
-  log2(`fatal: ${e.message}`);
-  process.exit(0);
-});
+async function main() {
+  await readStdin();
+  const result = await runSessionStartHook({});
+  if (result)
+    console.log(JSON.stringify(result));
+}
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => {
+    log2(`fatal: ${e.message}`);
+    process.exit(0);
+  });
+}
+export {
+  CLAUDE_SESSION_START_CONTEXT,
+  buildSessionStartAdditionalContext,
+  runSessionStartHook
+};

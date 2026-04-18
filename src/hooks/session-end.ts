@@ -83,6 +83,7 @@ export async function runSessionEndHook(input: StopInput, deps: SessionEndDeps =
   return { status: "flushed", flushStatus: flush.status };
 }
 
+/* c8 ignore start */
 async function main(): Promise<void> {
   const input = await readStdin<StopInput>();
   await runSessionEndHook(input);
@@ -91,3 +92,4 @@ async function main(): Promise<void> {
 if (isDirectRun(import.meta.url)) {
   main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
 }
+/* c8 ignore stop */

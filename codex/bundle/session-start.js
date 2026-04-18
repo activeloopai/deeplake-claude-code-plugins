@@ -2,7 +2,7 @@
 
 // dist/src/hooks/codex/session-start.js
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { dirname as dirname2, join as join4 } from "node:path";
 
 // dist/src/commands/auth.js
@@ -24,13 +24,13 @@ function loadCredentials() {
 
 // dist/src/utils/stdin.js
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let data = "";
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => data += chunk);
     process.stdin.on("end", () => {
       try {
-        resolve(JSON.parse(data));
+        resolve2(JSON.parse(data));
       } catch (err) {
         reject(new Error(`Failed to parse hook input: ${err}`));
       }
@@ -50,6 +50,20 @@ function log(tag, msg) {
     return;
   appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
 `);
+}
+
+// dist/src/utils/direct-run.js
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+function isDirectRun(metaUrl) {
+  const entry = process.argv[1];
+  if (!entry)
+    return false;
+  try {
+    return resolve(fileURLToPath(metaUrl)) === resolve(entry);
+  } catch {
+    return false;
+  }
 }
 
 // dist/src/hooks/version-check.js
@@ -85,9 +99,9 @@ function getInstalledVersion(bundleDir, pluginManifestDir) {
 
 // dist/src/hooks/codex/session-start.js
 var log2 = (msg) => log("codex-session-start", msg);
-var __bundleDir = dirname2(fileURLToPath(import.meta.url));
+var __bundleDir = dirname2(fileURLToPath2(import.meta.url));
 var AUTH_CMD = join4(__bundleDir, "commands", "auth-login.js");
-var context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
+var CODEX_SESSION_START_CONTEXT = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
 
 Structure: index.md (start here) \u2192 summaries/*.md \u2192 sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
 When index.md identifies a likely match, read that exact summary or session path directly before broader grep variants.
@@ -96,19 +110,23 @@ Do NOT probe unrelated local paths such as ~/.claude/projects/, arbitrary home d
 Search: grep -r "keyword" ~/.deeplake/memory/
 IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem.
 Do NOT spawn subagents to read deeplake memory.`;
-async function main() {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1")
-    return;
-  const input = await readStdin();
-  const creds = loadCredentials();
-  if (!creds?.token) {
-    log2("no credentials found \u2014 run auth login to authenticate");
-  } else {
-    log2(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
-  }
+function buildCodexSessionStartContext(args) {
+  const versionNotice = args.currentVersion ? `
+Hivemind v${args.currentVersion}` : "";
+  return args.creds?.token ? `${CODEX_SESSION_START_CONTEXT}
+Logged in to Deeplake as org: ${args.creds.orgName ?? args.creds.orgId} (workspace: ${args.creds.workspaceId ?? "default"})${versionNotice}` : `${CODEX_SESSION_START_CONTEXT}
+Not logged in to Deeplake. Run: node "${args.authCommand}" login${versionNotice}`;
+}
+async function runCodexSessionStartHook(input, deps = {}) {
+  const { wikiWorker = (process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1", creds = loadCredentials(), spawnFn = spawn, currentVersion = getInstalledVersion(__bundleDir, ".codex-plugin"), authCommand = AUTH_CMD, setupScript = join4(__bundleDir, "session-start-setup.js"), logFn = log2 } = deps;
+  if (wikiWorker)
+    return null;
+  if (!creds?.token)
+    logFn("no credentials found \u2014 run auth login to authenticate");
+  else
+    logFn(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
   if (creds?.token) {
-    const setupScript = join4(__bundleDir, "session-start-setup.js");
-    const child = spawn("node", [setupScript], {
+    const child = spawnFn("node", [setupScript], {
       detached: true,
       stdio: ["pipe", "ignore", "ignore"],
       env: { ...process.env }
@@ -116,20 +134,28 @@ async function main() {
     child.stdin?.write(JSON.stringify(input));
     child.stdin?.end();
     child.unref();
-    log2("spawned async setup process");
+    logFn("spawned async setup process");
   }
-  let versionNotice = "";
-  const current = getInstalledVersion(__bundleDir, ".codex-plugin");
-  if (current) {
-    versionNotice = `
-Hivemind v${current}`;
-  }
-  const additionalContext = creds?.token ? `${context}
-Logged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${versionNotice}` : `${context}
-Not logged in to Deeplake. Run: node "${AUTH_CMD}" login${versionNotice}`;
-  console.log(additionalContext);
+  return buildCodexSessionStartContext({
+    creds,
+    currentVersion,
+    authCommand
+  });
 }
-main().catch((e) => {
-  log2(`fatal: ${e.message}`);
-  process.exit(0);
-});
+async function main() {
+  const input = await readStdin();
+  const output = await runCodexSessionStartHook(input);
+  if (output)
+    console.log(output);
+}
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => {
+    log2(`fatal: ${e.message}`);
+    process.exit(0);
+  });
+}
+export {
+  CODEX_SESSION_START_CONTEXT,
+  buildCodexSessionStartContext,
+  runCodexSessionStartHook
+};

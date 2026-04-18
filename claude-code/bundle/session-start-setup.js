@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/session-start-setup.js
-import { fileURLToPath } from "node:url";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { dirname as dirname3, join as join6 } from "node:path";
 import { mkdirSync as mkdirSync4, appendFileSync as appendFileSync3 } from "node:fs";
 import { execSync as execSync2 } from "node:child_process";
@@ -116,7 +116,7 @@ var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 var Semaphore = class {
   max;
@@ -130,7 +130,7 @@ var Semaphore = class {
       this.active++;
       return;
     }
-    await new Promise((resolve) => this.waiting.push(resolve));
+    await new Promise((resolve2) => this.waiting.push(resolve2));
   }
   release() {
     this.active--;
@@ -338,19 +338,33 @@ var DeeplakeApi = class {
 
 // dist/src/utils/stdin.js
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let data = "";
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => data += chunk);
     process.stdin.on("end", () => {
       try {
-        resolve(JSON.parse(data));
+        resolve2(JSON.parse(data));
       } catch (err) {
         reject(new Error(`Failed to parse hook input: ${err}`));
       }
     });
     process.stdin.on("error", reject);
   });
+}
+
+// dist/src/utils/direct-run.js
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+function isDirectRun(metaUrl) {
+  const entry = process.argv[1];
+  if (!entry)
+    return false;
+  try {
+    return resolve(fileURLToPath(metaUrl)) === resolve(entry);
+  } catch {
+    return false;
+  }
 }
 
 // dist/src/hooks/session-queue.js
@@ -373,7 +387,7 @@ function buildSessionInsertSql(sessionsTable, rows) {
     throw new Error("buildSessionInsertSql: rows must not be empty");
   const table = sqlIdent(sessionsTable);
   const values = rows.map((row) => {
-    const jsonForSql = row.message.replace(/'/g, "''");
+    const jsonForSql = row.message.replace(/\\/g, "\\\\").replace(/'/g, "''");
     return `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, '${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', '${sqlStr(row.agent)}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`;
   }).join(", ");
   return `INSERT INTO "${table}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ${values}`;
@@ -526,13 +540,8 @@ function readQueuedRows(path) {
 function requeueInflight(queuePath, inflightPath) {
   if (!existsSync3(inflightPath))
     return;
-  if (!existsSync3(queuePath)) {
-    renameSync(inflightPath, queuePath);
-    return;
-  }
   const inflight = readFileSync3(inflightPath, "utf-8");
-  const queued = readFileSync3(queuePath, "utf-8");
-  writeFileSync2(queuePath, `${inflight}${queued}`);
+  appendFileSync2(queuePath, inflight);
   rmSync(inflightPath, { force: true });
 }
 function recoverStaleInflight(queuePath, inflightPath, staleInflightMs) {
@@ -607,7 +616,7 @@ async function waitForInflightToClear(inflightPath, waitIfBusyMs) {
   }
 }
 function sleep2(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 
 // dist/src/hooks/version-check.js
@@ -641,7 +650,7 @@ function getInstalledVersion(bundleDir, pluginManifestDir) {
   return null;
 }
 function isNewer(latest, current) {
-  const parse = (v) => v.split(".").map(Number);
+  const parse = (v) => v.replace(/-.*$/, "").split(".").map(Number);
   const [la, lb, lc] = parse(latest);
   const [ca, cb, cc] = parse(current);
   return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
@@ -701,7 +710,7 @@ async function getLatestVersionCached(opts) {
 
 // dist/src/hooks/session-start-setup.js
 var log3 = (msg) => log("session-setup", msg);
-var __bundleDir = dirname3(fileURLToPath(import.meta.url));
+var __bundleDir = dirname3(fileURLToPath2(import.meta.url));
 var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 var VERSION_CHECK_TIMEOUT = 3e3;
 var HOME = homedir6();
@@ -736,98 +745,105 @@ async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, 
   await api.query(`INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${now}', '${now}')`);
   wikiLog(`SessionSetup: created placeholder for ${sessionId} (${cwd})`);
 }
-async function main() {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1")
-    return;
-  const input = await readStdin();
-  const creds = loadCredentials();
+async function runSessionStartSetup(input, deps = {}) {
+  const { wikiWorker = (process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1", creds = loadCredentials(), saveCredentialsFn = saveCredentials, config = loadConfig(), createApi = (activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, activeConfig.tableName), captureEnabled = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false", drainSessionQueuesFn = drainSessionQueues, isSessionWriteDisabledFn = isSessionWriteDisabled, isSessionWriteAuthErrorFn = isSessionWriteAuthError, markSessionWriteDisabledFn = markSessionWriteDisabled, createPlaceholderFn = createPlaceholder, getInstalledVersionFn = getInstalledVersion, getLatestVersionCachedFn = getLatestVersionCached, isNewerFn = isNewer, execSyncFn = execSync2, logFn = log3, wikiLogFn = wikiLog } = deps;
+  if (wikiWorker)
+    return { status: "skipped" };
   if (!creds?.token) {
-    log3("no credentials");
-    return;
+    logFn("no credentials");
+    return { status: "no_credentials" };
   }
   if (!creds.userName) {
     try {
       const { userInfo: userInfo2 } = await import("node:os");
       creds.userName = userInfo2().username ?? "unknown";
-      saveCredentials(creds);
-      log3(`backfilled userName: ${creds.userName}`);
+      saveCredentialsFn(creds);
+      logFn(`backfilled userName: ${creds.userName}`);
     } catch {
     }
   }
-  const captureEnabled = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
-  if (input.session_id) {
+  if (input.session_id && config) {
     try {
-      const config = loadConfig();
-      if (config) {
-        const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
-        await api.ensureTable();
-        if (captureEnabled) {
-          if (isSessionWriteDisabled(config.sessionsTableName)) {
-            log3(`sessions table disabled, skipping setup for "${config.sessionsTableName}"`);
-          } else {
-            try {
-              await api.ensureSessionsTable(config.sessionsTableName);
-              const drain = await drainSessionQueues(api, {
-                sessionsTable: config.sessionsTableName
-              });
-              if (drain.flushedSessions > 0) {
-                log3(`drained ${drain.flushedSessions} queued session(s), rows=${drain.rows}, batches=${drain.batches}`);
-              }
-            } catch (e) {
-              if (isSessionWriteAuthError(e)) {
-                markSessionWriteDisabled(config.sessionsTableName, e.message);
-                log3(`sessions table unavailable, skipping setup: ${e.message}`);
-              } else {
-                throw e;
-              }
+      const api = createApi(config);
+      await api.ensureTable();
+      if (captureEnabled) {
+        if (isSessionWriteDisabledFn(config.sessionsTableName)) {
+          logFn(`sessions table disabled, skipping setup for "${config.sessionsTableName}"`);
+        } else {
+          try {
+            await api.ensureSessionsTable(config.sessionsTableName);
+            const drain = await drainSessionQueuesFn(api, {
+              sessionsTable: config.sessionsTableName
+            });
+            if (drain.flushedSessions > 0) {
+              logFn(`drained ${drain.flushedSessions} queued session(s), rows=${drain.rows}, batches=${drain.batches}`);
+            }
+          } catch (e) {
+            if (isSessionWriteAuthErrorFn(e)) {
+              markSessionWriteDisabledFn(config.sessionsTableName, e.message);
+              logFn(`sessions table unavailable, skipping setup: ${e.message}`);
+            } else {
+              throw e;
             }
           }
-          await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
         }
-        log3("setup complete");
+        await createPlaceholderFn(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
       }
+      logFn("setup complete");
     } catch (e) {
-      log3(`setup failed: ${e.message}`);
-      wikiLog(`SessionSetup: failed for ${input.session_id}: ${e.message}`);
+      logFn(`setup failed: ${e.message}`);
+      wikiLogFn(`SessionSetup: failed for ${input.session_id}: ${e.message}`);
     }
   }
   const autoupdate = creds.autoupdate !== false;
   try {
-    const current = getInstalledVersion(__bundleDir, ".claude-plugin");
+    const current = getInstalledVersionFn(__bundleDir, ".claude-plugin");
     if (current) {
-      const latest = await getLatestVersionCached({
+      const latest = await getLatestVersionCachedFn({
         url: GITHUB_RAW_PKG,
         timeoutMs: VERSION_CHECK_TIMEOUT
       });
-      if (latest && isNewer(latest, current)) {
+      if (latest && isNewerFn(latest, current)) {
         if (autoupdate) {
-          log3(`autoupdate: updating ${current} \u2192 ${latest}`);
+          logFn(`autoupdate: updating ${current} \u2192 ${latest}`);
           try {
             const scopes = ["user", "project", "local", "managed"];
             const cmd = scopes.map((s) => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null`).join("; ");
-            execSync2(cmd, { stdio: "ignore", timeout: 6e4 });
+            execSyncFn(cmd, { stdio: "ignore", timeout: 6e4 });
             process.stderr.write(`\u2705 Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.
 `);
-            log3(`autoupdate succeeded: ${current} \u2192 ${latest}`);
+            logFn(`autoupdate succeeded: ${current} \u2192 ${latest}`);
           } catch (e) {
             process.stderr.write(`\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /hivemind:update to upgrade manually.
 `);
-            log3(`autoupdate failed: ${e.message}`);
+            logFn(`autoupdate failed: ${e.message}`);
           }
         } else {
           process.stderr.write(`\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Run /hivemind:update to upgrade.
 `);
-          log3(`update available (autoupdate off): ${current} \u2192 ${latest}`);
+          logFn(`update available (autoupdate off): ${current} \u2192 ${latest}`);
         }
       } else {
-        log3(`version up to date: ${current}`);
+        logFn(`version up to date: ${current}`);
       }
     }
   } catch (e) {
-    log3(`version check failed: ${e.message}`);
+    logFn(`version check failed: ${e.message}`);
   }
+  return { status: "complete" };
 }
-main().catch((e) => {
-  log3(`fatal: ${e.message}`);
-  process.exit(0);
-});
+async function main() {
+  const input = await readStdin();
+  await runSessionStartSetup(input);
+}
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => {
+    log3(`fatal: ${e.message}`);
+    process.exit(0);
+  });
+}
+export {
+  createPlaceholder,
+  runSessionStartSetup,
+  wikiLog
+};

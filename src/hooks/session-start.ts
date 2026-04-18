@@ -143,6 +143,7 @@ export async function runSessionStartHook(_input: Record<string, unknown>, deps:
   };
 }
 
+/* c8 ignore start */
 async function main(): Promise<void> {
   await readStdin<Record<string, unknown>>();
   const result = await runSessionStartHook({});
@@ -152,3 +153,4 @@ async function main(): Promise<void> {
 if (isDirectRun(import.meta.url)) {
   main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
 }
+/* c8 ignore stop */
