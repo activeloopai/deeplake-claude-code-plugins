@@ -259,6 +259,7 @@ describe("claude pre-tool source", () => {
 
   it("builds shell commands and grep params for supported tools", () => {
     expect(getShellCommand("Read", { file_path: "~/.deeplake/memory/index.md" })).toBe("cat /index.md");
+    expect(getShellCommand("Read", { path: "~/.deeplake/memory" })).toBe("ls /");
     expect(getShellCommand("Glob", { path: "~/.deeplake/memory/summaries" })).toBe("ls /");
     expect(getShellCommand("Bash", { command: "cat ~/.deeplake/memory/index.md" })).toBe("cat /index.md");
     expect(getShellCommand("Bash", { command: "python3 ~/.deeplake/memory/index.md" })).toBeNull();
@@ -340,6 +341,20 @@ describe("claude pre-tool source", () => {
       executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
     expect(readDecision?.command).toContain("# Memory Index");
+
+    const readDirDecision = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Read",
+      tool_input: { path: "~/.deeplake/memory" },
+      tool_use_id: "tu-2b",
+    }, {
+      config: baseConfig,
+      listVirtualPathRowsFn: vi.fn(async () => [
+        { path: "/summaries/alice/s1.md", size_bytes: 42 },
+      ]) as any,
+      executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+    });
+    expect(readDirDecision?.command).toContain("summaries/");
 
     const lsDecision = await processPreToolUse({
       session_id: "s1",
@@ -433,6 +448,8 @@ describe("claude pre-tool source", () => {
       tool_use_id: "tu-6",
     }, {
       config: baseConfig,
+      readCachedIndexContentFn: vi.fn(() => null) as any,
+      writeCachedIndexContentFn: vi.fn() as any,
       readVirtualPathContentFn: contentReader as any,
       executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
@@ -445,6 +462,8 @@ describe("claude pre-tool source", () => {
       tool_use_id: "tu-7",
     }, {
       config: baseConfig,
+      readCachedIndexContentFn: vi.fn(() => null) as any,
+      writeCachedIndexContentFn: vi.fn() as any,
       readVirtualPathContentFn: contentReader as any,
       executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
@@ -457,6 +476,8 @@ describe("claude pre-tool source", () => {
       tool_use_id: "tu-8",
     }, {
       config: baseConfig,
+      readCachedIndexContentFn: vi.fn(() => null) as any,
+      writeCachedIndexContentFn: vi.fn() as any,
       readVirtualPathContentFn: contentReader as any,
       executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
@@ -524,6 +545,8 @@ describe("claude session start source", () => {
 
     expect(loggedIn).toContain("Logged in to Deeplake");
     expect(loggedIn).toContain("Hivemind v0.6.0");
+    expect(loggedIn).toContain("resolve it against that session's own date/date_time metadata");
+    expect(loggedIn).toContain('Do NOT answer "not found"');
     expect(loggedOut).toContain("Not logged in to Deeplake");
     expect(loggedOut).toContain("update available");
   });

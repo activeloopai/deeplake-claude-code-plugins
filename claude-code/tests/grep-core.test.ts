@@ -3,6 +3,7 @@ import {
   buildGrepSearchOptions,
   normalizeContent,
   buildPathFilter,
+  buildPathFilterForTargets,
   compileGrepRegex,
   extractRegexAlternationPrefilters,
   extractRegexLiteralPrefilter,
@@ -454,6 +455,23 @@ describe("buildPathFilter", () => {
   });
 });
 
+describe("buildPathFilterForTargets", () => {
+  it("returns empty string when any target is root", () => {
+    expect(buildPathFilterForTargets(["/summaries", "/"])).toBe("");
+  });
+
+  it("joins multiple target filters into one OR clause", () => {
+    const filter = buildPathFilterForTargets([
+      "/summaries/alice",
+      "/sessions/bob/chat.jsonl",
+    ]);
+    expect(filter).toContain("path = '/summaries/alice'");
+    expect(filter).toContain("path LIKE '/summaries/alice/%'");
+    expect(filter).toContain("path = '/sessions/bob/chat.jsonl'");
+    expect(filter).toContain(" OR ");
+  });
+});
+
 // ── compileGrepRegex ────────────────────────────────────────────────────────
 
 describe("compileGrepRegex", () => {
@@ -682,30 +700,15 @@ describe("searchDeeplakeTables", () => {
     expect(rows[0]).toEqual({ path: "/b", content: "" });
   });
 
-  it("returns partial results when the union query fails and the sessions fallback query errors", async () => {
+  it("keeps grep on a single SQL query when the union query fails", async () => {
     const api = {
       query: vi.fn()
         .mockRejectedValueOnce(new Error("bad union"))
-        .mockResolvedValueOnce([{ path: "/a", content: "ok" }])
-        .mockRejectedValueOnce(new Error("boom")),
     } as any;
-    const rows = await searchDeeplakeTables(api, "m", "s", {
+    await expect(searchDeeplakeTables(api, "m", "s", {
       pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
-    });
-    expect(rows).toEqual([{ path: "/a", content: "ok" }]);
-  });
-
-  it("returns partial results when the union query fails and the memory fallback query errors", async () => {
-    const api = {
-      query: vi.fn()
-        .mockRejectedValueOnce(new Error("bad union"))
-        .mockRejectedValueOnce(new Error("boom"))
-        .mockResolvedValueOnce([{ path: "/b", content: "ok" }]),
-    } as any;
-    const rows = await searchDeeplakeTables(api, "m", "s", {
-      pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
-    });
-    expect(rows).toEqual([{ path: "/b", content: "ok" }]);
+    })).rejects.toThrow("bad union");
+    expect(api.query).toHaveBeenCalledTimes(1);
   });
 
   it("defaults limit to 100 when omitted", async () => {

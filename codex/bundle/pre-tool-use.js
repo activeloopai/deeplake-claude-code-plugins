@@ -602,6 +602,20 @@ function normalizeContent(path, raw) {
     return raw;
   return out;
 }
+function buildPathCondition(targetPath) {
+  if (!targetPath || targetPath === "/")
+    return "";
+  const clean = targetPath.replace(/\/+$/, "");
+  if (/[*?]/.test(clean)) {
+    const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
+    return `path LIKE '${likePattern}'`;
+  }
+  const base = clean.split("/").pop() ?? "";
+  if (base.includes(".")) {
+    return `path = '${sqlStr(clean)}'`;
+  }
+  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+}
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
   const limit = opts.limit ?? 100;
@@ -610,34 +624,15 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
   const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
   const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
-  let rows;
-  try {
-    rows = await api.query(`SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`);
-  } catch {
-    const [memRows, sessRows] = await Promise.all([
-      api.query(memQuery).catch(() => []),
-      api.query(sessQuery).catch(() => [])
-    ]);
-    rows = [...memRows, ...sessRows];
-  }
+  const rows = await api.query(`SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`);
   return rows.map((row) => ({
     path: String(row["path"]),
     content: String(row["content"] ?? "")
   }));
 }
 function buildPathFilter(targetPath) {
-  if (!targetPath || targetPath === "/")
-    return "";
-  const clean = targetPath.replace(/\/+$/, "");
-  if (/[*?]/.test(clean)) {
-    const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
-    return ` AND path LIKE '${likePattern}'`;
-  }
-  const base = clean.split("/").pop() ?? "";
-  if (base.includes(".")) {
-    return ` AND path = '${sqlStr(clean)}'`;
-  }
-  return ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+  const condition = buildPathCondition(targetPath);
+  return condition ? ` AND ${condition}` : "";
 }
 function extractRegexLiteralPrefilter(pattern) {
   if (!pattern)

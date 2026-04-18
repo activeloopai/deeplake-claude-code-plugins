@@ -84,6 +84,24 @@ describe("grep interceptor", () => {
     expect(result.exitCode).toBe(0);
   });
 
+  it("uses one SQL query even when grep receives multiple target paths", async () => {
+    const client = makeClient([{ path: "/memory/a.txt", content: "hello world" }]);
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    client.query.mockClear();
+    client.query.mockResolvedValue([{ path: "/memory/a.txt", content: "hello world" }]);
+
+    const cmd = createGrepCommand(client as never, fs, "test", "sessions");
+    const result = await cmd.execute(["hello", "/memory/a", "/memory/b"], makeCtx(fs) as never);
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    const sql = client.query.mock.calls[0][0] as string;
+    expect(sql).toContain('FROM "test"');
+    expect(sql).toContain('FROM "sessions"');
+    expect(sql).toContain("path = '/memory/a'");
+    expect(sql).toContain("path = '/memory/b'");
+    expect(result.exitCode).toBe(0);
+  });
+
   it("falls back to in-memory scan when SQL returns nothing", async () => {
     const client = makeClient([]);
     const fs = await DeeplakeFs.create(client as never, "test", "/memory");

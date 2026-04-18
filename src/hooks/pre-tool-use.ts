@@ -44,6 +44,18 @@ export interface ClaudePreToolDecision {
   description: string;
 }
 
+function getReadTargetPath(toolInput: Record<string, unknown>): string | null {
+  const rawPath = (toolInput.file_path ?? toolInput.path) as string | undefined;
+  return rawPath ? rawPath : null;
+}
+
+function isLikelyDirectoryPath(virtualPath: string): boolean {
+  const normalized = virtualPath.replace(/\/+$/, "") || "/";
+  if (normalized === "/") return true;
+  const base = normalized.split("/").pop() ?? "";
+  return !base.includes(".");
+}
+
 export function getShellCommand(toolName: string, toolInput: Record<string, unknown>): string | null {
   switch (toolName) {
     case "Grep": {
@@ -58,8 +70,11 @@ export function getShellCommand(toolName: string, toolInput: Record<string, unkn
       break;
     }
     case "Read": {
-      const fp = toolInput.file_path as string | undefined;
-      if (fp && touchesMemory(fp)) return `cat ${rewritePaths(fp) || "/"}`;
+      const fp = getReadTargetPath(toolInput);
+      if (fp && touchesMemory(fp)) {
+        const rewritten = rewritePaths(fp) || "/";
+        return `${isLikelyDirectoryPath(rewritten) ? "ls" : "cat"} ${rewritten}`;
+      }
       break;
     }
     case "Bash": {
@@ -154,7 +169,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
 
   const cmd = (input.tool_input.command as string) ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
-  const toolPath = (input.tool_input.file_path ?? input.tool_input.path ?? "") as string;
+  const toolPath = (getReadTargetPath(input.tool_input) ?? input.tool_input.path ?? "") as string;
 
   if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
     const guidance = "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. " +
@@ -226,9 +241,15 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
     let virtualPath: string | null = null;
     let lineLimit = 0;
     let fromEnd = false;
+    let lsDir: string | null = null;
+    let longFormat = false;
 
     if (input.tool_name === "Read") {
-      virtualPath = rewritePaths((input.tool_input.file_path as string) ?? "");
+      virtualPath = rewritePaths(getReadTargetPath(input.tool_input) ?? "");
+      if (virtualPath && isLikelyDirectoryPath(virtualPath)) {
+        lsDir = virtualPath.replace(/\/+$/, "") || "/";
+        virtualPath = null;
+      }
     } else if (input.tool_name === "Bash") {
       const catCmd = shellCmd.replace(/\s+2>\S+/g, "").trim();
       const catPipeHead = catCmd.match(/^cat\s+(\S+?)\s*(?:\|[^|]*)*\|\s*head\s+(?:-n?\s*)?(-?\d+)\s*$/);
@@ -297,9 +318,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
       }
     }
 
-    let lsDir: string | null = null;
-    let longFormat = false;
-    if (input.tool_name === "Glob") {
+    if (!lsDir && input.tool_name === "Glob") {
       lsDir = rewritePaths((input.tool_input.path as string) ?? "") || "/";
     } else if (input.tool_name === "Bash") {
       const lsMatch = shellCmd.match(/^ls\s+(?:-([a-zA-Z]+)\s+)?(\S+)?\s*$/);

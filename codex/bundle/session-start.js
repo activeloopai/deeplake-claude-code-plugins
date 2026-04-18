@@ -107,6 +107,9 @@ Structure: index.md (start here) \u2192 summaries/*.md \u2192 sessions/{author}/
 When index.md identifies a likely match, read that exact summary or session path directly before broader grep variants.
 If index.md already points to likely candidate files, open those exact files before broader synonym greps or wide exploratory scans.
 Do NOT probe unrelated local paths such as ~/.claude/projects/, arbitrary home directories, or guessed summary roots for Deeplake recall tasks.
+TEMPORAL GROUNDING: If a summary or transcript uses relative time like "last year", "last week", or "next month", resolve it against that session's own date/date_time metadata, not today's date.
+NOT-FOUND BAR: Do NOT answer "not found" until you have checked index.md plus at least one likely summary or raw session file for the named person. If keyword grep is empty, grep the person's name alone and inspect the candidate files.
+NEGATIVE-EVIDENCE QUESTIONS: For identity, relationship status, and research-topic questions, summaries may omit the exact phrase. If likely summaries are ambiguous, read the candidate raw session transcript and look for positive clues before concluding the answer is absent.
 Search: grep -r "keyword" ~/.deeplake/memory/
 IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem.
 Do NOT spawn subagents to read deeplake memory.`;

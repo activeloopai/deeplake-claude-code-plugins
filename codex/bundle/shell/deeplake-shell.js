@@ -68876,6 +68876,20 @@ function normalizeContent(path2, raw) {
     return raw;
   return out;
 }
+function buildPathCondition(targetPath) {
+  if (!targetPath || targetPath === "/")
+    return "";
+  const clean = targetPath.replace(/\/+$/, "");
+  if (/[*?]/.test(clean)) {
+    const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
+    return `path LIKE '${likePattern}'`;
+  }
+  const base = clean.split("/").pop() ?? "";
+  if (base.includes(".")) {
+    return `path = '${sqlStr(clean)}'`;
+  }
+  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+}
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
   const limit = opts.limit ?? 100;
@@ -68884,34 +68898,25 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
   const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
   const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
-  let rows;
-  try {
-    rows = await api.query(`SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`);
-  } catch {
-    const [memRows, sessRows] = await Promise.all([
-      api.query(memQuery).catch(() => []),
-      api.query(sessQuery).catch(() => [])
-    ]);
-    rows = [...memRows, ...sessRows];
-  }
+  const rows = await api.query(`SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`);
   return rows.map((row) => ({
     path: String(row["path"]),
     content: String(row["content"] ?? "")
   }));
 }
 function buildPathFilter(targetPath) {
-  if (!targetPath || targetPath === "/")
+  const condition = buildPathCondition(targetPath);
+  return condition ? ` AND ${condition}` : "";
+}
+function buildPathFilterForTargets(targetPaths) {
+  if (targetPaths.some((targetPath) => !targetPath || targetPath === "/"))
     return "";
-  const clean = targetPath.replace(/\/+$/, "");
-  if (/[*?]/.test(clean)) {
-    const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
-    return ` AND path LIKE '${likePattern}'`;
-  }
-  const base = clean.split("/").pop() ?? "";
-  if (base.includes(".")) {
-    return ` AND path = '${sqlStr(clean)}'`;
-  }
-  return ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+  const conditions = [...new Set(targetPaths.map((targetPath) => buildPathCondition(targetPath)).filter((condition) => condition.length > 0))];
+  if (conditions.length === 0)
+    return "";
+  if (conditions.length === 1)
+    return ` AND ${conditions[0]}`;
+  return ` AND (${conditions.join(" OR ")})`;
 }
 function extractRegexLiteralPrefilter(pattern) {
   if (!pattern)
@@ -69089,15 +69094,16 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
     };
     let rows = [];
     try {
-      const perTarget = await Promise.race([
-        Promise.all(targets.map((t6) => searchDeeplakeTables(client, table, sessionsTable ?? "sessions", {
-          ...buildGrepSearchOptions(matchParams, t6),
-          limit: 100
-        }))),
+      const searchOptions = {
+        ...buildGrepSearchOptions(matchParams, targets[0] ?? ctx.cwd),
+        pathFilter: buildPathFilterForTargets(targets),
+        limit: 100
+      };
+      const queryRows = await Promise.race([
+        searchDeeplakeTables(client, table, sessionsTable ?? "sessions", searchOptions),
         new Promise((_16, reject) => setTimeout(() => reject(new Error("timeout")), 3e3))
       ]);
-      for (const batch of perTarget)
-        rows.push(...batch);
+      rows.push(...queryRows);
     } catch {
       rows = [];
     }

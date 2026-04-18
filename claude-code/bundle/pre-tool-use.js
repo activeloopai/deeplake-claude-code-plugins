@@ -615,6 +615,20 @@ function normalizeContent(path, raw) {
     return raw;
   return out;
 }
+function buildPathCondition(targetPath) {
+  if (!targetPath || targetPath === "/")
+    return "";
+  const clean = targetPath.replace(/\/+$/, "");
+  if (/[*?]/.test(clean)) {
+    const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
+    return `path LIKE '${likePattern}'`;
+  }
+  const base = clean.split("/").pop() ?? "";
+  if (base.includes(".")) {
+    return `path = '${sqlStr(clean)}'`;
+  }
+  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+}
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
   const limit = opts.limit ?? 100;
@@ -623,34 +637,15 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
   const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
   const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
-  let rows;
-  try {
-    rows = await api.query(`SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`);
-  } catch {
-    const [memRows, sessRows] = await Promise.all([
-      api.query(memQuery).catch(() => []),
-      api.query(sessQuery).catch(() => [])
-    ]);
-    rows = [...memRows, ...sessRows];
-  }
+  const rows = await api.query(`SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`);
   return rows.map((row) => ({
     path: String(row["path"]),
     content: String(row["content"] ?? "")
   }));
 }
 function buildPathFilter(targetPath) {
-  if (!targetPath || targetPath === "/")
-    return "";
-  const clean = targetPath.replace(/\/+$/, "");
-  if (/[*?]/.test(clean)) {
-    const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
-    return ` AND path LIKE '${likePattern}'`;
-  }
-  const base = clean.split("/").pop() ?? "";
-  if (base.includes(".")) {
-    return ` AND path = '${sqlStr(clean)}'`;
-  }
-  return ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+  const condition = buildPathCondition(targetPath);
+  return condition ? ` AND ${condition}` : "";
 }
 function extractRegexLiteralPrefilter(pattern) {
   if (!pattern)
@@ -1660,6 +1655,17 @@ function rewritePaths(cmd) {
 var log4 = (msg) => log("pre", msg);
 var __bundleDir = dirname(fileURLToPath2(import.meta.url));
 var SHELL_BUNDLE = existsSync3(join6(__bundleDir, "shell", "deeplake-shell.js")) ? join6(__bundleDir, "shell", "deeplake-shell.js") : join6(__bundleDir, "..", "shell", "deeplake-shell.js");
+function getReadTargetPath(toolInput) {
+  const rawPath = toolInput.file_path ?? toolInput.path;
+  return rawPath ? rawPath : null;
+}
+function isLikelyDirectoryPath(virtualPath) {
+  const normalized = virtualPath.replace(/\/+$/, "") || "/";
+  if (normalized === "/")
+    return true;
+  const base = normalized.split("/").pop() ?? "";
+  return !base.includes(".");
+}
 function getShellCommand(toolName, toolInput) {
   switch (toolName) {
     case "Grep": {
@@ -1676,9 +1682,11 @@ function getShellCommand(toolName, toolInput) {
       break;
     }
     case "Read": {
-      const fp = toolInput.file_path;
-      if (fp && touchesMemory(fp))
-        return `cat ${rewritePaths(fp) || "/"}`;
+      const fp = getReadTargetPath(toolInput);
+      if (fp && touchesMemory(fp)) {
+        const rewritten = rewritePaths(fp) || "/";
+        return `${isLikelyDirectoryPath(rewritten) ? "ls" : "cat"} ${rewritten}`;
+      }
       break;
     }
     case "Bash": {
@@ -1730,7 +1738,7 @@ async function processPreToolUse(input, deps = {}) {
   const { config = loadConfig(), createApi = (table2, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table2), executeCompiledBashCommandFn = executeCompiledBashCommand, handleGrepDirectFn = handleGrepDirect, readVirtualPathContentsFn = readVirtualPathContents, readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, readCachedIndexContentFn = readCachedIndexContent, writeCachedIndexContentFn = writeCachedIndexContent, shellBundle = SHELL_BUNDLE, logFn = log4 } = deps;
   const cmd = input.tool_input.command ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
-  const toolPath = input.tool_input.file_path ?? input.tool_input.path ?? "";
+  const toolPath = getReadTargetPath(input.tool_input) ?? input.tool_input.path ?? "";
   if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
     const guidance = "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. This virtual filesystem only supports bash builtins: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. python, python3, node, and curl are NOT available. You MUST rewrite your command using only the bash tools listed above and try again. For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
     logFn(`unsupported command, returning guidance: ${cmd}`);
@@ -1781,8 +1789,14 @@ async function processPreToolUse(input, deps = {}) {
     let virtualPath = null;
     let lineLimit = 0;
     let fromEnd = false;
+    let lsDir = null;
+    let longFormat = false;
     if (input.tool_name === "Read") {
-      virtualPath = rewritePaths(input.tool_input.file_path ?? "");
+      virtualPath = rewritePaths(getReadTargetPath(input.tool_input) ?? "");
+      if (virtualPath && isLikelyDirectoryPath(virtualPath)) {
+        lsDir = virtualPath.replace(/\/+$/, "") || "/";
+        virtualPath = null;
+      }
     } else if (input.tool_name === "Bash") {
       const catCmd = shellCmd.replace(/\s+2>\S+/g, "").trim();
       const catPipeHead = catCmd.match(/^cat\s+(\S+?)\s*(?:\|[^|]*)*\|\s*head\s+(?:-n?\s*)?(-?\d+)\s*$/);
@@ -1860,9 +1874,7 @@ async function processPreToolUse(input, deps = {}) {
         return buildAllowDecision(`echo ${JSON.stringify(content)}`, `[DeepLake direct] ${label} ${virtualPath}`);
       }
     }
-    let lsDir = null;
-    let longFormat = false;
-    if (input.tool_name === "Glob") {
+    if (!lsDir && input.tool_name === "Glob") {
       lsDir = rewritePaths(input.tool_input.path ?? "") || "/";
     } else if (input.tool_name === "Bash") {
       const lsMatch = shellCmd.match(/^ls\s+(?:-([a-zA-Z]+)\s+)?(\S+)?\s*$/);

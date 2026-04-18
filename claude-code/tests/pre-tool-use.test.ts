@@ -305,6 +305,15 @@ describe("pre-tool-use: non-Bash tools targeting memory", () => {
     }
   });
 
+  it("intercepts Read using path alias for the memory root", () => {
+    const r = runPreToolUse("Read", { path: "~/.deeplake/memory" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+      expect(r.updatedCommand).toContain("ls /");
+    }
+  });
+
   it("intercepts Glob targeting memory path", () => {
     const r = runPreToolUse("Glob", { path: "~/.deeplake/memory/", pattern: "*.md" });
     expect(r.empty).toBe(false);

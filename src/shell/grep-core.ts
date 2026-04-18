@@ -4,8 +4,8 @@
  *   - src/shell/grep-interceptor.ts  (slow-path inside deeplake-shell)
  *
  * Responsibilities:
- *   1. searchDeeplakeTables: run parallel LIKE/ILIKE queries against both the
- *      memory table (summaries, column `summary`) AND the sessions table
+ *   1. searchDeeplakeTables: run one UNION ALL query across both the memory
+ *      table (summaries, column `summary`) AND the sessions table
  *      (raw dialogue, column `message` JSONB), returning {path, content}.
  *   2. normalizeSessionContent: when a row comes from a session path, turn the
  *      single-line JSON blob into multi-line "Speaker: text" so the standard
@@ -229,10 +229,24 @@ export function normalizeContent(path: string, raw: string): string {
 
 // ── SQL search (both tables in parallel) ────────────────────────────────────
 
+function buildPathCondition(targetPath: string): string {
+  if (!targetPath || targetPath === "/") return "";
+  const clean = targetPath.replace(/\/+$/, "");
+  if (/[*?]/.test(clean)) {
+    const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
+    return `path LIKE '${likePattern}'`;
+  }
+  const base = clean.split("/").pop() ?? "";
+  if (base.includes(".")) {
+    return `path = '${sqlStr(clean)}'`;
+  }
+  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+}
+
 /**
  * Dual-table LIKE/ILIKE search. Casts `summary` (TEXT) and `message` (JSONB)
- * to ::text so the same predicate works across both. Both queries run in
- * parallel; if one fails, the other's rows are still returned.
+ * to ::text so the same predicate works across both. The lookup always goes
+ * through a single UNION ALL query so one grep maps to one SQL search.
  */
 export async function searchDeeplakeTables(
   api: DeeplakeApi,
@@ -251,20 +265,11 @@ export async function searchDeeplakeTables(
   const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
   const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
 
-  let rows: Record<string, unknown>[];
-  try {
-    rows = await api.query(
-      `SELECT path, content, source_order, creation_date FROM (` +
-      `(${memQuery}) UNION ALL (${sessQuery})` +
-      `) AS combined ORDER BY path, source_order, creation_date`
-    );
-  } catch {
-    const [memRows, sessRows] = await Promise.all([
-      api.query(memQuery).catch(() => []),
-      api.query(sessQuery).catch(() => []),
-    ]);
-    rows = [...memRows, ...sessRows];
-  }
+  const rows = await api.query(
+    `SELECT path, content, source_order, creation_date FROM (` +
+    `(${memQuery}) UNION ALL (${sessQuery})` +
+    `) AS combined ORDER BY path, source_order, creation_date`
+  );
 
   return rows.map(row => ({
     path: String(row["path"]),
@@ -274,17 +279,21 @@ export async function searchDeeplakeTables(
 
 /** Build a LIKE pathFilter clause for a `path` column. Returns "" if targetPath is root or empty. */
 export function buildPathFilter(targetPath: string): string {
-  if (!targetPath || targetPath === "/") return "";
-  const clean = targetPath.replace(/\/+$/, "");
-  if (/[*?]/.test(clean)) {
-    const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
-    return ` AND path LIKE '${likePattern}'`;
-  }
-  const base = clean.split("/").pop() ?? "";
-  if (base.includes(".")) {
-    return ` AND path = '${sqlStr(clean)}'`;
-  }
-  return ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+  const condition = buildPathCondition(targetPath);
+  return condition ? ` AND ${condition}` : "";
+}
+
+/** Build one combined pathFilter clause for multiple grep targets. */
+export function buildPathFilterForTargets(targetPaths: string[]): string {
+  if (targetPaths.some((targetPath) => !targetPath || targetPath === "/")) return "";
+  const conditions = [...new Set(
+    targetPaths
+      .map((targetPath) => buildPathCondition(targetPath))
+      .filter((condition): condition is string => condition.length > 0),
+  )];
+  if (conditions.length === 0) return "";
+  if (conditions.length === 1) return ` AND ${conditions[0]}`;
+  return ` AND (${conditions.join(" OR ")})`;
 }
 
 /**

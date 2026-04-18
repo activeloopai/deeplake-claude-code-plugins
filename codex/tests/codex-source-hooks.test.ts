@@ -294,6 +294,8 @@ describe("codex pre-tool source", () => {
       model: "gpt-5.2",
     }, {
       config: baseConfig,
+      readCachedIndexContentFn: vi.fn(() => null) as any,
+      writeCachedIndexContentFn: vi.fn() as any,
       readVirtualPathContentFn: contentReader as any,
       executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
@@ -309,6 +311,8 @@ describe("codex pre-tool source", () => {
       model: "gpt-5.2",
     }, {
       config: baseConfig,
+      readCachedIndexContentFn: vi.fn(() => null) as any,
+      writeCachedIndexContentFn: vi.fn() as any,
       readVirtualPathContentFn: contentReader as any,
       executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
@@ -324,6 +328,8 @@ describe("codex pre-tool source", () => {
       model: "gpt-5.2",
     }, {
       config: baseConfig,
+      readCachedIndexContentFn: vi.fn(() => null) as any,
+      writeCachedIndexContentFn: vi.fn() as any,
       readVirtualPathContentFn: contentReader as any,
       executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
@@ -455,6 +461,8 @@ describe("codex pre-tool source", () => {
       model: "gpt-5.2",
     }, {
       config: baseConfig,
+      readCachedIndexContentFn: vi.fn(() => null) as any,
+      writeCachedIndexContentFn: vi.fn() as any,
       readVirtualPathContentFn: vi.fn(async () => "line1\nline2") as any,
       executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
@@ -580,6 +588,8 @@ describe("codex pre-tool source", () => {
       model: "gpt-5.2",
     }, {
       config: baseConfig,
+      readCachedIndexContentFn: vi.fn(() => null) as any,
+      writeCachedIndexContentFn: vi.fn() as any,
       readVirtualPathContentFn: vi.fn(async () => "a\nb\nc") as any,
       executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
@@ -595,6 +605,8 @@ describe("codex pre-tool source", () => {
       model: "gpt-5.2",
     }, {
       config: baseConfig,
+      readCachedIndexContentFn: vi.fn(() => null) as any,
+      writeCachedIndexContentFn: vi.fn() as any,
       readVirtualPathContentFn: vi.fn(async () => "a\nb\nc") as any,
       executeCompiledBashCommandFn: vi.fn(async () => null) as any,
     });
@@ -657,6 +669,8 @@ describe("codex session start source", () => {
 
     expect(loggedIn).toContain("Logged in to Deeplake");
     expect(loggedIn).toContain("Hivemind v0.6.0");
+    expect(loggedIn).toContain("resolve it against that session's own date/date_time metadata");
+    expect(loggedIn).toContain('Do NOT answer "not found"');
     expect(loggedOut).toContain('Run: node "/tmp/auth-login.js" login');
   });
 

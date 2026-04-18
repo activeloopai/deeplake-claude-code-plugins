@@ -5,6 +5,7 @@ import type { DeeplakeFs } from "./deeplake-fs.js";
 
 import {
   buildGrepSearchOptions,
+  buildPathFilterForTargets,
   searchDeeplakeTables,
   normalizeContent,
   refineGrepMatches,
@@ -70,21 +71,18 @@ export function createGrepCommand(
       countOnly: Boolean(parsed.c || parsed["count"]),
     };
 
-    // Targets can be multiple; we run one SQL round per distinct target so the
-    // per-table pathFilter can prune server-side. In practice targets is 1-2
-    // entries, so the cost is negligible and still faster than the old shell.
     let rows: ContentRow[] = [];
     try {
-      const perTarget = await Promise.race([
-        Promise.all(targets.map(t =>
-          searchDeeplakeTables(client, table, sessionsTable ?? "sessions", {
-            ...buildGrepSearchOptions(matchParams, t),
-            limit: 100,
-          })
-        )),
+      const searchOptions = {
+        ...buildGrepSearchOptions(matchParams, targets[0] ?? ctx.cwd),
+        pathFilter: buildPathFilterForTargets(targets),
+        limit: 100,
+      };
+      const queryRows = await Promise.race([
+        searchDeeplakeTables(client, table, sessionsTable ?? "sessions", searchOptions),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 3000)),
       ]);
-      for (const batch of perTarget) rows.push(...batch);
+      rows.push(...queryRows);
     } catch {
       rows = []; // fall through to in-memory fallback
     }
