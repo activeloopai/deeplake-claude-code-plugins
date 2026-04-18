@@ -122,7 +122,7 @@ export function buildSessionInsertSql(sessionsTable: string, rows: QueuedSession
   if (rows.length === 0) throw new Error("buildSessionInsertSql: rows must not be empty");
   const table = sqlIdent(sessionsTable);
   const values = rows.map((row) => {
-    const jsonForSql = row.message.replace(/'/g, "''");
+    const jsonForSql = row.message.replace(/\\/g, "\\\\").replace(/'/g, "''");
     return (
       `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, ` +
       `'${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', ` +
@@ -323,15 +323,8 @@ function readQueuedRows(path: string): QueuedSessionRow[] {
 
 function requeueInflight(queuePath: string, inflightPath: string): void {
   if (!existsSync(inflightPath)) return;
-
-  if (!existsSync(queuePath)) {
-    renameSync(inflightPath, queuePath);
-    return;
-  }
-
   const inflight = readFileSync(inflightPath, "utf-8");
-  const queued = readFileSync(queuePath, "utf-8");
-  writeFileSync(queuePath, `${inflight}${queued}`);
+  appendFileSync(queuePath, inflight);
   rmSync(inflightPath, { force: true });
 }
 

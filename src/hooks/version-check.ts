@@ -33,7 +33,7 @@ export function getInstalledVersion(bundleDir: string, pluginManifestDir: ".clau
 }
 
 export function isNewer(latest: string, current: string): boolean {
-  const parse = (v: string) => v.split(".").map(Number);
+  const parse = (v: string) => v.replace(/-.*$/, "").split(".").map(Number);
   const [la, lb, lc] = parse(latest);
   const [ca, cb, cc] = parse(current);
   return la > ca || (la === ca && lb > cb) || (la === ca && lb === cb && lc > cc);
