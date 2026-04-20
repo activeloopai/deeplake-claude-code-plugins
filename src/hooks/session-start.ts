@@ -150,7 +150,7 @@ interface SessionStartInput {
 
 async function main(): Promise<void> {
   // Skip if this is a sub-session spawned by the wiki worker
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1") return;
+  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<SessionStartInput>();
 
@@ -173,10 +173,10 @@ async function main(): Promise<void> {
 
   // Ensure tables exist and (when capture is enabled) create the placeholder
   // summary via direct SQL. Tables must always be synced so queries return
-  // fresh data — only the placeholder INSERT is skipped when DEEPLAKE_CAPTURE=false
+  // fresh data — only the placeholder INSERT is skipped when HIVEMIND_CAPTURE=false
   // (benchmark runs, explicit opt-out). Mirrors the guard already in
   // session-start-setup.ts / session-end.ts / codex hooks.
-  const captureEnabled = process.env.DEEPLAKE_CAPTURE !== "false";
+  const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
   if (input.session_id && creds?.token) {
     try {
       const config = loadConfig();
@@ -190,7 +190,7 @@ async function main(): Promise<void> {
           await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
           log("placeholder created");
         } else {
-          log("placeholder skipped (DEEPLAKE_CAPTURE=false)");
+          log("placeholder skipped (HIVEMIND_CAPTURE=false)");
         }
       }
     } catch (e: any) {
