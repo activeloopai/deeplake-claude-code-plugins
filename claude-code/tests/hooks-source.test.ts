@@ -254,6 +254,8 @@ describe("claude pre-tool source", () => {
     expect(touchesMemory("cat ~/.deeplake/memory/index.md")).toBe(true);
     expect(rewritePaths("cat ~/.deeplake/memory/index.md")).toBe("cat /index.md");
     expect(isSafe("cat /index.md | head -20")).toBe(true);
+    expect(isSafe("find /sessions -name '*.json' -exec grep -l 'Melanie' {} \\; 2>/dev/null | head -10")).toBe(true);
+    expect(isSafe("for file in /sessions/conv_0_session_*.json; do echo \"=== $(basename $file) ===\"; grep -i \"age\\|birthday\\|born\" \"$file\" 2>/dev/null | head -3; done | grep -B 1 -i \"age\\|birthday\\|born\"")).toBe(false);
     expect(isSafe("python3 -c 'print(1)' /index.md")).toBe(false);
   });
 
@@ -300,6 +302,38 @@ describe("claude pre-tool source", () => {
       config: baseConfig,
     });
     expect(passthrough).toBeNull();
+  });
+
+  it("keeps benchmark-style find -exec grep pipelines on the compiled path and rejects shell-loop variants", async () => {
+    const compiled = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: {
+        command: "find ~/.deeplake/memory/sessions -name '*.json' -exec grep -l 'Melanie' {} \\; 2>/dev/null | head -10",
+      },
+      tool_use_id: "tu-bm-1",
+    }, {
+      config: baseConfig,
+      executeCompiledBashCommandFn: vi.fn(async (_api, _table, _sessions, cmd) => {
+        expect(cmd).toBe("find /sessions -name '*.json' -exec grep -l 'Melanie' {} \\; 2>/dev/null | head -10");
+        return "/sessions/conv_0_session_2.json";
+      }) as any,
+    });
+    expect(compiled?.command).toContain("/sessions/conv_0_session_2.json");
+    expect(compiled?.description).toContain("DeepLake compiled");
+
+    const guidance = await processPreToolUse({
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: {
+        command: "for file in ~/.deeplake/memory/sessions/conv_0_session_*.json; do echo \"=== $(basename $file) ===\"; grep -i \"age\\|birthday\\|born\" \"$file\" 2>/dev/null | head -3; done | grep -B 1 -i \"age\\|birthday\\|born\"",
+      },
+      tool_use_id: "tu-bm-2",
+    }, {
+      config: baseConfig,
+    });
+    expect(guidance?.command).toContain("RETRY REQUIRED");
+    expect(guidance?.description).toContain("unsupported command");
   });
 
   it("uses direct grep, direct reads, listings, finds, and shell fallback", async () => {
@@ -593,6 +627,25 @@ describe("claude session start source", () => {
     expect(context).toContain("org-1");
     expect(context).toContain("workspace: default");
     expect(context).not.toContain("Hivemind v");
+  });
+
+  it("switches to sessions-only guidance when the env flag is set", () => {
+    const prev = process.env.HIVEMIND_SESSIONS_ONLY;
+    process.env.HIVEMIND_SESSIONS_ONLY = "1";
+    try {
+      const context = buildSessionStartAdditionalContext({
+        authCommand: "/tmp/auth-login.js",
+        creds: baseCreds,
+        currentVersion: null,
+        latestVersion: null,
+      });
+      expect(context).toContain("SESSIONS-ONLY mode");
+      expect(context).toContain("do NOT start with index.md or summaries");
+      expect(context).not.toContain("Always read index.md first");
+    } finally {
+      if (prev === undefined) delete process.env.HIVEMIND_SESSIONS_ONLY;
+      else process.env.HIVEMIND_SESSIONS_ONLY = prev;
+    }
   });
 
   it("logs authenticated startup without backfilling when the username is already present", async () => {

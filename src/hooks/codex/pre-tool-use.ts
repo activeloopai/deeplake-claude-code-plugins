@@ -28,6 +28,7 @@ import {
   readVirtualPathContents,
   listVirtualPathRows,
   readVirtualPathContent,
+  buildVirtualIndexContent,
 } from "../virtual-table-query.js";
 import {
   readCachedIndexContent,
@@ -36,6 +37,7 @@ import {
 import { log as _log } from "../../utils/debug.js";
 import { isDirectRun } from "../../utils/direct-run.js";
 import { isSafe, touchesMemory, rewritePaths } from "../memory-path-utils.js";
+import { isIndexDisabled, isSessionsOnlyMode } from "../../utils/retrieval-mode.js";
 
 export { isSafe, touchesMemory, rewritePaths };
 
@@ -82,18 +84,6 @@ export function runVirtualShell(cmd: string, shellBundle = SHELL_BUNDLE, logFn: 
     logFn(`virtual shell failed: ${e.message}`);
     return "";
   }
-}
-
-function buildIndexContent(rows: Record<string, unknown>[]): string {
-  const lines = ["# Memory Index", "", `${rows.length} sessions:`, ""];
-  for (const row of rows) {
-    const path = row["path"] as string;
-    const project = row["project"] as string || "";
-    const description = (row["description"] as string || "").slice(0, 120);
-    const date = (row["creation_date"] as string || "").slice(0, 10);
-    lines.push(`- [${path}](${path}) ${date} ${project ? `[${project}]` : ""} ${description}`);
-  }
-  return lines.join("\n");
 }
 
 interface CodexPreToolDeps {
@@ -164,7 +154,7 @@ export async function processCodexPreToolUse(
     ): Promise<Map<string, string | null>> => {
       const uniquePaths = [...new Set(cachePaths)];
       const result = new Map<string, string | null>(uniquePaths.map((path) => [path, null]));
-      const cachedIndex = uniquePaths.includes("/index.md")
+      const cachedIndex = !isIndexDisabled() && uniquePaths.includes("/index.md")
         ? readCachedIndexContentFn(input.session_id)
         : null;
 
@@ -248,17 +238,17 @@ export async function processCodexPreToolUse(
 
       if (virtualPath && !virtualPath.endsWith("/")) {
         logFn(`direct read: ${virtualPath}`);
-        let content = virtualPath === "/index.md"
+        let content = !isIndexDisabled() && virtualPath === "/index.md"
           ? readCachedIndexContentFn(input.session_id)
           : null;
         if (content === null) {
           content = await readVirtualPathContentFn(api, table, sessionsTable, virtualPath);
         }
-        if (content === null && virtualPath === "/index.md") {
+        if (content === null && virtualPath === "/index.md" && !isSessionsOnlyMode() && !isIndexDisabled()) {
           const idxRows = await api.query(
-            `SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
+            `SELECT path, project, description, summary, creation_date, last_update_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY last_update_date DESC, creation_date DESC`
           );
-          content = buildIndexContent(idxRows);
+          content = buildVirtualIndexContent(idxRows);
         }
 
         if (content !== null) {

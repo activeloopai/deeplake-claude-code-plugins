@@ -7,15 +7,23 @@
  *   1. searchDeeplakeTables: run one UNION ALL query across both the memory
  *      table (summaries, column `summary`) AND the sessions table
  *      (raw dialogue, column `message` JSONB), returning {path, content}.
- *   2. normalizeSessionContent: when a row comes from a session path, turn the
- *      single-line JSON blob into multi-line "Speaker: text" so the standard
- *      line-wise regex refinement surfaces only matching turns, not the whole
- *      5 KB blob.
+ *   2. normalizeSessionContent: when a row comes from a session path, expose a
+ *      file-like text view. Transcript JSON blobs stay as canonical pretty
+ *      JSON so local grep/read over `/sessions/*.json` matches the plugin
+ *      surface, while production hook-event rows keep their concise normalized
+ *      text view.
  *   3. refineGrepMatches: line-by-line regex match with the usual grep flags.
  */
 
 import type { DeeplakeApi } from "../deeplake-api.js";
 import { sqlStr, sqlLike } from "../utils/sql.js";
+import { isSessionsOnlyMode, isSummaryBm25Disabled } from "../utils/retrieval-mode.js";
+
+const DEFAULT_GREP_CANDIDATE_LIMIT = Number(
+  process.env["HIVEMIND_GREP_LIMIT"]
+  ?? process.env["DEEPLAKE_GREP_LIMIT"]
+  ?? 500,
+);
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -44,20 +52,42 @@ export interface SearchOptions {
   likeOp: "LIKE" | "ILIKE";
   /** LIKE-escaped pattern (via sqlLike). */
   escapedPattern: string;
+  /** Optional raw grep regex pattern. May be normalized before SQL pushdown. */
+  regexPattern?: string;
   /** Optional safe literal anchor for regex searches (e.g. foo.*bar → foo). */
   prefilterPattern?: string;
   /** Optional safe literal alternation anchors for regex searches (e.g. foo|bar). */
   prefilterPatterns?: string[];
+  /** Optional lexical query text for BM25 summary retrieval. */
+  bm25QueryText?: string;
   /** Per-table row cap. */
   limit?: number;
+}
+
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Normalize common grep BRE operator spellings into the JS/SQL-regex form used
+ * by our execution paths. This fixes patterns like `book\\|novel` that grep
+ * users often write for alternation.
+ */
+export function normalizeGrepRegexPattern(pattern: string): string {
+  return pattern
+    .replace(/\\([|(){}+?])/g, "$1")
+    .replace(/\\</g, "\\b")
+    .replace(/\\>/g, "\\b");
 }
 
 // ── Content normalization ───────────────────────────────────────────────────
 
 /**
- * If the row is a session JSON blob, serialize it as multi-line
- * "Speaker: text" so the standard grep refinement surfaces only matching turns.
- * Falls back to the raw content if parsing fails or the path is not a session.
+ * If the row is a session JSON blob, expose a file-like text view. Transcript
+ * blobs (`turns` / `dialogue`) stay as canonical pretty JSON so grep/read
+ * match the local filesystem surface. Hook-event rows keep a concise
+ * normalized text projection. Falls back to the raw content if parsing fails
+ * or the path is not a session.
  */
 // ── Tool-call extractor ─────────────────────────────────────────────────────
 // Extracts only signal-bearing fields from `tool_input` / `tool_response`,
@@ -173,23 +203,9 @@ export function normalizeContent(path: string, raw: string): string {
   let obj: any;
   try { obj = JSON.parse(raw); } catch { return raw; }
 
-  // ── Turn-array session shape: { turns: [...] } ───────────────────────────
-  if (Array.isArray(obj.turns)) {
-    const header: string[] = [];
-    if (obj.date_time) header.push(`date: ${obj.date_time}`);
-    if (obj.speakers) {
-      const s = obj.speakers;
-      const names = [s.speaker_a, s.speaker_b].filter(Boolean).join(", ");
-      if (names) header.push(`speakers: ${names}`);
-    }
-    const lines = obj.turns.map((t: any) => {
-      const sp = String(t?.speaker ?? t?.name ?? "?").trim();
-      const tx = String(t?.text ?? t?.content ?? "").replace(/\s+/g, " ").trim();
-      const tag = t?.dia_id ? `[${t.dia_id}] ` : "";
-      return `${tag}${sp}: ${tx}`;
-    });
-    const out = [...header, ...lines].join("\n");
-    return out.trim() ? out : raw;
+  // ── Transcript session shapes: keep a canonical raw-JSON view ───────────
+  if (Array.isArray(obj.turns) || Array.isArray(obj.dialogue)) {
+    return `${JSON.stringify(obj, null, 2)}\n`;
   }
 
   // ── Production shape: single hook-event row (capture.ts output) ─────────
@@ -254,22 +270,52 @@ export async function searchDeeplakeTables(
   sessionsTable: string,
   opts: SearchOptions,
 ): Promise<ContentRow[]> {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
-  const limit = opts.limit ?? 100;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, regexPattern, prefilterPattern, prefilterPatterns, bm25QueryText } = opts;
+  const limit = opts.limit ?? DEFAULT_GREP_CANDIDATE_LIMIT;
   const filterPatterns = contentScanOnly
     ? (prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : (prefilterPattern ? [prefilterPattern] : []))
     : [escapedPattern];
-  const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
-  const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
+  const ignoreCase = likeOp === "ILIKE";
+  const likeMemFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
+  const likeSessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
+  const regexMemFilter = regexPattern ? buildRegexFilter("summary::text", regexPattern, ignoreCase) : "";
+  const regexSessFilter = regexPattern ? buildRegexFilter("message::text", regexPattern, ignoreCase) : "";
+  // Stay on portable message::text filters for session rows. The structured
+  // json_extract_string() predicates currently fail against the managed
+  // backend for these JSONB rows, which forces a 400 and a retry onto a
+  // coarser query path.
+  const primarySessFilter = `${likeSessFilter}${regexSessFilter}`;
+  const fallbackSessFilter = likeSessFilter;
+  const hasSqlRegexFilter = Boolean(regexMemFilter || regexSessFilter);
+  const sessionsOnly = isSessionsOnlyMode();
+  const useSummaryBm25 = !sessionsOnly && !isSummaryBm25Disabled() && Boolean(bm25QueryText);
+  const shouldUseFallbackCapablePrimary = useSummaryBm25
+    || hasSqlRegexFilter;
+  const ensureSummaryBm25Index = (api as DeeplakeApi & {
+    ensureSummaryBm25Index?: (tableName?: string) => Promise<void>;
+  }).ensureSummaryBm25Index;
 
-  const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
-  const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
+  if (useSummaryBm25 && typeof ensureSummaryBm25Index === "function") {
+    await ensureSummaryBm25Index.call(api, memoryTable).catch(() => {});
+  }
 
-  const rows = await api.query(
-    `SELECT path, content, source_order, creation_date FROM (` +
-    `(${memQuery}) UNION ALL (${sessQuery})` +
-    `) AS combined ORDER BY path, source_order, creation_date`
-  );
+  const buildCombinedQuery = (memFilter: string, sessFilter: string, useBm25Summary = false): string => {
+    const memQuery = useBm25Summary
+      ? buildSummaryBm25Query(memoryTable, pathFilter, bm25QueryText ?? "", limit)
+      : `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
+    const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
+    return sessionsOnly
+      ? `SELECT path, content, source_order, creation_date FROM (${sessQuery}) AS combined ORDER BY path, source_order, creation_date`
+      : `SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`;
+  };
+
+  const primaryMemFilter = useSummaryBm25 ? "" : `${likeMemFilter}${regexMemFilter}`;
+  const primaryQuery = buildCombinedQuery(primaryMemFilter, primarySessFilter, useSummaryBm25);
+  const fallbackQuery = buildCombinedQuery(likeMemFilter, fallbackSessFilter, false);
+
+  const rows = shouldUseFallbackCapablePrimary
+    ? await api.query(primaryQuery).catch(() => api.query(fallbackQuery))
+    : await api.query(primaryQuery);
 
   return rows.map(row => ({
     path: String(row["path"]),
@@ -311,6 +357,10 @@ export function extractRegexLiteralPrefilter(pattern: string): string | null {
     if (ch === "\\") {
       const next = pattern[i + 1];
       if (!next) return null;
+      if (/[bByYmM<>]/.test(next)) {
+        i++;
+        continue;
+      }
       if (/[dDsSwWbBAZzGkKpP]/.test(next)) return null;
       current += next;
       i++;
@@ -335,14 +385,15 @@ export function extractRegexLiteralPrefilter(pattern: string): string | null {
 }
 
 export function extractRegexAlternationPrefilters(pattern: string): string[] | null {
-  if (!pattern.includes("|")) return null;
+  const unwrapped = unwrapWholeRegexGroup(pattern);
+  if (!unwrapped.includes("|")) return null;
 
   const parts: string[] = [];
   let current = "";
   let escaped = false;
 
-  for (let i = 0; i < pattern.length; i++) {
-    const ch = pattern[i];
+  for (let i = 0; i < unwrapped.length; i++) {
+    const ch = unwrapped[i];
     if (escaped) {
       current += `\\${ch}`;
       escaped = false;
@@ -374,17 +425,56 @@ export function extractRegexAlternationPrefilters(pattern: string): string[] | n
 }
 
 export function buildGrepSearchOptions(params: GrepMatchParams, targetPath: string): SearchOptions {
-  const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
-  const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
-  const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
+  const normalizedPattern = params.fixedString ? params.pattern : normalizeGrepRegexPattern(params.pattern);
+  const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(normalizedPattern);
+  const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(normalizedPattern) : null;
+  const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(normalizedPattern) : null;
+  const bm25QueryText = buildSummaryBm25QueryText(normalizedPattern, params.fixedString, literalPrefilter, alternationPrefilters);
+  const regexBase = params.fixedString ? escapeRegexLiteral(normalizedPattern) : normalizedPattern;
+  const sqlRegexPattern = params.wordMatch
+    ? `\\b(?:${regexBase})\\b`
+    : hasRegexMeta
+      ? regexBase
+      : undefined;
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
     likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
     escapedPattern: sqlLike(params.pattern),
+    regexPattern: sqlRegexPattern,
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : undefined,
     prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
+    bm25QueryText: bm25QueryText ?? undefined,
+    limit: DEFAULT_GREP_CANDIDATE_LIMIT,
   };
+}
+
+export function buildSummaryBm25QueryText(
+  pattern: string,
+  fixedString: boolean,
+  literalPrefilter: string | null,
+  alternationPrefilters: string[] | null,
+): string | null {
+  const rawTokens = alternationPrefilters && alternationPrefilters.length > 0
+    ? alternationPrefilters
+    : literalPrefilter
+      ? [literalPrefilter]
+      : [pattern];
+
+  const cleaned = [...new Set(
+    rawTokens
+      .flatMap((token) => token
+        .replace(/\\b/g, " ")
+        .replace(/[.*+?^${}()[\]{}|\\]/g, " ")
+        .split(/\s+/))
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 2),
+  )];
+
+  if (cleaned.length === 0) {
+    return fixedString && pattern.trim().length >= 2 ? pattern.trim() : null;
+  }
+  return cleaned.join(" ");
 }
 
 function buildContentFilter(
@@ -392,24 +482,234 @@ function buildContentFilter(
   likeOp: "LIKE" | "ILIKE",
   patterns: string[],
 ): string {
+  const predicate = buildContentPredicate(column, likeOp, patterns);
+  return predicate ? ` AND ${predicate}` : "";
+}
+
+function buildRegexFilter(
+  column: string,
+  pattern: string,
+  ignoreCase: boolean,
+): string {
+  const predicate = buildRegexPredicate(column, pattern, ignoreCase);
+  return predicate ? ` AND ${predicate}` : "";
+}
+
+function buildSummaryBm25Query(
+  memoryTable: string,
+  pathFilter: string,
+  queryText: string,
+  limit: number,
+): string {
+  return `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter} ORDER BY (summary <#> '${sqlStr(queryText)}') DESC LIMIT ${limit}`;
+}
+
+export function toSqlRegexPattern(
+  pattern: string,
+  ignoreCase: boolean,
+): string | null {
+  if (!pattern) return null;
+
+  // Deeplake SQL supports `~` but not `~*`. For ignore-case regex searches,
+  // rely on LIKE/ILIKE prefilters plus in-memory regex refinement instead of
+  // pushing an incompatible SQL operator.
+  if (ignoreCase) return null;
+
+  try {
+    new RegExp(pattern);
+    return translateRegexPatternToSql(pattern);
+  } catch {
+    return pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+}
+
+function isSqlRegexPushdownSafe(pattern: string): boolean {
+  // The managed backend rejects some otherwise valid JS regexes, especially
+  // patterns with bracket syntax, anchors, or escaped literals like `^\[`.
+  // Keep SQL regex pushdown to a conservative subset and rely on in-memory
+  // refinement after candidate fetch for everything else.
+  return !/[\\[\]{}^$]/.test(pattern) && !/\(\?/.test(pattern);
+}
+
+function unwrapWholeRegexGroup(pattern: string): string {
+  if (!pattern.startsWith("(") || !pattern.endsWith(")")) return pattern;
+
+  let depth = 0;
+  let escaped = false;
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === "(") depth++;
+    if (ch === ")") {
+      depth--;
+      if (depth === 0 && i !== pattern.length - 1) return pattern;
+    }
+  }
+  if (depth !== 0) return pattern;
+  if (pattern.startsWith("(?:")) return pattern.slice(3, -1);
+  return pattern.slice(1, -1);
+}
+
+function translateRegexPatternToSql(pattern: string): string | null {
+  let out = "";
+
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+
+    if (ch === "\\") {
+      const next = pattern[i + 1];
+      if (!next) return pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      i++;
+      switch (next) {
+        case "d": out += "[[:digit:]]"; continue;
+        case "D": out += "[^[:digit:]]"; continue;
+        case "s": out += "[[:space:]]"; continue;
+        case "S": out += "[^[:space:]]"; continue;
+        case "w": out += "[[:alnum:]_]"; continue;
+        case "W": out += "[^[:alnum:]_]"; continue;
+        case "b": out += "\\y"; continue;
+        case "A":
+        case "B":
+        case "G":
+        case "K":
+        case "P":
+        case "p":
+        case "z":
+          return null;
+        default:
+          out += `\\${next}`;
+          continue;
+      }
+    }
+
+    if (ch === "(" && pattern.startsWith("(?:", i)) {
+      out += "(";
+      i += 2;
+      continue;
+    }
+
+    if (ch === "(" && /^[(]\?<[^>]+>/.test(pattern.slice(i))) {
+      const named = pattern.slice(i).match(/^\(\?<[^>]+>/);
+      if (!named) return null;
+      out += "(";
+      i += named[0].length - 1;
+      continue;
+    }
+
+    if (ch === "(" && pattern[i + 1] === "?") return null;
+
+    out += ch;
+  }
+
+  return out;
+}
+
+function buildContentPredicate(
+  column: string,
+  likeOp: "LIKE" | "ILIKE",
+  patterns: string[],
+): string {
   if (patterns.length === 0) return "";
-  if (patterns.length === 1) return ` AND ${column} ${likeOp} '%${patterns[0]}%'`;
-  return ` AND (${patterns.map((pattern) => `${column} ${likeOp} '%${pattern}%'`).join(" OR ")})`;
+  if (patterns.length === 1) return `${column} ${likeOp} '%${patterns[0]}%'`;
+  return `(${patterns.map((pattern) => `${column} ${likeOp} '%${pattern}%'`).join(" OR ")})`;
+}
+
+function buildRegexPredicate(
+  column: string,
+  pattern: string | undefined,
+  ignoreCase: boolean,
+): string {
+  if (!pattern) return "";
+  if (!isSqlRegexPushdownSafe(pattern)) return "";
+  const sqlPattern = toSqlRegexPattern(pattern, ignoreCase);
+  if (!sqlPattern) return "";
+  return `${column} ~ '${sqlStr(sqlPattern)}'`;
+}
+
+function joinAndPredicates(predicates: string[]): string {
+  const filtered = predicates.filter(Boolean);
+  if (filtered.length === 0) return "";
+  if (filtered.length === 1) return filtered[0]!;
+  return `(${filtered.join(" AND ")})`;
+}
+
+function joinOrPredicates(predicates: string[]): string {
+  const filtered = predicates.filter(Boolean);
+  if (filtered.length === 0) return "";
+  if (filtered.length === 1) return filtered[0]!;
+  return `(${filtered.join(" OR ")})`;
+}
+
+function buildAnyColumnPredicate(
+  columns: string[],
+  builder: (column: string) => string,
+): string {
+  return joinOrPredicates(columns.map((column) => builder(column)));
+}
+
+function buildStructuredSessionFilter(
+  likeOp: "LIKE" | "ILIKE",
+  patterns: string[],
+  regexPattern: string | undefined,
+  ignoreCase: boolean,
+): string {
+  const typeExpr = "COALESCE(json_extract_string(message, '$.type'), '')";
+  const contentExpr = "COALESCE(json_extract_string(message, '$.content'), '')";
+  const toolFieldExprs = [
+    "COALESCE(json_extract_string(message, '$.tool_name'), '')",
+    "COALESCE(json_extract_string(message, '$.tool_input'), '')",
+    "COALESCE(json_extract_string(message, '$.tool_response'), '')",
+  ];
+  const metaExprs = [
+    typeExpr,
+    "COALESCE(json_extract_string(message, '$.hook_event_name'), '')",
+    "COALESCE(json_extract_string(message, '$.agent_type'), '')",
+  ];
+
+  const buildFieldSearch = (columns: string[]): string => joinAndPredicates([
+    buildAnyColumnPredicate(columns, (column) => buildContentPredicate(column, likeOp, patterns)),
+    buildAnyColumnPredicate(columns, (column) => buildRegexPredicate(column, regexPattern, ignoreCase)),
+  ]);
+
+  const contentSearch = buildFieldSearch([contentExpr]);
+  const toolSearch = buildFieldSearch(toolFieldExprs);
+  const metaSearch = buildFieldSearch(metaExprs);
+
+  const branches = [
+    contentSearch
+      ? joinAndPredicates([`${typeExpr} IN ('user_message', 'assistant_message')`, contentSearch])
+      : "",
+    toolSearch
+      ? joinAndPredicates([`${typeExpr} = 'tool_call'`, toolSearch])
+      : "",
+    metaSearch,
+  ];
+
+  const predicate = joinOrPredicates(branches);
+  return predicate ? ` AND ${predicate}` : "";
 }
 
 // ── Regex refinement (line-by-line grep) ────────────────────────────────────
 
 /** Compile the grep regex from params, with a safe fallback on bad user regex. */
 export function compileGrepRegex(params: GrepMatchParams): RegExp {
+  const normalizedPattern = params.fixedString ? params.pattern : normalizeGrepRegexPattern(params.pattern);
   let reStr = params.fixedString
-    ? params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    : params.pattern;
-  if (params.wordMatch) reStr = `\\b${reStr}\\b`;
+    ? escapeRegexLiteral(normalizedPattern)
+    : normalizedPattern;
+  if (params.wordMatch) reStr = `\\b(?:${reStr})\\b`;
   try {
     return new RegExp(reStr, params.ignoreCase ? "i" : "");
   } catch {
     return new RegExp(
-      params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      escapeRegexLiteral(normalizedPattern),
       params.ignoreCase ? "i" : "",
     );
   }
@@ -462,6 +762,7 @@ export async function grepBothTables(
   sessionsTable: string,
   params: GrepMatchParams,
   targetPath: string,
+  forceMultiFilePrefix?: boolean,
 ): Promise<string[]> {
   const rows = await searchDeeplakeTables(api, memoryTable, sessionsTable, buildGrepSearchOptions(params, targetPath));
   // Defensive path dedup — memory and sessions tables use disjoint path
@@ -472,5 +773,5 @@ export async function grepBothTables(
   const seen = new Set<string>();
   const unique = rows.filter(r => seen.has(r.path) ? false : (seen.add(r.path), true));
   const normalized = unique.map(r => ({ path: r.path, content: normalizeContent(r.path, r.content) }));
-  return refineGrepMatches(normalized, params);
+  return refineGrepMatches(normalized, params, forceMultiFilePrefix);
 }

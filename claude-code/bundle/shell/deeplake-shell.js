@@ -66987,6 +66987,29 @@ var DeeplakeApi = class {
   async createIndex(column) {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
+  /** Create the standard BM25 summary index for a memory table. */
+  async createSummaryBm25Index(tableName) {
+    const table = tableName ?? this.tableName;
+    const indexName = this.buildLookupIndexName(table, "summary_bm25");
+    await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" USING deeplake_index ("summary")`);
+  }
+  /** Ensure the standard BM25 summary index exists, using a local freshness marker to avoid repeated CREATEs. */
+  async ensureSummaryBm25Index(tableName) {
+    const table = tableName ?? this.tableName;
+    const suffix = "summary_bm25";
+    if (this.hasFreshLookupIndexMarker(table, suffix))
+      return;
+    try {
+      await this.createSummaryBm25Index(table);
+      this.markLookupIndexReady(table, suffix);
+    } catch (e6) {
+      if (isDuplicateIndexError(e6)) {
+        this.markLookupIndexReady(table, suffix);
+        return;
+      }
+      throw e6;
+    }
+  }
   buildLookupIndexName(table, suffix) {
     return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
   }
@@ -67099,10 +67122,31 @@ var DeeplakeApi = class {
 };
 
 // dist/src/shell/deeplake-fs.js
-import { basename as basename4, posix } from "node:path";
+import { basename as basename5, posix } from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
 
+// dist/src/utils/retrieval-mode.js
+function isSessionsOnlyMode() {
+  const raw = process.env["HIVEMIND_SESSIONS_ONLY"] ?? process.env["DEEPLAKE_SESSIONS_ONLY"] ?? "";
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
+function isIndexDisabled() {
+  const raw = process.env["HIVEMIND_DISABLE_INDEX"] ?? process.env["DEEPLAKE_DISABLE_INDEX"] ?? "";
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
+function isSummaryBm25Disabled() {
+  const raw = process.env["HIVEMIND_DISABLE_SUMMARY_BM25"] ?? process.env["DEEPLAKE_DISABLE_SUMMARY_BM25"] ?? "";
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
+
 // dist/src/shell/grep-core.js
+var DEFAULT_GREP_CANDIDATE_LIMIT = Number(process.env["HIVEMIND_GREP_LIMIT"] ?? process.env["DEEPLAKE_GREP_LIMIT"] ?? 500);
+function escapeRegexLiteral(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function normalizeGrepRegexPattern(pattern) {
+  return pattern.replace(/\\([|(){}+?])/g, "$1").replace(/\\</g, "\\b").replace(/\\>/g, "\\b");
+}
 var TOOL_INPUT_FIELDS = [
   "command",
   "file_path",
@@ -67265,24 +67309,9 @@ function normalizeContent(path2, raw) {
   } catch {
     return raw;
   }
-  if (Array.isArray(obj.turns)) {
-    const header = [];
-    if (obj.date_time)
-      header.push(`date: ${obj.date_time}`);
-    if (obj.speakers) {
-      const s10 = obj.speakers;
-      const names = [s10.speaker_a, s10.speaker_b].filter(Boolean).join(", ");
-      if (names)
-        header.push(`speakers: ${names}`);
-    }
-    const lines = obj.turns.map((t6) => {
-      const sp = String(t6?.speaker ?? t6?.name ?? "?").trim();
-      const tx = String(t6?.text ?? t6?.content ?? "").replace(/\s+/g, " ").trim();
-      const tag = t6?.dia_id ? `[${t6.dia_id}] ` : "";
-      return `${tag}${sp}: ${tx}`;
-    });
-    const out2 = [...header, ...lines].join("\n");
-    return out2.trim() ? out2 : raw;
+  if (Array.isArray(obj.turns) || Array.isArray(obj.dialogue)) {
+    return `${JSON.stringify(obj, null, 2)}
+`;
   }
   const stripRecalled = (t6) => {
     const i11 = t6.indexOf("<recalled-memories>");
@@ -67326,14 +67355,34 @@ function buildPathCondition(targetPath) {
   return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
-  const limit = opts.limit ?? 100;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, regexPattern, prefilterPattern, prefilterPatterns, bm25QueryText } = opts;
+  const limit = opts.limit ?? DEFAULT_GREP_CANDIDATE_LIMIT;
   const filterPatterns = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : [escapedPattern];
-  const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
-  const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
-  const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
-  const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
-  const rows = await api.query(`SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`);
+  const ignoreCase = likeOp === "ILIKE";
+  const likeMemFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
+  const likeSessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
+  const regexMemFilter = regexPattern ? buildRegexFilter("summary::text", regexPattern, ignoreCase) : "";
+  const regexSessFilter = regexPattern ? buildRegexFilter("message::text", regexPattern, ignoreCase) : "";
+  const primarySessFilter = `${likeSessFilter}${regexSessFilter}`;
+  const fallbackSessFilter = likeSessFilter;
+  const hasSqlRegexFilter = Boolean(regexMemFilter || regexSessFilter);
+  const sessionsOnly = isSessionsOnlyMode();
+  const useSummaryBm25 = !sessionsOnly && !isSummaryBm25Disabled() && Boolean(bm25QueryText);
+  const shouldUseFallbackCapablePrimary = useSummaryBm25 || hasSqlRegexFilter;
+  const ensureSummaryBm25Index = api.ensureSummaryBm25Index;
+  if (useSummaryBm25 && typeof ensureSummaryBm25Index === "function") {
+    await ensureSummaryBm25Index.call(api, memoryTable).catch(() => {
+    });
+  }
+  const buildCombinedQuery = (memFilter, sessFilter, useBm25Summary = false) => {
+    const memQuery = useBm25Summary ? buildSummaryBm25Query(memoryTable, pathFilter, bm25QueryText ?? "", limit) : `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
+    const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
+    return sessionsOnly ? `SELECT path, content, source_order, creation_date FROM (${sessQuery}) AS combined ORDER BY path, source_order, creation_date` : `SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`;
+  };
+  const primaryMemFilter = useSummaryBm25 ? "" : `${likeMemFilter}${regexMemFilter}`;
+  const primaryQuery = buildCombinedQuery(primaryMemFilter, primarySessFilter, useSummaryBm25);
+  const fallbackQuery = buildCombinedQuery(likeMemFilter, fallbackSessFilter, false);
+  const rows = shouldUseFallbackCapablePrimary ? await api.query(primaryQuery).catch(() => api.query(fallbackQuery)) : await api.query(primaryQuery);
   return rows.map((row) => ({
     path: String(row["path"]),
     content: String(row["content"] ?? "")
@@ -67364,6 +67413,10 @@ function extractRegexLiteralPrefilter(pattern) {
       const next = pattern[i11 + 1];
       if (!next)
         return null;
+      if (/[bByYmM<>]/.test(next)) {
+        i11++;
+        continue;
+      }
       if (/[dDsSwWbBAZzGkKpP]/.test(next))
         return null;
       current += next;
@@ -67390,13 +67443,14 @@ function extractRegexLiteralPrefilter(pattern) {
   return literal.length >= 2 ? literal : null;
 }
 function extractRegexAlternationPrefilters(pattern) {
-  if (!pattern.includes("|"))
+  const unwrapped = unwrapWholeRegexGroup(pattern);
+  if (!unwrapped.includes("|"))
     return null;
   const parts = [];
   let current = "";
   let escaped = false;
-  for (let i11 = 0; i11 < pattern.length; i11++) {
-    const ch = pattern[i11];
+  for (let i11 = 0; i11 < unwrapped.length; i11++) {
+    const ch = unwrapped[i11];
     if (escaped) {
       current += `\\${ch}`;
       escaped = false;
@@ -67424,33 +67478,177 @@ function extractRegexAlternationPrefilters(pattern) {
   return literals.length > 0 ? literals : null;
 }
 function buildGrepSearchOptions(params, targetPath) {
-  const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
-  const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
-  const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
+  const normalizedPattern = params.fixedString ? params.pattern : normalizeGrepRegexPattern(params.pattern);
+  const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(normalizedPattern);
+  const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(normalizedPattern) : null;
+  const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(normalizedPattern) : null;
+  const bm25QueryText = buildSummaryBm25QueryText(normalizedPattern, params.fixedString, literalPrefilter, alternationPrefilters);
+  const regexBase = params.fixedString ? escapeRegexLiteral(normalizedPattern) : normalizedPattern;
+  const sqlRegexPattern = params.wordMatch ? `\\b(?:${regexBase})\\b` : hasRegexMeta ? regexBase : void 0;
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
     likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
     escapedPattern: sqlLike(params.pattern),
+    regexPattern: sqlRegexPattern,
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0,
-    prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal))
+    prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
+    bm25QueryText: bm25QueryText ?? void 0,
+    limit: DEFAULT_GREP_CANDIDATE_LIMIT
   };
 }
+function buildSummaryBm25QueryText(pattern, fixedString, literalPrefilter, alternationPrefilters) {
+  const rawTokens = alternationPrefilters && alternationPrefilters.length > 0 ? alternationPrefilters : literalPrefilter ? [literalPrefilter] : [pattern];
+  const cleaned = [...new Set(rawTokens.flatMap((token) => token.replace(/\\b/g, " ").replace(/[.*+?^${}()[\]{}|\\]/g, " ").split(/\s+/)).map((token) => token.trim()).filter((token) => token.length >= 2))];
+  if (cleaned.length === 0) {
+    return fixedString && pattern.trim().length >= 2 ? pattern.trim() : null;
+  }
+  return cleaned.join(" ");
+}
 function buildContentFilter(column, likeOp, patterns) {
+  const predicate = buildContentPredicate(column, likeOp, patterns);
+  return predicate ? ` AND ${predicate}` : "";
+}
+function buildRegexFilter(column, pattern, ignoreCase) {
+  const predicate = buildRegexPredicate(column, pattern, ignoreCase);
+  return predicate ? ` AND ${predicate}` : "";
+}
+function buildSummaryBm25Query(memoryTable, pathFilter, queryText, limit) {
+  return `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter} ORDER BY (summary <#> '${sqlStr(queryText)}') DESC LIMIT ${limit}`;
+}
+function toSqlRegexPattern(pattern, ignoreCase) {
+  if (!pattern)
+    return null;
+  if (ignoreCase)
+    return null;
+  try {
+    new RegExp(pattern);
+    return translateRegexPatternToSql(pattern);
+  } catch {
+    return pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+}
+function isSqlRegexPushdownSafe(pattern) {
+  return !/[\\[\]{}^$]/.test(pattern) && !/\(\?/.test(pattern);
+}
+function unwrapWholeRegexGroup(pattern) {
+  if (!pattern.startsWith("(") || !pattern.endsWith(")"))
+    return pattern;
+  let depth = 0;
+  let escaped = false;
+  for (let i11 = 0; i11 < pattern.length; i11++) {
+    const ch = pattern[i11];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === "(")
+      depth++;
+    if (ch === ")") {
+      depth--;
+      if (depth === 0 && i11 !== pattern.length - 1)
+        return pattern;
+    }
+  }
+  if (depth !== 0)
+    return pattern;
+  if (pattern.startsWith("(?:"))
+    return pattern.slice(3, -1);
+  return pattern.slice(1, -1);
+}
+function translateRegexPatternToSql(pattern) {
+  let out = "";
+  for (let i11 = 0; i11 < pattern.length; i11++) {
+    const ch = pattern[i11];
+    if (ch === "\\") {
+      const next = pattern[i11 + 1];
+      if (!next)
+        return pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      i11++;
+      switch (next) {
+        case "d":
+          out += "[[:digit:]]";
+          continue;
+        case "D":
+          out += "[^[:digit:]]";
+          continue;
+        case "s":
+          out += "[[:space:]]";
+          continue;
+        case "S":
+          out += "[^[:space:]]";
+          continue;
+        case "w":
+          out += "[[:alnum:]_]";
+          continue;
+        case "W":
+          out += "[^[:alnum:]_]";
+          continue;
+        case "b":
+          out += "\\y";
+          continue;
+        case "A":
+        case "B":
+        case "G":
+        case "K":
+        case "P":
+        case "p":
+        case "z":
+          return null;
+        default:
+          out += `\\${next}`;
+          continue;
+      }
+    }
+    if (ch === "(" && pattern.startsWith("(?:", i11)) {
+      out += "(";
+      i11 += 2;
+      continue;
+    }
+    if (ch === "(" && /^[(]\?<[^>]+>/.test(pattern.slice(i11))) {
+      const named = pattern.slice(i11).match(/^\(\?<[^>]+>/);
+      if (!named)
+        return null;
+      out += "(";
+      i11 += named[0].length - 1;
+      continue;
+    }
+    if (ch === "(" && pattern[i11 + 1] === "?")
+      return null;
+    out += ch;
+  }
+  return out;
+}
+function buildContentPredicate(column, likeOp, patterns) {
   if (patterns.length === 0)
     return "";
   if (patterns.length === 1)
-    return ` AND ${column} ${likeOp} '%${patterns[0]}%'`;
-  return ` AND (${patterns.map((pattern) => `${column} ${likeOp} '%${pattern}%'`).join(" OR ")})`;
+    return `${column} ${likeOp} '%${patterns[0]}%'`;
+  return `(${patterns.map((pattern) => `${column} ${likeOp} '%${pattern}%'`).join(" OR ")})`;
+}
+function buildRegexPredicate(column, pattern, ignoreCase) {
+  if (!pattern)
+    return "";
+  if (!isSqlRegexPushdownSafe(pattern))
+    return "";
+  const sqlPattern = toSqlRegexPattern(pattern, ignoreCase);
+  if (!sqlPattern)
+    return "";
+  return `${column} ~ '${sqlStr(sqlPattern)}'`;
 }
 function compileGrepRegex(params) {
-  let reStr = params.fixedString ? params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : params.pattern;
+  const normalizedPattern = params.fixedString ? params.pattern : normalizeGrepRegexPattern(params.pattern);
+  let reStr = params.fixedString ? escapeRegexLiteral(normalizedPattern) : normalizedPattern;
   if (params.wordMatch)
-    reStr = `\\b${reStr}\\b`;
+    reStr = `\\b(?:${reStr})\\b`;
   try {
     return new RegExp(reStr, params.ignoreCase ? "i" : "");
   } catch {
-    return new RegExp(params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), params.ignoreCase ? "i" : "");
+    return new RegExp(escapeRegexLiteral(normalizedPattern), params.ignoreCase ? "i" : "");
   }
 }
 function refineGrepMatches(rows, params, forceMultiFilePrefix) {
@@ -67483,6 +67681,234 @@ function refineGrepMatches(rows, params, forceMultiFilePrefix) {
     }
   }
   return output;
+}
+
+// dist/src/utils/summary-format.js
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function basename4(path2) {
+  const trimmed = path2.replace(/\/+$/, "");
+  const idx = trimmed.lastIndexOf("/");
+  return idx === -1 ? trimmed : trimmed.slice(idx + 1);
+}
+function extractSection(text, heading) {
+  const re9 = new RegExp(`^## ${escapeRegex(heading)}\\s*\\n([\\s\\S]*?)(?=\\n## |$)`, "m");
+  const match2 = text.match(re9);
+  return match2 ? match2[1].trim() : null;
+}
+function extractHeaderField(text, field) {
+  const re9 = new RegExp(`^- \\*\\*${escapeRegex(field)}\\*\\*:\\s*(.+)$`, "m");
+  const match2 = text.match(re9);
+  return match2 ? match2[1].trim() : null;
+}
+function compactText(value) {
+  return value.replace(/\s+/g, " ").trim();
+}
+function splitMetadataList(value) {
+  if (!value)
+    return [];
+  return [...new Set(value.split(/\s*(?:,|;|&|\band\b)\s*/i).map((part) => compactText(part)).filter((part) => part.length >= 2 && !/^unknown$/i.test(part)))];
+}
+function extractBullets(section, limit = 3) {
+  if (!section)
+    return [];
+  return section.split("\n").map((line) => line.trim()).filter((line) => line.startsWith("- ")).map((line) => compactText(line.slice(2))).filter(Boolean).slice(0, limit);
+}
+function extractSummaryDate(text) {
+  return extractHeaderField(text, "Date") ?? extractHeaderField(text, "Started");
+}
+function extractSummaryParticipants(text) {
+  return extractHeaderField(text, "Participants") ?? extractHeaderField(text, "Speakers");
+}
+function extractSummaryTopics(text) {
+  return extractHeaderField(text, "Topics");
+}
+function extractSummarySource(text) {
+  return extractHeaderField(text, "Source");
+}
+function buildSummaryBlurb(text) {
+  const participants = extractSummaryParticipants(text);
+  const topics = extractSummaryTopics(text);
+  const factBullets = extractBullets(extractSection(text, "Searchable Facts"), 3);
+  const keyBullets = factBullets.length > 0 ? factBullets : extractBullets(extractSection(text, "Key Facts"), 3);
+  const whatHappened = compactText(extractSection(text, "What Happened") ?? "");
+  const parts = [];
+  if (participants)
+    parts.push(participants);
+  if (topics)
+    parts.push(topics);
+  if (keyBullets.length > 0)
+    parts.push(keyBullets.join("; "));
+  if (parts.length === 0 && whatHappened)
+    parts.push(whatHappened);
+  const blurb = parts.join(" | ").slice(0, 300).trim();
+  return blurb || "completed";
+}
+function truncate(value, max) {
+  return value.length > max ? `${value.slice(0, max - 1).trimEnd()}\u2026` : value;
+}
+function formatIndexTimestamp(value) {
+  if (!value)
+    return "";
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(value))
+    return value;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed))
+    return value;
+  const ts3 = new Date(parsed);
+  const yyyy = ts3.getUTCFullYear();
+  const mm = String(ts3.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(ts3.getUTCDate()).padStart(2, "0");
+  const hh = String(ts3.getUTCHours()).padStart(2, "0");
+  const min = String(ts3.getUTCMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${min} UTC`;
+}
+function buildSummaryIndexEntry(row) {
+  const path2 = typeof row.path === "string" ? row.path : "";
+  if (!path2)
+    return null;
+  if (path2.startsWith("/summaries/") && !/^\/summaries\/[^/]+\/[^/]+$/.test(path2))
+    return null;
+  const summary = typeof row.summary === "string" ? row.summary : "";
+  const project = typeof row.project === "string" ? row.project.trim() : "";
+  const description = typeof row.description === "string" ? compactText(row.description) : "";
+  const creationDate = typeof row.creation_date === "string" ? row.creation_date : "";
+  const lastUpdateDate = typeof row.last_update_date === "string" ? row.last_update_date : "";
+  const label = basename4(path2) || path2;
+  const date = summary ? extractSummaryDate(summary) ?? creationDate : creationDate;
+  const participantsText = summary ? extractSummaryParticipants(summary) ?? "" : "";
+  const topicsText = summary ? extractSummaryTopics(summary) ?? "" : "";
+  const source = summary ? extractSummarySource(summary) ?? "" : "";
+  const structuredBlurb = summary ? buildSummaryBlurb(summary) : "";
+  const blurb = structuredBlurb && structuredBlurb !== "completed" ? structuredBlurb : truncate(description, 220);
+  return {
+    path: path2,
+    label,
+    project,
+    description,
+    date,
+    createdAt: creationDate,
+    updatedAt: lastUpdateDate,
+    sortDate: lastUpdateDate || creationDate || date,
+    participantsText,
+    participants: splitMetadataList(participantsText),
+    topicsText,
+    topics: splitMetadataList(topicsText),
+    source,
+    blurb
+  };
+}
+function formatSummaryIndexEntry(entry) {
+  const parts = [`- [summary: ${entry.label}](${entry.path})`];
+  if (entry.source)
+    parts.push(`[session](${entry.source})`);
+  if (entry.date)
+    parts.push(truncate(entry.date, 40));
+  const visibleTime = entry.updatedAt || entry.createdAt;
+  if (visibleTime)
+    parts.push(`updated: ${truncate(formatIndexTimestamp(visibleTime), 24)}`);
+  if (entry.participantsText)
+    parts.push(truncate(entry.participantsText, 80));
+  if (entry.topicsText)
+    parts.push(`topics: ${truncate(entry.topicsText, 90)}`);
+  if (entry.project)
+    parts.push(`[${truncate(entry.project, 40)}]`);
+  if (entry.blurb && entry.blurb !== "completed")
+    parts.push(truncate(entry.blurb, 220));
+  return parts.join(" \u2014 ");
+}
+function buildSummaryIndexLine(row) {
+  const entry = "label" in row && typeof row.label === "string" ? row : buildSummaryIndexEntry(row);
+  return entry ? formatSummaryIndexEntry(entry) : null;
+}
+
+// dist/src/hooks/virtual-table-query.js
+function buildVirtualIndexContent(rows) {
+  const entries = rows.map((row) => buildSummaryIndexEntry(row)).filter((entry) => entry !== null).sort((a15, b26) => (b26.sortDate || "").localeCompare(a15.sortDate || "") || a15.path.localeCompare(b26.path));
+  const lines = [
+    "# Memory Index",
+    "",
+    "Persistent wiki directory. Start here, open the linked summary first, then open the paired raw session if you need exact wording or temporal grounding.",
+    "",
+    "## How To Use",
+    "",
+    "- Use the People section when the question names a person.",
+    "- In the catalog, each row links to both the summary page and its source session.",
+    "- Once you have a likely match, open that exact summary or session instead of broadening into wide grep scans.",
+    ""
+  ];
+  const peopleLines = buildPeopleDirectory(entries);
+  if (peopleLines.length > 0) {
+    lines.push("## People");
+    lines.push("");
+    lines.push(...peopleLines);
+    lines.push("");
+  }
+  const projectLines = buildProjectDirectory(entries);
+  if (projectLines.length > 0) {
+    lines.push("## Projects");
+    lines.push("");
+    lines.push(...projectLines);
+    lines.push("");
+  }
+  lines.push("## Summary To Session Catalog");
+  lines.push("");
+  for (const entry of entries) {
+    const line = buildSummaryIndexLine(entry);
+    if (line)
+      lines.push(line);
+  }
+  return lines.join("\n");
+}
+function formatEntryLink(entry) {
+  const session = entry.source ? ` -> [session](${entry.source})` : "";
+  return `[${entry.label}](${entry.path})${session}`;
+}
+function topList(counts, limit) {
+  return [...counts.entries()].sort((a15, b26) => b26[1] - a15[1] || a15[0].localeCompare(b26[0])).slice(0, limit).map(([value]) => value);
+}
+function buildPeopleDirectory(entries) {
+  const people = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    for (const person of entry.participants) {
+      const current = people.get(person) ?? { count: 0, topics: /* @__PURE__ */ new Map(), recent: [] };
+      current.count += 1;
+      for (const topic of entry.topics) {
+        current.topics.set(topic, (current.topics.get(topic) ?? 0) + 1);
+      }
+      current.recent.push(entry);
+      people.set(person, current);
+    }
+  }
+  return [...people.entries()].sort((a15, b26) => b26[1].count - a15[1].count || a15[0].localeCompare(b26[0])).map(([person, info]) => {
+    const topics = topList(info.topics, 3);
+    const recent = info.recent.slice(0, 2).map((entry) => formatEntryLink(entry)).join(", ");
+    const parts = [`- ${person} \u2014 ${info.count} summaries`];
+    if (topics.length > 0)
+      parts.push(`topics: ${topics.join("; ")}`);
+    if (recent)
+      parts.push(`recent: ${recent}`);
+    return parts.join(" \u2014 ");
+  });
+}
+function buildProjectDirectory(entries) {
+  const projects = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    if (!entry.project)
+      continue;
+    const current = projects.get(entry.project) ?? { count: 0, recent: [] };
+    current.count += 1;
+    current.recent.push(entry);
+    projects.set(entry.project, current);
+  }
+  return [...projects.entries()].sort((a15, b26) => b26[1].count - a15[1].count || a15[0].localeCompare(b26[0])).map(([project, info]) => {
+    const recent = info.recent.slice(0, 2).map((entry) => formatEntryLink(entry)).join(", ");
+    const parts = [`- ${project} \u2014 ${info.count} summaries`];
+    if (recent)
+      parts.push(`recent: ${recent}`);
+    return parts.join(" \u2014 ");
+  });
 }
 
 // dist/src/shell/deeplake-fs.js
@@ -67542,6 +67968,8 @@ var DeeplakeFs = class _DeeplakeFs {
   // Paths that live in the sessions table (multi-row, read by concatenation)
   sessionPaths = /* @__PURE__ */ new Set();
   sessionsTable = null;
+  sessionsOnly = false;
+  indexDisabled = false;
   constructor(client, table, mountPoint) {
     this.client = client;
     this.table = table;
@@ -67553,9 +67981,11 @@ var DeeplakeFs = class _DeeplakeFs {
   static async create(client, table, mount = "/memory", sessionsTable) {
     const fs3 = new _DeeplakeFs(client, table, mount);
     fs3.sessionsTable = sessionsTable ?? null;
+    fs3.sessionsOnly = isSessionsOnlyMode();
+    fs3.indexDisabled = isIndexDisabled();
     await client.ensureTable();
     let sessionSyncOk = true;
-    const memoryBootstrap = (async () => {
+    const memoryBootstrap = fs3.sessionsOnly ? Promise.resolve() : (async () => {
       const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
       try {
         const rows = await client.query(sql);
@@ -67611,7 +68041,7 @@ var DeeplakeFs = class _DeeplakeFs {
     this.pending.delete(filePath);
     this.flushed.delete(filePath);
     const parent = parentOf(filePath);
-    this.dirs.get(parent)?.delete(basename4(filePath));
+    this.dirs.get(parent)?.delete(basename5(filePath));
   }
   // ── flush / write batching ────────────────────────────────────────────────
   scheduleFlush() {
@@ -67674,46 +68104,8 @@ var DeeplakeFs = class _DeeplakeFs {
   }
   // ── Virtual index.md generation ────────────────────────────────────────────
   async generateVirtualIndex() {
-    const rows = await this.client.query(`SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" WHERE path LIKE '${sqlStr("/summaries/")}%' ORDER BY last_update_date DESC`);
-    const sessionPathsByKey = /* @__PURE__ */ new Map();
-    for (const sp of this.sessionPaths) {
-      const hivemind = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
-      if (hivemind) {
-        sessionPathsByKey.set(hivemind[1], sp.slice(1));
-      } else {
-        const fname = sp.split("/").pop() ?? "";
-        const stem = fname.replace(/\.[^.]+$/, "");
-        if (stem)
-          sessionPathsByKey.set(stem, sp.slice(1));
-      }
-    }
-    const lines = [
-      "# Session Index",
-      "",
-      "List of all Claude Code sessions with summaries.",
-      "",
-      "| Session | Conversation | Created | Last Updated | Project | Description |",
-      "|---------|-------------|---------|--------------|---------|-------------|"
-    ];
-    for (const row of rows) {
-      const p22 = row["path"];
-      const match2 = p22.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
-      if (!match2)
-        continue;
-      const summaryUser = match2[1];
-      const sessionId = match2[2];
-      const relPath = `summaries/${summaryUser}/${sessionId}.md`;
-      const baseName = sessionId.replace(/_summary$/, "");
-      const convPath = sessionPathsByKey.get(sessionId) ?? sessionPathsByKey.get(baseName);
-      const convLink = convPath ? `[messages](${convPath})` : "";
-      const project = row["project"] || "";
-      const description = row["description"] || "";
-      const creationDate = row["creation_date"] || "";
-      const lastUpdateDate = row["last_update_date"] || "";
-      lines.push(`| [${sessionId}](${relPath}) | ${convLink} | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
-    }
-    lines.push("");
-    return lines.join("\n");
+    const rows = await this.client.query(`SELECT path, project, description, summary, creation_date, last_update_date FROM "${this.table}" WHERE path LIKE '${sqlStr("/summaries/")}%' ORDER BY last_update_date DESC, creation_date DESC`);
+    return buildVirtualIndexContent(rows);
   }
   // ── batch prefetch ────────────────────────────────────────────────────────
   /**
@@ -67802,7 +68194,7 @@ var DeeplakeFs = class _DeeplakeFs {
     const p22 = normPath(path2);
     if (this.dirs.has(p22) && !this.files.has(p22))
       throw fsErr("EISDIR", "illegal operation on a directory", p22);
-    if (p22 === "/index.md" && !this.files.has(p22)) {
+    if (!this.sessionsOnly && !this.indexDisabled && p22 === "/index.md" && !this.files.has(p22)) {
       const realRows = await this.client.query(`SELECT summary FROM "${this.table}" WHERE path = '${sqlStr("/index.md")}' LIMIT 1`);
       if (realRows.length > 0 && realRows[0]["summary"]) {
         const text2 = realRows[0]["summary"];
@@ -67847,13 +68239,13 @@ var DeeplakeFs = class _DeeplakeFs {
       throw fsErr("EISDIR", "illegal operation on a directory", p22);
     const text = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
     const buf = Buffer.from(text, "utf-8");
-    const mime = guessMime(basename4(p22));
+    const mime = guessMime(basename5(p22));
     this.files.set(p22, buf);
     this.meta.set(p22, { size: buf.length, mime, mtime: /* @__PURE__ */ new Date() });
     this.addToTree(p22);
     this.pending.set(p22, {
       path: p22,
-      filename: basename4(p22),
+      filename: basename5(p22),
       contentText: text,
       mimeType: mime,
       sizeBytes: buf.length,
@@ -67872,13 +68264,13 @@ var DeeplakeFs = class _DeeplakeFs {
       throw fsErr("EISDIR", "illegal operation on a directory", p22);
     const text = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
     const buf = Buffer.from(text, "utf-8");
-    const mime = guessMime(basename4(p22));
+    const mime = guessMime(basename5(p22));
     this.files.set(p22, buf);
     this.meta.set(p22, { size: buf.length, mime, mtime: /* @__PURE__ */ new Date() });
     this.addToTree(p22);
     this.pending.set(p22, {
       path: p22,
-      filename: basename4(p22),
+      filename: basename5(p22),
       contentText: text,
       mimeType: mime,
       sizeBytes: buf.length
@@ -67910,7 +68302,7 @@ var DeeplakeFs = class _DeeplakeFs {
   // ── IFileSystem: metadata ─────────────────────────────────────────────────
   async exists(path2) {
     const p22 = normPath(path2);
-    if (p22 === "/index.md")
+    if (!this.sessionsOnly && !this.indexDisabled && p22 === "/index.md")
       return true;
     return this.files.has(p22) || this.dirs.has(p22);
   }
@@ -67918,7 +68310,7 @@ var DeeplakeFs = class _DeeplakeFs {
     const p22 = normPath(path2);
     const isFile = this.files.has(p22);
     const isDir = this.dirs.has(p22);
-    if (p22 === "/index.md" && !isFile && !isDir) {
+    if (!this.sessionsOnly && !this.indexDisabled && p22 === "/index.md" && !isFile && !isDir) {
       return {
         isFile: true,
         isDirectory: false,
@@ -67958,7 +68350,7 @@ var DeeplakeFs = class _DeeplakeFs {
   }
   async realpath(path2) {
     const p22 = normPath(path2);
-    if (p22 === "/index.md")
+    if (!this.sessionsOnly && !this.indexDisabled && p22 === "/index.md")
       return p22;
     if (!this.files.has(p22) && !this.dirs.has(p22))
       throw fsErr("ENOENT", "no such file or directory", p22);
@@ -67983,14 +68375,14 @@ var DeeplakeFs = class _DeeplakeFs {
     const parent = parentOf(p22);
     if (!this.dirs.has(parent))
       this.dirs.set(parent, /* @__PURE__ */ new Set());
-    this.dirs.get(parent).add(basename4(p22));
+    this.dirs.get(parent).add(basename5(p22));
   }
   async readdir(path2) {
     const p22 = normPath(path2);
     if (!this.dirs.has(p22))
       throw fsErr("ENOTDIR", "not a directory", p22);
     const entries = [...this.dirs.get(p22) ?? []];
-    if (p22 === "/" && !entries.includes("index.md")) {
+    if (!this.sessionsOnly && !this.indexDisabled && p22 === "/" && !entries.includes("index.md")) {
       entries.push("index.md");
     }
     return entries;
@@ -68002,7 +68394,7 @@ var DeeplakeFs = class _DeeplakeFs {
       const child = p22 === "/" ? `/${name}` : `${p22}/${name}`;
       return {
         name,
-        isFile: (this.files.has(child) || child === "/index.md") && !this.dirs.has(child),
+        isFile: (this.files.has(child) || !this.sessionsOnly && !this.indexDisabled && child === "/index.md") && !this.dirs.has(child),
         isDirectory: this.dirs.has(child),
         isSymbolicLink: false
       };
@@ -68038,7 +68430,7 @@ var DeeplakeFs = class _DeeplakeFs {
       for (const fp of safeToDelete)
         this.removeFromTree(fp);
       this.dirs.delete(p22);
-      this.dirs.get(parentOf(p22))?.delete(basename4(p22));
+      this.dirs.get(parentOf(p22))?.delete(basename5(p22));
       if (safeToDelete.length > 0) {
         const inList = safeToDelete.map((fp) => `'${sqlStr(fp)}'`).join(", ");
         await this.client.query(`DELETE FROM "${this.table}" WHERE path IN (${inList})`);
@@ -69112,8 +69504,7 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
     try {
       const searchOptions = {
         ...buildGrepSearchOptions(matchParams, targets[0] ?? ctx.cwd),
-        pathFilter: buildPathFilterForTargets(targets),
-        limit: 100
+        pathFilter: buildPathFilterForTargets(targets)
       };
       const queryRows = await Promise.race([
         searchDeeplakeTables(client, table, sessionsTable ?? "sessions", searchOptions),
@@ -69136,7 +69527,8 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
       }
     }
     const normalized = rows.map((r10) => ({ path: r10.path, content: normalizeContent(r10.path, r10.content) }));
-    const output = refineGrepMatches(normalized, matchParams);
+    const forceMultiFilePrefix = parsed.r || parsed.R || parsed.recursive ? true : void 0;
+    const output = refineGrepMatches(normalized, matchParams, forceMultiFilePrefix);
     return {
       stdout: output.length > 0 ? output.join("\n") + "\n" : "",
       stderr: "",

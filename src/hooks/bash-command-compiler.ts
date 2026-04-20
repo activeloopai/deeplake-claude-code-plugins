@@ -23,6 +23,11 @@ interface ParsedModifier {
   ignoreMissing: boolean;
 }
 
+interface ParsedFindSpec {
+  patterns: string[];
+  execGrepCmd: string | null;
+}
+
 function isQuoted(ch: string): boolean {
   return ch === "'" || ch === "\"";
 }
@@ -31,17 +36,29 @@ export function splitTopLevel(input: string, operators: string[]): string[] | nu
   const parts: string[] = [];
   let current = "";
   let quote: string | null = null;
+  let escaped = false;
 
   for (let i = 0; i < input.length; i++) {
     const ch = input[i];
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
     if (quote) {
       if (ch === quote) quote = null;
+      else if (ch === "\\" && quote === "\"") escaped = true;
       current += ch;
       continue;
     }
     if (isQuoted(ch)) {
       quote = ch;
       current += ch;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < input.length) {
+      current += ch;
+      escaped = true;
       continue;
     }
 
@@ -57,7 +74,7 @@ export function splitTopLevel(input: string, operators: string[]): string[] | nu
     current += ch;
   }
 
-  if (quote) return null;
+  if (quote || escaped) return null;
   const trimmed = current.trim();
   if (trimmed) parts.push(trimmed);
   return parts;
@@ -127,10 +144,10 @@ export function expandBraceToken(token: string): string[] {
 }
 
 export function stripAllowedModifiers(segment: string): ParsedModifier {
-  const ignoreMissing = /\s2>\/dev\/null\s*$/.test(segment);
+  const ignoreMissing = /\s2>\/dev\/null(?=\s*(?:\||$))/.test(segment);
   const clean = segment
-    .replace(/\s2>\/dev\/null\s*$/g, "")
-    .replace(/\s2>&1\s*/g, " ")
+    .replace(/\s2>\/dev\/null(?=\s*(?:\||$))/g, "")
+    .replace(/\s2>&1(?=\s*(?:\||$))/g, "")
     .trim();
   return { clean, ignoreMissing };
 }
@@ -192,7 +209,7 @@ function isValidPipelineHeadTailStage(stage: string): boolean {
   return false;
 }
 
-function parseFindNamePatterns(tokens: string[]): string[] | null {
+function parseFindSpec(tokens: string[]): ParsedFindSpec | null {
   const patterns: string[] = [];
   for (let i = 2; i < tokens.length; i++) {
     const token = tokens[i];
@@ -208,9 +225,20 @@ function parseFindNamePatterns(tokens: string[]): string[] | null {
       i += 1;
       continue;
     }
+    if (token === "-exec") {
+      const execTokens = tokens.slice(i + 1);
+      if (patterns.length === 0 || execTokens.length < 4) return null;
+      const terminator = execTokens.at(-1);
+      const target = execTokens.at(-2);
+      if ((terminator !== "\\;" && terminator !== ";") || target !== "{}") return null;
+      return {
+        patterns,
+        execGrepCmd: execTokens.slice(0, -1).join(" "),
+      };
+    }
     return null;
   }
-  return patterns.length > 0 ? patterns : null;
+  return patterns.length > 0 ? { patterns, execGrepCmd: null } : null;
 }
 
 export function parseCompiledSegment(segment: string): CompiledSegment | null {
@@ -297,12 +325,27 @@ export function parseCompiledSegment(segment: string): CompiledSegment | null {
     if (pipeline.length > 3) return null;
     const dir = tokens[1];
     if (!dir) return null;
-    const patterns = parseFindNamePatterns(tokens);
-    if (!patterns) return null;
+    const spec = parseFindSpec(tokens);
+    if (!spec) return null;
+    const { patterns, execGrepCmd } = spec;
     const countOnly = pipeline.length === 2 && /^wc\s+-l\s*$/.test(pipeline[1].trim());
     if (countOnly) {
       if (patterns.length !== 1) return null;
       return { kind: "find", dir, pattern: patterns[0], countOnly };
+    }
+
+    if (execGrepCmd) {
+      const grepParams = parseBashGrep(execGrepCmd);
+      if (!grepParams) return null;
+      let lineLimit = 0;
+      if (pipeline.length === 2) {
+        const headStage = pipeline[1].trim();
+        if (!isValidPipelineHeadTailStage(headStage)) return null;
+        const headTail = parseHeadTailStage(headStage);
+        if (!headTail || headTail.fromEnd) return null;
+        lineLimit = headTail.lineLimit;
+      }
+      return { kind: "find_grep", dir, patterns, params: grepParams, lineLimit };
     }
 
     if (pipeline.length >= 2) {

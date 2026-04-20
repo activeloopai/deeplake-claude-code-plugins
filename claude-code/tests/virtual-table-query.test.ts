@@ -16,10 +16,23 @@ describe("virtual-table-query", () => {
         project: "repo",
         description: "session summary",
         creation_date: "2026-01-01T00:00:00.000Z",
+        summary: `# Session s1
+- **Source**: /sessions/a/s1.jsonl
+- **Date**: 2026-01-01
+- **Participants**: Alice, Bob
+- **Topics**: auth, retries
+
+## Searchable Facts
+- Auth tokens refresh automatically.
+`,
       },
     ]);
     expect(content).toContain("# Memory Index");
-    expect(content).toContain("/summaries/alice/s1.md");
+    expect(content).toContain("## People");
+    expect(content).toContain("## Summary To Session Catalog");
+    expect(content).toContain("s1.md");
+    expect(content).toContain("Alice, Bob");
+    expect(content).toContain("[session](/sessions/a/s1.jsonl)");
   });
 
   it("builds index rows when project metadata is missing", () => {
@@ -28,7 +41,7 @@ describe("virtual-table-query", () => {
         path: "/summaries/alice/s2.md",
       },
     ]);
-    expect(content).toContain("/summaries/alice/s2.md");
+    expect(content).toContain("s2.md");
     expect(content).toContain("# Memory Index");
   });
 
@@ -54,17 +67,36 @@ describe("virtual-table-query", () => {
     expect(api.query).not.toHaveBeenCalled();
   });
 
-  it("normalizes session rows for exact path reads", async () => {
+  it("pretty-prints transcript session rows for exact path reads", async () => {
     const api = {
       query: vi.fn().mockResolvedValueOnce([
-        { path: "/sessions/a.jsonl", content: "{\"type\":\"user_message\",\"content\":\"hello\"}", source_order: 1 },
-        { path: "/sessions/a.jsonl", content: "{\"type\":\"assistant_message\",\"content\":\"hi\"}", source_order: 1 },
+        {
+          path: "/sessions/a.json",
+          content: "{\"conversation_id\":0,\"session_number\":1,\"turns\":[{\"speaker\":\"Caroline\",\"text\":\"hello\"},{\"speaker\":\"Melanie\",\"text\":\"hi\"}]}",
+          source_order: 1,
+        },
       ]),
     } as any;
 
-    const content = await readVirtualPathContent(api, "memory", "sessions", "/sessions/a.jsonl");
+    const content = await readVirtualPathContent(api, "memory", "sessions", "/sessions/a.json");
 
-    expect(content).toBe("[user] hello\n[assistant] hi");
+    expect(content).toBe([
+      "{",
+      "  \"conversation_id\": 0,",
+      "  \"session_number\": 1,",
+      "  \"turns\": [",
+      "    {",
+      "      \"speaker\": \"Caroline\",",
+      "      \"text\": \"hello\"",
+      "    },",
+      "    {",
+      "      \"speaker\": \"Melanie\",",
+      "      \"text\": \"hi\"",
+      "    }",
+      "  ]",
+      "}",
+      "",
+    ].join("\n"));
   });
 
   it("reads multiple exact paths in a single query and synthesizes /index.md when needed", async () => {
@@ -79,6 +111,11 @@ describe("virtual-table-query", () => {
             project: "repo",
             description: "session summary",
             creation_date: "2026-01-01T00:00:00.000Z",
+            summary: `# Session s1
+- **Source**: /sessions/a/s1.jsonl
+- **Date**: 2026-01-01
+- **Participants**: Alice, Bob
+`,
           },
         ]),
     } as any;
@@ -88,6 +125,66 @@ describe("virtual-table-query", () => {
     expect(content.get("/summaries/a.md")).toBe("summary body");
     expect(content.get("/index.md")).toContain("# Memory Index");
     expect(api.query).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips memory and does not synthesize /index.md in sessions-only mode", async () => {
+    const prev = process.env.HIVEMIND_SESSIONS_ONLY;
+    process.env.HIVEMIND_SESSIONS_ONLY = "1";
+    try {
+      const api = {
+        query: vi.fn().mockResolvedValueOnce([
+          {
+            path: "/sessions/a.json",
+            content: "{\"conversation_id\":0,\"turns\":[{\"speaker\":\"Caroline\",\"text\":\"hello\"}]}",
+            source_order: 1,
+            creation_date: "",
+          },
+        ]),
+      } as any;
+
+      const content = await readVirtualPathContents(api, "memory", "sessions", ["/sessions/a.json", "/index.md"]);
+
+      expect(content.get("/sessions/a.json")).toBe([
+        "{",
+        "  \"conversation_id\": 0,",
+        "  \"turns\": [",
+        "    {",
+        "      \"speaker\": \"Caroline\",",
+        "      \"text\": \"hello\"",
+        "    }",
+        "  ]",
+        "}",
+        "",
+      ].join("\n"));
+      expect(content.get("/index.md")).toBeNull();
+      expect(api.query).toHaveBeenCalledTimes(1);
+      expect(String(api.query.mock.calls[0]?.[0])).not.toContain('FROM "memory"');
+    } finally {
+      if (prev === undefined) delete process.env.HIVEMIND_SESSIONS_ONLY;
+      else process.env.HIVEMIND_SESSIONS_ONLY = prev;
+    }
+  });
+
+  it("does not synthesize /index.md when index is disabled but still reads summaries", async () => {
+    const prev = process.env.HIVEMIND_DISABLE_INDEX;
+    process.env.HIVEMIND_DISABLE_INDEX = "1";
+    try {
+      const api = {
+        query: vi.fn().mockResolvedValueOnce([
+          { path: "/summaries/a.md", content: "summary body", source_order: 0 },
+        ]),
+      } as any;
+
+      const content = await readVirtualPathContents(api, "memory", "sessions", ["/summaries/a.md", "/index.md"]);
+
+      expect(content.get("/summaries/a.md")).toBe("summary body");
+      expect(content.get("/index.md")).toBeNull();
+      expect(api.query).toHaveBeenCalledTimes(1);
+      expect(String(api.query.mock.calls[0]?.[0])).not.toContain("'/index.md'");
+    } finally {
+      if (prev === undefined) delete process.env.HIVEMIND_DISABLE_INDEX;
+      else process.env.HIVEMIND_DISABLE_INDEX = prev;
+    }
   });
 
   it("ignores invalid exact-read rows before merging content", async () => {

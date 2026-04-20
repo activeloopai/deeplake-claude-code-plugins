@@ -1,15 +1,18 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   buildGrepSearchOptions,
+  buildSummaryBm25QueryText,
   normalizeContent,
   buildPathFilter,
   buildPathFilterForTargets,
   compileGrepRegex,
   extractRegexAlternationPrefilters,
   extractRegexLiteralPrefilter,
+  normalizeGrepRegexPattern,
   refineGrepMatches,
   searchDeeplakeTables,
   grepBothTables,
+  toSqlRegexPattern,
 } from "../../src/shell/grep-core.js";
 
 // ── normalizeContent ────────────────────────────────────────────────────────
@@ -36,7 +39,7 @@ describe("normalizeContent: passthrough for non-session paths", () => {
   });
 });
 
-describe("normalizeContent: turn-array session shape", () => {
+describe("normalizeContent: transcript session shape", () => {
   const raw = JSON.stringify({
     date_time: "1:56 pm on 8 May, 2023",
     speakers: { speaker_a: "Avery", speaker_b: "Jordan" },
@@ -46,77 +49,82 @@ describe("normalizeContent: turn-array session shape", () => {
     ],
   });
 
-  it("emits date and speakers header", () => {
+  it("pretty-prints transcript JSON", () => {
     const out = normalizeContent("/sessions/alice/chat_1.json", raw);
-    expect(out).toContain("date: 1:56 pm on 8 May, 2023");
-    expect(out).toContain("speakers: Avery, Jordan");
+    expect(out).toBe(`${JSON.stringify(JSON.parse(raw), null, 2)}\n`);
   });
 
-  it("emits one line per turn with dia_id tag", () => {
+  it("preserves dia_id and turn text in the raw JSON view", () => {
     const out = normalizeContent("/sessions/alice/chat_1.json", raw);
-    expect(out).toContain("[D1:1] Avery: Hey Jordan!");
-    expect(out).toContain("[D1:2] Jordan: Hi Avery.");
+    expect(out).toContain('"dia_id": "D1:1"');
+    expect(out).toContain('"text": "Hey Jordan!"');
+    expect(out).toContain('"speaker": "Jordan"');
   });
 
-  it("falls back gracefully on turns without speaker/text", () => {
+  it("keeps sparse turns as canonical JSON", () => {
     const weird = JSON.stringify({ turns: [{}, { speaker: "X" }] });
     const out = normalizeContent("/sessions/alice/chat_1.json", weird);
-    // Must not crash; includes placeholder `?` for missing speaker
-    expect(out).toContain("?: ");
-    expect(out).toContain("X: ");
+    expect(out).toBe(`${JSON.stringify(JSON.parse(weird), null, 2)}\n`);
   });
 
-  it("omits speakers header when both speaker fields are empty", () => {
+  it("preserves empty speaker metadata instead of synthesizing headers", () => {
     const raw = JSON.stringify({
       turns: [{ speaker: "A", text: "hi" }],
       speakers: { speaker_a: "", speaker_b: "" },
     });
     const out = normalizeContent("/sessions/alice/chat_1.json", raw);
-    expect(out).not.toContain("speakers:");
-    expect(out).toContain("A: hi");
+    expect(out).toContain('"speaker_a": ""');
+    expect(out).toContain('"text": "hi"');
   });
 
-  it("emits only speaker_a when speaker_b is missing", () => {
+  it("preserves single-speaker metadata", () => {
     const raw = JSON.stringify({
       turns: [{ speaker: "A", text: "hi" }],
       speakers: { speaker_a: "Alice" },
     });
     const out = normalizeContent("/sessions/alice/chat_1.json", raw);
-    expect(out).toContain("speakers: Alice");
+    expect(out).toContain('"speaker_a": "Alice"');
   });
 
-  it("falls back speaker->name when speaker field is absent on a turn", () => {
+  it("keeps alternate turn keys in the raw JSON view", () => {
     const raw = JSON.stringify({ turns: [{ name: "Avery", text: "hi" }] });
     const out = normalizeContent("/sessions/alice/chat_1.json", raw);
-    expect(out).toContain("Avery: hi");
+    expect(out).toContain('"name": "Avery"');
   });
 
-  it("falls back text->content when text field is absent on a turn", () => {
+  it("keeps content fallback fields in the raw JSON view", () => {
     const raw = JSON.stringify({ turns: [{ speaker: "X", content: "fallback" }] });
     const out = normalizeContent("/sessions/alice/chat_1.json", raw);
-    expect(out).toContain("X: fallback");
+    expect(out).toContain('"content": "fallback"');
   });
 
-  it("omits dia_id prefix when the turn has no dia_id", () => {
+  it("leaves missing dia_id fields absent", () => {
     const raw = JSON.stringify({ turns: [{ speaker: "A", text: "hi" }] });
     const out = normalizeContent("/sessions/alice/chat_1.json", raw);
-    expect(out).toContain("A: hi");
-    expect(out).not.toMatch(/\[\]/);
+    expect(out).toContain('"speaker": "A"');
+    expect(out).not.toContain('"dia_id"');
   });
 
-  it("emits turns without date/speakers when both are missing", () => {
+  it("keeps transcript rows without date or speakers", () => {
     const raw = JSON.stringify({ turns: [{ speaker: "A", text: "hi" }] });
     const out = normalizeContent("/sessions/alice/chat_1.json", raw);
     expect(out).not.toContain("date:");
     expect(out).not.toContain("speakers:");
-    expect(out).toContain("A: hi");
+    expect(out).toContain('"speaker": "A"');
   });
 
-  it("returns raw when turns produce an empty serialization", () => {
+  it("pretty-prints empty transcript arrays", () => {
     const empty = JSON.stringify({ turns: [] });
-    // No header, no turns → trimmed output is empty → fallback to raw
     const out = normalizeContent("/sessions/alice/chat_1.json", empty);
-    expect(out).toBe(empty);
+    expect(out).toBe(`${JSON.stringify(JSON.parse(empty), null, 2)}\n`);
+  });
+
+  it("pretty-prints dialogue-array transcripts too", () => {
+    const dialogue = JSON.stringify({
+      dialogue: [{ speaker: "Melanie", text: "camping next month" }],
+    });
+    const out = normalizeContent("/sessions/conv_0_session_2.json", dialogue);
+    expect(out).toBe(`${JSON.stringify(JSON.parse(dialogue), null, 2)}\n`);
   });
 });
 
@@ -627,6 +635,26 @@ describe("searchDeeplakeTables", () => {
     expect(sql).toContain("UNION ALL");
   });
 
+  it("uses text BM25 operator for summary searches before ILIKE fallback", async () => {
+    const api = {
+      query: vi.fn().mockImplementationOnce(async () => []),
+      ensureSummaryBm25Index: vi.fn().mockResolvedValue(undefined),
+    } as any;
+    await searchDeeplakeTables(api, "memory", "sessions", {
+      pathFilter: " AND (path = '/x' OR path LIKE '/x/%')",
+      contentScanOnly: false,
+      likeOp: "ILIKE",
+      escapedPattern: "book",
+      bm25QueryText: "book novel literature",
+      limit: 50,
+    });
+    expect(api.ensureSummaryBm25Index).toHaveBeenCalledWith("memory");
+    expect(api.query).toHaveBeenCalledTimes(1);
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain("ORDER BY (summary <#> 'book novel literature') DESC");
+    expect(sql).toContain('FROM "sessions"');
+  });
+
   it("skips LIKE filter when contentScanOnly is true (regex-in-memory mode)", async () => {
     const api = mockApi([]);
     await searchDeeplakeTables(api, "m", "s", {
@@ -638,6 +666,7 @@ describe("searchDeeplakeTables", () => {
     const sql = api.query.mock.calls[0][0] as string;
     expect(sql).not.toContain("summary::text LIKE");
     expect(sql).not.toContain("message::text LIKE");
+    expect(sql).not.toContain("message::text ~");
   });
 
   it("uses a safe literal prefilter for regex scans when available", async () => {
@@ -647,27 +676,123 @@ describe("searchDeeplakeTables", () => {
       contentScanOnly: true,
       likeOp: "LIKE",
       escapedPattern: "foo.*bar",
+      regexPattern: "foo.*bar",
       prefilterPattern: "foo",
     });
     const sql = api.query.mock.calls[0][0] as string;
-    expect(sql).toContain("summary::text LIKE '%foo%'");
-    expect(sql).toContain("message::text LIKE '%foo%'");
+    expect(sql).toContain("summary::text ~ 'foo.*bar'");
+    expect(sql).toContain("message::text ~ 'foo.*bar'");
+    expect(sql).toContain("LIKE '%foo%'");
   });
 
-  it("expands alternation prefilters into OR clauses instead of literal pipes", async () => {
+  it("uses regex predicates for alternation patterns instead of literal pipes", async () => {
     const api = mockApi([]);
     await searchDeeplakeTables(api, "m", "s", {
       pathFilter: "",
       contentScanOnly: true,
       likeOp: "LIKE",
       escapedPattern: "relationship|partner|married",
+      regexPattern: "relationship|partner|married",
       prefilterPatterns: ["relationship", "partner", "married"],
     });
     const sql = api.query.mock.calls[0][0] as string;
-    expect(sql).toContain("summary::text LIKE '%relationship%'");
-    expect(sql).toContain("summary::text LIKE '%partner%'");
-    expect(sql).toContain("summary::text LIKE '%married%'");
-    expect(sql).not.toContain("relationship|partner|married");
+    expect(sql).toContain("summary::text ~ 'relationship|partner|married'");
+    expect(sql).toContain("message::text ~ 'relationship|partner|married'");
+  });
+
+  it("skips SQL regex pushdown for ignore-case regex scans", async () => {
+    const api = mockApi([]);
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: true,
+      likeOp: "ILIKE",
+      escapedPattern: "relationship|partner|married",
+      regexPattern: "relationship|partner|married",
+      prefilterPatterns: ["relationship", "partner", "married"],
+    });
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain("summary::text ILIKE '%relationship%'");
+    expect(sql).not.toContain("summary::text ~");
+    expect(sql).not.toContain("message::text ~");
+  });
+
+  it("uses OR ILIKE prefilters for grep BRE alternation patterns", async () => {
+    const api = mockApi([]);
+    const opts = buildGrepSearchOptions({
+      pattern: "book\\|novel\\|literature",
+      ignoreCase: true,
+      wordMatch: false,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: false,
+    }, "/");
+    await searchDeeplakeTables(api, "m", "s", opts);
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain("ORDER BY (summary <#> 'book novel literature') DESC");
+    expect(sql).toContain("message::text");
+    expect(sql).toContain("ILIKE '%book%'");
+    expect(sql).toContain("ILIKE '%novel%'");
+    expect(sql).toContain("ILIKE '%literature%'");
+    expect(sql).not.toContain("ILIKE '%book|novel|literature%'");
+  });
+
+  it("keeps unsupported bracketed regex patterns out of SQL pushdown", async () => {
+    const api = mockApi([]);
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: " AND path = '/index.md'",
+      contentScanOnly: true,
+      likeOp: "LIKE",
+      escapedPattern: "^- [conv_0_session_.*\\]",
+      regexPattern: "^- [conv_0_session_.*\\]",
+    });
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain("path = '/index.md'");
+    expect(sql).not.toContain("summary::text ~");
+    expect(sql).not.toContain("message::text ~");
+  });
+
+  it("falls back to OR LIKE prefilters when regex SQL is rejected", async () => {
+    const api = {
+      query: vi.fn()
+        .mockRejectedValueOnce(new Error("regex operator not supported"))
+        .mockResolvedValueOnce([]),
+    } as any;
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: true,
+      likeOp: "LIKE",
+      escapedPattern: "relationship|partner|married",
+      regexPattern: "relationship|partner|married",
+      prefilterPatterns: ["relationship", "partner", "married"],
+    });
+    expect(api.query).toHaveBeenCalledTimes(2);
+    const fallbackSql = api.query.mock.calls[1][0] as string;
+    expect(fallbackSql).toContain("summary::text LIKE '%relationship%'");
+    expect(fallbackSql).toContain("summary::text LIKE '%partner%'");
+    expect(fallbackSql).toContain("summary::text LIKE '%married%'");
+    expect(fallbackSql).not.toContain("relationship|partner|married");
+  });
+
+  it("falls back to summary ILIKE when BM25 query is rejected", async () => {
+    const api = {
+      query: vi.fn()
+        .mockRejectedValueOnce(new Error("bm25 operator not supported"))
+        .mockResolvedValueOnce([]),
+      ensureSummaryBm25Index: vi.fn().mockResolvedValue(undefined),
+    } as any;
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: false,
+      likeOp: "ILIKE",
+      escapedPattern: "book",
+      bm25QueryText: "book novel literature",
+    });
+    expect(api.query).toHaveBeenCalledTimes(2);
+    const fallbackSql = api.query.mock.calls[1][0] as string;
+    expect(fallbackSql).toContain("summary::text ILIKE '%book%'");
+    expect(fallbackSql).not.toContain("<#>");
   });
 
   it("concatenates rows from both tables into {path, content}", async () => {
@@ -704,6 +829,7 @@ describe("searchDeeplakeTables", () => {
     const api = {
       query: vi.fn()
         .mockRejectedValueOnce(new Error("bad union"))
+        .mockRejectedValueOnce(new Error("bad union")),
     } as any;
     await expect(searchDeeplakeTables(api, "m", "s", {
       pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
@@ -717,7 +843,25 @@ describe("searchDeeplakeTables", () => {
       pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
     });
     const sql = api.query.mock.calls[0][0] as string;
-    expect(sql).toContain("LIMIT 100");
+    expect(sql).toContain("LIMIT 500");
+  });
+
+  it("queries only the sessions table in sessions-only mode", async () => {
+    const prev = process.env.HIVEMIND_SESSIONS_ONLY;
+    process.env.HIVEMIND_SESSIONS_ONLY = "1";
+    try {
+      const api = { query: vi.fn().mockResolvedValue([]) } as any;
+      await searchDeeplakeTables(api, "m", "s", {
+        pathFilter: "", contentScanOnly: false, likeOp: "ILIKE", escapedPattern: "foo",
+      });
+      const sql = api.query.mock.calls[0][0] as string;
+      expect(sql).not.toContain('FROM "m"');
+      expect(sql).toContain('FROM "s"');
+      expect(sql).not.toContain("UNION ALL");
+    } finally {
+      if (prev === undefined) delete process.env.HIVEMIND_SESSIONS_ONLY;
+      else process.env.HIVEMIND_SESSIONS_ONLY = prev;
+    }
   });
 });
 
@@ -754,7 +898,7 @@ describe("grepBothTables", () => {
     expect(out.length).toBe(1);
   });
 
-  it("normalizes session JSON before refinement (turn-array sessions)", async () => {
+  it("greps against canonical raw JSON for transcript sessions", async () => {
     const sessionContent = JSON.stringify({
       turns: [
         { dia_id: "D1:1", speaker: "Alice", text: "project foo update" },
@@ -766,8 +910,7 @@ describe("grepBothTables", () => {
         .mockResolvedValueOnce([{ path: "/sessions/alice/chat_1.json", content: sessionContent }]),
     } as any;
     const out = await grepBothTables(api, "m", "s", baseParams, "/");
-    // Only the matching turn is returned, not the whole JSON blob
-    expect(out.some(l => l.includes("[D1:1] Alice: project foo update"))).toBe(true);
+    expect(out.some(l => l.includes('"text": "project foo update"'))).toBe(true);
     expect(out.some(l => l.includes("unrelated"))).toBe(false);
   });
 
@@ -783,7 +926,8 @@ describe("grepBothTables", () => {
     const api = mockApi([{ path: "/a", content: "foo middle bar" }]);
     await grepBothTables(api, "m", "s", { ...baseParams, pattern: "foo.*bar" }, "/");
     const [sql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(sql).toContain("summary::text LIKE '%foo%'");
+    expect(sql).toContain("ORDER BY (summary <#> 'foo') DESC");
+    expect(sql).toContain("message::text LIKE '%foo%'");
   });
 
   it("routes to ILIKE when ignoreCase is set", async () => {
@@ -842,7 +986,9 @@ describe("regex literal prefilter", () => {
 
     expect(opts.contentScanOnly).toBe(true);
     expect(opts.likeOp).toBe("ILIKE");
+    expect(opts.regexPattern).toBe("foo.*bar");
     expect(opts.prefilterPattern).toBe("foo");
+    expect(opts.bm25QueryText).toBe("foo");
     expect(opts.pathFilter).toContain("/summaries");
   });
 
@@ -865,12 +1011,42 @@ describe("regex literal prefilter", () => {
     }, "/summaries");
 
     expect(opts.contentScanOnly).toBe(true);
+    expect(opts.regexPattern).toBe("relationship|partner|married");
     expect(opts.prefilterPatterns).toEqual(["relationship", "partner", "married"]);
+    expect(opts.bm25QueryText).toBe("relationship partner married");
+  });
+
+  it("unwraps simple grouping around alternations", () => {
+    expect(extractRegexAlternationPrefilters("(foo|bar)")).toEqual(["foo", "bar"]);
+    expect(extractRegexAlternationPrefilters("(?:foo|bar)")).toEqual(["foo", "bar"]);
+  });
+
+  it("normalizes grep BRE alternation before building search options", () => {
+    expect(normalizeGrepRegexPattern("book\\|novel\\|literature")).toBe("book|novel|literature");
+
+    const opts = buildGrepSearchOptions({
+      pattern: "book\\|novel\\|literature",
+      ignoreCase: true,
+      wordMatch: false,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: false,
+    }, "/summaries");
+
+    expect(opts.contentScanOnly).toBe(true);
+    expect(opts.regexPattern).toBe("book|novel|literature");
+    expect(opts.prefilterPatterns).toEqual(["book", "novel", "literature"]);
+    expect(opts.bm25QueryText).toBe("book novel literature");
   });
 
   it("rejects alternation prefilters when grouping makes them unsafe", () => {
-    expect(extractRegexAlternationPrefilters("(foo|bar)")).toBeNull();
     expect(extractRegexAlternationPrefilters("foo|bar.*baz")).toEqual(["foo", "bar"]);
+  });
+
+  it("extracts literals through word-boundary escapes", () => {
+    expect(extractRegexLiteralPrefilter("\\bcountry\\b")).toBe("country");
   });
 
   it("preserves escaped alternation characters inside a literal branch", () => {
@@ -891,7 +1067,215 @@ describe("regex literal prefilter", () => {
     }, "/summaries/alice/s1.md");
 
     expect(opts.contentScanOnly).toBe(false);
+    expect(opts.regexPattern).toBeUndefined();
     expect(opts.prefilterPattern).toBeUndefined();
+    expect(opts.bm25QueryText).toBe("foo bar");
     expect(opts.pathFilter).toBe(" AND path = '/summaries/alice/s1.md'");
+  });
+
+  it("builds BM25 query text from regex literals conservatively", () => {
+    expect(buildSummaryBm25QueryText("home country", false, null, null)).toBe("home country");
+    expect(buildSummaryBm25QueryText("book|novel|literature", false, null, ["book", "novel", "literature"])).toBe("book novel literature");
+    expect(buildSummaryBm25QueryText(".*", false, null, null)).toBeNull();
+  });
+
+  it("builds SQL-safe regex patterns conservatively", () => {
+    expect(toSqlRegexPattern("foo.*bar", false)).toBe("foo.*bar");
+    expect(toSqlRegexPattern("foo.*bar", true)).toBeNull();
+    expect(toSqlRegexPattern("^- [conv_0_session_.*\\]", false)).toBe("\\^- \\[conv_0_session_\\.\\*\\\\\\]");
+    expect(toSqlRegexPattern("\\bitem\\d+", false)).toBe("\\yitem[[:digit:]]+");
+    expect(toSqlRegexPattern("foo(?=bar)", false)).toBeNull();
+  });
+
+  it("compiles grep BRE alternation as real alternation", () => {
+    const re = compileGrepRegex({
+      pattern: "book\\|novel\\|literature",
+      ignoreCase: true,
+      wordMatch: false,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: false,
+    });
+
+    expect(re.test("She loves literature")).toBe(true);
+    expect(re.test("A novel inspired her")).toBe(true);
+    expect(re.test("No match here")).toBe(false);
+  });
+
+  describe("benchmark parity", () => {
+    function mockQueryRows(rows: { path: string; content: string }[]) {
+      return { query: vi.fn().mockResolvedValueOnce(rows) } as any;
+    }
+
+    async function runParityCase(
+      rows: { path: string; content: string }[],
+      params: {
+        pattern: string;
+        ignoreCase: boolean;
+        wordMatch: boolean;
+        filesOnly: boolean;
+        countOnly: boolean;
+        lineNumber: boolean;
+        invertMatch: boolean;
+        fixedString: boolean;
+      },
+      targetPath = "/",
+    ) {
+      const api = mockQueryRows(rows);
+      const remote = await grepBothTables(api, "memory", "sessions", params, targetPath);
+      const local = refineGrepMatches(
+        rows.map((row) => ({ path: row.path, content: normalizeContent(row.path, row.content) })),
+        params,
+      );
+      return { api, remote, local };
+    }
+
+    it("matches local grep for LoCoMo-style relationship status lookups", async () => {
+      const rows = [
+        {
+          path: "/summaries/locomo/conv_0_session_3_summary.md",
+          content: "## Searchable Facts\n- Relationship status: Single.\n- Caroline is researching adoption agencies.\n",
+        },
+        {
+          path: "/sessions/conv_0_session_3.json",
+          content: JSON.stringify({
+            turns: [
+              { dia_id: "D1:1", speaker: "Caroline", text: "I'm single and still planning to adopt on my own." },
+              { dia_id: "D1:2", speaker: "Melanie", text: "That sounds like a good plan." },
+            ],
+          }),
+        },
+      ];
+
+      const params = {
+        pattern: "single",
+        ignoreCase: true,
+        wordMatch: true,
+        filesOnly: false,
+        countOnly: false,
+        lineNumber: false,
+        invertMatch: false,
+        fixedString: false,
+      };
+
+      const { api, remote, local } = await runParityCase(rows, params, "/summaries");
+      expect(remote).toEqual(local);
+      const sql = api.query.mock.calls[0][0] as string;
+      expect(sql).toContain("ORDER BY (summary <#> 'single') DESC");
+      expect(sql).toContain("message::text ILIKE '%single%'");
+    });
+
+    it("matches local grep for LoCoMo-style title and reading mentions", async () => {
+      const rows = [
+        {
+          path: "/sessions/conv_0_session_6.json",
+          content: JSON.stringify({
+            turns: [
+              { dia_id: "D6:1", speaker: "Melanie", text: "Charlotte's Web was my favorite book as a kid." },
+              { dia_id: "D6:2", speaker: "Caroline", text: "I can recommend another book if you want." },
+            ],
+          }),
+        },
+      ];
+
+      const params = {
+        pattern: "Charlotte\\|book",
+        ignoreCase: true,
+        wordMatch: false,
+        filesOnly: false,
+        countOnly: false,
+        lineNumber: false,
+        invertMatch: false,
+        fixedString: false,
+      };
+
+      const { api, remote, local } = await runParityCase(rows, params, "/sessions");
+      expect(remote).toEqual(local);
+      expect(remote.some((line) => line.includes("Charlotte's Web"))).toBe(true);
+      const sql = api.query.mock.calls[0][0] as string;
+      expect(sql).toContain("ILIKE '%Charlotte%'");
+      expect(sql).toContain("ILIKE '%book%'");
+    });
+
+    it("matches local grep for LoCoMo-style relative-time phrases", async () => {
+      const rows = [
+        {
+          path: "/sessions/conv_0_session_12.json",
+          content: JSON.stringify({
+            turns: [
+              { dia_id: "D12:1", speaker: "Caroline", text: "A friend made it for my 18th birthday ten years ago." },
+              { dia_id: "D12:2", speaker: "Melanie", text: "That's really thoughtful." },
+            ],
+          }),
+        },
+      ];
+
+      const params = {
+        pattern: "ten years ago",
+        ignoreCase: true,
+        wordMatch: false,
+        filesOnly: false,
+        countOnly: false,
+        lineNumber: false,
+        invertMatch: false,
+        fixedString: false,
+      };
+
+      const { api, remote, local } = await runParityCase(rows, params, "/sessions");
+      expect(remote).toEqual(local);
+      const sql = api.query.mock.calls[0][0] as string;
+      expect(sql).toContain("message::text ILIKE '%ten years ago%'");
+    });
+
+    it("avoids SQL regex pushdown for bracket-anchored patterns and matches the raw-json local output", async () => {
+      const rows = [
+        {
+          path: "/sessions/conv_0_session_2.json",
+          content: JSON.stringify({
+            turns: [
+              { dia_id: "D2:1", speaker: "Melanie", text: "We're thinking about going camping next month." },
+              { dia_id: "D2:2", speaker: "Caroline", text: "That should be fun." },
+            ],
+          }),
+        },
+      ];
+
+      const params = {
+        pattern: "^\\[D2:1\\]",
+        ignoreCase: false,
+        wordMatch: false,
+        filesOnly: false,
+        countOnly: false,
+        lineNumber: false,
+        invertMatch: false,
+        fixedString: false,
+      };
+
+      const { api, remote, local } = await runParityCase(rows, params, "/sessions");
+      expect(remote).toEqual(local);
+      expect(remote).toEqual([]);
+      const sql = api.query.mock.calls[0][0] as string;
+      expect(sql).not.toContain("summary::text ~");
+      expect(sql).not.toContain("message::text ~");
+    });
+  });
+
+  it("compiles word-boundary alternation with grouping", () => {
+    const re = compileGrepRegex({
+      pattern: "book\\|novel",
+      ignoreCase: true,
+      wordMatch: true,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: false,
+    });
+
+    expect(re.test("book club")).toBe(true);
+    expect(re.test("graphic novel")).toBe(true);
+    expect(re.test("storybook")).toBe(false);
   });
 });

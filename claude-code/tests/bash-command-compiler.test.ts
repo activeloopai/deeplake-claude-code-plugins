@@ -61,6 +61,10 @@ describe("bash-command-compiler parsing", () => {
       clean: "cat /a",
       ignoreMissing: true,
     });
+    expect(stripAllowedModifiers("find /sessions -name '*.json' -exec grep -l 'Melanie' {} \\; 2>/dev/null | head -10")).toEqual({
+      clean: "find /sessions -name '*.json' -exec grep -l 'Melanie' {} \\; | head -10",
+      ignoreMissing: true,
+    });
     expect(stripAllowedModifiers("cat /a 2>&1 | head -2")).toEqual({
       clean: "cat /a | head -2",
       ignoreMissing: false,
@@ -161,6 +165,7 @@ describe("bash-command-compiler parsing", () => {
       params: {
         pattern: "foo",
         targetPath: "/summaries",
+        recursive: false,
         ignoreCase: false,
         wordMatch: false,
         filesOnly: false,
@@ -176,6 +181,7 @@ describe("bash-command-compiler parsing", () => {
       params: {
         pattern: "foo",
         targetPath: "/summaries",
+        recursive: false,
         ignoreCase: false,
         wordMatch: false,
         filesOnly: false,
@@ -191,6 +197,7 @@ describe("bash-command-compiler parsing", () => {
       params: {
         pattern: "foo",
         targetPath: "/summaries",
+        recursive: false,
         ignoreCase: false,
         wordMatch: false,
         filesOnly: false,
@@ -208,6 +215,7 @@ describe("bash-command-compiler parsing", () => {
       params: {
         pattern: "launch",
         targetPath: "/",
+        recursive: false,
         ignoreCase: false,
         wordMatch: false,
         filesOnly: true,
@@ -225,6 +233,7 @@ describe("bash-command-compiler parsing", () => {
       params: {
         pattern: "launch",
         targetPath: "/",
+        recursive: false,
         ignoreCase: false,
         wordMatch: false,
         filesOnly: true,
@@ -234,6 +243,40 @@ describe("bash-command-compiler parsing", () => {
         fixedString: false,
       },
       lineLimit: 1,
+    });
+    expect(parseCompiledSegment("find /sessions -name '*.json' -exec grep -l 'Melanie' {} \\; 2>/dev/null | head -10")).toEqual({
+      kind: "find_grep",
+      dir: "/sessions",
+      patterns: ["*.json"],
+      params: {
+        pattern: "Melanie",
+        targetPath: "{}",
+        recursive: false,
+        ignoreCase: false,
+        wordMatch: false,
+        filesOnly: true,
+        countOnly: false,
+        lineNumber: false,
+        invertMatch: false,
+        fixedString: false,
+      },
+      lineLimit: 10,
+    });
+    expect(parseCompiledSegment("grep -i 'age\\|birthday\\|born.*19\\|born.*20' /sessions/*.json 2>/dev/null | head -3")).toEqual({
+      kind: "grep",
+      params: {
+        pattern: "age\\|birthday\\|born.*19\\|born.*20",
+        targetPath: "/sessions/*.json",
+        recursive: false,
+        ignoreCase: true,
+        wordMatch: false,
+        filesOnly: false,
+        countOnly: false,
+        lineNumber: false,
+        invertMatch: false,
+        fixedString: false,
+      },
+      lineLimit: 3,
     });
   });
 
@@ -453,5 +496,48 @@ describe("bash-command-compiler execution", () => {
       ["/summaries/a.md", "/summaries/shared.json", "/summaries/b.json"],
     );
     expect(output).toBe("/summaries/a.md");
+  });
+
+  it("compiles benchmark trace find -exec grep -l pipelines into the same find_grep plan", async () => {
+    const findVirtualPathsFn = vi.fn(async () => [
+      "/sessions/conv_0_session_2.json",
+      "/sessions/conv_0_session_5.json",
+      "/sessions/conv_0_session_8.json",
+    ]);
+    const readVirtualPathContentsFn = vi.fn(async () => new Map([
+      ["/sessions/conv_0_session_2.json", "{\"dialogue\":[{\"speaker\":\"Melanie\",\"text\":\"camping next month\"}]}"],
+      ["/sessions/conv_0_session_5.json", "{\"dialogue\":[{\"speaker\":\"Caroline\",\"text\":\"book club\"}]}"],
+      ["/sessions/conv_0_session_8.json", "{\"dialogue\":[{\"speaker\":\"Melanie\",\"text\":\"museum trip\"}]}"],
+    ]));
+
+    const output = await executeCompiledBashCommand(
+      { query: vi.fn() } as any,
+      "memory",
+      "sessions",
+      "find /sessions -name '*.json' -exec grep -l 'Melanie' {} \\; 2>/dev/null | head -10",
+      {
+        findVirtualPathsFn: findVirtualPathsFn as any,
+        readVirtualPathContentsFn: readVirtualPathContentsFn as any,
+      },
+    );
+
+    expect(findVirtualPathsFn).toHaveBeenCalledWith(
+      expect.anything(),
+      "memory",
+      "sessions",
+      "/sessions",
+      "%.json",
+    );
+    expect(readVirtualPathContentsFn).toHaveBeenCalledWith(
+      expect.anything(),
+      "memory",
+      "sessions",
+      [
+        "/sessions/conv_0_session_2.json",
+        "/sessions/conv_0_session_5.json",
+        "/sessions/conv_0_session_8.json",
+      ],
+    );
+    expect(output).toBe("/sessions/conv_0_session_2.json\n/sessions/conv_0_session_8.json");
   });
 });

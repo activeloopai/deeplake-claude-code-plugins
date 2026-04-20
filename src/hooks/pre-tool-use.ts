@@ -16,12 +16,14 @@ import {
   readVirtualPathContents,
   listVirtualPathRows,
   readVirtualPathContent,
+  buildVirtualIndexContent,
 } from "./virtual-table-query.js";
 import {
   readCachedIndexContent,
   writeCachedIndexContent,
 } from "./query-cache.js";
 import { isSafe, touchesMemory, rewritePaths } from "./memory-path-utils.js";
+import { isIndexDisabled, isSessionsOnlyMode } from "../utils/retrieval-mode.js";
 
 export { isSafe, touchesMemory, rewritePaths };
 
@@ -110,6 +112,7 @@ export function extractGrepParams(
     return {
       pattern: (toolInput.pattern as string) ?? "",
       targetPath: rewritePaths((toolInput.path as string) ?? "") || "/",
+      recursive: true,
       ignoreCase: !!toolInput["-i"],
       wordMatch: false,
       filesOnly: outputMode === "files_with_matches",
@@ -196,7 +199,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
   ): Promise<Map<string, string | null>> => {
     const uniquePaths = [...new Set(cachePaths)];
     const result = new Map<string, string | null>(uniquePaths.map((path) => [path, null]));
-    const cachedIndex = uniquePaths.includes("/index.md")
+    const cachedIndex = !isIndexDisabled() && uniquePaths.includes("/index.md")
       ? readCachedIndexContentFn(input.session_id)
       : null;
 
@@ -283,26 +286,18 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
 
     if (virtualPath && !virtualPath.endsWith("/")) {
       logFn(`direct read: ${virtualPath}`);
-      let content = virtualPath === "/index.md"
+      let content = !isIndexDisabled() && virtualPath === "/index.md"
         ? readCachedIndexContentFn(input.session_id)
         : null;
 
       if (content === null) {
         content = await readVirtualPathContentFn(api, table, sessionsTable, virtualPath);
       }
-      if (content === null && virtualPath === "/index.md") {
+      if (content === null && virtualPath === "/index.md" && !isSessionsOnlyMode() && !isIndexDisabled()) {
         const idxRows = await api.query(
-          `SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
+          `SELECT path, project, description, summary, creation_date, last_update_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY last_update_date DESC, creation_date DESC`
         );
-        const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
-        for (const r of idxRows) {
-          const p = r["path"] as string;
-          const proj = r["project"] as string || "";
-          const desc = (r["description"] as string || "").slice(0, 120);
-          const date = (r["creation_date"] as string || "").slice(0, 10);
-          lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
-        }
-        content = lines.join("\n");
+        content = buildVirtualIndexContent(idxRows);
       }
       if (content !== null) {
         if (virtualPath === "/index.md") {

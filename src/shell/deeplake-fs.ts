@@ -6,6 +6,8 @@ import type {
   FileContent, BufferEncoding,
 } from "just-bash";
 import { normalizeContent } from "./grep-core.js";
+import { isIndexDisabled, isSessionsOnlyMode } from "../utils/retrieval-mode.js";
+import { buildVirtualIndexContent } from "../hooks/virtual-table-query.js";
 
 interface ReadFileOptions { encoding?: BufferEncoding }
 interface WriteFileOptions { encoding?: BufferEncoding }
@@ -84,6 +86,8 @@ export class DeeplakeFs implements IFileSystem {
   // Paths that live in the sessions table (multi-row, read by concatenation)
   private sessionPaths = new Set<string>();
   private sessionsTable: string | null = null;
+  private sessionsOnly = false;
+  private indexDisabled = false;
 
   private constructor(
     private readonly client: DeeplakeApi,
@@ -102,12 +106,14 @@ export class DeeplakeFs implements IFileSystem {
   ): Promise<DeeplakeFs> {
     const fs = new DeeplakeFs(client, table, mount);
     fs.sessionsTable = sessionsTable ?? null;
+    fs.sessionsOnly = isSessionsOnlyMode();
+    fs.indexDisabled = isIndexDisabled();
     // Ensure the table exists before bootstrapping.
     await client.ensureTable();
 
     // Bootstrap memory + sessions metadata in parallel.
     let sessionSyncOk = true;
-    const memoryBootstrap = (async () => {
+    const memoryBootstrap = fs.sessionsOnly ? Promise.resolve() : (async () => {
       const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
       try {
         const rows = await client.query(sql);
@@ -247,55 +253,10 @@ export class DeeplakeFs implements IFileSystem {
 
   private async generateVirtualIndex(): Promise<string> {
     const rows = await this.client.query(
-      `SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" ` +
-      `WHERE path LIKE '${esc("/summaries/")}%' ORDER BY last_update_date DESC`
+      `SELECT path, project, description, summary, creation_date, last_update_date FROM "${this.table}" ` +
+      `WHERE path LIKE '${esc("/summaries/")}%' ORDER BY last_update_date DESC, creation_date DESC`
     );
-
-    // Build a lookup: key → session path from sessionPaths
-    // Supports two formats:
-    //   1. /sessions/<user>/<user>_<org>_<ws>_<sessionId>.jsonl  → key = sessionId
-    //   2. /sessions/<author>/<filename>.json or .jsonl         → key = filename stem
-    const sessionPathsByKey = new Map<string, string>();
-    for (const sp of this.sessionPaths) {
-      const hivemind = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
-      if (hivemind) {
-        sessionPathsByKey.set(hivemind[1], sp.slice(1));
-      } else {
-        // Generic: extract filename without extension
-        const fname = sp.split("/").pop() ?? "";
-        const stem = fname.replace(/\.[^.]+$/, "");
-        if (stem) sessionPathsByKey.set(stem, sp.slice(1));
-      }
-    }
-
-    const lines: string[] = [
-      "# Session Index",
-      "",
-      "List of all Claude Code sessions with summaries.",
-      "",
-      "| Session | Conversation | Created | Last Updated | Project | Description |",
-      "|---------|-------------|---------|--------------|---------|-------------|",
-    ];
-    for (const row of rows) {
-      const p = row["path"] as string;
-      // Extract session ID from path: /summaries/<user>/<id>.md
-      const match = p.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
-      if (!match) continue;
-      const summaryUser = match[1];
-      const sessionId = match[2];
-      const relPath = `summaries/${summaryUser}/${sessionId}.md`;
-      // Try matching session: first exact sessionId, then strip _summary suffix
-      const baseName = sessionId.replace(/_summary$/, "");
-      const convPath = sessionPathsByKey.get(sessionId) ?? sessionPathsByKey.get(baseName);
-      const convLink = convPath ? `[messages](${convPath})` : "";
-      const project = (row["project"] as string) || "";
-      const description = (row["description"] as string) || "";
-      const creationDate = (row["creation_date"] as string) || "";
-      const lastUpdateDate = (row["last_update_date"] as string) || "";
-      lines.push(`| [${sessionId}](${relPath}) | ${convLink} | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
-    }
-    lines.push("");
-    return lines.join("\n");
+    return buildVirtualIndexContent(rows);
   }
 
   // ── batch prefetch ────────────────────────────────────────────────────────
@@ -396,7 +357,7 @@ export class DeeplakeFs implements IFileSystem {
     if (this.dirs.has(p) && !this.files.has(p)) throw fsErr("EISDIR", "illegal operation on a directory", p);
 
     // Virtual index.md: if no real row exists, generate from summary rows
-    if (p === "/index.md" && !this.files.has(p)) {
+    if (!this.sessionsOnly && !this.indexDisabled && p === "/index.md" && !this.files.has(p)) {
       // Check if a real /index.md row exists in the table
       const realRows = await this.client.query(
         `SELECT summary FROM "${this.table}" WHERE path = '${esc("/index.md")}' LIMIT 1`
@@ -526,7 +487,7 @@ export class DeeplakeFs implements IFileSystem {
 
   async exists(path: string): Promise<boolean> {
     const p = normPath(path);
-    if (p === "/index.md") return true; // Virtual index always exists
+    if (!this.sessionsOnly && !this.indexDisabled && p === "/index.md") return true; // Virtual index always exists
     return this.files.has(p) || this.dirs.has(p);
   }
 
@@ -535,7 +496,7 @@ export class DeeplakeFs implements IFileSystem {
     const isFile = this.files.has(p);
     const isDir  = this.dirs.has(p);
     // Virtual index.md: always exists as a file
-    if (p === "/index.md" && !isFile && !isDir) {
+    if (!this.sessionsOnly && !this.indexDisabled && p === "/index.md" && !isFile && !isDir) {
       return {
         isFile: true, isDirectory: false, isSymbolicLink: false,
         mode: 0o644, size: 0, mtime: new Date(),
@@ -562,7 +523,7 @@ export class DeeplakeFs implements IFileSystem {
   async readlink(path: string): Promise<string> { throw fsErr("EINVAL", "invalid argument", path); }
   async realpath(path: string): Promise<string> {
     const p = normPath(path);
-    if (p === "/index.md") return p; // Virtual index always exists
+    if (!this.sessionsOnly && !this.indexDisabled && p === "/index.md") return p; // Virtual index always exists
     if (!this.files.has(p) && !this.dirs.has(p)) throw fsErr("ENOENT", "no such file or directory", p);
     return p;
   }
@@ -591,7 +552,7 @@ export class DeeplakeFs implements IFileSystem {
     if (!this.dirs.has(p)) throw fsErr("ENOTDIR", "not a directory", p);
     const entries = [...(this.dirs.get(p) ?? [])];
     // Virtual index.md: always show in root listing even if no real row exists
-    if (p === "/" && !entries.includes("index.md")) {
+    if (!this.sessionsOnly && !this.indexDisabled && p === "/" && !entries.includes("index.md")) {
       entries.push("index.md");
     }
     return entries;
@@ -604,7 +565,7 @@ export class DeeplakeFs implements IFileSystem {
       const child = p === "/" ? `/${name}` : `${p}/${name}`;
       return {
         name,
-        isFile: (this.files.has(child) || child === "/index.md") && !this.dirs.has(child),
+        isFile: (this.files.has(child) || (!this.sessionsOnly && !this.indexDisabled && child === "/index.md")) && !this.dirs.has(child),
         isDirectory: this.dirs.has(child),
         isSymbolicLink: false,
       };
