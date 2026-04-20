@@ -178,12 +178,52 @@ function bundleDirFromImportMeta(importMetaUrl) {
   return dirname(fileURLToPath(importMetaUrl));
 }
 
+// dist/src/hooks/summary-state.js
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, writeSync, mkdirSync as mkdirSync2, renameSync, existsSync as existsSync2, unlinkSync, openSync, closeSync } from "node:fs";
+import { homedir as homedir4 } from "node:os";
+import { join as join4 } from "node:path";
+var STATE_DIR = join4(homedir4(), ".claude", "hooks", "summary-state");
+var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
+function lockPath(sessionId) {
+  return join4(STATE_DIR, `${sessionId}.lock`);
+}
+function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
+  mkdirSync2(STATE_DIR, { recursive: true });
+  const p = lockPath(sessionId);
+  if (existsSync2(p)) {
+    try {
+      const ageMs = Date.now() - parseInt(readFileSync2(p, "utf-8"), 10);
+      if (Number.isFinite(ageMs) && ageMs < maxAgeMs)
+        return false;
+    } catch {
+    }
+    try {
+      unlinkSync(p);
+    } catch {
+      return false;
+    }
+  }
+  try {
+    const fd = openSync(p, "wx");
+    try {
+      writeSync(fd, String(Date.now()));
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  } catch (e) {
+    if (e.code === "EEXIST")
+      return false;
+    throw e;
+  }
+}
+
 // dist/src/hooks/session-end.js
 var log2 = (msg) => log("session-end", msg);
 async function main() {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1")
+  if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
-  if ((process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) === "false")
+  if (process.env.HIVEMIND_CAPTURE === "false")
     return;
   const input = await readStdin();
   const sessionId = input.session_id;
@@ -193,6 +233,10 @@ async function main() {
   const config = loadConfig();
   if (!config) {
     log2("no config");
+    return;
+  }
+  if (!tryAcquireLock(sessionId)) {
+    wikiLog(`SessionEnd: periodic worker already running for ${sessionId}, skipping`);
     return;
   }
   wikiLog(`SessionEnd: triggering summary for ${sessionId}`);
