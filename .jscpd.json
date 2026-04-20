@@ -1,0 +1,21 @@
+{
+  "threshold": 7,
+  "reporters": ["console", "markdown"],
+  "output": "./jscpd-report",
+  "ignore": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/bundle/**",
+    "**/coverage/**",
+    "**/*.test.ts",
+    "**/tests/**",
+    "**/fixtures/**",
+    "**/claude-code/.claude-plugin/**",
+    "**/codex/.codex-plugin/**"
+  ],
+  "absolute": false,
+  "gitignore": true,
+  "format": ["typescript"],
+  "minLines": 10,
+  "minTokens": 60
+}
