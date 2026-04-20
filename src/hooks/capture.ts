@@ -7,7 +7,6 @@
  * Used by: UserPromptSubmit, PostToolUse (async), Stop, SubagentStop
  */
 
-import { homedir } from "node:os";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig, type Config } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
@@ -18,6 +17,7 @@ import {
   loadTriggerConfig,
   shouldTrigger,
   tryAcquireLock,
+  releaseLock,
 } from "./summary-state.js";
 import { bundleDirFromImportMeta, spawnWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 const log = (msg: string) => _log("capture", msg);
@@ -43,7 +43,7 @@ interface HookInput {
   agent_transcript_path?: string;
 }
 
-const CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
+const CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 
 /** Build the session path matching the CLI convention:
  *  /sessions/<username>/<username>_<org>_<workspace>_<slug>.jsonl */
@@ -163,13 +163,18 @@ function maybeTriggerPeriodicSummary(sessionId: string, cwd: string, config: Con
     }
 
     wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
-    spawnWikiWorker({
-      config,
-      sessionId,
-      cwd,
-      bundleDir: bundleDirFromImportMeta(import.meta.url),
-      reason: "Periodic",
-    });
+    try {
+      spawnWikiWorker({
+        config,
+        sessionId,
+        cwd,
+        bundleDir: bundleDirFromImportMeta(import.meta.url),
+        reason: "Periodic",
+      });
+    } catch (e: any) {
+      try { releaseLock(sessionId); } catch { /* ignore */ }
+      throw e;
+    }
   } catch (e: any) {
     log(`periodic trigger error: ${e.message}`);
   }
