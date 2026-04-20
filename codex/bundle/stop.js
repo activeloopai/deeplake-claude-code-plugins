@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/codex/stop.js
-import { readFileSync as readFileSync2, existsSync as existsSync2 } from "node:fs";
+import { readFileSync as readFileSync3, existsSync as existsSync3 } from "node:fs";
 
 // dist/src/utils/stdin.js
 function readStdin() {
@@ -408,14 +408,54 @@ function bundleDirFromImportMeta(importMetaUrl) {
   return dirname(fileURLToPath(importMetaUrl));
 }
 
+// dist/src/hooks/summary-state.js
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, writeSync, mkdirSync as mkdirSync2, renameSync, existsSync as existsSync2, unlinkSync, openSync, closeSync } from "node:fs";
+import { homedir as homedir4 } from "node:os";
+import { join as join4 } from "node:path";
+var STATE_DIR = join4(homedir4(), ".claude", "hooks", "summary-state");
+var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
+function lockPath(sessionId) {
+  return join4(STATE_DIR, `${sessionId}.lock`);
+}
+function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
+  mkdirSync2(STATE_DIR, { recursive: true });
+  const p = lockPath(sessionId);
+  if (existsSync2(p)) {
+    try {
+      const ageMs = Date.now() - parseInt(readFileSync2(p, "utf-8"), 10);
+      if (Number.isFinite(ageMs) && ageMs < maxAgeMs)
+        return false;
+    } catch {
+    }
+    try {
+      unlinkSync(p);
+    } catch {
+      return false;
+    }
+  }
+  try {
+    const fd = openSync(p, "wx");
+    try {
+      writeSync(fd, String(Date.now()));
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  } catch (e) {
+    if (e.code === "EEXIST")
+      return false;
+    throw e;
+  }
+}
+
 // dist/src/hooks/codex/stop.js
 var log3 = (msg) => log("codex-stop", msg);
-var CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
+var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 function buildSessionPath(config, sessionId) {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
 }
 async function main() {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1")
+  if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
   const input = await readStdin();
   const sessionId = input.session_id;
@@ -435,8 +475,8 @@ async function main() {
       if (input.transcript_path) {
         try {
           const transcriptPath = input.transcript_path;
-          if (existsSync2(transcriptPath)) {
-            const transcript = readFileSync2(transcriptPath, "utf-8");
+          if (existsSync3(transcriptPath)) {
+            const transcript = readFileSync3(transcriptPath, "utf-8");
             const lines = transcript.trim().split("\n").reverse();
             for (const line2 of lines) {
               try {
@@ -484,6 +524,10 @@ async function main() {
   }
   if (!CAPTURE)
     return;
+  if (!tryAcquireLock(sessionId)) {
+    wikiLog(`Stop: periodic worker already running for ${sessionId}, skipping`);
+    return;
+  }
   wikiLog(`Stop: triggering summary for ${sessionId}`);
   spawnCodexWikiWorker({
     config,
