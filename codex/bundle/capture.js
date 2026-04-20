@@ -417,6 +417,12 @@ function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
     throw e;
   }
 }
+function releaseLock(sessionId) {
+  try {
+    unlinkSync(lockPath(sessionId));
+  } catch {
+  }
+}
 
 // dist/src/hooks/codex/spawn-wiki-worker.js
 import { spawn, execSync } from "node:child_process";
@@ -526,7 +532,7 @@ function bundleDirFromImportMeta(importMetaUrl) {
 
 // dist/src/hooks/codex/capture.js
 var log3 = (msg) => log("codex-capture", msg);
-var CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
+var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 function buildSessionPath(config, sessionId) {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
 }
@@ -609,13 +615,21 @@ function maybeTriggerPeriodicSummary(sessionId, cwd, config) {
       return;
     }
     wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
-    spawnCodexWikiWorker({
-      config,
-      sessionId,
-      cwd,
-      bundleDir: bundleDirFromImportMeta(import.meta.url),
-      reason: "Periodic"
-    });
+    try {
+      spawnCodexWikiWorker({
+        config,
+        sessionId,
+        cwd,
+        bundleDir: bundleDirFromImportMeta(import.meta.url),
+        reason: "Periodic"
+      });
+    } catch (e) {
+      try {
+        releaseLock(sessionId);
+      } catch {
+      }
+      throw e;
+    }
   } catch (e) {
     log3(`periodic trigger error: ${e.message}`);
   }
