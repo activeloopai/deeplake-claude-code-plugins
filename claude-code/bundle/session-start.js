@@ -265,8 +265,7 @@ var CLAUDE_SESSION_START_CONTEXT_PSQL = `DEEPLAKE MEMORY SQL MODE: For this run,
 
 Available Deeplake tables:
 - memory(path, summary, project, description, creation_date, last_update_date)
-- sessions_text(path, creation_date, message_text)
-- sessions(path, message, creation_date)
+- sessions(path, creation_date, turn_index, event_type, dia_id, speaker, text, turn_summary, source_date_time, message)
 
 Use this command shape:
 - psql -At -F '|' -c "SELECT ..."
@@ -275,11 +274,13 @@ SQL strategy:
 1. Start with targeted SELECTs against memory to find likely summaries.
 2. In the first pass, combine the named person/entity term with one or more topic terms. Prefer narrow AND filters over broad OR filters.
 3. After finding candidate summary rows, re-query memory by exact path to inspect only those summaries.
-4. If the answer needs exact wording, exact dates, or transcript grounding, query sessions_text by exact path for those candidate sessions.
+4. If the answer needs exact wording, exact dates, or transcript grounding, query sessions by exact path for those candidate sessions.
 5. Prefer precise WHERE filters, ORDER BY creation_date/last_update_date, and LIMIT 5-10.
 6. Do not use filesystem commands, grep, cat, ls, Read, or Glob for recall in this mode.
 7. If the first summary query returns 0-3 weak rows or the answer still seems semantically off, retry with BM25 ranking on memory before concluding the data is absent.
-8. Use sessions only when you need the raw structured payload; use sessions_text for normal text filtering.
+8. Use sessions.text, sessions.speaker, sessions.turn_index, and sessions.source_date_time for transcript retrieval. Use sessions.message only when you need the raw JSON payload.
+9. If a summary answer is vague or relative (for example "home country", "next month", "last week"), immediately open the linked sessions rows and convert it to the most concrete answer supported there.
+10. For identity, origin, relationship, and "what did they decide" questions, prefer the exact self-description or named entity from sessions over a paraphrased summary label.
 
 Good query patterns:
 - Candidate summaries:
@@ -287,22 +288,24 @@ Good query patterns:
 - Exact summary reread:
   psql -At -F '|' -c "SELECT path, summary FROM memory WHERE path IN ('/summaries/...', '/summaries/...')"
 - Transcript grounding by exact path:
-  psql -At -F '|' -c "SELECT path, creation_date, message_text FROM sessions_text WHERE path IN ('/sessions/...', '/sessions/...') ORDER BY creation_date ASC"
+  psql -At -F '|' -c "SELECT path, creation_date, turn_index, speaker, text, source_date_time FROM sessions WHERE path IN ('/sessions/...', '/sessions/...') ORDER BY path ASC, turn_index ASC"
 - Transcript search inside known sessions:
-  psql -At -F '|' -c "SELECT path, creation_date, message_text FROM sessions_text WHERE path IN ('/sessions/...', '/sessions/...') AND message_text ILIKE '%<keyword>%' ORDER BY creation_date ASC"
+  psql -At -F '|' -c "SELECT path, creation_date, turn_index, speaker, text, source_date_time FROM sessions WHERE path IN ('/sessions/...', '/sessions/...') AND (speaker ILIKE '%<person>%' OR text ILIKE '%<keyword>%') ORDER BY path ASC, turn_index ASC"
 - If literal ILIKE retrieval is sparse or semantically weak, retry with BM25 text ranking on summaries:
   psql -At -F '|' -c "SELECT path, summary, summary <#> '<person> <topic terms>' AS score FROM memory WHERE summary ILIKE '%<person>%' ORDER BY score DESC LIMIT 5"
 
 Avoid these mistakes:
 - Do NOT search person names via path ILIKE. Person names live in summary text, not session paths.
-- Do NOT filter sessions.message directly. Use sessions_text.message_text for transcript text search.
+- Do NOT filter sessions.message directly when sessions.text / sessions.speaker already contain the needed transcript fields.
 - Do NOT blend multiple different events when the question asks about one specific event. Prefer the most direct supporting row.
 
 Answer rules:
 - Return the smallest exact answer supported by the data.
 - Resolve relative dates against the session's own creation_date or transcript date metadata, not today's date.
-- Do not answer "not found" until you have checked both memory and a likely sessions_text row for the named person.
+- Do not answer "not found" until you have checked both memory and a likely sessions row for the named person.
 - For duration or age-style answers, preserve the stored relative phrase when it directly answers the question instead of over-converting it.
+- If the transcript already directly answers with a relative duration like "10 years ago", return that phrase instead of recalculating to today's date.
+- If a summary says something vague like "home country", search sessions for the exact named place before answering.
 - For list or profile questions, aggregate across the small set of candidate sessions before answering.
 - For "likely", "would", or profile questions, a concise inference from strong summary evidence is allowed even if the exact final phrase is not quoted verbatim.
 

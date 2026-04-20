@@ -410,17 +410,55 @@ var DeeplakeApi = class {
         this._tablesCache = [...tables, tbl];
     }
   }
-  /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
+  /** Create the sessions table (one physical row per message/event, with direct search columns). */
   async ensureSessionsTable(name) {
+    const sessionColumns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `message JSONB`,
+      `session_id TEXT NOT NULL DEFAULT ''`,
+      `event_type TEXT NOT NULL DEFAULT ''`,
+      `turn_index BIGINT NOT NULL DEFAULT 0`,
+      `dia_id TEXT NOT NULL DEFAULT ''`,
+      `speaker TEXT NOT NULL DEFAULT ''`,
+      `text TEXT NOT NULL DEFAULT ''`,
+      `turn_summary TEXT NOT NULL DEFAULT ''`,
+      `source_date_time TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (` + sessionColumns.join(", ") + `) USING deeplake`);
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
     }
-    await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
+    const alterColumns = [
+      ["session_id", `TEXT NOT NULL DEFAULT ''`],
+      ["event_type", `TEXT NOT NULL DEFAULT ''`],
+      ["turn_index", `BIGINT NOT NULL DEFAULT 0`],
+      ["dia_id", `TEXT NOT NULL DEFAULT ''`],
+      ["speaker", `TEXT NOT NULL DEFAULT ''`],
+      ["text", `TEXT NOT NULL DEFAULT ''`],
+      ["turn_summary", `TEXT NOT NULL DEFAULT ''`],
+      ["source_date_time", `TEXT NOT NULL DEFAULT ''`]
+    ];
+    for (const [column, ddl] of alterColumns) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "path_creation_date_turn_index", `("path", "creation_date", "turn_index")`);
   }
 };
 
@@ -697,11 +735,20 @@ function buildSessionPath(config, sessionId) {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
 }
 function buildQueuedSessionRow(args) {
+  const structured = extractStructuredSessionFields(args.line, args.sessionId);
   return {
     id: crypto.randomUUID(),
     path: args.sessionPath,
     filename: args.sessionPath.split("/").pop() ?? "",
     message: args.line,
+    sessionId: structured.sessionId,
+    eventType: structured.eventType,
+    turnIndex: structured.turnIndex,
+    diaId: structured.diaId,
+    speaker: structured.speaker,
+    text: structured.text,
+    turnSummary: structured.turnSummary,
+    sourceDateTime: structured.sourceDateTime,
     author: args.userName,
     sizeBytes: Buffer.byteLength(args.line, "utf-8"),
     project: args.projectName,
@@ -724,10 +771,10 @@ function buildSessionInsertSql(sessionsTable, rows) {
     throw new Error("buildSessionInsertSql: rows must not be empty");
   const table = sqlIdent(sessionsTable);
   const values = rows.map((row) => {
-    const jsonForSql = sqlStr(coerceJsonbPayload(row.message));
-    return `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, '${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', '${sqlStr(row.agent)}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`;
+    const jsonForSql = escapeJsonbLiteral(coerceJsonbPayload(row.message));
+    return `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, '${sqlStr(row.sessionId)}', '${sqlStr(row.eventType)}', ${row.turnIndex}, '${sqlStr(row.diaId)}', '${sqlStr(row.speaker)}', '${sqlStr(row.text)}', '${sqlStr(row.turnSummary)}', '${sqlStr(row.sourceDateTime)}', '${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', '${sqlStr(row.agent)}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`;
   }).join(", ");
-  return `INSERT INTO "${table}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ${values}`;
+  return `INSERT INTO "${table}" (id, path, filename, message, session_id, event_type, turn_index, dia_id, speaker, text, turn_summary, source_date_time, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ${values}`;
 }
 function coerceJsonbPayload(message) {
   try {
@@ -738,6 +785,59 @@ function coerceJsonbPayload(message) {
       content: message
     });
   }
+}
+function escapeJsonbLiteral(value) {
+  return value.replace(/'/g, "''").replace(/\0/g, "");
+}
+function extractString(value) {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+function extractNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value))
+    return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed))
+      return parsed;
+  }
+  return 0;
+}
+function extractStructuredSessionFields(message, fallbackSessionId = "") {
+  let parsed = null;
+  try {
+    const raw = JSON.parse(message);
+    if (raw && typeof raw === "object")
+      parsed = raw;
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) {
+    return {
+      sessionId: fallbackSessionId,
+      eventType: "raw_message",
+      turnIndex: 0,
+      diaId: "",
+      speaker: "",
+      text: message,
+      turnSummary: "",
+      sourceDateTime: ""
+    };
+  }
+  const eventType = extractString(parsed["type"]);
+  const content = extractString(parsed["content"]);
+  const toolName = extractString(parsed["tool_name"]);
+  const speaker = extractString(parsed["speaker"]) || (eventType === "user_message" ? "user" : eventType === "assistant_message" ? "assistant" : "");
+  const text = extractString(parsed["text"]) || content || (eventType === "tool_call" ? toolName : "");
+  return {
+    sessionId: extractString(parsed["session_id"]) || fallbackSessionId,
+    eventType,
+    turnIndex: extractNumber(parsed["turn_index"]),
+    diaId: extractString(parsed["dia_id"]),
+    speaker,
+    text,
+    turnSummary: extractString(parsed["summary"]) || extractString(parsed["message_summary"]) || extractString(parsed["msg_summary"]),
+    sourceDateTime: extractString(parsed["source_date_time"]) || extractString(parsed["date_time"]) || extractString(parsed["date"])
+  };
 }
 async function flushSessionQueue(api, opts) {
   const queueDir = opts.queueDir ?? DEFAULT_QUEUE_DIR;
@@ -1044,6 +1144,7 @@ async function runCaptureHook(input, deps = {}) {
   appendQueuedSessionRowFn(buildQueuedSessionRowFn({
     sessionPath,
     line,
+    sessionId: input.session_id,
     userName: config.userName,
     projectName,
     description: input.hook_event_name ?? "",

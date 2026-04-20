@@ -148,6 +148,7 @@ export async function runCodexStopHook(input: CodexStopInput, deps: CodexStopDep
       appendQueuedSessionRowFn(buildQueuedSessionRowFn({
         sessionPath,
         line,
+        sessionId: input.session_id,
         userName: config.userName,
         projectName,
         description: "Stop",

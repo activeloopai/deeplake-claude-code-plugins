@@ -309,9 +309,9 @@ describe("bash-command-compiler parsing", () => {
       fieldSeparator: "|",
     });
 
-    expect(parseCompiledSegment("psql -At -F '|' -c \"SELECT path, creation_date, message_text FROM sessions_text WHERE message_text ILIKE '%camp%' LIMIT 2\"")).toEqual({
+    expect(parseCompiledSegment("psql -At -F '|' -c \"SELECT path, creation_date, turn_index, speaker, text FROM sessions WHERE text ILIKE '%camp%' LIMIT 2\"")).toEqual({
       kind: "psql",
-      query: "SELECT path, creation_date, message_text FROM sessions_text WHERE message_text ILIKE '%camp%' LIMIT 2",
+      query: "SELECT path, creation_date, turn_index, speaker, text FROM sessions WHERE text ILIKE '%camp%' LIMIT 2",
       lineLimit: 0,
       tuplesOnly: true,
       fieldSeparator: "|",
@@ -530,13 +530,18 @@ describe("bash-command-compiler execution", () => {
     restorePsqlMode();
   });
 
-  it("rewrites sessions_text queries into a text CTE over the backing sessions table", async () => {
+  it("executes direct sessions queries against physical per-message rows", async () => {
     const query = vi.fn(async (sql: string) => {
-      expect(sql).toContain('WITH "__hivemind_sessions_text" AS (SELECT path, creation_date, message::text AS message_text FROM "sessions_actual")');
-      expect(sql).toContain('FROM "__hivemind_sessions_text"');
-      expect(sql).toContain("message_text ILIKE '%camp%'");
+      expect(sql).toContain('FROM "sessions_actual"');
+      expect(sql).toContain("WHERE path = '/sessions/conv_0_session_8.json'");
       return [
-        { path: "/sessions/conv_0_session_8.json", creation_date: "2023-08-10", message_text: "{\"turns\":[{\"text\":\"We planned a camping trip\"}]}" },
+        {
+          path: "/sessions/conv_0_session_8.json",
+          creation_date: "2023-08-10",
+          turn_index: 1,
+          speaker: "Melanie",
+          text: "We planned a camping trip",
+        },
       ];
     });
 
@@ -545,9 +550,10 @@ describe("bash-command-compiler execution", () => {
       { query } as any,
       "memory_actual",
       "sessions_actual",
-      "psql -At -F '|' -c \"SELECT path, creation_date, message_text FROM sessions_text WHERE message_text ILIKE '%camp%' LIMIT 1\"",
+      "psql -At -F '|' -c \"SELECT path, creation_date, turn_index, speaker, text FROM sessions WHERE path = '/sessions/conv_0_session_8.json' AND text ILIKE '%camp%' ORDER BY turn_index ASC LIMIT 1\"",
     );
-    expect(output).toBe('/sessions/conv_0_session_8.json|2023-08-10|{"turns":[{"text":"We planned a camping trip"}]}');
+    expect(output).toBe("/sessions/conv_0_session_8.json|2023-08-10|1|Melanie|We planned a camping trip");
+    expect(query).toHaveBeenCalledTimes(1);
     restorePsqlMode();
   });
 

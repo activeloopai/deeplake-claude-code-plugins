@@ -25,6 +25,14 @@ export interface QueuedSessionRow {
   path: string;
   filename: string;
   message: string;
+  sessionId: string;
+  eventType: string;
+  turnIndex: number;
+  diaId: string;
+  speaker: string;
+  text: string;
+  turnSummary: string;
+  sourceDateTime: string;
   author: string;
   sizeBytes: number;
   project: string;
@@ -92,17 +100,27 @@ export function buildSessionPath(config: { userName: string; orgName: string; wo
 export function buildQueuedSessionRow(args: {
   sessionPath: string;
   line: string;
+  sessionId?: string;
   userName: string;
   projectName: string;
   description: string;
   agent: string;
   timestamp: string;
 }): QueuedSessionRow {
+  const structured = extractStructuredSessionFields(args.line, args.sessionId);
   return {
     id: crypto.randomUUID(),
     path: args.sessionPath,
     filename: args.sessionPath.split("/").pop() ?? "",
     message: args.line,
+    sessionId: structured.sessionId,
+    eventType: structured.eventType,
+    turnIndex: structured.turnIndex,
+    diaId: structured.diaId,
+    speaker: structured.speaker,
+    text: structured.text,
+    turnSummary: structured.turnSummary,
+    sourceDateTime: structured.sourceDateTime,
     author: args.userName,
     sizeBytes: Buffer.byteLength(args.line, "utf-8"),
     project: args.projectName,
@@ -125,9 +143,11 @@ export function buildSessionInsertSql(sessionsTable: string, rows: QueuedSession
   if (rows.length === 0) throw new Error("buildSessionInsertSql: rows must not be empty");
   const table = sqlIdent(sessionsTable);
   const values = rows.map((row) => {
-    const jsonForSql = sqlStr(coerceJsonbPayload(row.message));
+    const jsonForSql = escapeJsonbLiteral(coerceJsonbPayload(row.message));
     return (
       `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, ` +
+      `'${sqlStr(row.sessionId)}', '${sqlStr(row.eventType)}', ${row.turnIndex}, '${sqlStr(row.diaId)}', ` +
+      `'${sqlStr(row.speaker)}', '${sqlStr(row.text)}', '${sqlStr(row.turnSummary)}', '${sqlStr(row.sourceDateTime)}', ` +
       `'${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', ` +
       `'${sqlStr(row.agent)}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`
     );
@@ -135,7 +155,7 @@ export function buildSessionInsertSql(sessionsTable: string, rows: QueuedSession
 
   return (
     `INSERT INTO "${table}" ` +
-    `(id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `(id, path, filename, message, session_id, event_type, turn_index, dia_id, speaker, text, turn_summary, source_date_time, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
     `VALUES ${values}`
   );
 }
@@ -149,6 +169,77 @@ function coerceJsonbPayload(message: string): string {
       content: message,
     });
   }
+}
+
+function escapeJsonbLiteral(value: string): string {
+  return value
+    .replace(/'/g, "''")
+    .replace(/\0/g, "");
+}
+
+function extractString(value: unknown): string {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+function extractNumber(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+function extractStructuredSessionFields(message: string, fallbackSessionId = ""): {
+  sessionId: string;
+  eventType: string;
+  turnIndex: number;
+  diaId: string;
+  speaker: string;
+  text: string;
+  turnSummary: string;
+  sourceDateTime: string;
+} {
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    const raw = JSON.parse(message);
+    if (raw && typeof raw === "object") parsed = raw as Record<string, unknown>;
+  } catch {
+    parsed = null;
+  }
+
+  if (!parsed) {
+    return {
+      sessionId: fallbackSessionId,
+      eventType: "raw_message",
+      turnIndex: 0,
+      diaId: "",
+      speaker: "",
+      text: message,
+      turnSummary: "",
+      sourceDateTime: "",
+    };
+  }
+
+  const eventType = extractString(parsed["type"]);
+  const content = extractString(parsed["content"]);
+  const toolName = extractString(parsed["tool_name"]);
+  const speaker = extractString(parsed["speaker"])
+    || (eventType === "user_message" ? "user" : eventType === "assistant_message" ? "assistant" : "");
+  const text = extractString(parsed["text"])
+    || content
+    || (eventType === "tool_call" ? toolName : "");
+
+  return {
+    sessionId: extractString(parsed["session_id"]) || fallbackSessionId,
+    eventType,
+    turnIndex: extractNumber(parsed["turn_index"]),
+    diaId: extractString(parsed["dia_id"]),
+    speaker,
+    text,
+    turnSummary: extractString(parsed["summary"]) || extractString(parsed["message_summary"]) || extractString(parsed["msg_summary"]),
+    sourceDateTime: extractString(parsed["source_date_time"]) || extractString(parsed["date_time"]) || extractString(parsed["date"]),
+  };
 }
 
 export async function flushSessionQueue(api: SessionQueueApi, opts: FlushSessionQueueOptions): Promise<FlushSessionQueueResult> {

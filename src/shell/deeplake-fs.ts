@@ -333,7 +333,7 @@ export class DeeplakeFs implements IFileSystem {
     // 3. Session files: concatenate rows from sessions table
     if (this.sessionPaths.has(p) && this.sessionsTable) {
       const rows = await this.client.query(
-        `SELECT message FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC`
+        `SELECT message FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC, turn_index ASC`
       );
       if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
       const text = joinSessionMessages(p, rows.map((row) => row["message"]));
@@ -385,7 +385,7 @@ export class DeeplakeFs implements IFileSystem {
     // Session files: concatenate rows from sessions table, ordered by creation_date
     if (this.sessionPaths.has(p) && this.sessionsTable) {
       const rows = await this.client.query(
-        `SELECT message FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC`
+        `SELECT message FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC, turn_index ASC`
       );
       if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
       const text = joinSessionMessages(p, rows.map((row) => row["message"]));

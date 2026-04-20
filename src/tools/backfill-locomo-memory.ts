@@ -15,6 +15,14 @@ const execFileAsync = promisify(execFile);
 interface SessionRow {
   path: string;
   filename: string;
+  creation_date?: string;
+  source_date_time?: string;
+  turn_index?: number;
+  dia_id?: string;
+  speaker?: string;
+  text?: string;
+  turn_summary?: string;
+  event_type?: string;
   message: unknown;
 }
 
@@ -84,7 +92,7 @@ function parseSessionPayload(raw: unknown): Record<string, unknown> {
   return { raw };
 }
 
-function buildSessionTask(row: SessionRow): SessionTask {
+function buildSessionTaskFromBlob(row: SessionRow): SessionTask {
   const sessionId = basename(row.path).replace(/\.[^.]+$/, "");
   const summaryFilename = `${sessionId}_summary.md`;
   const summaryPath = `/summaries/locomo/${summaryFilename}`;
@@ -131,6 +139,51 @@ function buildSessionTask(row: SessionRow): SessionTask {
   return {
     sessionId,
     sourcePath: row.path,
+    summaryPath,
+    summaryFilename,
+    jsonlContent: `${lines.join("\n")}\n`,
+    jsonlLines: lines.length,
+  };
+}
+
+function buildSessionTaskFromRows(rows: SessionRow[]): SessionTask {
+  if (rows.length === 0) throw new Error("buildSessionTaskFromRows requires at least one row");
+  const sorted = [...rows].sort((a, b) => {
+    const turnA = typeof a.turn_index === "number" ? a.turn_index : Number.MAX_SAFE_INTEGER;
+    const turnB = typeof b.turn_index === "number" ? b.turn_index : Number.MAX_SAFE_INTEGER;
+    if (turnA !== turnB) return turnA - turnB;
+    return (a.creation_date ?? "").localeCompare(b.creation_date ?? "");
+  });
+  const first = sorted[0];
+  const sessionId = basename(first.path).replace(/\.[^.]+$/, "");
+  const summaryFilename = `${sessionId}_summary.md`;
+  const summaryPath = `/summaries/locomo/${summaryFilename}`;
+  const sessionDateTime = first.source_date_time ?? first.creation_date ?? null;
+
+  const lines = [JSON.stringify({
+    type: "session_meta",
+    session_id: sessionId,
+    source_path: first.path,
+    date_time: sessionDateTime,
+  })];
+
+  for (const row of sorted) {
+    if ((row.event_type && row.event_type !== "dialogue_turn") && !row.text) continue;
+    lines.push(JSON.stringify({
+      type: row.event_type || "dialogue_turn",
+      session_id: sessionId,
+      date_time: row.source_date_time ?? row.creation_date ?? null,
+      turn_index: row.turn_index ?? null,
+      dia_id: row.dia_id ?? null,
+      speaker: row.speaker ?? null,
+      text: row.text ?? null,
+      summary: row.turn_summary ?? null,
+    }));
+  }
+
+  return {
+    sessionId,
+    sourcePath: first.path,
     summaryPath,
     summaryFilename,
     jsonlContent: `${lines.join("\n")}\n`,
@@ -298,8 +351,9 @@ async function main(): Promise<void> {
 
   const claudeBin = findClaudeBin();
   const sessionRowsRaw = await api.query(
-    `SELECT path, filename, message FROM "${opts.sessionsTable}" ` +
-    `WHERE path LIKE '/sessions/conv_%_session_%.json%' ORDER BY path`
+    `SELECT path, filename, creation_date, source_date_time, turn_index, dia_id, speaker, text, turn_summary, event_type, message ` +
+    `FROM "${opts.sessionsTable}" WHERE path LIKE '/sessions/conv_%_session_%.json%' ` +
+    `ORDER BY path, creation_date, turn_index`
   );
   const sessionRows = sessionRowsRaw
     .filter((row) =>
@@ -310,12 +364,32 @@ async function main(): Promise<void> {
     .map((row) => ({
       path: row["path"] as string,
       filename: row["filename"] as string,
+      creation_date: typeof row["creation_date"] === "string" ? row["creation_date"] as string : undefined,
+      source_date_time: typeof row["source_date_time"] === "string" ? row["source_date_time"] as string : undefined,
+      turn_index: typeof row["turn_index"] === "number" ? row["turn_index"] as number : undefined,
+      dia_id: typeof row["dia_id"] === "string" ? row["dia_id"] as string : undefined,
+      speaker: typeof row["speaker"] === "string" ? row["speaker"] as string : undefined,
+      text: typeof row["text"] === "string" ? row["text"] as string : undefined,
+      turn_summary: typeof row["turn_summary"] === "string" ? row["turn_summary"] as string : undefined,
+      event_type: typeof row["event_type"] === "string" ? row["event_type"] as string : undefined,
       message: row["message"],
     })) as SessionRow[];
 
-  const allTasks = sessionRows
-    .filter((row) => typeof row.path === "string" && row.path.includes("/conv_"))
-    .map(buildSessionTask);
+  const grouped = new Map<string, SessionRow[]>();
+  for (const row of sessionRows) {
+    if (!row.path.includes("/conv_")) continue;
+    const list = grouped.get(row.path) ?? [];
+    list.push(row);
+    grouped.set(row.path, list);
+  }
+
+  const allTasks = [...grouped.values()].map((rows) => {
+    const blobRow = rows.find((row) => {
+      const payload = parseSessionPayload(row.message);
+      return Array.isArray(payload["turns"]) || Array.isArray(payload["dialogue"]);
+    });
+    return blobRow ? buildSessionTaskFromBlob(blobRow) : buildSessionTaskFromRows(rows);
+  });
   let tasks = [...allTasks];
   const tasksByPath = new Map(allTasks.map((task) => [task.summaryPath, task]));
   const expectedPaths = new Set(allTasks.map((task) => task.summaryPath));

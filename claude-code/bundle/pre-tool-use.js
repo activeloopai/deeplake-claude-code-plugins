@@ -409,17 +409,55 @@ var DeeplakeApi = class {
         this._tablesCache = [...tables, tbl];
     }
   }
-  /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
+  /** Create the sessions table (one physical row per message/event, with direct search columns). */
   async ensureSessionsTable(name) {
+    const sessionColumns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `message JSONB`,
+      `session_id TEXT NOT NULL DEFAULT ''`,
+      `event_type TEXT NOT NULL DEFAULT ''`,
+      `turn_index BIGINT NOT NULL DEFAULT 0`,
+      `dia_id TEXT NOT NULL DEFAULT ''`,
+      `speaker TEXT NOT NULL DEFAULT ''`,
+      `text TEXT NOT NULL DEFAULT ''`,
+      `turn_summary TEXT NOT NULL DEFAULT ''`,
+      `source_date_time TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (` + sessionColumns.join(", ") + `) USING deeplake`);
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
     }
-    await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
+    const alterColumns = [
+      ["session_id", `TEXT NOT NULL DEFAULT ''`],
+      ["event_type", `TEXT NOT NULL DEFAULT ''`],
+      ["turn_index", `BIGINT NOT NULL DEFAULT 0`],
+      ["dia_id", `TEXT NOT NULL DEFAULT ''`],
+      ["speaker", `TEXT NOT NULL DEFAULT ''`],
+      ["text", `TEXT NOT NULL DEFAULT ''`],
+      ["turn_summary", `TEXT NOT NULL DEFAULT ''`],
+      ["source_date_time", `TEXT NOT NULL DEFAULT ''`]
+    ];
+    for (const [column, ddl] of alterColumns) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "path_creation_date_turn_index", `("path", "creation_date", "turn_index")`);
   }
 };
 
@@ -1842,11 +1880,11 @@ function extractSqlTableRefs(query) {
   return refs;
 }
 function queryReferencesInterceptedTables(query) {
-  return extractSqlTableRefs(query).some((ref) => ref === "memory" || ref === "sessions" || ref === "sessions_text" || ref === "hivemind.memory" || ref === "hivemind.sessions" || ref === "hivemind.sessions_text");
+  return extractSqlTableRefs(query).some((ref) => ref === "memory" || ref === "sessions" || ref === "hivemind.memory" || ref === "hivemind.sessions");
 }
 function queryUsesOnlyInterceptedTables(query) {
   const refs = extractSqlTableRefs(query);
-  return refs.length > 0 && refs.every((ref) => ref === "memory" || ref === "sessions" || ref === "sessions_text" || ref === "hivemind.memory" || ref === "hivemind.sessions" || ref === "hivemind.sessions_text");
+  return refs.length > 0 && refs.every((ref) => ref === "memory" || ref === "sessions" || ref === "hivemind.memory" || ref === "hivemind.sessions");
 }
 function parsePsqlSegment(pipeline, tokens) {
   if (tokens[0] !== "psql" || !isPsqlMode())
@@ -1894,23 +1932,19 @@ function parsePsqlSegment(pipeline, tokens) {
 }
 function normalizePsqlQuery(query, memoryTable, sessionsTable) {
   let sql = query.trim().replace(/;+\s*$/, "");
-  sql = sql.replace(/\bFROM\s+"?memory"?\b/gi, `FROM "${memoryTable}"`).replace(/\bJOIN\s+"?memory"?\b/gi, `JOIN "${memoryTable}"`).replace(/\bFROM\s+"?sessions_text"?\b/gi, `FROM "__hivemind_sessions_text"`).replace(/\bJOIN\s+"?sessions_text"?\b/gi, `JOIN "__hivemind_sessions_text"`).replace(/\bFROM\s+"?sessions"?\b/gi, `FROM "${sessionsTable}"`).replace(/\bJOIN\s+"?sessions"?\b/gi, `JOIN "${sessionsTable}"`).replace(/\bFROM\s+"?hivemind"?\."?memory"?\b/gi, `FROM "${memoryTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?memory"?\b/gi, `JOIN "${memoryTable}"`).replace(/\bFROM\s+"?hivemind"?\."?sessions_text"?\b/gi, `FROM "__hivemind_sessions_text"`).replace(/\bJOIN\s+"?hivemind"?\."?sessions_text"?\b/gi, `JOIN "__hivemind_sessions_text"`).replace(/\bFROM\s+"?hivemind"?\."?sessions"?\b/gi, `FROM "${sessionsTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?sessions"?\b/gi, `JOIN "${sessionsTable}"`);
-  if (/\b__hivemind_sessions_text\b/i.test(sql)) {
-    const cte = `"__hivemind_sessions_text" AS (SELECT path, creation_date, message::text AS message_text FROM "${sessionsTable}")`;
-    sql = /^\s*with\b/i.test(sql) ? sql.replace(/^\s*with\b/i, `WITH ${cte},`) : `WITH ${cte} ${sql}`;
-  }
+  sql = sql.replace(/\bFROM\s+"?memory"?\b/gi, `FROM "${memoryTable}"`).replace(/\bJOIN\s+"?memory"?\b/gi, `JOIN "${memoryTable}"`).replace(/\bFROM\s+"?sessions"?\b/gi, `FROM "${sessionsTable}"`).replace(/\bJOIN\s+"?sessions"?\b/gi, `JOIN "${sessionsTable}"`).replace(/\bFROM\s+"?hivemind"?\."?memory"?\b/gi, `FROM "${memoryTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?memory"?\b/gi, `JOIN "${memoryTable}"`).replace(/\bFROM\s+"?hivemind"?\."?sessions"?\b/gi, `FROM "${sessionsTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?sessions"?\b/gi, `JOIN "${sessionsTable}"`);
   return sql;
 }
 function validatePsqlQuery(query, memoryTable, sessionsTable) {
   if (!queryUsesOnlyInterceptedTables(query)) {
-    throw new Error("psql queries must reference only memory, sessions, sessions_text, hivemind.memory, hivemind.sessions, or hivemind.sessions_text");
+    throw new Error("psql queries must reference only memory, sessions, hivemind.memory, or hivemind.sessions");
   }
   const sql = normalizePsqlQuery(query, memoryTable, sessionsTable);
   const compact = sql.replace(/\s+/g, " ").trim();
   if (!/^(select|with)\b/i.test(compact)) {
     throw new Error("psql mode only supports SELECT queries");
   }
-  const allowedTables = /* @__PURE__ */ new Set([memoryTable, sessionsTable, "__hivemind_sessions_text"]);
+  const allowedTables = /* @__PURE__ */ new Set([memoryTable, sessionsTable]);
   const tableMatches = [...compact.matchAll(/\b(?:from|join)\s+"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi)];
   if (tableMatches.length === 0) {
     throw new Error("psql query must reference memory or sessions");
@@ -2224,8 +2258,7 @@ async function executeCompiledBashCommand(api, memoryTable, sessionsTable, cmd, 
       continue;
     }
     if (segment.kind === "psql") {
-      const sql = validatePsqlQuery(segment.query, memoryTable, sessionsTable);
-      const rows = await api.query(sql);
+      const rows = await api.query(validatePsqlQuery(segment.query, memoryTable, sessionsTable));
       const formatted = formatPsqlRows(rows, segment.tuplesOnly, segment.fieldSeparator);
       const limited = segment.lineLimit > 0 ? formatted.split("\n").slice(0, segment.lineLimit).join("\n") : formatted;
       outputs.push(limited);

@@ -457,21 +457,25 @@ describe("DeeplakeApi.ensureTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "memory" }] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({}));
-    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    mockFetch.mockResolvedValue(jsonResponse({}));
     const api = makeApi("memory");
 
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(mockFetch).toHaveBeenCalledTimes(3);
-    const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    const tableListCalls = mockFetch.mock.calls.filter(([url]) => String(url).endsWith("/tables"));
+    expect(tableListCalls).toHaveLength(1);
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    const createSql = querySqls.find((sql) => sql.includes("CREATE TABLE IF NOT EXISTS")) ?? "";
     expect(createSql).toContain("CREATE TABLE IF NOT EXISTS");
     expect(createSql).toContain("sessions");
-    const indexSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
+    const indexSql = querySqls.find((sql) => sql.includes("CREATE INDEX IF NOT EXISTS")) ?? "";
     expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
     expect(indexSql).toContain("\"path\"");
     expect(indexSql).toContain("\"creation_date\"");
+    expect(indexSql).toContain("\"turn_index\"");
   });
 });
 
@@ -483,19 +487,26 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({}));
-    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    mockFetch.mockResolvedValue(jsonResponse({}));
     const api = makeApi();
     await api.ensureSessionsTable("sessions");
-    const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    const createSql = querySqls.find((sql) => sql.includes("CREATE TABLE IF NOT EXISTS")) ?? "";
     expect(createSql).toContain("CREATE TABLE IF NOT EXISTS");
     expect(createSql).toContain("sessions");
     expect(createSql).toContain("JSONB");
     expect(createSql).toContain("USING deeplake");
-    const indexSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
+    expect(createSql).toContain("session_id TEXT");
+    expect(createSql).toContain("turn_index BIGINT");
+    expect(createSql).toContain("text TEXT");
+    const alterSqls = querySqls.filter((sql) => sql.startsWith("ALTER TABLE"));
+    expect(alterSqls).toHaveLength(8);
+    const indexSql = querySqls.find((sql) => sql.includes("CREATE INDEX IF NOT EXISTS")) ?? "";
     expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
     expect(indexSql).toContain("\"sessions\"");
-    expect(indexSql).toContain("(\"path\", \"creation_date\")");
+    expect(indexSql).toContain("(\"path\", \"creation_date\", \"turn_index\")");
   });
 
   it("ensures the lookup index when sessions table already exists", async () => {
@@ -503,11 +514,14 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "sessions" }] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    mockFetch.mockResolvedValue(jsonResponse({}));
     const api = makeApi();
     await api.ensureSessionsTable("sessions");
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-    const indexSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    expect(querySqls.filter((sql) => sql.startsWith("ALTER TABLE"))).toHaveLength(8);
+    const indexSql = querySqls.find((sql) => sql.includes("CREATE INDEX IF NOT EXISTS")) ?? "";
     expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
   });
 
@@ -516,11 +530,16 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "sessions" }] }),
     });
+    for (let i = 0; i < 8; i++) mockFetch.mockResolvedValueOnce(jsonResponse({}));
     mockFetch.mockResolvedValueOnce(jsonResponse("forbidden", 403));
     const api = makeApi();
 
     await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    expect(querySqls.filter((sql) => sql.startsWith("ALTER TABLE"))).toHaveLength(8);
+    expect(querySqls.some((sql) => sql.includes("CREATE INDEX IF NOT EXISTS"))).toBe(true);
   });
 
   it("treats duplicate concurrent index creation errors as success and records a local marker", async () => {
@@ -528,14 +547,20 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "sessions" }] }),
     });
+    for (let i = 0; i < 8; i++) mockFetch.mockResolvedValueOnce(jsonResponse({}));
     mockFetch.mockResolvedValueOnce(jsonResponse("duplicate key value violates unique constraint \"pg_class_relname_nsp_index\"", 400));
 
     const api = makeApi();
     await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
 
     mockFetch.mockReset();
+    mockFetch.mockResolvedValue(jsonResponse({}));
     await api.ensureSessionsTable("sessions");
 
-    expect(mockFetch).not.toHaveBeenCalled();
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    expect(querySqls.filter((sql) => sql.startsWith("ALTER TABLE"))).toHaveLength(8);
+    expect(querySqls.some((sql) => sql.includes("CREATE INDEX IF NOT EXISTS"))).toBe(false);
   });
 });

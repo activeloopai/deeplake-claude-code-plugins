@@ -219,7 +219,7 @@ function cleanup() {
 async function main() {
   try {
     wlog("fetching session events");
-    const rows = await query(`SELECT message, creation_date FROM "${cfg.sessionsTable}" WHERE path LIKE '${esc2(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`);
+    const rows = await query(`SELECT message, creation_date FROM "${cfg.sessionsTable}" WHERE path LIKE '${esc2(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC, turn_index ASC`);
     if (rows.length === 0) {
       wlog("no session events found \u2014 exiting");
       return;

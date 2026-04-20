@@ -585,17 +585,55 @@ var DeeplakeApi = class {
         this._tablesCache = [...tables, tbl];
     }
   }
-  /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
+  /** Create the sessions table (one physical row per message/event, with direct search columns). */
   async ensureSessionsTable(name) {
+    const sessionColumns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `message JSONB`,
+      `session_id TEXT NOT NULL DEFAULT ''`,
+      `event_type TEXT NOT NULL DEFAULT ''`,
+      `turn_index BIGINT NOT NULL DEFAULT 0`,
+      `dia_id TEXT NOT NULL DEFAULT ''`,
+      `speaker TEXT NOT NULL DEFAULT ''`,
+      `text TEXT NOT NULL DEFAULT ''`,
+      `turn_summary TEXT NOT NULL DEFAULT ''`,
+      `source_date_time TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (` + sessionColumns.join(", ") + `) USING deeplake`);
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
     }
-    await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
+    const alterColumns = [
+      ["session_id", `TEXT NOT NULL DEFAULT ''`],
+      ["event_type", `TEXT NOT NULL DEFAULT ''`],
+      ["turn_index", `BIGINT NOT NULL DEFAULT 0`],
+      ["dia_id", `TEXT NOT NULL DEFAULT ''`],
+      ["speaker", `TEXT NOT NULL DEFAULT ''`],
+      ["text", `TEXT NOT NULL DEFAULT ''`],
+      ["turn_summary", `TEXT NOT NULL DEFAULT ''`],
+      ["source_date_time", `TEXT NOT NULL DEFAULT ''`]
+    ];
+    for (const [column, ddl] of alterColumns) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "path_creation_date_turn_index", `("path", "creation_date", "turn_index")`);
   }
 };
 

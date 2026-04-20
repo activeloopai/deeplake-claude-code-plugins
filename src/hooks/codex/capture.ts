@@ -179,6 +179,7 @@ export async function runCodexCaptureHook(input: CodexHookInput, deps: CodexCapt
   appendQueuedSessionRowFn(buildQueuedSessionRowFn({
     sessionPath,
     line,
+    sessionId: input.session_id,
     userName: config.userName,
     projectName,
     description: input.hook_event_name ?? "",

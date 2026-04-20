@@ -97,7 +97,7 @@ async function main(): Promise<void> {
     wlog("fetching session events");
     const rows = await query(
       `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
-      `WHERE path LIKE E'${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
+      `WHERE path LIKE E'${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC, turn_index ASC`
     );
 
     if (rows.length === 0) {

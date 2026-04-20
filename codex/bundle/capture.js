@@ -327,11 +327,20 @@ function buildSessionPath(config, sessionId) {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
 }
 function buildQueuedSessionRow(args) {
+  const structured = extractStructuredSessionFields(args.line, args.sessionId);
   return {
     id: crypto.randomUUID(),
     path: args.sessionPath,
     filename: args.sessionPath.split("/").pop() ?? "",
     message: args.line,
+    sessionId: structured.sessionId,
+    eventType: structured.eventType,
+    turnIndex: structured.turnIndex,
+    diaId: structured.diaId,
+    speaker: structured.speaker,
+    text: structured.text,
+    turnSummary: structured.turnSummary,
+    sourceDateTime: structured.sourceDateTime,
     author: args.userName,
     sizeBytes: Buffer.byteLength(args.line, "utf-8"),
     project: args.projectName,
@@ -348,6 +357,56 @@ function appendQueuedSessionRow(row, queueDir = DEFAULT_QUEUE_DIR) {
   appendFileSync3(queuePath, `${JSON.stringify(row)}
 `);
   return queuePath;
+}
+function extractString(value) {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+function extractNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value))
+    return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed))
+      return parsed;
+  }
+  return 0;
+}
+function extractStructuredSessionFields(message, fallbackSessionId = "") {
+  let parsed = null;
+  try {
+    const raw = JSON.parse(message);
+    if (raw && typeof raw === "object")
+      parsed = raw;
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) {
+    return {
+      sessionId: fallbackSessionId,
+      eventType: "raw_message",
+      turnIndex: 0,
+      diaId: "",
+      speaker: "",
+      text: message,
+      turnSummary: "",
+      sourceDateTime: ""
+    };
+  }
+  const eventType = extractString(parsed["type"]);
+  const content = extractString(parsed["content"]);
+  const toolName = extractString(parsed["tool_name"]);
+  const speaker = extractString(parsed["speaker"]) || (eventType === "user_message" ? "user" : eventType === "assistant_message" ? "assistant" : "");
+  const text = extractString(parsed["text"]) || content || (eventType === "tool_call" ? toolName : "");
+  return {
+    sessionId: extractString(parsed["session_id"]) || fallbackSessionId,
+    eventType,
+    turnIndex: extractNumber(parsed["turn_index"]),
+    diaId: extractString(parsed["dia_id"]),
+    speaker,
+    text,
+    turnSummary: extractString(parsed["summary"]) || extractString(parsed["message_summary"]) || extractString(parsed["msg_summary"]),
+    sourceDateTime: extractString(parsed["source_date_time"]) || extractString(parsed["date_time"]) || extractString(parsed["date"])
+  };
 }
 function getQueuePath(queueDir, sessionId) {
   return join5(queueDir, `${sessionId}.jsonl`);
@@ -463,6 +522,7 @@ async function runCodexCaptureHook(input, deps = {}) {
   appendQueuedSessionRowFn(buildQueuedSessionRowFn({
     sessionPath,
     line,
+    sessionId: input.session_id,
     userName: config.userName,
     projectName,
     description: input.hook_event_name ?? "",

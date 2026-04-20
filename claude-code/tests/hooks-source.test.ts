@@ -293,8 +293,8 @@ describe("claude pre-tool source", () => {
         command: "psql -At -F '|' -c \"SELECT path, summary FROM hivemind.memory LIMIT 1\"",
       })).toBe("psql -At -F '|' -c \"SELECT path, summary FROM hivemind.memory LIMIT 1\"");
       expect(getShellCommand("Bash", {
-        command: "psql -At -F '|' -c \"SELECT path, creation_date, message_text FROM sessions_text LIMIT 1\"",
-      })).toBe("psql -At -F '|' -c \"SELECT path, creation_date, message_text FROM sessions_text LIMIT 1\"");
+        command: "psql -At -F '|' -c \"SELECT path, creation_date, turn_index, speaker, text FROM sessions LIMIT 1\"",
+      })).toBe("psql -At -F '|' -c \"SELECT path, creation_date, turn_index, speaker, text FROM sessions LIMIT 1\"");
       expect(getShellCommand("Read", { file_path: "~/.deeplake/memory/index.md" })).toBeNull();
       expect(getShellCommand("Glob", { path: "~/.deeplake/memory/summaries" })).toBeNull();
     } finally {
@@ -332,18 +332,18 @@ describe("claude pre-tool source", () => {
       });
       expect(passthrough).toBeNull();
 
-      const sessionsText = await processPreToolUse({
+      const sessionsQuery = await processPreToolUse({
         session_id: "s1",
         tool_name: "Bash",
         tool_input: {
-          command: "psql -At -F '|' -c \"SELECT path, creation_date, message_text FROM sessions_text WHERE message_text ILIKE '%camp%' LIMIT 1\"",
+          command: "psql -At -F '|' -c \"SELECT path, creation_date, turn_index, speaker, text FROM sessions WHERE text ILIKE '%camp%' LIMIT 1\"",
         },
         tool_use_id: "tu-psql-sessions-text",
       }, {
         config: baseConfig,
-        executeCompiledBashCommandFn: vi.fn(async () => "/sessions/conv_0_session_8.json|2023-08-10|{\"turns\":[{\"text\":\"We planned a camping trip\"}]}") as any,
+        executeCompiledBashCommandFn: vi.fn(async () => "/sessions/conv_0_session_8.json|2023-08-10|1|Melanie|We planned a camping trip") as any,
       });
-      expect(sessionsText?.command).toContain("camping trip");
+      expect(sessionsQuery?.command).toContain("camping trip");
     } finally {
       if (prev === undefined) delete process.env.HIVEMIND_PSQL_MODE;
       else process.env.HIVEMIND_PSQL_MODE = prev;
@@ -755,11 +755,10 @@ describe("claude session start source", () => {
       });
       expect(context).toContain("DEEPLAKE MEMORY SQL MODE");
       expect(context).toContain("memory(path, summary");
-      expect(context).toContain("sessions_text(path, creation_date, message_text)");
-      expect(context).toContain("sessions(path, message");
+      expect(context).toContain("sessions(path, creation_date, turn_index, event_type, dia_id, speaker, text, turn_summary, source_date_time, message)");
       expect(context).toContain("psql -At -F '|'");
-      expect(context).toContain("Use sessions only when you need the raw structured payload");
-      expect(context).toContain("Do NOT filter sessions.message directly");
+      expect(context).toContain("Use sessions.text, sessions.speaker, sessions.turn_index, and sessions.source_date_time");
+      expect(context).toContain("Use sessions.message only when you need the raw JSON payload");
       expect(context).toContain("Do not use filesystem commands");
       expect(context).not.toContain("Always read index.md first");
       expect(context).not.toContain("~/.deeplake/memory");

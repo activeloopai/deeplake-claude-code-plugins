@@ -283,10 +283,8 @@ export function queryReferencesInterceptedTables(query: string): boolean {
   return extractSqlTableRefs(query).some((ref) =>
     ref === "memory" ||
     ref === "sessions" ||
-    ref === "sessions_text" ||
     ref === "hivemind.memory" ||
-    ref === "hivemind.sessions" ||
-    ref === "hivemind.sessions_text");
+    ref === "hivemind.sessions");
 }
 
 export function queryUsesOnlyInterceptedTables(query: string): boolean {
@@ -294,10 +292,8 @@ export function queryUsesOnlyInterceptedTables(query: string): boolean {
   return refs.length > 0 && refs.every((ref) =>
     ref === "memory" ||
     ref === "sessions" ||
-    ref === "sessions_text" ||
     ref === "hivemind.memory" ||
-    ref === "hivemind.sessions" ||
-    ref === "hivemind.sessions_text");
+    ref === "hivemind.sessions");
 }
 
 export function queryUsesBareMemoryTables(query: string): boolean {
@@ -352,35 +348,25 @@ function normalizePsqlQuery(query: string, memoryTable: string, sessionsTable: s
   sql = sql
     .replace(/\bFROM\s+"?memory"?\b/gi, `FROM "${memoryTable}"`)
     .replace(/\bJOIN\s+"?memory"?\b/gi, `JOIN "${memoryTable}"`)
-    .replace(/\bFROM\s+"?sessions_text"?\b/gi, `FROM "__hivemind_sessions_text"`)
-    .replace(/\bJOIN\s+"?sessions_text"?\b/gi, `JOIN "__hivemind_sessions_text"`)
     .replace(/\bFROM\s+"?sessions"?\b/gi, `FROM "${sessionsTable}"`)
     .replace(/\bJOIN\s+"?sessions"?\b/gi, `JOIN "${sessionsTable}"`)
     .replace(/\bFROM\s+"?hivemind"?\."?memory"?\b/gi, `FROM "${memoryTable}"`)
     .replace(/\bJOIN\s+"?hivemind"?\."?memory"?\b/gi, `JOIN "${memoryTable}"`)
-    .replace(/\bFROM\s+"?hivemind"?\."?sessions_text"?\b/gi, `FROM "__hivemind_sessions_text"`)
-    .replace(/\bJOIN\s+"?hivemind"?\."?sessions_text"?\b/gi, `JOIN "__hivemind_sessions_text"`)
     .replace(/\bFROM\s+"?hivemind"?\."?sessions"?\b/gi, `FROM "${sessionsTable}"`)
     .replace(/\bJOIN\s+"?hivemind"?\."?sessions"?\b/gi, `JOIN "${sessionsTable}"`);
-  if (/\b__hivemind_sessions_text\b/i.test(sql)) {
-    const cte = `"__hivemind_sessions_text" AS (SELECT path, creation_date, message::text AS message_text FROM "${sessionsTable}")`;
-    sql = /^\s*with\b/i.test(sql)
-      ? sql.replace(/^\s*with\b/i, `WITH ${cte},`)
-      : `WITH ${cte} ${sql}`;
-  }
   return sql;
 }
 
 function validatePsqlQuery(query: string, memoryTable: string, sessionsTable: string): string {
   if (!queryUsesOnlyInterceptedTables(query)) {
-    throw new Error("psql queries must reference only memory, sessions, sessions_text, hivemind.memory, hivemind.sessions, or hivemind.sessions_text");
+    throw new Error("psql queries must reference only memory, sessions, hivemind.memory, or hivemind.sessions");
   }
   const sql = normalizePsqlQuery(query, memoryTable, sessionsTable);
   const compact = sql.replace(/\s+/g, " ").trim();
   if (!/^(select|with)\b/i.test(compact)) {
     throw new Error("psql mode only supports SELECT queries");
   }
-  const allowedTables = new Set([memoryTable, sessionsTable, "__hivemind_sessions_text"]);
+  const allowedTables = new Set([memoryTable, sessionsTable]);
   const tableMatches = [...compact.matchAll(/\b(?:from|join)\s+"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi)];
   if (tableMatches.length === 0) {
     throw new Error("psql query must reference memory or sessions");
@@ -726,8 +712,7 @@ export async function executeCompiledBashCommand(
     }
 
     if (segment.kind === "psql") {
-      const sql = validatePsqlQuery(segment.query, memoryTable, sessionsTable);
-      const rows = await api.query(sql);
+      const rows = await api.query(validatePsqlQuery(segment.query, memoryTable, sessionsTable));
       const formatted = formatPsqlRows(rows, segment.tuplesOnly, segment.fieldSeparator);
       const limited = segment.lineLimit > 0 ? formatted.split("\n").slice(0, segment.lineLimit).join("\n") : formatted;
       outputs.push(limited);
