@@ -388,7 +388,7 @@ function isNewer(latest, current) {
   return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
 }
 async function main() {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1")
+  if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
   const input = await readStdin();
   const creds = loadCredentials();
