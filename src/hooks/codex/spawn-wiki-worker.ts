@@ -6,12 +6,14 @@
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import type { Config } from "../../config.js";
+import { makeWikiLogger } from "../../utils/wiki-log.js";
 
 const HOME = homedir();
-export const WIKI_LOG = join(HOME, ".codex", "hooks", "deeplake-wiki.log");
+const wikiLogger = makeWikiLogger(join(HOME, ".codex", "hooks"));
+export const WIKI_LOG = wikiLogger.path;
 
 export const WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge — entities, decisions, relationships, and facts — into a structured, searchable wiki entry.
 
@@ -63,12 +65,7 @@ IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact.
 PRIVACY: Never include absolute filesystem paths in the summary.
 LENGTH LIMIT: Keep the total summary under 4000 characters.`;
 
-export function wikiLog(msg: string): void {
-  try {
-    mkdirSync(join(HOME, ".codex", "hooks"), { recursive: true });
-    appendFileSync(WIKI_LOG, `[${new Date().toISOString().replace("T", " ").slice(0, 19)}] ${msg}\n`);
-  } catch { /* ignore */ }
-}
+export const wikiLog = wikiLogger.log;
 
 export function findCodexBin(): string {
   try {

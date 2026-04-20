@@ -3,8 +3,7 @@
 // dist/src/hooks/codex/session-start.js
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join as join3 } from "node:path";
-import { readFileSync as readFileSync2 } from "node:fs";
+import { dirname as dirname2, join as join4 } from "node:path";
 
 // dist/src/commands/auth.js
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
@@ -53,25 +52,18 @@ function log(tag, msg) {
 `);
 }
 
-// dist/src/hooks/codex/session-start.js
-var log2 = (msg) => log("codex-session-start", msg);
-var __bundleDir = dirname(fileURLToPath(import.meta.url));
-var AUTH_CMD = join3(__bundleDir, "commands", "auth-login.js");
-var context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
-
-Structure: index.md (start here) \u2192 summaries/*.md \u2192 sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
-Search: grep -r "keyword" ~/.deeplake/memory/
-IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem.
-Do NOT spawn subagents to read deeplake memory.`;
-function getInstalledVersion() {
+// dist/src/utils/version-check.js
+import { readFileSync as readFileSync2 } from "node:fs";
+import { dirname, join as join3 } from "node:path";
+function getInstalledVersion(bundleDir, pluginManifestDir) {
   try {
-    const pluginJson = join3(__bundleDir, "..", ".codex-plugin", "plugin.json");
+    const pluginJson = join3(bundleDir, "..", pluginManifestDir, "plugin.json");
     const plugin = JSON.parse(readFileSync2(pluginJson, "utf-8"));
     if (plugin.version)
       return plugin.version;
   } catch {
   }
-  let dir = __bundleDir;
+  let dir = bundleDir;
   for (let i = 0; i < 5; i++) {
     const candidate = join3(dir, "package.json");
     try {
@@ -87,8 +79,19 @@ function getInstalledVersion() {
   }
   return null;
 }
+
+// dist/src/hooks/codex/session-start.js
+var log2 = (msg) => log("codex-session-start", msg);
+var __bundleDir = dirname2(fileURLToPath(import.meta.url));
+var AUTH_CMD = join4(__bundleDir, "commands", "auth-login.js");
+var context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
+
+Structure: index.md (start here) \u2192 summaries/*.md \u2192 sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
+Search: grep -r "keyword" ~/.deeplake/memory/
+IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem.
+Do NOT spawn subagents to read deeplake memory.`;
 async function main() {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1")
+  if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
   const input = await readStdin();
   const creds = loadCredentials();
@@ -98,7 +101,7 @@ async function main() {
     log2(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
   }
   if (creds?.token) {
-    const setupScript = join3(__bundleDir, "session-start-setup.js");
+    const setupScript = join4(__bundleDir, "session-start-setup.js");
     const child = spawn("node", [setupScript], {
       detached: true,
       stdio: ["pipe", "ignore", "ignore"],
@@ -110,7 +113,7 @@ async function main() {
     log2("spawned async setup process");
   }
   let versionNotice = "";
-  const current = getInstalledVersion();
+  const current = getInstalledVersion(__bundleDir, ".codex-plugin");
   if (current) {
     versionNotice = `
 Hivemind v${current}`;

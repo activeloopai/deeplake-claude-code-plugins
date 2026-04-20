@@ -8,7 +8,6 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdirSync, appendFileSync, readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials } from "../../commands/auth.js";
@@ -17,60 +16,12 @@ import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
+import { getInstalledVersion, getLatestVersion, isNewer } from "../../utils/version-check.js";
+import { makeWikiLogger } from "../../utils/wiki-log.js";
 const log = (msg: string) => _log("codex-session-setup", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
-
-const GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
-const VERSION_CHECK_TIMEOUT = 3000;
-
-const HOME = homedir();
-const WIKI_LOG = join(HOME, ".codex", "hooks", "deeplake-wiki.log");
-
-function wikiLog(msg: string): void {
-  try {
-    mkdirSync(join(HOME, ".codex", "hooks"), { recursive: true });
-    appendFileSync(WIKI_LOG, `[${new Date().toISOString().replace("T", " ").slice(0, 19)}] ${msg}\n`);
-  } catch { /* ignore */ }
-}
-
-function getInstalledVersion(): string | null {
-  try {
-    const pluginJson = join(__bundleDir, "..", ".codex-plugin", "plugin.json");
-    const plugin = JSON.parse(readFileSync(pluginJson, "utf-8"));
-    if (plugin.version) return plugin.version;
-  } catch { /* fall through */ }
-  let dir = __bundleDir;
-  for (let i = 0; i < 5; i++) {
-    const candidate = join(dir, "package.json");
-    try {
-      const pkg = JSON.parse(readFileSync(candidate, "utf-8"));
-      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version) return pkg.version;
-    } catch { /* not here, keep looking */ }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
-async function getLatestVersion(): Promise<string | null> {
-  try {
-    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(VERSION_CHECK_TIMEOUT) });
-    if (!res.ok) return null;
-    const pkg = await res.json();
-    return pkg.version ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function isNewer(latest: string, current: string): boolean {
-  const parse = (v: string) => v.split(".").map(Number);
-  const [la, lb, lc] = parse(latest);
-  const [ca, cb, cc] = parse(current);
-  return la > ca || (la === ca && lb > cb) || (la === ca && lb === cb && lc > cc);
-}
+const { log: wikiLog } = makeWikiLogger(join(homedir(), ".codex", "hooks"));
 
 /** Create a placeholder summary via direct SQL INSERT. */
 async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
@@ -116,7 +67,7 @@ interface CodexSessionStartInput {
 }
 
 async function main(): Promise<void> {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1") return;
+  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<CodexSessionStartInput>();
   const creds = loadCredentials();
@@ -133,7 +84,7 @@ async function main(): Promise<void> {
   }
 
   // Table setup + sync — always sync, only skip placeholder when capture disabled
-  const captureEnabled = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
+  const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
   if (input.session_id) {
     try {
       const config = loadConfig();
@@ -155,7 +106,7 @@ async function main(): Promise<void> {
   // Version check + auto-update
   const autoupdate = creds.autoupdate !== false;
   try {
-    const current = getInstalledVersion();
+    const current = getInstalledVersion(__bundleDir, ".codex-plugin");
     if (current) {
       const latest = await getLatestVersion();
       if (latest && isNewer(latest, current)) {

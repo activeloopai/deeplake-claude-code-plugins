@@ -18,6 +18,8 @@ import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { log as _log } from "../../utils/debug.js";
 import { bundleDirFromImportMeta, spawnCodexWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
+import { tryAcquireLock, releaseLock } from "../summary-state.js";
+import { buildSessionPath } from "../../utils/session-path.js";
 
 const log = (msg: string) => _log("codex-stop", msg);
 
@@ -29,14 +31,10 @@ interface CodexStopInput {
   model: string;
 }
 
-const CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
-
-function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
-  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
-}
+const CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 
 async function main(): Promise<void> {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1") return;
+  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<CodexStopInput>();
   const sessionId = input.session_id;
@@ -119,14 +117,36 @@ async function main(): Promise<void> {
 
   // 2. Spawn wiki worker — skip when capture disabled
   if (!CAPTURE) return;
+
+  // Coordinate with the periodic worker: if one is already running for this
+  // session, skip. Two workers writing the same summary row trip the
+  // Deeplake UPDATE-coalescing quirk (see CLAUDE.md) and drop one write.
+  if (!tryAcquireLock(sessionId)) {
+    wikiLog(`Stop: periodic worker already running for ${sessionId}, skipping`);
+    return;
+  }
+
   wikiLog(`Stop: triggering summary for ${sessionId}`);
-  spawnCodexWikiWorker({
-    config,
-    sessionId,
-    cwd: input.cwd ?? "",
-    bundleDir: bundleDirFromImportMeta(import.meta.url),
-    reason: "Stop",
-  });
+  try {
+    spawnCodexWikiWorker({
+      config,
+      sessionId,
+      cwd: input.cwd ?? "",
+      bundleDir: bundleDirFromImportMeta(import.meta.url),
+      reason: "Stop",
+    });
+  } catch (e: any) {
+    // Spawn threw before the worker took ownership of the lock: release
+    // it here so a --resume can retrigger periodic summaries without
+    // waiting for the 10-minute stale reclaim.
+    log(`spawn failed: ${e.message}`);
+    try {
+      releaseLock(sessionId);
+    } catch (releaseErr: any) {
+      log(`releaseLock after spawn failure also failed: ${releaseErr.message}`);
+    }
+    throw e;
+  }
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });

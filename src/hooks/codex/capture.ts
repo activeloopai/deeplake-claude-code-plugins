@@ -17,11 +17,13 @@ import { loadConfig, type Config } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { log as _log } from "../../utils/debug.js";
+import { buildSessionPath } from "../../utils/session-path.js";
 import {
   bumpTotalCount,
   loadTriggerConfig,
   shouldTrigger,
   tryAcquireLock,
+  releaseLock,
 } from "../summary-state.js";
 import { bundleDirFromImportMeta, spawnCodexWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 const log = (msg: string) => _log("codex-capture", msg);
@@ -42,11 +44,7 @@ interface CodexHookInput {
   tool_response?: Record<string, unknown>;
 }
 
-const CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
-
-function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
-  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
-}
+const CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 
 async function main(): Promise<void> {
   if (!CAPTURE) return;
@@ -138,13 +136,23 @@ function maybeTriggerPeriodicSummary(sessionId: string, cwd: string, config: Con
     }
 
     wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
-    spawnCodexWikiWorker({
-      config,
-      sessionId,
-      cwd,
-      bundleDir: bundleDirFromImportMeta(import.meta.url),
-      reason: "Periodic",
-    });
+    try {
+      spawnCodexWikiWorker({
+        config,
+        sessionId,
+        cwd,
+        bundleDir: bundleDirFromImportMeta(import.meta.url),
+        reason: "Periodic",
+      });
+    } catch (e: any) {
+      log(`periodic spawn failed: ${e.message}`);
+      try {
+        releaseLock(sessionId);
+      } catch (releaseErr: any) {
+        log(`releaseLock after periodic spawn failure also failed: ${releaseErr.message}`);
+      }
+      throw e;
+    }
   } catch (e: any) {
     log(`periodic trigger error: ${e.message}`);
   }

@@ -12,6 +12,7 @@ import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { log as _log } from "../utils/debug.js";
 import { bundleDirFromImportMeta, spawnWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
+import { tryAcquireLock, releaseLock } from "./summary-state.js";
 
 const log = (msg: string) => _log("session-end", msg);
 
@@ -22,8 +23,8 @@ interface StopInput {
 }
 
 async function main(): Promise<void> {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1") return;
-  if ((process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) === "false") return;
+  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
+  if (process.env.HIVEMIND_CAPTURE === "false") return;
 
   const input = await readStdin<StopInput>();
   const sessionId = input.session_id;
@@ -33,14 +34,35 @@ async function main(): Promise<void> {
   const config = loadConfig();
   if (!config) { log("no config"); return; }
 
+  // Coordinate with the periodic worker: if one is already running for this
+  // session, skip. Two workers writing the same summary row trip the
+  // Deeplake UPDATE-coalescing quirk (see CLAUDE.md) and drop one write.
+  if (!tryAcquireLock(sessionId)) {
+    wikiLog(`SessionEnd: periodic worker already running for ${sessionId}, skipping`);
+    return;
+  }
+
   wikiLog(`SessionEnd: triggering summary for ${sessionId}`);
-  spawnWikiWorker({
-    config,
-    sessionId,
-    cwd,
-    bundleDir: bundleDirFromImportMeta(import.meta.url),
-    reason: "SessionEnd",
-  });
+  try {
+    spawnWikiWorker({
+      config,
+      sessionId,
+      cwd,
+      bundleDir: bundleDirFromImportMeta(import.meta.url),
+      reason: "SessionEnd",
+    });
+  } catch (e: any) {
+    // Spawn threw before the worker took ownership of the lock: release
+    // it here so a --resume can retrigger periodic summaries without
+    // waiting for the 10-minute stale reclaim.
+    log(`spawn failed: ${e.message}`);
+    try {
+      releaseLock(sessionId);
+    } catch (releaseErr: any) {
+      log(`releaseLock after spawn failure also failed: ${releaseErr.message}`);
+    }
+    throw e;
+  }
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });

@@ -2,8 +2,8 @@
 
 // dist/src/hooks/session-start.js
 import { fileURLToPath } from "node:url";
-import { dirname, join as join4 } from "node:path";
-import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2, readFileSync as readFileSync3, readdirSync, rmSync } from "node:fs";
+import { dirname as dirname2, join as join6 } from "node:path";
+import { readdirSync, rmSync } from "node:fs";
 import { execSync as execSync2 } from "node:child_process";
 import { homedir as homedir4 } from "node:os";
 
@@ -331,10 +331,74 @@ function readStdin() {
   });
 }
 
+// dist/src/utils/version-check.js
+import { readFileSync as readFileSync3 } from "node:fs";
+import { dirname, join as join4 } from "node:path";
+var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
+function getInstalledVersion(bundleDir, pluginManifestDir) {
+  try {
+    const pluginJson = join4(bundleDir, "..", pluginManifestDir, "plugin.json");
+    const plugin = JSON.parse(readFileSync3(pluginJson, "utf-8"));
+    if (plugin.version)
+      return plugin.version;
+  } catch {
+  }
+  let dir = bundleDir;
+  for (let i = 0; i < 5; i++) {
+    const candidate = join4(dir, "package.json");
+    try {
+      const pkg = JSON.parse(readFileSync3(candidate, "utf-8"));
+      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version)
+        return pkg.version;
+    } catch {
+    }
+    const parent = dirname(dir);
+    if (parent === dir)
+      break;
+    dir = parent;
+  }
+  return null;
+}
+async function getLatestVersion(timeoutMs = 3e3) {
+  try {
+    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok)
+      return null;
+    const pkg = await res.json();
+    return pkg.version ?? null;
+  } catch {
+    return null;
+  }
+}
+function isNewer(latest, current) {
+  const parse = (v) => v.split(".").map(Number);
+  const [la, lb, lc] = parse(latest);
+  const [ca, cb, cc] = parse(current);
+  return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
+}
+
+// dist/src/utils/wiki-log.js
+import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2 } from "node:fs";
+import { join as join5 } from "node:path";
+function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
+  const path = join5(hooksDir, filename);
+  return {
+    path,
+    log(msg) {
+      try {
+        mkdirSync2(hooksDir, { recursive: true });
+        appendFileSync2(path, `[${utcTimestamp()}] ${msg}
+`);
+      } catch {
+      }
+    }
+  };
+}
+
 // dist/src/hooks/session-start.js
 var log3 = (msg) => log("session-start", msg);
-var __bundleDir = dirname(fileURLToPath(import.meta.url));
-var AUTH_CMD = join4(__bundleDir, "commands", "auth-login.js");
+var __bundleDir = dirname2(fileURLToPath(import.meta.url));
+var AUTH_CMD = join6(__bundleDir, "commands", "auth-login.js");
 var context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
 
 1. Your built-in memory (~/.claude/) \u2014 personal per-project notes
@@ -365,59 +429,8 @@ IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
-var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
-var VERSION_CHECK_TIMEOUT = 3e3;
-function getInstalledVersion() {
-  try {
-    const pluginJson = join4(__bundleDir, "..", ".claude-plugin", "plugin.json");
-    const plugin = JSON.parse(readFileSync3(pluginJson, "utf-8"));
-    if (plugin.version)
-      return plugin.version;
-  } catch {
-  }
-  let dir = __bundleDir;
-  for (let i = 0; i < 5; i++) {
-    const candidate = join4(dir, "package.json");
-    try {
-      const pkg = JSON.parse(readFileSync3(candidate, "utf-8"));
-      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version)
-        return pkg.version;
-    } catch {
-    }
-    const parent = dirname(dir);
-    if (parent === dir)
-      break;
-    dir = parent;
-  }
-  return null;
-}
-async function getLatestVersion() {
-  try {
-    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(VERSION_CHECK_TIMEOUT) });
-    if (!res.ok)
-      return null;
-    const pkg = await res.json();
-    return pkg.version ?? null;
-  } catch {
-    return null;
-  }
-}
-function isNewer(latest, current) {
-  const parse = (v) => v.split(".").map(Number);
-  const [la, lb, lc] = parse(latest);
-  const [ca, cb, cc] = parse(current);
-  return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
-}
 var HOME = homedir4();
-var WIKI_LOG = join4(HOME, ".claude", "hooks", "deeplake-wiki.log");
-function wikiLog(msg) {
-  try {
-    mkdirSync2(join4(HOME, ".claude", "hooks"), { recursive: true });
-    appendFileSync2(WIKI_LOG, `[${utcTimestamp()}] ${msg}
-`);
-  } catch {
-  }
-}
+var { log: wikiLog } = makeWikiLogger(join6(HOME, ".claude", "hooks"));
 async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, workspaceId) {
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
   const existing = await api.query(`SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`);
@@ -441,7 +454,7 @@ async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, 
   wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
 }
 async function main() {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1")
+  if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
   const input = await readStdin();
   let creds = loadCredentials();
@@ -459,7 +472,7 @@ async function main() {
       }
     }
   }
-  const captureEnabled = process.env.DEEPLAKE_CAPTURE !== "false";
+  const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
   if (input.session_id && creds?.token) {
     try {
       const config = loadConfig();
@@ -473,7 +486,7 @@ async function main() {
           await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
           log3("placeholder created");
         } else {
-          log3("placeholder skipped (DEEPLAKE_CAPTURE=false)");
+          log3("placeholder skipped (HIVEMIND_CAPTURE=false)");
         }
       }
     } catch (e) {
@@ -484,7 +497,7 @@ async function main() {
   const autoupdate = creds?.autoupdate !== false;
   let updateNotice = "";
   try {
-    const current = getInstalledVersion();
+    const current = getInstalledVersion(__bundleDir, ".claude-plugin");
     if (current) {
       const latest = await getLatestVersion();
       if (latest && isNewer(latest, current)) {
@@ -495,11 +508,11 @@ async function main() {
             const cmd = scopes.map((s) => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null || true`).join("; ");
             execSync2(cmd, { stdio: "ignore", timeout: 6e4 });
             try {
-              const cacheParent = join4(homedir4(), ".claude", "plugins", "cache", "hivemind", "hivemind");
+              const cacheParent = join6(homedir4(), ".claude", "plugins", "cache", "hivemind", "hivemind");
               const entries = readdirSync(cacheParent, { withFileTypes: true });
               for (const e of entries) {
                 if (e.isDirectory() && e.name !== latest) {
-                  rmSync(join4(cacheParent, e.name), { recursive: true, force: true });
+                  rmSync(join6(cacheParent, e.name), { recursive: true, force: true });
                   log3(`cache cleanup: removed old version ${e.name}`);
                 }
               }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/codex/stop.js
-import { readFileSync as readFileSync2, existsSync as existsSync2 } from "node:fs";
+import { readFileSync as readFileSync3, existsSync as existsSync3 } from "node:fs";
 
 // dist/src/utils/stdin.js
 function readStdin() {
@@ -65,6 +65,9 @@ import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 var DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
+function utcTimestamp(d = /* @__PURE__ */ new Date()) {
+  return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
+}
 function log(tag, msg) {
   if (!DEBUG)
     return;
@@ -305,11 +308,32 @@ var DeeplakeApi = class {
 // dist/src/hooks/codex/spawn-wiki-worker.js
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join as join3 } from "node:path";
-import { writeFileSync, mkdirSync, appendFileSync as appendFileSync2 } from "node:fs";
+import { dirname, join as join4 } from "node:path";
+import { writeFileSync, mkdirSync as mkdirSync2 } from "node:fs";
 import { homedir as homedir3, tmpdir } from "node:os";
+
+// dist/src/utils/wiki-log.js
+import { mkdirSync, appendFileSync as appendFileSync2 } from "node:fs";
+import { join as join3 } from "node:path";
+function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
+  const path = join3(hooksDir, filename);
+  return {
+    path,
+    log(msg) {
+      try {
+        mkdirSync(hooksDir, { recursive: true });
+        appendFileSync2(path, `[${utcTimestamp()}] ${msg}
+`);
+      } catch {
+      }
+    }
+  };
+}
+
+// dist/src/hooks/codex/spawn-wiki-worker.js
 var HOME = homedir3();
-var WIKI_LOG = join3(HOME, ".codex", "hooks", "deeplake-wiki.log");
+var wikiLogger = makeWikiLogger(join4(HOME, ".codex", "hooks"));
+var WIKI_LOG = wikiLogger.path;
 var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry.
 
 SESSION JSONL path: __JSONL__
@@ -359,14 +383,7 @@ Format: **entity** (type) \u2014 what was done with it, its current state>
 IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact.
 PRIVACY: Never include absolute filesystem paths in the summary.
 LENGTH LIMIT: Keep the total summary under 4000 characters.`;
-function wikiLog(msg) {
-  try {
-    mkdirSync(join3(HOME, ".codex", "hooks"), { recursive: true });
-    appendFileSync2(WIKI_LOG, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] ${msg}
-`);
-  } catch {
-  }
-}
+var wikiLog = wikiLogger.log;
 function findCodexBin() {
   try {
     return execSync("which codex 2>/dev/null", { encoding: "utf-8" }).trim();
@@ -377,9 +394,9 @@ function findCodexBin() {
 function spawnCodexWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
   const projectName = cwd.split("/").pop() || "unknown";
-  const tmpDir = join3(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
-  mkdirSync(tmpDir, { recursive: true });
-  const configFile = join3(tmpDir, "config.json");
+  const tmpDir = join4(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  mkdirSync2(tmpDir, { recursive: true });
+  const configFile = join4(tmpDir, "config.json");
   writeFileSync(configFile, JSON.stringify({
     apiUrl: config.apiUrl,
     token: config.token,
@@ -393,11 +410,11 @@ function spawnCodexWikiWorker(opts) {
     tmpDir,
     codexBin: findCodexBin(),
     wikiLog: WIKI_LOG,
-    hooksDir: join3(HOME, ".codex", "hooks"),
+    hooksDir: join4(HOME, ".codex", "hooks"),
     promptTemplate: WIKI_PROMPT_TEMPLATE
   }));
   wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
-  const workerPath = join3(bundleDir, "wiki-worker.js");
+  const workerPath = join4(bundleDir, "wiki-worker.js");
   spawn("nohup", ["node", workerPath, configFile], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"]
@@ -408,14 +425,69 @@ function bundleDirFromImportMeta(importMetaUrl) {
   return dirname(fileURLToPath(importMetaUrl));
 }
 
+// dist/src/hooks/summary-state.js
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, writeSync, mkdirSync as mkdirSync3, renameSync, existsSync as existsSync2, unlinkSync, openSync, closeSync } from "node:fs";
+import { homedir as homedir4 } from "node:os";
+import { join as join5 } from "node:path";
+var dlog = (msg) => log("summary-state", msg);
+var STATE_DIR = join5(homedir4(), ".claude", "hooks", "summary-state");
+var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
+function lockPath(sessionId) {
+  return join5(STATE_DIR, `${sessionId}.lock`);
+}
+function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
+  mkdirSync3(STATE_DIR, { recursive: true });
+  const p = lockPath(sessionId);
+  if (existsSync2(p)) {
+    try {
+      const ageMs = Date.now() - parseInt(readFileSync2(p, "utf-8"), 10);
+      if (Number.isFinite(ageMs) && ageMs < maxAgeMs)
+        return false;
+    } catch (readErr) {
+      dlog(`lock file unreadable for ${sessionId}, treating as stale: ${readErr.message}`);
+    }
+    try {
+      unlinkSync(p);
+    } catch (unlinkErr) {
+      dlog(`could not unlink stale lock for ${sessionId}: ${unlinkErr.message}`);
+      return false;
+    }
+  }
+  try {
+    const fd = openSync(p, "wx");
+    try {
+      writeSync(fd, String(Date.now()));
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  } catch (e) {
+    if (e.code === "EEXIST")
+      return false;
+    throw e;
+  }
+}
+function releaseLock(sessionId) {
+  try {
+    unlinkSync(lockPath(sessionId));
+  } catch (e) {
+    if (e?.code !== "ENOENT") {
+      dlog(`releaseLock unlink failed for ${sessionId}: ${e.message}`);
+    }
+  }
+}
+
+// dist/src/utils/session-path.js
+function buildSessionPath(config, sessionId) {
+  const workspace = config.workspaceId ?? "default";
+  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${workspace}_${sessionId}.jsonl`;
+}
+
 // dist/src/hooks/codex/stop.js
 var log3 = (msg) => log("codex-stop", msg);
-var CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
-function buildSessionPath(config, sessionId) {
-  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
-}
+var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 async function main() {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1")
+  if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
   const input = await readStdin();
   const sessionId = input.session_id;
@@ -435,8 +507,8 @@ async function main() {
       if (input.transcript_path) {
         try {
           const transcriptPath = input.transcript_path;
-          if (existsSync2(transcriptPath)) {
-            const transcript = readFileSync2(transcriptPath, "utf-8");
+          if (existsSync3(transcriptPath)) {
+            const transcript = readFileSync3(transcriptPath, "utf-8");
             const lines = transcript.trim().split("\n").reverse();
             for (const line2 of lines) {
               try {
@@ -484,14 +556,28 @@ async function main() {
   }
   if (!CAPTURE)
     return;
+  if (!tryAcquireLock(sessionId)) {
+    wikiLog(`Stop: periodic worker already running for ${sessionId}, skipping`);
+    return;
+  }
   wikiLog(`Stop: triggering summary for ${sessionId}`);
-  spawnCodexWikiWorker({
-    config,
-    sessionId,
-    cwd: input.cwd ?? "",
-    bundleDir: bundleDirFromImportMeta(import.meta.url),
-    reason: "Stop"
-  });
+  try {
+    spawnCodexWikiWorker({
+      config,
+      sessionId,
+      cwd: input.cwd ?? "",
+      bundleDir: bundleDirFromImportMeta(import.meta.url),
+      reason: "Stop"
+    });
+  } catch (e) {
+    log3(`spawn failed: ${e.message}`);
+    try {
+      releaseLock(sessionId);
+    } catch (releaseErr) {
+      log3(`releaseLock after spawn failure also failed: ${releaseErr.message}`);
+    }
+    throw e;
+  }
 }
 main().catch((e) => {
   log3(`fatal: ${e.message}`);
