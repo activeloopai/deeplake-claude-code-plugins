@@ -55,6 +55,12 @@ if (SESSION_ROWS.length !== 272) {
 // which records the session we'd expect Claude to land on.
 const REAL_QAS = [
   {
+    name: "qa_3: Caroline's research (fix #2 smoke — real run did Read x3)",
+    question: "What did Caroline research?",
+    gold_answer: "Adoption agencies",
+    expected_session_file: "/sessions/conv_0_session_1.json",
+  },
+  {
     name: "qa_6: Melanie's camping plans",
     question: "When is Melanie planning on going camping?",
     gold_answer: "June 2023",
@@ -64,6 +70,12 @@ const REAL_QAS = [
     name: "qa_25: Caroline's LGBTQ conference",
     question: "When did Caroline go to the LGBTQ conference?",
     gold_answer: "10 July 2023",
+    expected_session_file: "/sessions/conv_0_session_7.json",
+  },
+  {
+    name: "qa_29: Melanie's pottery workshop",
+    question: "When did Melanie go to the pottery workshop?",
+    gold_answer: "The Friday before 15 July 2023",
     expected_session_file: "/sessions/conv_0_session_7.json",
   },
   {
@@ -208,4 +220,74 @@ describe("baseline_cloud 3-QA regression: sessions-only workspace", () => {
       });
     });
   }
+
+  // ── Regression coverage anchored in a real benchmark run ─────────────
+  //
+  // In `baseline_cloud_9qa_read_candidates_fix2` (2026-04-20), haiku chose
+  // to call the Read tool directly against session files — not just
+  // /index.md. Specifically, qa_3 did three Read calls including
+  // Read /home/.deeplake/memory/sessions/conv_0_session_1.json and
+  // Read /home/.deeplake/memory/sessions/conv_0_session_2.json, and all
+  // three succeeded (zero "path must be of type string" errors) after
+  // fix #2 landed. The previous run on the same workspace without the fix
+  // produced that error on every memory-path Read call.
+  //
+  // This test drives the same session-file Read through processPreToolUse
+  // and asserts the decision shape matches what Claude Code's Read tool
+  // expects — i.e. `updatedInput: {file_path}`, not `{command}`.
+
+  it("Read /sessions/<file> intercept returns file_path pointing to the session content (qa_3 real-run path)", async () => {
+    const sessionJson = JSON.stringify({
+      conversation_id: 0,
+      session_number: 1,
+      date_time: "8 May, 2023",
+      speakers: { speaker_a: "Caroline", speaker_b: "Melanie" },
+      turns: [
+        { speaker: "Caroline", dia_id: "D1:1", text: "Hey Mel! Good to see you!" },
+      ],
+    });
+
+    const api = {
+      query: vi.fn(async (sql: string) => {
+        // Exact-path read hits the sessions table.
+        if (/FROM\s+"sessions"/i.test(sql) && /conv_0_session_1\.json/.test(sql)) {
+          return [{ path: "/sessions/conv_0_session_1.json", content: sessionJson, source_order: 1 }];
+        }
+        if (/FROM\s+"memory"/i.test(sql)) return [];
+        return [];
+      }),
+    } as any;
+    const capturedReadFiles: Array<{ sessionId: string; virtualPath: string; content: string }> = [];
+
+    const decision = await processPreToolUse(
+      {
+        session_id: "s-qa3-session-read",
+        tool_name: "Read",
+        tool_input: { file_path: "~/.deeplake/memory/sessions/conv_0_session_1.json" },
+        tool_use_id: "tu-read-session-1",
+      },
+      {
+        config: BASE_CONFIG,
+        createApi: vi.fn(() => api),
+        executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+        readCachedIndexContentFn: () => null,
+        writeCachedIndexContentFn: () => undefined,
+        writeReadCacheFileFn: ((sessionId: string, virtualPath: string, content: string) => {
+          capturedReadFiles.push({ sessionId, virtualPath, content });
+          return `/tmp/test-${sessionId}${virtualPath}`;
+        }) as any,
+      },
+    );
+
+    // Read-tool shape: decision must carry file_path, not just command.
+    expect(decision).not.toBeNull();
+    expect(decision?.file_path).toBe("/tmp/test-s-qa3-session-read/sessions/conv_0_session_1.json");
+
+    // Content materialized exactly once, at the right virtual path, with
+    // the real session payload Claude needs to answer qa_3.
+    expect(capturedReadFiles).toHaveLength(1);
+    expect(capturedReadFiles[0]?.virtualPath).toBe("/sessions/conv_0_session_1.json");
+    expect(capturedReadFiles[0]?.content).toContain("Caroline");
+    expect(capturedReadFiles[0]?.content).toContain("8 May, 2023");
+  });
 });
