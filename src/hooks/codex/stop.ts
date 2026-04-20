@@ -18,7 +18,7 @@ import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { log as _log } from "../../utils/debug.js";
 import { bundleDirFromImportMeta, spawnCodexWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
-import { tryAcquireLock } from "../summary-state.js";
+import { tryAcquireLock, releaseLock } from "../summary-state.js";
 
 const log = (msg: string) => _log("codex-stop", msg);
 
@@ -130,13 +130,21 @@ async function main(): Promise<void> {
   }
 
   wikiLog(`Stop: triggering summary for ${sessionId}`);
-  spawnCodexWikiWorker({
-    config,
-    sessionId,
-    cwd: input.cwd ?? "",
-    bundleDir: bundleDirFromImportMeta(import.meta.url),
-    reason: "Stop",
-  });
+  try {
+    spawnCodexWikiWorker({
+      config,
+      sessionId,
+      cwd: input.cwd ?? "",
+      bundleDir: bundleDirFromImportMeta(import.meta.url),
+      reason: "Stop",
+    });
+  } catch (e: any) {
+    // Spawn threw before the worker took ownership of the lock: release
+    // it here so a --resume can retrigger periodic summaries without
+    // waiting for the 10-minute stale reclaim.
+    try { releaseLock(sessionId); } catch { /* ignore */ }
+    throw e;
+  }
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });

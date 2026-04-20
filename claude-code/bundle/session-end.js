@@ -217,6 +217,12 @@ function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
     throw e;
   }
 }
+function releaseLock(sessionId) {
+  try {
+    unlinkSync(lockPath(sessionId));
+  } catch {
+  }
+}
 
 // dist/src/hooks/session-end.js
 var log2 = (msg) => log("session-end", msg);
@@ -240,13 +246,21 @@ async function main() {
     return;
   }
   wikiLog(`SessionEnd: triggering summary for ${sessionId}`);
-  spawnWikiWorker({
-    config,
-    sessionId,
-    cwd,
-    bundleDir: bundleDirFromImportMeta(import.meta.url),
-    reason: "SessionEnd"
-  });
+  try {
+    spawnWikiWorker({
+      config,
+      sessionId,
+      cwd,
+      bundleDir: bundleDirFromImportMeta(import.meta.url),
+      reason: "SessionEnd"
+    });
+  } catch (e) {
+    try {
+      releaseLock(sessionId);
+    } catch {
+    }
+    throw e;
+  }
 }
 main().catch((e) => {
   log2(`fatal: ${e.message}`);

@@ -20,17 +20,19 @@ const loadConfigMock = vi.fn();
 const spawnMock = vi.fn();
 const wikiLogMock = vi.fn();
 const tryAcquireLockMock = vi.fn();
+const releaseLockMock = vi.fn();
 const debugLogMock = vi.fn();
 
-vi.mock("../../src/utils/stdin.js", () => ({ readStdin: stdinMock }));
-vi.mock("../../src/config.js", () => ({ loadConfig: loadConfigMock }));
+vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
+vi.mock("../../src/config.js", () => ({ loadConfig: (...a: any[]) => loadConfigMock(...a) }));
 vi.mock("../../src/hooks/spawn-wiki-worker.js", () => ({
-  spawnWikiWorker: spawnMock,
-  wikiLog: wikiLogMock,
+  spawnWikiWorker: (...a: any[]) => spawnMock(...a),
+  wikiLog: (...a: any[]) => wikiLogMock(...a),
   bundleDirFromImportMeta: () => "/fake/bundle",
 }));
 vi.mock("../../src/hooks/summary-state.js", () => ({
-  tryAcquireLock: tryAcquireLockMock,
+  tryAcquireLock: (...a: any[]) => tryAcquireLockMock(...a),
+  releaseLock: (...a: any[]) => releaseLockMock(...a),
 }));
 vi.mock("../../src/utils/debug.js", () => ({
   log: (_tag: string, msg: string) => debugLogMock(msg),
@@ -58,6 +60,7 @@ beforeEach(() => {
   spawnMock.mockReset();
   wikiLogMock.mockReset();
   tryAcquireLockMock.mockReset().mockReturnValue(true);
+  releaseLockMock.mockReset();
   debugLogMock.mockReset();
 });
 
@@ -134,6 +137,29 @@ describe("session-end hook", () => {
     // Let the catch in `main().catch(...)` run.
     await new Promise(r => setImmediate(r));
     expect(debugLogMock).toHaveBeenCalledWith("fatal: stdin boom");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("releases the lock if spawnWikiWorker throws (no lock leak)", async () => {
+    spawnMock.mockImplementation(() => { throw new Error("spawn exploded"); });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    await runHook();
+    // Let the outer main().catch run.
+    await new Promise(r => setImmediate(r));
+    expect(releaseLockMock).toHaveBeenCalledWith("sid-1");
+    // The throw bubbles to main().catch and logs "fatal: ..."
+    expect(debugLogMock).toHaveBeenCalledWith("fatal: spawn exploded");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("still swallows release errors when spawn throws (no double-fault)", async () => {
+    spawnMock.mockImplementation(() => { throw new Error("spawn exploded"); });
+    releaseLockMock.mockImplementation(() => { throw new Error("release also broken"); });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    await runHook();
+    await new Promise(r => setImmediate(r));
+    // Outer fatal is the ORIGINAL spawn failure, not the release failure
+    expect(debugLogMock).toHaveBeenCalledWith("fatal: spawn exploded");
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 });

@@ -16,6 +16,7 @@ const loadConfigMock = vi.fn();
 const spawnMock = vi.fn();
 const wikiLogMock = vi.fn();
 const tryAcquireLockMock = vi.fn();
+const releaseLockMock = vi.fn();
 const debugLogMock = vi.fn();
 const queryMock = vi.fn();
 
@@ -28,6 +29,7 @@ vi.mock("../../src/hooks/codex/spawn-wiki-worker.js", () => ({
 }));
 vi.mock("../../src/hooks/summary-state.js", () => ({
   tryAcquireLock: (...args: any[]) => tryAcquireLockMock(...args),
+  releaseLock: (...args: any[]) => releaseLockMock(...args),
 }));
 vi.mock("../../src/utils/debug.js", () => ({
   log: (_tag: string, msg: string) => debugLogMock(msg),
@@ -67,6 +69,7 @@ beforeEach(() => {
   spawnMock.mockReset();
   wikiLogMock.mockReset();
   tryAcquireLockMock.mockReset().mockReturnValue(true);
+  releaseLockMock.mockReset();
   debugLogMock.mockReset();
   queryMock.mockReset().mockResolvedValue([]);
 });
@@ -251,6 +254,26 @@ describe("codex stop hook — fatal catch", () => {
     await runHook();
     await new Promise(r => setImmediate(r));
     expect(debugLogMock).toHaveBeenCalledWith("fatal: bad stdin");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("releases the lock if spawnCodexWikiWorker throws (no lock leak)", async () => {
+    spawnMock.mockImplementation(() => { throw new Error("codex spawn exploded"); });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    await runHook();
+    await new Promise(r => setImmediate(r));
+    expect(releaseLockMock).toHaveBeenCalledWith("sid-1");
+    expect(debugLogMock).toHaveBeenCalledWith("fatal: codex spawn exploded");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("swallows release errors when spawn also throws (no double-fault)", async () => {
+    spawnMock.mockImplementation(() => { throw new Error("codex spawn exploded"); });
+    releaseLockMock.mockImplementation(() => { throw new Error("release broken"); });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    await runHook();
+    await new Promise(r => setImmediate(r));
+    expect(debugLogMock).toHaveBeenCalledWith("fatal: codex spawn exploded");
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 });

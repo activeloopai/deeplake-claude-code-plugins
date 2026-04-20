@@ -447,6 +447,12 @@ function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
     throw e;
   }
 }
+function releaseLock(sessionId) {
+  try {
+    unlinkSync(lockPath(sessionId));
+  } catch {
+  }
+}
 
 // dist/src/hooks/codex/stop.js
 var log3 = (msg) => log("codex-stop", msg);
@@ -529,13 +535,21 @@ async function main() {
     return;
   }
   wikiLog(`Stop: triggering summary for ${sessionId}`);
-  spawnCodexWikiWorker({
-    config,
-    sessionId,
-    cwd: input.cwd ?? "",
-    bundleDir: bundleDirFromImportMeta(import.meta.url),
-    reason: "Stop"
-  });
+  try {
+    spawnCodexWikiWorker({
+      config,
+      sessionId,
+      cwd: input.cwd ?? "",
+      bundleDir: bundleDirFromImportMeta(import.meta.url),
+      reason: "Stop"
+    });
+  } catch (e) {
+    try {
+      releaseLock(sessionId);
+    } catch {
+    }
+    throw e;
+  }
 }
 main().catch((e) => {
   log3(`fatal: ${e.message}`);
