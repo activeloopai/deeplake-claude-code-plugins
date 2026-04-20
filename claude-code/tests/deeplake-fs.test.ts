@@ -47,12 +47,12 @@ function makeClient(seed: Record<string, Buffer> = {}) {
         }
         return [];
       }
-      // Virtual index: SELECT path, project, description, creation_date, last_update_date FROM ... WHERE path LIKE '/summaries/%'
-      if (sql.includes("SELECT path, project, description, creation_date, last_update_date")) {
+      // Virtual index: SELECT path, project, description, summary, creation_date FROM ... WHERE path LIKE '/summaries/%'
+      if (sql.includes("SELECT path, project, description, summary, creation_date")) {
         return rows
           .filter(r => r.path.startsWith("/summaries/"))
           .map(r => ({
-            path: r.path, project: r.project, description: r.description,
+            path: r.path, project: r.project, description: r.description, summary: r.summary,
             creation_date: r.creation_date, last_update_date: r.last_update_date,
           }));
       }
@@ -804,17 +804,50 @@ describe("virtual index.md", () => {
 
   it("generates virtual index when no /index.md row exists", async () => {
     const { fs } = await makeFsWithSummaries([
-      { id: "aaa-111", userName: "alice", project: "my-project", description: "Fixed auth bug", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T11:00:00.000Z", content: "# Session aaa-111" },
-      { id: "bbb-222", userName: "alice", project: "other-proj", description: "in progress", creationDate: "2026-04-07T12:00:00.000Z", lastUpdateDate: "2026-04-07T12:00:00.000Z", content: "# Session bbb-222" },
+      {
+        id: "aaa-111",
+        userName: "alice",
+        project: "my-project",
+        description: "Fixed auth bug",
+        creationDate: "2026-04-07T10:00:00.000Z",
+        lastUpdateDate: "2026-04-07T11:00:00.000Z",
+        content: `# Session aaa-111
+- **Source**: /sessions/alice/aaa-111.jsonl
+- **Date**: 2026-04-07
+- **Participants**: Alice, Bob
+- **Topics**: auth, retries
+
+## Searchable Facts
+- Auth tokens now refresh automatically.
+`,
+      },
+      {
+        id: "bbb-222",
+        userName: "alice",
+        project: "other-proj",
+        description: "in progress",
+        creationDate: "2026-04-07T12:00:00.000Z",
+        lastUpdateDate: "2026-04-07T12:00:00.000Z",
+        content: `# Session bbb-222
+- **Source**: /sessions/alice/bbb-222.jsonl
+- **Date**: 2026-04-07
+- **Participants**: Alice, Carol
+- **Topics**: rollout
+`,
+      },
     ]);
     const content = await fs.readFile("/index.md");
-    expect(content).toContain("# Session Index");
-    expect(content).toContain("| Session | Conversation | Created | Last Updated | Project | Description |");
+    expect(content).toContain("# Memory Index");
+    expect(content).toContain("## People");
+    expect(content).toContain("## Projects");
+    expect(content).toContain("## Summary To Session Catalog");
     expect(content).toContain("aaa-111");
     expect(content).toContain("bbb-222");
     expect(content).toContain("my-project");
-    expect(content).toContain("Fixed auth bug");
+    expect(content).toContain("Alice, Bob");
+    expect(content).toContain("[session](/sessions/alice/aaa-111.jsonl)");
     expect(content).toContain("2026-04-07");
+    expect(content).toContain("updated: 2026-04-07 11:00 UTC");
   });
 
   it("serves real /index.md row when it exists", async () => {
@@ -847,6 +880,39 @@ describe("virtual index.md", () => {
     expect(s.isDirectory).toBe(false);
   });
 
+  it("hides the virtual index in sessions-only mode", async () => {
+    const prev = process.env.HIVEMIND_SESSIONS_ONLY;
+    process.env.HIVEMIND_SESSIONS_ONLY = "1";
+    try {
+      const { fs } = await makeFsWithSummaries([
+        { id: "aaa-111", userName: "alice", project: "proj", description: "desc", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T10:00:00.000Z", content: "# Session" },
+      ]);
+      expect(await fs.exists("/index.md")).toBe(false);
+      const entries = await fs.readdir("/");
+      expect(entries).not.toContain("index.md");
+    } finally {
+      if (prev === undefined) delete process.env.HIVEMIND_SESSIONS_ONLY;
+      else process.env.HIVEMIND_SESSIONS_ONLY = prev;
+    }
+  });
+
+  it("hides the virtual index when index is disabled but still keeps summaries", async () => {
+    const prev = process.env.HIVEMIND_DISABLE_INDEX;
+    process.env.HIVEMIND_DISABLE_INDEX = "1";
+    try {
+      const { fs } = await makeFsWithSummaries([
+        { id: "aaa-111", userName: "alice", project: "proj", description: "desc", creationDate: "2026-04-07T10:00:00.000Z", lastUpdateDate: "2026-04-07T10:00:00.000Z", content: "# Session" },
+      ]);
+      expect(await fs.exists("/index.md")).toBe(false);
+      const entries = await fs.readdir("/");
+      expect(entries).not.toContain("index.md");
+      expect(entries).toContain("summaries");
+    } finally {
+      if (prev === undefined) delete process.env.HIVEMIND_DISABLE_INDEX;
+      else process.env.HIVEMIND_DISABLE_INDEX = prev;
+    }
+  });
+
   it("virtual index shows all summary rows ordered", async () => {
     const { fs } = await makeFsWithSummaries([
       { id: "old-session", userName: "alice", project: "proj-a", description: "Old work", creationDate: "2026-04-01T10:00:00.000Z", lastUpdateDate: "2026-04-01T11:00:00.000Z", content: "# Old" },
@@ -863,10 +929,8 @@ describe("virtual index.md", () => {
   it("virtual index handles empty summaries table", async () => {
     const { fs } = await makeFs({}, "/");
     const content = await fs.readFile("/index.md");
-    expect(content).toContain("# Session Index");
-    expect(content).toContain("| Session | Conversation | Created | Last Updated | Project | Description |");
-    // No data rows
-    const lines = content.split("\n").filter(l => l.startsWith("| ["));
+    expect(content).toContain("# Memory Index");
+    const lines = content.split("\n").filter(l => l.startsWith("- ["));
     expect(lines.length).toBe(0);
   });
 

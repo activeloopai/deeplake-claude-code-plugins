@@ -70,6 +70,20 @@ function isDirectRun(metaUrl) {
   }
 }
 
+// dist/src/utils/retrieval-mode.js
+function isSessionsOnlyMode() {
+  const raw = process.env["HIVEMIND_SESSIONS_ONLY"] ?? process.env["DEEPLAKE_SESSIONS_ONLY"] ?? "";
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
+function isIndexDisabled() {
+  const raw = process.env["HIVEMIND_DISABLE_INDEX"] ?? process.env["DEEPLAKE_DISABLE_INDEX"] ?? "";
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
+function isPsqlMode() {
+  const raw = process.env["HIVEMIND_PSQL_MODE"] ?? process.env["DEEPLAKE_PSQL_MODE"] ?? "";
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
+
 // dist/src/hooks/version-check.js
 import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { dirname, join as join3 } from "node:path";
@@ -171,9 +185,134 @@ IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
+var CLAUDE_SESSION_START_CONTEXT_SESSIONS_ONLY = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
+
+1. Your built-in memory (~/.claude/) \u2014 personal per-project notes
+2. Deeplake global memory (~/.deeplake/memory/) \u2014 shared org memory, currently exposed in SESSIONS-ONLY mode for benchmark comparison
+
+Deeplake memory structure available in this mode:
+- ~/.deeplake/memory/sessions/{author}/* \u2014 raw session data
+
+SEARCH STRATEGY: Search raw session files directly. In this mode, do NOT start with index.md or summaries and do NOT assume those paths exist.
+Open the most likely session file directly before broadening into synonym greps or wide exploratory scans.
+Do NOT probe unrelated local paths such as ~/.claude/projects/, arbitrary home directories, or guessed summary roots when the question is about Deeplake memory.
+TEMPORAL GROUNDING: If a transcript uses relative time like "last year", "last week", or "next month", resolve it against that session's own date/date_time metadata, not today's date.
+TEMPORAL FOLLOW-THROUGH: If a session only gives a relative time, use that session's date/date_time to convert the final answer into an absolute month/date/year or explicit range before responding.
+ANSWER SHAPE: Once you have enough evidence, answer with the smallest exact phrase supported by memory. For identity or relationship questions, use just the noun phrase. For education questions, answer with the likely field or credential directly, not the broader life story. For "when" questions, prefer absolute dates/months/years over relative phrases. Avoid extra biography, explanation, or hedging.
+NOT-FOUND BAR: Do NOT answer "not found" until you have checked at least one likely raw session file for the named person. If keyword grep is empty, grep the person's name alone and inspect the candidate session files.
+NEGATIVE-EVIDENCE QUESTIONS: For identity, relationship status, and research-topic questions, raw sessions may contain the exact phrase even when broad keyword grep looks sparse. Read the candidate transcript and look for positive clues before concluding the answer is absent.
+SELF-LABEL PRIORITY: For identity questions, prefer the person's own explicit self-label from the transcript over broader category descriptions or paraphrases.
+RELATIONSHIP STATUS INFERENCE: For relationship-status questions, treat explicit self-descriptions about partnership, dating, marriage, or parenting plans as status evidence. If the transcript strongly supports an unpartnered status, answer with the concise status phrase instead of "not found."
+
+Search command: Grep pattern="keyword" path="~/.deeplake/memory"
+
+Organization management \u2014 each argument is SEPARATE (do NOT quote subcommands together):
+- node "HIVEMIND_AUTH_CMD" login                              \u2014 SSO login
+- node "HIVEMIND_AUTH_CMD" whoami                             \u2014 show current user/org
+- node "HIVEMIND_AUTH_CMD" org list                           \u2014 list organizations
+- node "HIVEMIND_AUTH_CMD" org switch <name-or-id>            \u2014 switch organization
+- node "HIVEMIND_AUTH_CMD" workspaces                         \u2014 list workspaces
+- node "HIVEMIND_AUTH_CMD" workspace <id>                     \u2014 switch workspace
+- node "HIVEMIND_AUTH_CMD" invite <email> <ADMIN|WRITE|READ>  \u2014 invite member (ALWAYS ask user which role before inviting)
+- node "HIVEMIND_AUTH_CMD" members                            \u2014 list members
+- node "HIVEMIND_AUTH_CMD" remove <user-id>                   \u2014 remove member
+
+IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem. If a task seems to require Python, rewrite it using bash commands and standard text-processing tools (awk, sed, jq, grep, etc.).
+
+LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
+
+Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
+var CLAUDE_SESSION_START_CONTEXT_NO_INDEX = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
+
+1. Your built-in memory (~/.claude/) \u2014 personal per-project notes
+2. Deeplake global memory (~/.deeplake/memory/) \u2014 global memory shared across all sessions, users, and agents in the org
+
+Deeplake memory structure in this mode:
+- ~/.deeplake/memory/summaries/username/*.md \u2014 AI-generated wiki summaries per session
+- ~/.deeplake/memory/sessions/{author}/* \u2014 raw session data (last resort)
+
+INDEX MODE: /index.md is intentionally unavailable for this run. Do NOT try to read it or rely on it.
+SEARCH STRATEGY: Start by grepping summaries for the named person, topic, or keyword. Then read the specific matching summaries. Only read raw session files if the summaries don't have enough detail. Do NOT jump straight to raw session files.
+If a summary points to a likely source session, open that exact raw session before broadening into synonym greps or wide exploratory scans.
+Do NOT probe unrelated local paths such as ~/.claude/projects/, arbitrary home directories, or guessed summary roots when the question is about Deeplake memory.
+TEMPORAL GROUNDING: If a summary or transcript uses relative time like "last year", "last week", or "next month", resolve it against that session's own date/date_time metadata, not today's date.
+TEMPORAL FOLLOW-THROUGH: If a summary only gives a relative time, open the linked source session and use its date/date_time to convert the final answer into an absolute month/date/year or explicit range before responding.
+ANSWER SHAPE: Once you have enough evidence, answer with the smallest exact phrase supported by memory. For identity or relationship questions, use just the noun phrase. For education questions, answer with the likely field or credential directly, not the broader life story. For "when" questions, prefer absolute dates/months/years over relative phrases. Avoid extra biography, explanation, or hedging.
+NOT-FOUND BAR: Do NOT answer "not found" until you have checked at least one likely summary plus one likely raw session file for the named person when the summary is ambiguous. If keyword grep is empty, grep the person's name alone and inspect the candidate files.
+NEGATIVE-EVIDENCE QUESTIONS: For identity, relationship status, and research-topic questions, summaries may omit the exact phrase. If likely summaries are ambiguous, read the candidate raw session transcript and look for positive clues before concluding the answer is absent.
+SELF-LABEL PRIORITY: For identity questions, prefer the person's own explicit self-label from the transcript over broader category descriptions or paraphrases.
+RELATIONSHIP STATUS INFERENCE: For relationship-status questions, treat explicit self-descriptions about partnership, dating, marriage, or parenting plans as status evidence. If the transcript strongly supports an unpartnered status, answer with the concise status phrase instead of "not found."
+
+Search command: Grep pattern="keyword" path="~/.deeplake/memory"
+
+Organization management \u2014 each argument is SEPARATE (do NOT quote subcommands together):
+- node "HIVEMIND_AUTH_CMD" login                              \u2014 SSO login
+- node "HIVEMIND_AUTH_CMD" whoami                             \u2014 show current user/org
+- node "HIVEMIND_AUTH_CMD" org list                           \u2014 list organizations
+- node "HIVEMIND_AUTH_CMD" org switch <name-or-id>            \u2014 switch organization
+- node "HIVEMIND_AUTH_CMD" workspaces                         \u2014 list workspaces
+- node "HIVEMIND_AUTH_CMD" workspace <id>                     \u2014 switch workspace
+- node "HIVEMIND_AUTH_CMD" invite <email> <ADMIN|WRITE|READ>  \u2014 invite member (ALWAYS ask user which role before inviting)
+- node "HIVEMIND_AUTH_CMD" members                            \u2014 list members
+- node "HIVEMIND_AUTH_CMD" remove <user-id>                   \u2014 remove member
+
+IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem. If a task seems to require Python, rewrite it using bash commands and standard text-processing tools (awk, sed, jq, grep, etc.).
+
+LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
+
+Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
+var CLAUDE_SESSION_START_CONTEXT_PSQL = `DEEPLAKE MEMORY SQL MODE: For this run, use SQL only when answering recall questions.
+
+Available Deeplake tables:
+- memory(path, summary, project, description, creation_date, last_update_date)
+- sessions_text(path, creation_date, message_text)
+- sessions(path, message, creation_date)
+
+Use this command shape:
+- psql -At -F '|' -c "SELECT ..."
+
+SQL strategy:
+1. Start with targeted SELECTs against memory to find likely summaries.
+2. In the first pass, combine the named person/entity term with one or more topic terms. Prefer narrow AND filters over broad OR filters.
+3. After finding candidate summary rows, re-query memory by exact path to inspect only those summaries.
+4. If the answer needs exact wording, exact dates, or transcript grounding, query sessions_text by exact path for those candidate sessions.
+5. Prefer precise WHERE filters, ORDER BY creation_date/last_update_date, and LIMIT 5-10.
+6. Do not use filesystem commands, grep, cat, ls, Read, or Glob for recall in this mode.
+7. If the first summary query returns 0-3 weak rows or the answer still seems semantically off, retry with BM25 ranking on memory before concluding the data is absent.
+8. Use sessions only when you need the raw structured payload; use sessions_text for normal text filtering.
+
+Good query patterns:
+- Candidate summaries:
+  psql -At -F '|' -c "SELECT path, summary, creation_date FROM memory WHERE summary ILIKE '%<person>%' AND (summary ILIKE '%<topic1>%' OR summary ILIKE '%<topic2>%') ORDER BY creation_date DESC LIMIT 5"
+- Exact summary reread:
+  psql -At -F '|' -c "SELECT path, summary FROM memory WHERE path IN ('/summaries/...', '/summaries/...')"
+- Transcript grounding by exact path:
+  psql -At -F '|' -c "SELECT path, creation_date, message_text FROM sessions_text WHERE path IN ('/sessions/...', '/sessions/...') ORDER BY creation_date ASC"
+- Transcript search inside known sessions:
+  psql -At -F '|' -c "SELECT path, creation_date, message_text FROM sessions_text WHERE path IN ('/sessions/...', '/sessions/...') AND message_text ILIKE '%<keyword>%' ORDER BY creation_date ASC"
+- If literal ILIKE retrieval is sparse or semantically weak, retry with BM25 text ranking on summaries:
+  psql -At -F '|' -c "SELECT path, summary, summary <#> '<person> <topic terms>' AS score FROM memory WHERE summary ILIKE '%<person>%' ORDER BY score DESC LIMIT 5"
+
+Avoid these mistakes:
+- Do NOT search person names via path ILIKE. Person names live in summary text, not session paths.
+- Do NOT filter sessions.message directly. Use sessions_text.message_text for transcript text search.
+- Do NOT blend multiple different events when the question asks about one specific event. Prefer the most direct supporting row.
+
+Answer rules:
+- Return the smallest exact answer supported by the data.
+- Resolve relative dates against the session's own creation_date or transcript date metadata, not today's date.
+- Do not answer "not found" until you have checked both memory and a likely sessions_text row for the named person.
+- For duration or age-style answers, preserve the stored relative phrase when it directly answers the question instead of over-converting it.
+- For list or profile questions, aggregate across the small set of candidate sessions before answering.
+- For "likely", "would", or profile questions, a concise inference from strong summary evidence is allowed even if the exact final phrase is not quoted verbatim.
+
+IMPORTANT: Only psql SELECT queries over memory and sessions are intercepted in this mode. Do NOT use python, python3, node, curl, or filesystem paths for recall in this mode.
+
+Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
 var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 function buildSessionStartAdditionalContext(args) {
-  const resolvedContext = CLAUDE_SESSION_START_CONTEXT.replace(/HIVEMIND_AUTH_CMD/g, args.authCommand);
+  const template = isPsqlMode() ? CLAUDE_SESSION_START_CONTEXT_PSQL : isSessionsOnlyMode() ? CLAUDE_SESSION_START_CONTEXT_SESSIONS_ONLY : isIndexDisabled() ? CLAUDE_SESSION_START_CONTEXT_NO_INDEX : CLAUDE_SESSION_START_CONTEXT;
+  const resolvedContext = template.replace(/HIVEMIND_AUTH_CMD/g, args.authCommand);
   let updateNotice = "";
   if (args.currentVersion) {
     if (args.latestVersion && isNewer(args.latestVersion, args.currentVersion)) {
@@ -236,6 +375,9 @@ if (isDirectRun(import.meta.url)) {
 }
 export {
   CLAUDE_SESSION_START_CONTEXT,
+  CLAUDE_SESSION_START_CONTEXT_NO_INDEX,
+  CLAUDE_SESSION_START_CONTEXT_PSQL,
+  CLAUDE_SESSION_START_CONTEXT_SESSIONS_ONLY,
   buildSessionStartAdditionalContext,
   runSessionStartHook
 };

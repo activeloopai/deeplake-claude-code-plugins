@@ -7,6 +7,7 @@ import {
   readVirtualPathContents,
   findVirtualPaths,
 } from "./virtual-table-query.js";
+import { isPsqlMode } from "../utils/retrieval-mode.js";
 
 type VirtualRow = Record<string, unknown>;
 
@@ -16,6 +17,7 @@ export type CompiledSegment =
   | { kind: "ls"; dirs: string[]; longFormat: boolean }
   | { kind: "find"; dir: string; pattern: string; countOnly: boolean }
   | { kind: "find_grep"; dir: string; patterns: string[]; params: GrepParams; lineLimit: number }
+  | { kind: "psql"; query: string; lineLimit: number; tuplesOnly: boolean; fieldSeparator: string }
   | { kind: "grep"; params: GrepParams; lineLimit: number };
 
 interface ParsedModifier {
@@ -241,6 +243,175 @@ function parseFindSpec(tokens: string[]): ParsedFindSpec | null {
   return patterns.length > 0 ? { patterns, execGrepCmd: null } : null;
 }
 
+function extractPsqlQuery(tokens: string[]): string | null {
+  let query: string | null = null;
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "-c" || token === "--command") {
+      query = tokens[i + 1] ?? null;
+      i += 1;
+      continue;
+    }
+    if (token.startsWith("-c") && token.length > 2) {
+      query = token.slice(2);
+      continue;
+    }
+  }
+  return query;
+}
+
+export function extractPsqlQueryFromCommand(cmd: string): string | null {
+  const tokens = tokenizeShellWords(cmd.trim());
+  if (!tokens || tokens[0] !== "psql") return null;
+  return extractPsqlQuery(tokens);
+}
+
+function normalizeSqlRef(ref: string): string {
+  return ref.replace(/\s+/g, "").replace(/"/g, "").toLowerCase();
+}
+
+function extractSqlTableRefs(query: string): string[] {
+  const refs: string[] = [];
+  const regex = /\b(?:from|join)\s+((?:"[^"]+"|[a-zA-Z_][a-zA-Z0-9_]*)(?:\s*\.\s*(?:"[^"]+"|[a-zA-Z_][a-zA-Z0-9_]*))?)/gi;
+  for (const match of query.matchAll(regex)) {
+    if (match[1]) refs.push(normalizeSqlRef(match[1]));
+  }
+  return refs;
+}
+
+export function queryReferencesInterceptedTables(query: string): boolean {
+  return extractSqlTableRefs(query).some((ref) =>
+    ref === "memory" ||
+    ref === "sessions" ||
+    ref === "sessions_text" ||
+    ref === "hivemind.memory" ||
+    ref === "hivemind.sessions" ||
+    ref === "hivemind.sessions_text");
+}
+
+export function queryUsesOnlyInterceptedTables(query: string): boolean {
+  const refs = extractSqlTableRefs(query);
+  return refs.length > 0 && refs.every((ref) =>
+    ref === "memory" ||
+    ref === "sessions" ||
+    ref === "sessions_text" ||
+    ref === "hivemind.memory" ||
+    ref === "hivemind.sessions" ||
+    ref === "hivemind.sessions_text");
+}
+
+export function queryUsesBareMemoryTables(query: string): boolean {
+  return extractSqlTableRefs(query).some((ref) => ref === "memory" || ref === "sessions");
+}
+
+function parsePsqlSegment(pipeline: string[], tokens: string[]): CompiledSegment | null {
+  if (tokens[0] !== "psql" || !isPsqlMode()) return null;
+  const query = extractPsqlQuery(tokens);
+  let tuplesOnly = false;
+  let fieldSeparator = "|";
+
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "-F" || token === "--field-separator") {
+      fieldSeparator = tokens[i + 1] ?? fieldSeparator;
+      i += 1;
+      continue;
+    }
+    if (token.startsWith("-F") && token.length > 2) {
+      fieldSeparator = token.slice(2);
+      continue;
+    }
+    if (token === "-t" || token === "--tuples-only") {
+      tuplesOnly = true;
+      continue;
+    }
+    if (token.startsWith("-") && !token.startsWith("--")) {
+      const shortFlags = token.slice(1);
+      if (shortFlags.includes("t")) tuplesOnly = true;
+      continue;
+    }
+  }
+
+  if (!query || !queryUsesOnlyInterceptedTables(query)) return null;
+
+  let lineLimit = 0;
+  if (pipeline.length > 1) {
+    if (pipeline.length !== 2) return null;
+    const headStage = pipeline[1].trim();
+    if (!isValidPipelineHeadTailStage(headStage)) return null;
+    const headTail = parseHeadTailStage(headStage);
+    if (!headTail || headTail.fromEnd) return null;
+    lineLimit = headTail.lineLimit;
+  }
+
+  return { kind: "psql", query, lineLimit, tuplesOnly, fieldSeparator };
+}
+
+function normalizePsqlQuery(query: string, memoryTable: string, sessionsTable: string): string {
+  let sql = query.trim().replace(/;+\s*$/, "");
+  sql = sql
+    .replace(/\bFROM\s+"?memory"?\b/gi, `FROM "${memoryTable}"`)
+    .replace(/\bJOIN\s+"?memory"?\b/gi, `JOIN "${memoryTable}"`)
+    .replace(/\bFROM\s+"?sessions_text"?\b/gi, `FROM "__hivemind_sessions_text"`)
+    .replace(/\bJOIN\s+"?sessions_text"?\b/gi, `JOIN "__hivemind_sessions_text"`)
+    .replace(/\bFROM\s+"?sessions"?\b/gi, `FROM "${sessionsTable}"`)
+    .replace(/\bJOIN\s+"?sessions"?\b/gi, `JOIN "${sessionsTable}"`)
+    .replace(/\bFROM\s+"?hivemind"?\."?memory"?\b/gi, `FROM "${memoryTable}"`)
+    .replace(/\bJOIN\s+"?hivemind"?\."?memory"?\b/gi, `JOIN "${memoryTable}"`)
+    .replace(/\bFROM\s+"?hivemind"?\."?sessions_text"?\b/gi, `FROM "__hivemind_sessions_text"`)
+    .replace(/\bJOIN\s+"?hivemind"?\."?sessions_text"?\b/gi, `JOIN "__hivemind_sessions_text"`)
+    .replace(/\bFROM\s+"?hivemind"?\."?sessions"?\b/gi, `FROM "${sessionsTable}"`)
+    .replace(/\bJOIN\s+"?hivemind"?\."?sessions"?\b/gi, `JOIN "${sessionsTable}"`);
+  if (/\b__hivemind_sessions_text\b/i.test(sql)) {
+    const cte = `"__hivemind_sessions_text" AS (SELECT path, creation_date, message::text AS message_text FROM "${sessionsTable}")`;
+    sql = /^\s*with\b/i.test(sql)
+      ? sql.replace(/^\s*with\b/i, `WITH ${cte},`)
+      : `WITH ${cte} ${sql}`;
+  }
+  return sql;
+}
+
+function validatePsqlQuery(query: string, memoryTable: string, sessionsTable: string): string {
+  if (!queryUsesOnlyInterceptedTables(query)) {
+    throw new Error("psql queries must reference only memory, sessions, sessions_text, hivemind.memory, hivemind.sessions, or hivemind.sessions_text");
+  }
+  const sql = normalizePsqlQuery(query, memoryTable, sessionsTable);
+  const compact = sql.replace(/\s+/g, " ").trim();
+  if (!/^(select|with)\b/i.test(compact)) {
+    throw new Error("psql mode only supports SELECT queries");
+  }
+  const allowedTables = new Set([memoryTable, sessionsTable, "__hivemind_sessions_text"]);
+  const tableMatches = [...compact.matchAll(/\b(?:from|join)\s+"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi)];
+  if (tableMatches.length === 0) {
+    throw new Error("psql query must reference memory or sessions");
+  }
+  for (const match of tableMatches) {
+    if (!allowedTables.has(match[1])) {
+      throw new Error(`psql query references unsupported table: ${match[1]}`);
+    }
+  }
+  return sql;
+}
+
+function formatPsqlValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function formatPsqlRows(
+  rows: VirtualRow[],
+  tuplesOnly: boolean,
+  fieldSeparator: string,
+): string {
+  if (rows.length === 0) return tuplesOnly ? "" : "(0 rows)";
+  const columns = Object.keys(rows[0] ?? {});
+  const body = rows.map((row) => columns.map((column) => formatPsqlValue(row[column])).join(fieldSeparator));
+  if (tuplesOnly) return body.join("\n");
+  return [columns.join(fieldSeparator), ...body].join("\n");
+}
+
 export function parseCompiledSegment(segment: string): CompiledSegment | null {
   const { clean, ignoreMissing } = stripAllowedModifiers(segment);
   if (hasUnsupportedRedirection(clean)) return null;
@@ -249,6 +420,9 @@ export function parseCompiledSegment(segment: string): CompiledSegment | null {
 
   const tokens = tokenizeShellWords(pipeline[0]);
   if (!tokens || tokens.length === 0) return null;
+
+  const psqlSegment = parsePsqlSegment(pipeline, tokens);
+  if (psqlSegment) return psqlSegment;
 
   if (tokens[0] === "echo" && pipeline.length === 1) {
     const text = tokens.slice(1).join(" ");
@@ -548,6 +722,15 @@ export async function executeCompiledBashCommand(
       );
       const limited = segment.lineLimit > 0 ? matched.slice(0, segment.lineLimit) : matched;
       outputs.push(limited.join("\n") || "(no matches)");
+      continue;
+    }
+
+    if (segment.kind === "psql") {
+      const sql = validatePsqlQuery(segment.query, memoryTable, sessionsTable);
+      const rows = await api.query(sql);
+      const formatted = formatPsqlRows(rows, segment.tuplesOnly, segment.fieldSeparator);
+      const limited = segment.lineLimit > 0 ? formatted.split("\n").slice(0, segment.lineLimit).join("\n") : formatted;
+      outputs.push(limited);
       continue;
     }
 

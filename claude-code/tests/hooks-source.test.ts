@@ -282,6 +282,74 @@ describe("claude pre-tool source", () => {
     });
   });
 
+  it("passes through psql bash commands when sql mode is enabled", () => {
+    const prev = process.env.HIVEMIND_PSQL_MODE;
+    process.env.HIVEMIND_PSQL_MODE = "1";
+    try {
+      expect(getShellCommand("Bash", {
+        command: "psql -At -F '|' -c \"SELECT path, summary FROM memory LIMIT 1\"",
+      })).toBe("psql -At -F '|' -c \"SELECT path, summary FROM memory LIMIT 1\"");
+      expect(getShellCommand("Bash", {
+        command: "psql -At -F '|' -c \"SELECT path, summary FROM hivemind.memory LIMIT 1\"",
+      })).toBe("psql -At -F '|' -c \"SELECT path, summary FROM hivemind.memory LIMIT 1\"");
+      expect(getShellCommand("Bash", {
+        command: "psql -At -F '|' -c \"SELECT path, creation_date, message_text FROM sessions_text LIMIT 1\"",
+      })).toBe("psql -At -F '|' -c \"SELECT path, creation_date, message_text FROM sessions_text LIMIT 1\"");
+      expect(getShellCommand("Read", { file_path: "~/.deeplake/memory/index.md" })).toBeNull();
+      expect(getShellCommand("Glob", { path: "~/.deeplake/memory/summaries" })).toBeNull();
+    } finally {
+      if (prev === undefined) delete process.env.HIVEMIND_PSQL_MODE;
+      else process.env.HIVEMIND_PSQL_MODE = prev;
+    }
+  });
+
+  it("passes through memory/session psql queries and leaves unrelated psql untouched", async () => {
+    const prev = process.env.HIVEMIND_PSQL_MODE;
+    process.env.HIVEMIND_PSQL_MODE = "1";
+    try {
+      const decision = await processPreToolUse({
+        session_id: "s1",
+        tool_name: "Bash",
+        tool_input: {
+          command: "psql -At -F '|' -c \"SELECT path, summary FROM memory LIMIT 1\"",
+        },
+        tool_use_id: "tu-psql-memory",
+      }, {
+        config: baseConfig,
+        executeCompiledBashCommandFn: vi.fn(async () => "/summaries/locomo/conv_0_session_1_summary.md|summary") as any,
+      });
+      expect(decision?.command).toContain("summary");
+
+      const passthrough = await processPreToolUse({
+        session_id: "s1",
+        tool_name: "Bash",
+        tool_input: {
+          command: "psql -At -F '|' -c \"SELECT * FROM users LIMIT 1\"",
+        },
+        tool_use_id: "tu-psql-pass",
+      }, {
+        config: baseConfig,
+      });
+      expect(passthrough).toBeNull();
+
+      const sessionsText = await processPreToolUse({
+        session_id: "s1",
+        tool_name: "Bash",
+        tool_input: {
+          command: "psql -At -F '|' -c \"SELECT path, creation_date, message_text FROM sessions_text WHERE message_text ILIKE '%camp%' LIMIT 1\"",
+        },
+        tool_use_id: "tu-psql-sessions-text",
+      }, {
+        config: baseConfig,
+        executeCompiledBashCommandFn: vi.fn(async () => "/sessions/conv_0_session_8.json|2023-08-10|{\"turns\":[{\"text\":\"We planned a camping trip\"}]}") as any,
+      });
+      expect(sessionsText?.command).toContain("camping trip");
+    } finally {
+      if (prev === undefined) delete process.env.HIVEMIND_PSQL_MODE;
+      else process.env.HIVEMIND_PSQL_MODE = prev;
+    }
+  });
+
   it("returns guidance for unsupported memory commands and passthrough for non-memory commands", async () => {
     const guidance = await processPreToolUse({
       session_id: "s1",
@@ -560,6 +628,33 @@ describe("claude pre-tool source", () => {
     expect(decision?.command).toContain("compiled output");
     expect(decision?.description).toContain("DeepLake compiled");
   });
+
+  it("routes supported psql benchmark commands through the compiled path", async () => {
+    const prev = process.env.HIVEMIND_PSQL_MODE;
+    process.env.HIVEMIND_PSQL_MODE = "1";
+    try {
+      const decision = await processPreToolUse({
+        session_id: "s1",
+        tool_name: "Bash",
+        tool_input: {
+          command: "psql -At -F '|' -c \"SELECT path, summary FROM memory WHERE summary ILIKE '%Caroline%' LIMIT 1\"",
+        },
+        tool_use_id: "tu-psql-1",
+      }, {
+        config: baseConfig,
+        executeCompiledBashCommandFn: vi.fn(async (_api, _table, _sessions, cmd) => {
+          expect(cmd).toBe("psql -At -F '|' -c \"SELECT path, summary FROM memory WHERE summary ILIKE '%Caroline%' LIMIT 1\"");
+          return "/summaries/locomo/conv_0_session_6_summary.md|Caroline keeps classic kids books";
+        }) as any,
+      });
+
+      expect(decision?.command).toContain("classic kids books");
+      expect(decision?.description).toContain("DeepLake compiled");
+    } finally {
+      if (prev === undefined) delete process.env.HIVEMIND_PSQL_MODE;
+      else process.env.HIVEMIND_PSQL_MODE = prev;
+    }
+  });
 });
 
 describe("claude session start source", () => {
@@ -645,6 +740,32 @@ describe("claude session start source", () => {
     } finally {
       if (prev === undefined) delete process.env.HIVEMIND_SESSIONS_ONLY;
       else process.env.HIVEMIND_SESSIONS_ONLY = prev;
+    }
+  });
+
+  it("switches to sql guidance when psql mode is enabled", () => {
+    const prev = process.env.HIVEMIND_PSQL_MODE;
+    process.env.HIVEMIND_PSQL_MODE = "1";
+    try {
+      const context = buildSessionStartAdditionalContext({
+        authCommand: "/tmp/auth-login.js",
+        creds: baseCreds,
+        currentVersion: null,
+        latestVersion: null,
+      });
+      expect(context).toContain("DEEPLAKE MEMORY SQL MODE");
+      expect(context).toContain("memory(path, summary");
+      expect(context).toContain("sessions_text(path, creation_date, message_text)");
+      expect(context).toContain("sessions(path, message");
+      expect(context).toContain("psql -At -F '|'");
+      expect(context).toContain("Use sessions only when you need the raw structured payload");
+      expect(context).toContain("Do NOT filter sessions.message directly");
+      expect(context).toContain("Do not use filesystem commands");
+      expect(context).not.toContain("Always read index.md first");
+      expect(context).not.toContain("~/.deeplake/memory");
+    } finally {
+      if (prev === undefined) delete process.env.HIVEMIND_PSQL_MODE;
+      else process.env.HIVEMIND_PSQL_MODE = prev;
     }
   });
 

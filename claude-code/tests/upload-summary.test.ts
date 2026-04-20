@@ -24,6 +24,22 @@ All ten commands executed successfully.
 **test-project** (directory) — working directory
 `;
 
+const TEXT_WITH_STRUCTURED_FACTS = `# Session conv_0_session_10
+- **Source**: /sessions/conv_0_session_10.json
+- **Date**: 8:56 pm on 20 July, 2023
+- **Participants**: Caroline, Melanie
+- **Project**: locomo
+- **Topics**: LGBTQ activism, family summer traditions
+
+## What Happened
+Caroline and Melanie talked about activism, family trips, and recent milestones.
+
+## Searchable Facts
+- Caroline joined Connected LGBTQ Activists last Tuesday.
+- Melanie's family takes an annual summer camping trip.
+- Melanie's youngest child recently took her first steps.
+`;
+
 function makeSpyQuery(responses: Array<Array<Record<string, unknown>>> = [[]]): { fn: QueryFn; calls: string[] } {
   const calls: string[] = [];
   let i = 0;
@@ -134,10 +150,18 @@ describe("uploadSummary — Deeplake single-UPDATE invariant", () => {
 });
 
 describe("extractDescription", () => {
-  it("extracts the What Happened section trimmed to 300 chars", () => {
+  it("falls back to the What Happened section when no richer structure exists", () => {
     const d = extractDescription(TEXT_WITH_WHAT_HAPPENED);
     expect(d.startsWith("User ran diagnostic commands")).toBe(true);
     expect(d.length).toBeLessThanOrEqual(300);
+  });
+
+  it("prefers participants, topics, and searchable facts when present", () => {
+    const d = extractDescription(TEXT_WITH_STRUCTURED_FACTS);
+    expect(d).toContain("Caroline, Melanie");
+    expect(d).toContain("LGBTQ activism, family summer traditions");
+    expect(d).toContain("Connected LGBTQ Activists");
+    expect(d).not.toContain("## Searchable Facts");
   });
 
   it("returns 'completed' when the section is absent", () => {

@@ -314,6 +314,29 @@ describe("DeeplakeApi.createIndex", () => {
   });
 });
 
+describe("DeeplakeApi.createSummaryBm25Index", () => {
+  it("generates correct CREATE INDEX SQL for summary BM25", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    const api = makeApi("memory");
+    await api.createSummaryBm25Index();
+    const sql = JSON.parse(mockFetch.mock.calls[0][1].body).query;
+    expect(sql).toContain("CREATE INDEX IF NOT EXISTS");
+    expect(sql).toContain("idx_memory_summary_bm25");
+    expect(sql).toContain('ON "memory" USING deeplake_index ("summary")');
+  });
+});
+
+describe("DeeplakeApi.ensureSummaryBm25Index", () => {
+  it("creates the summary BM25 index when no fresh marker exists", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    const api = makeApi("memory");
+    await api.ensureSummaryBm25Index();
+    const sql = JSON.parse(mockFetch.mock.calls[0][1].body).query;
+    expect(sql).toContain("CREATE INDEX IF NOT EXISTS");
+    expect(sql).toContain("idx_memory_summary_bm25");
+  });
+});
+
 // ── listTables ──────────────────────────────────────────────────────────────
 
 describe("DeeplakeApi.listTables", () => {

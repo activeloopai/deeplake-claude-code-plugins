@@ -465,6 +465,29 @@ var DeeplakeApi = class {
   async createIndex(column) {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
+  /** Create the standard BM25 summary index for a memory table. */
+  async createSummaryBm25Index(tableName) {
+    const table = tableName ?? this.tableName;
+    const indexName = this.buildLookupIndexName(table, "summary_bm25");
+    await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" USING deeplake_index ("summary")`);
+  }
+  /** Ensure the standard BM25 summary index exists, using a local freshness marker to avoid repeated CREATEs. */
+  async ensureSummaryBm25Index(tableName) {
+    const table = tableName ?? this.tableName;
+    const suffix = "summary_bm25";
+    if (this.hasFreshLookupIndexMarker(table, suffix))
+      return;
+    try {
+      await this.createSummaryBm25Index(table);
+      this.markLookupIndexReady(table, suffix);
+    } catch (e) {
+      if (isDuplicateIndexError(e)) {
+        this.markLookupIndexReady(table, suffix);
+        return;
+      }
+      throw e;
+    }
+  }
   buildLookupIndexName(table, suffix) {
     return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
   }

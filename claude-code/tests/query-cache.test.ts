@@ -13,6 +13,7 @@ describe("query-cache", () => {
   const tempRoots: string[] = [];
 
   afterEach(() => {
+    vi.useRealTimers();
     for (const root of tempRoots.splice(0)) {
       rmSync(root, { recursive: true, force: true });
     }
@@ -64,5 +65,17 @@ describe("query-cache", () => {
       logFn,
     });
     expect(logFn).toHaveBeenCalledWith(expect.stringContaining("clear failed"));
+  });
+
+  it("drops stale cached content instead of reusing it across long gaps", () => {
+    const cacheRoot = mkdtempSync(join(tmpdir(), "hivemind-query-cache-"));
+    tempRoots.push(cacheRoot);
+
+    writeCachedIndexContent("session-3", "cached once", { cacheRoot });
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + (16 * 60 * 1000));
+
+    expect(readCachedIndexContent("session-3", { cacheRoot })).toBeNull();
+    expect(readCachedIndexContent("session-3", { cacheRoot })).toBeNull();
   });
 });

@@ -22,7 +22,12 @@ import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlLike } from "../../utils/sql.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
-import { executeCompiledBashCommand } from "../bash-command-compiler.js";
+import {
+  executeCompiledBashCommand,
+  extractPsqlQueryFromCommand,
+  queryReferencesInterceptedTables,
+  queryUsesOnlyInterceptedTables,
+} from "../bash-command-compiler.js";
 import {
   findVirtualPaths,
   readVirtualPathContents,
@@ -37,9 +42,25 @@ import {
 import { log as _log } from "../../utils/debug.js";
 import { isDirectRun } from "../../utils/direct-run.js";
 import { isSafe, touchesMemory, rewritePaths } from "../memory-path-utils.js";
-import { isIndexDisabled, isSessionsOnlyMode } from "../../utils/retrieval-mode.js";
+import { isIndexDisabled, isPsqlMode, isSessionsOnlyMode } from "../../utils/retrieval-mode.js";
 
 export { isSafe, touchesMemory, rewritePaths };
+
+function isAnyPsqlCommand(cmd: string): boolean {
+  return /^\s*psql\b/.test(cmd.trim());
+}
+
+function isHivemindPsqlCommand(cmd: string): boolean {
+  if (!isPsqlMode()) return false;
+  const query = extractPsqlQueryFromCommand(cmd);
+  return !!query && queryUsesOnlyInterceptedTables(query);
+}
+
+function needsHivemindPsqlRewrite(cmd: string): boolean {
+  if (!isPsqlMode() || !isAnyPsqlCommand(cmd)) return false;
+  const query = extractPsqlQueryFromCommand(cmd);
+  return !!query && queryReferencesInterceptedTables(query) && !queryUsesOnlyInterceptedTables(query);
+}
 
 const log = (msg: string) => _log("codex-pre", msg);
 
@@ -67,9 +88,20 @@ export interface CodexPreToolDecision {
 
 export function buildUnsupportedGuidance(): string {
   return "This command is not supported for ~/.deeplake/memory/ operations. " +
-    "Only bash builtins are available: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. " +
+    "Only bash builtins are available, plus benchmark SQL mode via psql -At -F '|' -c \"SELECT ...\". " +
     "Do NOT use python, python3, node, curl, or other interpreters. " +
     "Rewrite your command using only bash tools and retry.";
+}
+
+export function buildPsqlOnlyGuidance(): string {
+  return "Hivemind recall is SQL-only in this mode. " +
+    "Use psql with the memory and sessions tables only. " +
+    "Do NOT use grep, cat, ls, Read, Glob, or filesystem paths for memory lookups.";
+}
+
+export function buildPsqlSchemaGuidance(): string {
+  return "Only psql SELECT queries over memory and sessions are intercepted in SQL mode. " +
+    "Rewrite the query to reference only those tables with normal psql SELECT syntax.";
 }
 
 export function runVirtualShell(cmd: string, shellBundle = SHELL_BUNDLE, logFn: (msg: string) => void = log): string {
@@ -131,15 +163,42 @@ export async function processCodexPreToolUse(
   const cmd = input.tool_input?.command ?? "";
   logFn(`hook fired: cmd=${cmd}`);
 
-  if (!touchesMemory(cmd)) return { action: "pass" };
+  if (!touchesMemory(cmd) && !isAnyPsqlCommand(cmd)) return { action: "pass" };
 
-  const rewritten = rewritePaths(cmd);
+  if (isAnyPsqlCommand(cmd) && !isHivemindPsqlCommand(cmd)) {
+    if (needsHivemindPsqlRewrite(cmd)) {
+      return {
+        action: "guide",
+        output: buildPsqlSchemaGuidance(),
+        rewrittenCommand: cmd.trim(),
+      };
+    }
+    return { action: "pass" };
+  }
+
+  if (isPsqlMode() && touchesMemory(cmd)) {
+    return {
+      action: "guide",
+      output: buildPsqlOnlyGuidance(),
+      rewrittenCommand: cmd.trim(),
+    };
+  }
+
+  const rewritten = isHivemindPsqlCommand(cmd) ? cmd.trim() : rewritePaths(cmd);
   if (!isSafe(rewritten)) {
-    const guidance = buildUnsupportedGuidance();
+    const guidance = isPsqlMode() ? buildPsqlOnlyGuidance() : buildUnsupportedGuidance();
     logFn(`unsupported command, returning guidance: ${rewritten}`);
     return {
       action: "guide",
       output: guidance,
+      rewrittenCommand: rewritten,
+    };
+  }
+
+  if (isHivemindPsqlCommand(rewritten) && !config) {
+    return {
+      action: "guide",
+      output: "Hivemind SQL mode is unavailable because Deeplake credentials are missing.",
       rewrittenCommand: rewritten,
     };
   }
@@ -337,7 +396,22 @@ export async function processCodexPreToolUse(
       }
     } catch (e: any) {
       logFn(`direct query failed, falling back to shell: ${e.message}`);
+      if (isHivemindPsqlCommand(rewritten)) {
+        return {
+          action: "guide",
+          output: "Hivemind SQL mode could not satisfy the query. Rewrite it as a narrower SELECT over memory or sessions.",
+          rewrittenCommand: rewritten,
+        };
+      }
     }
+  }
+
+  if (isHivemindPsqlCommand(rewritten)) {
+    return {
+      action: "guide",
+      output: "Hivemind SQL mode could not satisfy the query. Rewrite it as a narrower SELECT over memory or sessions.",
+      rewrittenCommand: rewritten,
+    };
   }
 
   logFn(`intercepted → running via virtual shell: ${rewritten}`);

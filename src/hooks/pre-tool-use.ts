@@ -10,7 +10,12 @@ import { sqlLike } from "../utils/sql.js";
 import { log as _log } from "../utils/debug.js";
 import { isDirectRun } from "../utils/direct-run.js";
 import { type GrepParams, parseBashGrep, handleGrepDirect } from "./grep-direct.js";
-import { executeCompiledBashCommand } from "./bash-command-compiler.js";
+import {
+  executeCompiledBashCommand,
+  extractPsqlQueryFromCommand,
+  queryReferencesInterceptedTables,
+  queryUsesOnlyInterceptedTables,
+} from "./bash-command-compiler.js";
 import {
   findVirtualPaths,
   readVirtualPathContents,
@@ -23,9 +28,36 @@ import {
   writeCachedIndexContent,
 } from "./query-cache.js";
 import { isSafe, touchesMemory, rewritePaths } from "./memory-path-utils.js";
-import { isIndexDisabled, isSessionsOnlyMode } from "../utils/retrieval-mode.js";
+import { isIndexDisabled, isPsqlMode, isSessionsOnlyMode } from "../utils/retrieval-mode.js";
 
 export { isSafe, touchesMemory, rewritePaths };
+
+function isAnyPsqlCommand(cmd: string): boolean {
+  return /^\s*psql\b/.test(cmd.trim());
+}
+
+function isHivemindPsqlCommand(cmd: string): boolean {
+  if (!isPsqlMode()) return false;
+  const query = extractPsqlQueryFromCommand(cmd);
+  return !!query && queryUsesOnlyInterceptedTables(query);
+}
+
+function needsHivemindPsqlRewrite(cmd: string): boolean {
+  if (!isPsqlMode() || !isAnyPsqlCommand(cmd)) return false;
+  const query = extractPsqlQueryFromCommand(cmd);
+  return !!query && queryReferencesInterceptedTables(query) && !queryUsesOnlyInterceptedTables(query);
+}
+
+function buildPsqlOnlyGuidance(): string {
+  return "[RETRY REQUIRED] Hivemind recall is SQL-only in this mode. " +
+    "Use psql with the memory and sessions tables only. " +
+    "Do NOT use grep, cat, ls, Read, Glob, or filesystem paths for memory lookups.";
+}
+
+function buildPsqlSchemaGuidance(): string {
+  return "[RETRY REQUIRED] Only psql SELECT queries over memory and sessions are intercepted in SQL mode. " +
+    "Rewrite the query to reference only those tables with normal psql SELECT syntax.";
+}
 
 const log = (msg: string) => _log("pre", msg);
 
@@ -62,6 +94,7 @@ export function getShellCommand(toolName: string, toolInput: Record<string, unkn
   switch (toolName) {
     case "Grep": {
       const p = toolInput.path as string | undefined;
+      if (isPsqlMode() && p && touchesMemory(p)) return null;
       if (p && touchesMemory(p)) {
         const pattern = toolInput.pattern as string ?? "";
         const flags: string[] = ["-r"];
@@ -73,6 +106,7 @@ export function getShellCommand(toolName: string, toolInput: Record<string, unkn
     }
     case "Read": {
       const fp = getReadTargetPath(toolInput);
+      if (isPsqlMode() && fp && touchesMemory(fp)) return null;
       if (fp && touchesMemory(fp)) {
         const rewritten = rewritePaths(fp) || "/";
         return `${isLikelyDirectoryPath(rewritten) ? "ls" : "cat"} ${rewritten}`;
@@ -81,7 +115,10 @@ export function getShellCommand(toolName: string, toolInput: Record<string, unkn
     }
     case "Bash": {
       const cmd = toolInput.command as string | undefined;
-      if (!cmd || !touchesMemory(cmd)) break;
+      if (!cmd) break;
+      if (isHivemindPsqlCommand(cmd)) return cmd.trim();
+      if (isPsqlMode() && (touchesMemory(cmd) || needsHivemindPsqlRewrite(cmd))) return null;
+      if (!touchesMemory(cmd)) break;
       const rewritten = rewritePaths(cmd);
       if (!isSafe(rewritten)) {
         log(`unsafe command blocked: ${rewritten}`);
@@ -91,6 +128,7 @@ export function getShellCommand(toolName: string, toolInput: Record<string, unkn
     }
     case "Glob": {
       const p = toolInput.path as string | undefined;
+      if (isPsqlMode() && p && touchesMemory(p)) return null;
       if (p && touchesMemory(p)) return "ls /";
       break;
     }
@@ -173,22 +211,35 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
   const cmd = (input.tool_input.command as string) ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
   const toolPath = (getReadTargetPath(input.tool_input) ?? input.tool_input.path ?? "") as string;
+  const psqlRewriteNeeded = needsHivemindPsqlRewrite(cmd);
 
-  if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
-    const guidance = "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. " +
-      "This virtual filesystem only supports bash builtins: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. " +
-      "python, python3, node, and curl are NOT available. " +
-      "You MUST rewrite your command using only the bash tools listed above and try again. " +
-      "For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
+  if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath) || psqlRewriteNeeded)) {
+    const guidance = isPsqlMode()
+      ? (psqlRewriteNeeded ? buildPsqlSchemaGuidance() : buildPsqlOnlyGuidance())
+      : "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. " +
+        "This virtual filesystem only supports bash builtins plus benchmark SQL mode via psql -At -F '|' -c \"SELECT ...\". " +
+        "python, python3, node, and curl are NOT available. " +
+        "You MUST rewrite your command using only the bash tools listed above and try again. " +
+        "For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
     logFn(`unsupported command, returning guidance: ${cmd}`);
     return buildAllowDecision(
       `echo ${JSON.stringify(guidance)}`,
-      "[DeepLake] unsupported command — rewrite using bash builtins",
+      isPsqlMode()
+        ? "[DeepLake SQL] unsupported command — rewrite using psql over memory/sessions"
+        : "[DeepLake] unsupported command — rewrite using bash builtins",
     );
   }
 
   if (!shellCmd) return null;
-  if (!config) return buildFallbackDecision(shellCmd, shellBundle);
+  if (!config) {
+    if (isHivemindPsqlCommand(shellCmd)) {
+      return buildAllowDecision(
+        `echo ${JSON.stringify("[RETRY REQUIRED] Hivemind SQL mode is unavailable because Deeplake credentials are missing.")}`,
+        "[DeepLake SQL] unavailable",
+      );
+    }
+    return buildFallbackDecision(shellCmd, shellBundle);
+  }
 
   const table = process.env["HIVEMIND_TABLE"] ?? "memory";
   const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
@@ -372,6 +423,12 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
     logFn(`direct query failed, falling back to shell: ${e.message}`);
   }
 
+  if (isHivemindPsqlCommand(shellCmd)) {
+    return buildAllowDecision(
+      `echo ${JSON.stringify("[RETRY REQUIRED] Hivemind SQL mode could not satisfy the query. Rewrite it as a narrower SELECT over memory or sessions.")}`,
+      "[DeepLake SQL] query rewrite required",
+    );
+  }
   return buildFallbackDecision(shellCmd, shellBundle);
 }
 

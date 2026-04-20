@@ -10,6 +10,13 @@ import {
   tokenizeShellWords,
 } from "../../src/hooks/bash-command-compiler.js";
 
+const originalPsqlMode = process.env.HIVEMIND_PSQL_MODE;
+
+function restorePsqlMode(): void {
+  if (originalPsqlMode === undefined) delete process.env.HIVEMIND_PSQL_MODE;
+  else process.env.HIVEMIND_PSQL_MODE = originalPsqlMode;
+}
+
 describe("bash-command-compiler parsing", () => {
   it("splits top-level sequences while respecting quotes", () => {
     expect(splitTopLevel("cat /a && echo 'x && y' ; ls /b", ["&&", ";"])).toEqual([
@@ -74,6 +81,7 @@ describe("bash-command-compiler parsing", () => {
   });
 
   it("parses supported read-only segments", () => {
+    restorePsqlMode();
     expect(parseCompiledSegment("echo ---")).toEqual({ kind: "echo", text: "---" });
     expect(parseCompiledSegment("cat /a /b | head -2")).toEqual({
       kind: "cat",
@@ -280,7 +288,40 @@ describe("bash-command-compiler parsing", () => {
     });
   });
 
+  it("parses psql segments only when psql mode is enabled", () => {
+    delete process.env.HIVEMIND_PSQL_MODE;
+    expect(parseCompiledSegment("psql -At -F '|' -c \"SELECT path, summary FROM memory LIMIT 2\"")).toBeNull();
+
+    process.env.HIVEMIND_PSQL_MODE = "1";
+    expect(parseCompiledSegment("psql -At -F '|' -c \"SELECT path, summary FROM memory LIMIT 2\" | head -1")).toEqual({
+      kind: "psql",
+      query: "SELECT path, summary FROM memory LIMIT 2",
+      lineLimit: 1,
+      tuplesOnly: true,
+      fieldSeparator: "|",
+    });
+
+    expect(parseCompiledSegment("psql -At -F '|' -c \"SELECT path, summary FROM hivemind.memory LIMIT 2\"")).toEqual({
+      kind: "psql",
+      query: "SELECT path, summary FROM hivemind.memory LIMIT 2",
+      lineLimit: 0,
+      tuplesOnly: true,
+      fieldSeparator: "|",
+    });
+
+    expect(parseCompiledSegment("psql -At -F '|' -c \"SELECT path, creation_date, message_text FROM sessions_text WHERE message_text ILIKE '%camp%' LIMIT 2\"")).toEqual({
+      kind: "psql",
+      query: "SELECT path, creation_date, message_text FROM sessions_text WHERE message_text ILIKE '%camp%' LIMIT 2",
+      lineLimit: 0,
+      tuplesOnly: true,
+      fieldSeparator: "|",
+    });
+
+    restorePsqlMode();
+  });
+
   it("rejects unsupported segments and command shapes", () => {
+    process.env.HIVEMIND_PSQL_MODE = "1";
     expect(parseCompiledSegment("cat")).toBeNull();
     expect(parseCompiledSegment("echo ok > /x")).toBeNull();
     expect(parseCompiledSegment("cat /a | jq '.x'")).toBeNull();
@@ -300,8 +341,10 @@ describe("bash-command-compiler parsing", () => {
     expect(parseCompiledSegment("find /summaries -name '*.md' | xargs grep -l foo | tail -2")).toBeNull();
     expect(parseCompiledSegment("grep foo /a | tail -2")).toBeNull();
     expect(parseCompiledSegment("grep foo /a | head nope")).toBeNull();
+    expect(parseCompiledSegment("psql -At -F '|' -c \"SELECT * FROM memory\" | tail -2")).toBeNull();
     expect(parseCompiledBashCommand("cat /a || cat /b")).toBeNull();
     expect(parseCompiledBashCommand("cat /a && echo ok > /x")).toBeNull();
+    restorePsqlMode();
   });
 });
 
@@ -465,6 +508,86 @@ describe("bash-command-compiler execution", () => {
       },
     );
     expect(output).toBeNull();
+  });
+
+  it("executes psql queries against normalized memory and sessions table names", async () => {
+    const query = vi.fn(async (sql: string) => {
+      expect(sql).toContain('FROM "memory_actual"');
+      expect(sql).toContain('JOIN "sessions_actual"');
+      return [
+        { path: "/summaries/locomo/conv_0_session_6_summary.md", summary: "Caroline keeps classic kids books" },
+      ];
+    });
+
+    process.env.HIVEMIND_PSQL_MODE = "1";
+    const output = await executeCompiledBashCommand(
+      { query } as any,
+      "memory_actual",
+      "sessions_actual",
+      "psql -At -F '|' -c \"SELECT m.path, m.summary FROM memory m JOIN sessions s ON s.path = m.path WHERE m.summary ILIKE '%Caroline%' LIMIT 1\"",
+    );
+    expect(output).toBe("/summaries/locomo/conv_0_session_6_summary.md|Caroline keeps classic kids books");
+    restorePsqlMode();
+  });
+
+  it("rewrites sessions_text queries into a text CTE over the backing sessions table", async () => {
+    const query = vi.fn(async (sql: string) => {
+      expect(sql).toContain('WITH "__hivemind_sessions_text" AS (SELECT path, creation_date, message::text AS message_text FROM "sessions_actual")');
+      expect(sql).toContain('FROM "__hivemind_sessions_text"');
+      expect(sql).toContain("message_text ILIKE '%camp%'");
+      return [
+        { path: "/sessions/conv_0_session_8.json", creation_date: "2023-08-10", message_text: "{\"turns\":[{\"text\":\"We planned a camping trip\"}]}" },
+      ];
+    });
+
+    process.env.HIVEMIND_PSQL_MODE = "1";
+    const output = await executeCompiledBashCommand(
+      { query } as any,
+      "memory_actual",
+      "sessions_actual",
+      "psql -At -F '|' -c \"SELECT path, creation_date, message_text FROM sessions_text WHERE message_text ILIKE '%camp%' LIMIT 1\"",
+    );
+    expect(output).toBe('/sessions/conv_0_session_8.json|2023-08-10|{"turns":[{"text":"We planned a camping trip"}]}');
+    restorePsqlMode();
+  });
+
+  it("matches psql tuples-only empty output semantics", async () => {
+    process.env.HIVEMIND_PSQL_MODE = "1";
+    const tuplesOnly = await executeCompiledBashCommand(
+      { query: vi.fn(async () => []) } as any,
+      "memory",
+      "sessions",
+      "psql -At -F '|' -c \"SELECT path FROM memory WHERE summary ILIKE '%missing%'\"",
+    );
+    expect(tuplesOnly).toBe("");
+
+    const withHeader = await executeCompiledBashCommand(
+      { query: vi.fn(async () => []) } as any,
+      "memory",
+      "sessions",
+      "psql -F '|' -c \"SELECT path FROM memory WHERE summary ILIKE '%missing%'\"",
+    );
+    expect(withHeader).toBe("(0 rows)");
+    restorePsqlMode();
+  });
+
+  it("does not compile unrelated psql commands and rejects invalid hivemind writes", async () => {
+    process.env.HIVEMIND_PSQL_MODE = "1";
+    await expect(executeCompiledBashCommand(
+      { query: vi.fn() } as any,
+      "memory",
+      "sessions",
+      "psql -At -F '|' -c \"DELETE FROM memory\"",
+    )).rejects.toThrow("psql mode only supports SELECT queries");
+
+    const unrelated = await executeCompiledBashCommand(
+      { query: vi.fn() } as any,
+      "memory",
+      "sessions",
+      "psql -At -F '|' -c \"SELECT * FROM users\"",
+    );
+    expect(unrelated).toBeNull();
+    restorePsqlMode();
   });
 
   it("compiles find | xargs grep -l | head into batched path reads", async () => {

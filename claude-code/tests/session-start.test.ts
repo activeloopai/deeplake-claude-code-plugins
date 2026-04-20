@@ -148,6 +148,15 @@ describe("claude-code integration: session-start.js (sync hook)", () => {
     expect(ctx).toContain("convert the final answer into an absolute month/date/year");
   });
 
+  it("switches to summary-first guidance when index is disabled", () => {
+    const raw = runHook("session-start.js", baseInput, { HIVEMIND_DISABLE_INDEX: "1" });
+    const parsed = JSON.parse(raw);
+    const ctx = parsed.hookSpecificOutput.additionalContext;
+    expect(ctx).toContain("/index.md is intentionally unavailable");
+    expect(ctx).toContain("Start by grepping summaries");
+    expect(ctx).not.toContain("Always read index.md first");
+  });
+
   it("completes within 3s with no credentials (no server calls)", () => {
     const start = Date.now();
     runHook("session-start.js", baseInput);

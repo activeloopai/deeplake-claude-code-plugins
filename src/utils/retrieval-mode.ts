@@ -12,3 +12,8 @@ export function isSummaryBm25Disabled(): boolean {
   const raw = process.env["HIVEMIND_DISABLE_SUMMARY_BM25"] ?? process.env["DEEPLAKE_DISABLE_SUMMARY_BM25"] ?? "";
   return /^(1|true|yes|on)$/i.test(raw.trim());
 }
+
+export function isPsqlMode(): boolean {
+  const raw = process.env["HIVEMIND_PSQL_MODE"] ?? process.env["DEEPLAKE_PSQL_MODE"] ?? "";
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}

@@ -437,6 +437,10 @@ function isSummaryBm25Disabled() {
   const raw = process.env["HIVEMIND_DISABLE_SUMMARY_BM25"] ?? process.env["DEEPLAKE_DISABLE_SUMMARY_BM25"] ?? "";
   return /^(1|true|yes|on)$/i.test(raw.trim());
 }
+function isPsqlMode() {
+  const raw = process.env["HIVEMIND_PSQL_MODE"] ?? process.env["DEEPLAKE_PSQL_MODE"] ?? "";
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
 
 // dist/src/shell/grep-core.js
 var DEFAULT_GREP_CANDIDATE_LIMIT = Number(process.env["HIVEMIND_GREP_LIMIT"] ?? process.env["DEEPLAKE_GREP_LIMIT"] ?? 500);
@@ -1790,6 +1794,139 @@ function parseFindSpec(tokens) {
   }
   return patterns.length > 0 ? { patterns, execGrepCmd: null } : null;
 }
+function extractPsqlQuery(tokens) {
+  let query = null;
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "-c" || token === "--command") {
+      query = tokens[i + 1] ?? null;
+      i += 1;
+      continue;
+    }
+    if (token.startsWith("-c") && token.length > 2) {
+      query = token.slice(2);
+      continue;
+    }
+  }
+  return query;
+}
+function extractPsqlQueryFromCommand(cmd) {
+  const tokens = tokenizeShellWords(cmd.trim());
+  if (!tokens || tokens[0] !== "psql")
+    return null;
+  return extractPsqlQuery(tokens);
+}
+function normalizeSqlRef(ref) {
+  return ref.replace(/\s+/g, "").replace(/"/g, "").toLowerCase();
+}
+function extractSqlTableRefs(query) {
+  const refs = [];
+  const regex = /\b(?:from|join)\s+((?:"[^"]+"|[a-zA-Z_][a-zA-Z0-9_]*)(?:\s*\.\s*(?:"[^"]+"|[a-zA-Z_][a-zA-Z0-9_]*))?)/gi;
+  for (const match of query.matchAll(regex)) {
+    if (match[1])
+      refs.push(normalizeSqlRef(match[1]));
+  }
+  return refs;
+}
+function queryReferencesInterceptedTables(query) {
+  return extractSqlTableRefs(query).some((ref) => ref === "memory" || ref === "sessions" || ref === "sessions_text" || ref === "hivemind.memory" || ref === "hivemind.sessions" || ref === "hivemind.sessions_text");
+}
+function queryUsesOnlyInterceptedTables(query) {
+  const refs = extractSqlTableRefs(query);
+  return refs.length > 0 && refs.every((ref) => ref === "memory" || ref === "sessions" || ref === "sessions_text" || ref === "hivemind.memory" || ref === "hivemind.sessions" || ref === "hivemind.sessions_text");
+}
+function parsePsqlSegment(pipeline, tokens) {
+  if (tokens[0] !== "psql" || !isPsqlMode())
+    return null;
+  const query = extractPsqlQuery(tokens);
+  let tuplesOnly = false;
+  let fieldSeparator = "|";
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "-F" || token === "--field-separator") {
+      fieldSeparator = tokens[i + 1] ?? fieldSeparator;
+      i += 1;
+      continue;
+    }
+    if (token.startsWith("-F") && token.length > 2) {
+      fieldSeparator = token.slice(2);
+      continue;
+    }
+    if (token === "-t" || token === "--tuples-only") {
+      tuplesOnly = true;
+      continue;
+    }
+    if (token.startsWith("-") && !token.startsWith("--")) {
+      const shortFlags = token.slice(1);
+      if (shortFlags.includes("t"))
+        tuplesOnly = true;
+      continue;
+    }
+  }
+  if (!query || !queryUsesOnlyInterceptedTables(query))
+    return null;
+  let lineLimit = 0;
+  if (pipeline.length > 1) {
+    if (pipeline.length !== 2)
+      return null;
+    const headStage = pipeline[1].trim();
+    if (!isValidPipelineHeadTailStage(headStage))
+      return null;
+    const headTail = parseHeadTailStage(headStage);
+    if (!headTail || headTail.fromEnd)
+      return null;
+    lineLimit = headTail.lineLimit;
+  }
+  return { kind: "psql", query, lineLimit, tuplesOnly, fieldSeparator };
+}
+function normalizePsqlQuery(query, memoryTable, sessionsTable) {
+  let sql = query.trim().replace(/;+\s*$/, "");
+  sql = sql.replace(/\bFROM\s+"?memory"?\b/gi, `FROM "${memoryTable}"`).replace(/\bJOIN\s+"?memory"?\b/gi, `JOIN "${memoryTable}"`).replace(/\bFROM\s+"?sessions_text"?\b/gi, `FROM "__hivemind_sessions_text"`).replace(/\bJOIN\s+"?sessions_text"?\b/gi, `JOIN "__hivemind_sessions_text"`).replace(/\bFROM\s+"?sessions"?\b/gi, `FROM "${sessionsTable}"`).replace(/\bJOIN\s+"?sessions"?\b/gi, `JOIN "${sessionsTable}"`).replace(/\bFROM\s+"?hivemind"?\."?memory"?\b/gi, `FROM "${memoryTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?memory"?\b/gi, `JOIN "${memoryTable}"`).replace(/\bFROM\s+"?hivemind"?\."?sessions_text"?\b/gi, `FROM "__hivemind_sessions_text"`).replace(/\bJOIN\s+"?hivemind"?\."?sessions_text"?\b/gi, `JOIN "__hivemind_sessions_text"`).replace(/\bFROM\s+"?hivemind"?\."?sessions"?\b/gi, `FROM "${sessionsTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?sessions"?\b/gi, `JOIN "${sessionsTable}"`);
+  if (/\b__hivemind_sessions_text\b/i.test(sql)) {
+    const cte = `"__hivemind_sessions_text" AS (SELECT path, creation_date, message::text AS message_text FROM "${sessionsTable}")`;
+    sql = /^\s*with\b/i.test(sql) ? sql.replace(/^\s*with\b/i, `WITH ${cte},`) : `WITH ${cte} ${sql}`;
+  }
+  return sql;
+}
+function validatePsqlQuery(query, memoryTable, sessionsTable) {
+  if (!queryUsesOnlyInterceptedTables(query)) {
+    throw new Error("psql queries must reference only memory, sessions, sessions_text, hivemind.memory, hivemind.sessions, or hivemind.sessions_text");
+  }
+  const sql = normalizePsqlQuery(query, memoryTable, sessionsTable);
+  const compact = sql.replace(/\s+/g, " ").trim();
+  if (!/^(select|with)\b/i.test(compact)) {
+    throw new Error("psql mode only supports SELECT queries");
+  }
+  const allowedTables = /* @__PURE__ */ new Set([memoryTable, sessionsTable, "__hivemind_sessions_text"]);
+  const tableMatches = [...compact.matchAll(/\b(?:from|join)\s+"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi)];
+  if (tableMatches.length === 0) {
+    throw new Error("psql query must reference memory or sessions");
+  }
+  for (const match of tableMatches) {
+    if (!allowedTables.has(match[1])) {
+      throw new Error(`psql query references unsupported table: ${match[1]}`);
+    }
+  }
+  return sql;
+}
+function formatPsqlValue(value) {
+  if (value === null || value === void 0)
+    return "";
+  if (typeof value === "string")
+    return value;
+  if (typeof value === "number" || typeof value === "boolean")
+    return String(value);
+  return JSON.stringify(value);
+}
+function formatPsqlRows(rows, tuplesOnly, fieldSeparator) {
+  if (rows.length === 0)
+    return tuplesOnly ? "" : "(0 rows)";
+  const columns = Object.keys(rows[0] ?? {});
+  const body = rows.map((row) => columns.map((column) => formatPsqlValue(row[column])).join(fieldSeparator));
+  if (tuplesOnly)
+    return body.join("\n");
+  return [columns.join(fieldSeparator), ...body].join("\n");
+}
 function parseCompiledSegment(segment) {
   const { clean, ignoreMissing } = stripAllowedModifiers(segment);
   if (hasUnsupportedRedirection(clean))
@@ -1800,6 +1937,9 @@ function parseCompiledSegment(segment) {
   const tokens = tokenizeShellWords(pipeline[0]);
   if (!tokens || tokens.length === 0)
     return null;
+  const psqlSegment = parsePsqlSegment(pipeline, tokens);
+  if (psqlSegment)
+    return psqlSegment;
   if (tokens[0] === "echo" && pipeline.length === 1) {
     const text = tokens.slice(1).join(" ");
     return { kind: "echo", text };
@@ -2070,6 +2210,14 @@ async function executeCompiledBashCommand(api, memoryTable, sessionsTable, cmd, 
       outputs.push(limited.join("\n") || "(no matches)");
       continue;
     }
+    if (segment.kind === "psql") {
+      const sql = validatePsqlQuery(segment.query, memoryTable, sessionsTable);
+      const rows = await api.query(sql);
+      const formatted = formatPsqlRows(rows, segment.tuplesOnly, segment.fieldSeparator);
+      const limited = segment.lineLimit > 0 ? formatted.split("\n").slice(0, segment.lineLimit).join("\n") : formatted;
+      outputs.push(limited);
+      continue;
+    }
     if (segment.kind === "grep") {
       const result = await handleGrepDirectFn(api, memoryTable, sessionsTable, segment.params);
       if (result === null)
@@ -2210,6 +2358,7 @@ var SAFE_BUILTINS = /* @__PURE__ */ new Set([
   "md5sum",
   "sha1sum",
   "sha256sum",
+  "psql",
   "echo",
   "printf",
   "tee",
@@ -2321,11 +2470,32 @@ function rewritePaths(cmd) {
 }
 
 // dist/src/hooks/codex/pre-tool-use.js
+function isAnyPsqlCommand(cmd) {
+  return /^\s*psql\b/.test(cmd.trim());
+}
+function isHivemindPsqlCommand(cmd) {
+  if (!isPsqlMode())
+    return false;
+  const query = extractPsqlQueryFromCommand(cmd);
+  return !!query && queryUsesOnlyInterceptedTables(query);
+}
+function needsHivemindPsqlRewrite(cmd) {
+  if (!isPsqlMode() || !isAnyPsqlCommand(cmd))
+    return false;
+  const query = extractPsqlQueryFromCommand(cmd);
+  return !!query && queryReferencesInterceptedTables(query) && !queryUsesOnlyInterceptedTables(query);
+}
 var log4 = (msg) => log("codex-pre", msg);
 var __bundleDir = dirname(fileURLToPath2(import.meta.url));
 var SHELL_BUNDLE = existsSync3(join6(__bundleDir, "shell", "deeplake-shell.js")) ? join6(__bundleDir, "shell", "deeplake-shell.js") : join6(__bundleDir, "..", "shell", "deeplake-shell.js");
 function buildUnsupportedGuidance() {
-  return "This command is not supported for ~/.deeplake/memory/ operations. Only bash builtins are available: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. Do NOT use python, python3, node, curl, or other interpreters. Rewrite your command using only bash tools and retry.";
+  return `This command is not supported for ~/.deeplake/memory/ operations. Only bash builtins are available, plus benchmark SQL mode via psql -At -F '|' -c "SELECT ...". Do NOT use python, python3, node, curl, or other interpreters. Rewrite your command using only bash tools and retry.`;
+}
+function buildPsqlOnlyGuidance() {
+  return "Hivemind recall is SQL-only in this mode. Use psql with the memory and sessions tables only. Do NOT use grep, cat, ls, Read, Glob, or filesystem paths for memory lookups.";
+}
+function buildPsqlSchemaGuidance() {
+  return "Only psql SELECT queries over memory and sessions are intercepted in SQL mode. Rewrite the query to reference only those tables with normal psql SELECT syntax.";
 }
 function runVirtualShell(cmd, shellBundle = SHELL_BUNDLE, logFn = log4) {
   try {
@@ -2344,15 +2514,39 @@ async function processCodexPreToolUse(input, deps = {}) {
   const { config = loadConfig(), createApi = (table, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table), executeCompiledBashCommandFn = executeCompiledBashCommand, readVirtualPathContentsFn = readVirtualPathContents, readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, handleGrepDirectFn = handleGrepDirect, readCachedIndexContentFn = readCachedIndexContent, writeCachedIndexContentFn = writeCachedIndexContent, runVirtualShellFn = runVirtualShell, shellBundle = SHELL_BUNDLE, logFn = log4 } = deps;
   const cmd = input.tool_input?.command ?? "";
   logFn(`hook fired: cmd=${cmd}`);
-  if (!touchesMemory(cmd))
+  if (!touchesMemory(cmd) && !isAnyPsqlCommand(cmd))
     return { action: "pass" };
-  const rewritten = rewritePaths(cmd);
+  if (isAnyPsqlCommand(cmd) && !isHivemindPsqlCommand(cmd)) {
+    if (needsHivemindPsqlRewrite(cmd)) {
+      return {
+        action: "guide",
+        output: buildPsqlSchemaGuidance(),
+        rewrittenCommand: cmd.trim()
+      };
+    }
+    return { action: "pass" };
+  }
+  if (isPsqlMode() && touchesMemory(cmd)) {
+    return {
+      action: "guide",
+      output: buildPsqlOnlyGuidance(),
+      rewrittenCommand: cmd.trim()
+    };
+  }
+  const rewritten = isHivemindPsqlCommand(cmd) ? cmd.trim() : rewritePaths(cmd);
   if (!isSafe(rewritten)) {
-    const guidance = buildUnsupportedGuidance();
+    const guidance = isPsqlMode() ? buildPsqlOnlyGuidance() : buildUnsupportedGuidance();
     logFn(`unsupported command, returning guidance: ${rewritten}`);
     return {
       action: "guide",
       output: guidance,
+      rewrittenCommand: rewritten
+    };
+  }
+  if (isHivemindPsqlCommand(rewritten) && !config) {
+    return {
+      action: "guide",
+      output: "Hivemind SQL mode is unavailable because Deeplake credentials are missing.",
       rewrittenCommand: rewritten
     };
   }
@@ -2525,7 +2719,21 @@ async function processCodexPreToolUse(input, deps = {}) {
       }
     } catch (e) {
       logFn(`direct query failed, falling back to shell: ${e.message}`);
+      if (isHivemindPsqlCommand(rewritten)) {
+        return {
+          action: "guide",
+          output: "Hivemind SQL mode could not satisfy the query. Rewrite it as a narrower SELECT over memory or sessions.",
+          rewrittenCommand: rewritten
+        };
+      }
     }
+  }
+  if (isHivemindPsqlCommand(rewritten)) {
+    return {
+      action: "guide",
+      output: "Hivemind SQL mode could not satisfy the query. Rewrite it as a narrower SELECT over memory or sessions.",
+      rewrittenCommand: rewritten
+    };
   }
   logFn(`intercepted \u2192 running via virtual shell: ${rewritten}`);
   const result = runVirtualShellFn(rewritten, shellBundle, logFn);
@@ -2556,6 +2764,8 @@ if (isDirectRun(import.meta.url)) {
   });
 }
 export {
+  buildPsqlOnlyGuidance,
+  buildPsqlSchemaGuidance,
   buildUnsupportedGuidance,
   isSafe,
   processCodexPreToolUse,

@@ -15,6 +15,7 @@ export const SAFE_BUILTINS = new Set([
   "jq", "yq", "xan", "base64", "od",
   "tar", "gzip", "gunzip", "zcat",
   "md5sum", "sha1sum", "sha256sum",
+  "psql",
   "echo", "printf", "tee",
   "pwd", "cd", "basename", "dirname", "env", "printenv", "hostname", "whoami",
   "date", "seq", "expr", "sleep", "timeout", "time", "true", "false", "test",

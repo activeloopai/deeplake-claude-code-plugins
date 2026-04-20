@@ -290,6 +290,29 @@ var DeeplakeApi = class {
   async createIndex(column) {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
+  /** Create the standard BM25 summary index for a memory table. */
+  async createSummaryBm25Index(tableName) {
+    const table = tableName ?? this.tableName;
+    const indexName = this.buildLookupIndexName(table, "summary_bm25");
+    await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" USING deeplake_index ("summary")`);
+  }
+  /** Ensure the standard BM25 summary index exists, using a local freshness marker to avoid repeated CREATEs. */
+  async ensureSummaryBm25Index(tableName) {
+    const table = tableName ?? this.tableName;
+    const suffix = "summary_bm25";
+    if (this.hasFreshLookupIndexMarker(table, suffix))
+      return;
+    try {
+      await this.createSummaryBm25Index(table);
+      this.markLookupIndexReady(table, suffix);
+    } catch (e) {
+      if (isDuplicateIndexError(e)) {
+        this.markLookupIndexReady(table, suffix);
+        return;
+      }
+      throw e;
+    }
+  }
   buildLookupIndexName(table, suffix) {
     return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
   }
@@ -542,7 +565,9 @@ import { writeFileSync as writeFileSync3, mkdirSync as mkdirSync3, appendFileSyn
 import { homedir as homedir4, tmpdir as tmpdir2 } from "node:os";
 var HOME = homedir4();
 var WIKI_LOG = join5(HOME, ".claude", "hooks", "deeplake-wiki.log");
-var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry. Think of this as building a knowledge graph, not writing a summary.
+var WIKI_PROMPT_TEMPLATE = `You are maintaining a persistent wiki from a session transcript. This page will become part of a long-lived knowledge base that future agents will search through index.md before opening the source session. Write for retrieval, not storytelling.
+
+The session may be a coding session, a meeting, or a personal conversation. Your job is to turn the raw transcript into a dense, factual wiki page that preserves names, dates, relationships, preferences, plans, titles, and exact status changes.
 
 SESSION JSONL path: __JSONL__
 SUMMARY FILE to write: __SUMMARY__
@@ -556,40 +581,50 @@ Steps:
    - If PREVIOUS JSONL OFFSET > 0, this is a resumed session. Read the existing summary file first,
      then focus on lines AFTER the offset for new content. Merge new facts into the existing summary.
    - If offset is 0, generate from scratch.
+   - Treat the JSONL as the source of truth. Do not invent facts.
 
 2. Write the summary file at the path above with this EXACT format. The header fields (Source, Project) are pre-filled \u2014 copy them VERBATIM, do NOT replace them with paths from the JSONL content:
 
 # Session __SESSION_ID__
 - **Source**: __JSONL_SERVER_PATH__
+- **Date**: <primary real-world date/time for the session if the transcript contains one; otherwise "unknown">
+- **Participants**: <comma-separated names or roles of the main participants>
 - **Started**: <extract from JSONL>
 - **Ended**: <now>
 - **Project**: __PROJECT__
+- **Topics**: <comma-separated topics, themes, or workstreams>
 - **JSONL offset**: __JSONL_LINES__
 
 ## What Happened
-<2-3 dense sentences. What was the goal, what was accomplished, what's left.>
+<2-4 dense sentences. What happened, why it mattered, and what changed. Prefer specific names/titles/dates over abstractions.>
+
+## Searchable Facts
+<Bullet list of atomic facts. One fact per bullet. Each bullet should be able to answer a future query on its own.
+Include exact names, titles, identity labels, relationship status clues, home countries/origins, occupations, preferences, collections, books/media titles, pets, family details, goals, plans, locations, organizations, bugs, APIs, dates, and relative-time resolutions when the session date makes them unambiguous.>
 
 ## People
-<For each person mentioned: name, role, what they did/said. Format: **Name** \u2014 role \u2014 action>
+<For each person mentioned: name, role/relationship, notable traits/preferences/goals, and what they did or said. Format: **Name** \u2014 role/relationship \u2014 facts>
 
 ## Entities
-<Every named thing: repos, branches, files, APIs, tools, services, tables, features, bugs.
-Format: **entity** (type) \u2014 what was done with it, its current state>
+<Every named thing: repos, branches, files, APIs, tools, services, tables, features, bugs, places, organizations, events, books, songs, artworks, pets, or products.
+Format: **entity** (type) \u2014 why it matters, relevant state/details>
 
 ## Decisions & Reasoning
-<Every decision made and WHY. Not just "did X" but "did X because Y, considered Z but rejected it because W">
-
-## Key Facts
-<Bullet list of atomic facts that could answer future questions. Each fact should stand alone.
-Example: "- The memory table uses DELETE+INSERT, not UPDATE (WASM doesn't support upsert)">
+<Every decision made and WHY. Not just "did X" but "did X because Y, considered Z but rejected it because W". If no explicit decision happened, say "- None explicit.">
 
 ## Files Modified
-<bullet list: path (new/modified/deleted) \u2014 what changed>
+<bullet list: path (new/modified/deleted) \u2014 what changed. If none, say "- None.">
 
 ## Open Questions / TODO
-<Anything unresolved, blocked, or explicitly deferred>
+<Anything unresolved, blocked, explicitly deferred, or worth following up later. If none, say "- None explicit.">
 
-IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact. Future you will search this wiki to answer questions like "who worked on X", "why did we choose Y", "what's the status of Z". If a detail exists in the session, it should be in the wiki.
+IMPORTANT:
+- Be exhaustive. If a detail exists in the session and could answer a later question, it should be in the wiki.
+- Favor exact nouns and titles over generic paraphrases. Preserve exact book names, organization names, file names, feature names, and self-descriptions.
+- Keep facts canonical and query-friendly: "Ava is single", "Leo's home country is Brazil", "The team chose retries because the API returned 429s".
+- Resolve relative dates like "last year" or "next month" against the session's own date when the source makes that possible. If it is ambiguous, keep the relative phrase instead of guessing.
+- Do not omit beneficiary groups or targets of goals (for example who a project, career, or effort is meant to help).
+- Do not leak absolute filesystem paths beyond the pre-filled Source field.
 
 PRIVACY: Never include absolute filesystem paths (e.g. /home/user/..., /Users/..., C:\\\\...) in the summary. Use only project-relative paths or the project name. The Source and Project fields above are already correct \u2014 do not change them.
 
@@ -892,11 +927,12 @@ function sleep2(ms) {
 }
 
 // dist/src/hooks/query-cache.js
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync5, rmSync as rmSync2, writeFileSync as writeFileSync5 } from "node:fs";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync5, rmSync as rmSync2, statSync as statSync2, writeFileSync as writeFileSync5 } from "node:fs";
 import { join as join7 } from "node:path";
 import { homedir as homedir6 } from "node:os";
 var log3 = (msg) => log("query-cache", msg);
 var DEFAULT_CACHE_ROOT = join7(homedir6(), ".deeplake", "query-cache");
+var INDEX_CACHE_TTL_MS = 15 * 60 * 1e3;
 function getSessionQueryCacheDir(sessionId, deps = {}) {
   const { cacheRoot = DEFAULT_CACHE_ROOT } = deps;
   return join7(cacheRoot, sessionId);

@@ -94,12 +94,60 @@ function releaseLock(sessionId) {
 
 // dist/src/hooks/upload-summary.js
 import { randomUUID } from "node:crypto";
+
+// dist/src/utils/summary-format.js
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function extractSection(text, heading) {
+  const re = new RegExp(`^## ${escapeRegex(heading)}\\s*\\n([\\s\\S]*?)(?=\\n## |$)`, "m");
+  const match = text.match(re);
+  return match ? match[1].trim() : null;
+}
+function extractHeaderField(text, field) {
+  const re = new RegExp(`^- \\*\\*${escapeRegex(field)}\\*\\*:\\s*(.+)$`, "m");
+  const match = text.match(re);
+  return match ? match[1].trim() : null;
+}
+function compactText(value) {
+  return value.replace(/\s+/g, " ").trim();
+}
+function extractBullets(section, limit = 3) {
+  if (!section)
+    return [];
+  return section.split("\n").map((line) => line.trim()).filter((line) => line.startsWith("- ")).map((line) => compactText(line.slice(2))).filter(Boolean).slice(0, limit);
+}
+function extractSummaryParticipants(text) {
+  return extractHeaderField(text, "Participants") ?? extractHeaderField(text, "Speakers");
+}
+function extractSummaryTopics(text) {
+  return extractHeaderField(text, "Topics");
+}
+function buildSummaryBlurb(text) {
+  const participants = extractSummaryParticipants(text);
+  const topics = extractSummaryTopics(text);
+  const factBullets = extractBullets(extractSection(text, "Searchable Facts"), 3);
+  const keyBullets = factBullets.length > 0 ? factBullets : extractBullets(extractSection(text, "Key Facts"), 3);
+  const whatHappened = compactText(extractSection(text, "What Happened") ?? "");
+  const parts = [];
+  if (participants)
+    parts.push(participants);
+  if (topics)
+    parts.push(topics);
+  if (keyBullets.length > 0)
+    parts.push(keyBullets.join("; "));
+  if (parts.length === 0 && whatHappened)
+    parts.push(whatHappened);
+  const blurb = parts.join(" | ").slice(0, 300).trim();
+  return blurb || "completed";
+}
+
+// dist/src/hooks/upload-summary.js
 function esc(s) {
   return s.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 function extractDescription(text) {
-  const match = text.match(/## What Happened\n([\s\S]*?)(?=\n##|$)/);
-  return match ? match[1].trim().slice(0, 300) : "completed";
+  return buildSummaryBlurb(text);
 }
 async function uploadSummary(query2, params) {
   const { tableName, vpath, fname, userName, project, agent, text } = params;
