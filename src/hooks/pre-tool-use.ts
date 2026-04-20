@@ -23,6 +23,7 @@ import {
   writeCachedIndexContent,
 } from "./query-cache.js";
 import { isSafe, touchesMemory, rewritePaths } from "./memory-path-utils.js";
+import { capOutputForClaude } from "../utils/output-cap.js";
 
 export { isSafe, touchesMemory, rewritePaths };
 
@@ -354,11 +355,15 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
           content = fromEnd ? lines.slice(-lineLimit).join("\n") : lines.slice(0, lineLimit).join("\n");
         }
         const label = lineLimit > 0 ? (fromEnd ? `tail -${lineLimit}` : `head -${lineLimit}`) : "cat";
+        // Read tool writes content to disk and Claude Code reads the file directly,
+        // so no size pressure; keep full content. Bash intercepts flow through
+        // Claude Code's 16 KB tool_result threshold so we cap before reaching it.
         if (input.tool_name === "Read") {
           const file_path = writeReadCacheFileFn(input.session_id, virtualPath, content);
           return buildReadDecision(file_path, `[DeepLake direct] ${label} ${virtualPath}`);
         }
-        return buildAllowDecision(`echo ${JSON.stringify(content)}`, `[DeepLake direct] ${label} ${virtualPath}`);
+        const capped = capOutputForClaude(content, { kind: label });
+        return buildAllowDecision(`echo ${JSON.stringify(capped)}`, `[DeepLake direct] ${label} ${virtualPath}`);
       }
     }
 
@@ -402,7 +407,8 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
           lines.push(name + (info.isDir ? "/" : ""));
         }
       }
-      return buildAllowDecision(`echo ${JSON.stringify(lines.join("\n") || "(empty directory)")}`, `[DeepLake direct] ls ${dir}`);
+      const lsOutput = capOutputForClaude(lines.join("\n") || "(empty directory)", { kind: "ls" });
+      return buildAllowDecision(`echo ${JSON.stringify(lsOutput)}`, `[DeepLake direct] ls ${dir}`);
     }
 
     if (input.tool_name === "Bash") {
@@ -414,7 +420,8 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
         const paths = await findVirtualPathsFn(api, table, sessionsTable, dir, namePattern);
         let result = paths.join("\n") || "";
         if (/\|\s*wc\s+-l\s*$/.test(shellCmd)) result = String(paths.length);
-        return buildAllowDecision(`echo ${JSON.stringify(result || "(no matches)")}`, `[DeepLake direct] find ${dir}`);
+        const capped = capOutputForClaude(result || "(no matches)", { kind: "find" });
+        return buildAllowDecision(`echo ${JSON.stringify(capped)}`, `[DeepLake direct] find ${dir}`);
       }
     }
   } catch (e: any) {

@@ -795,6 +795,44 @@ async function grepBothTables(api, memoryTable, sessionsTable, params, targetPat
   return refineGrepMatches(normalized, params);
 }
 
+// dist/src/utils/output-cap.js
+var CLAUDE_OUTPUT_CAP_BYTES = 8 * 1024;
+function byteLen(str) {
+  return Buffer.byteLength(str, "utf8");
+}
+function capOutputForClaude(output, options = {}) {
+  const maxBytes = options.maxBytes ?? CLAUDE_OUTPUT_CAP_BYTES;
+  if (byteLen(output) <= maxBytes)
+    return output;
+  const kind = options.kind ?? "output";
+  const footerReserve = 220;
+  const budget = Math.max(1, maxBytes - footerReserve);
+  let cut = 0;
+  let running = 0;
+  const lines = output.split("\n");
+  const keptLines = [];
+  for (const line of lines) {
+    const lineBytes = byteLen(line) + 1;
+    if (running + lineBytes > budget)
+      break;
+    keptLines.push(line);
+    running += lineBytes;
+    cut += lineBytes;
+  }
+  if (keptLines.length === 0) {
+    const slice = Buffer.from(output, "utf8").slice(0, budget).toString("utf8");
+    const footer2 = `
+... [${kind} truncated: ${(byteLen(output) / 1024).toFixed(1)} KB total; refine with '| head -N' or a tighter pattern]`;
+    return slice + footer2;
+  }
+  const totalLines = lines.length;
+  const elidedLines = totalLines - keptLines.length;
+  const elidedBytes = byteLen(output) - byteLen(keptLines.join("\n"));
+  const footer = `
+... [${kind} truncated: ${elidedLines} more lines (${(elidedBytes / 1024).toFixed(1)} KB) elided \u2014 refine with '| head -N' or a tighter pattern]`;
+  return keptLines.join("\n") + footer;
+}
+
 // dist/src/hooks/grep-direct.js
 function splitFirstPipelineStage(cmd) {
   const input = cmd.trim();
@@ -1034,7 +1072,8 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
     fixedString: params.fixedString
   };
   const output = await grepBothTables(api, table, sessionsTable, matchParams, params.targetPath);
-  return output.join("\n") || "(no matches)";
+  const joined = output.join("\n") || "(no matches)";
+  return capOutputForClaude(joined, { kind: "grep" });
 }
 
 // dist/src/hooks/virtual-table-query.js
@@ -1649,7 +1688,7 @@ async function executeCompiledBashCommand(api, memoryTable, sessionsTable, cmd, 
       continue;
     }
   }
-  return outputs.join("\n");
+  return capOutputForClaude(outputs.join("\n"), { kind: "bash" });
 }
 
 // dist/src/hooks/query-cache.js
@@ -2040,7 +2079,8 @@ async function processPreToolUse(input, deps = {}) {
           const file_path = writeReadCacheFileFn(input.session_id, virtualPath, content);
           return buildReadDecision(file_path, `[DeepLake direct] ${label} ${virtualPath}`);
         }
-        return buildAllowDecision(`echo ${JSON.stringify(content)}`, `[DeepLake direct] ${label} ${virtualPath}`);
+        const capped = capOutputForClaude(content, { kind: label });
+        return buildAllowDecision(`echo ${JSON.stringify(capped)}`, `[DeepLake direct] ${label} ${virtualPath}`);
       }
     }
     if (!lsDir && input.tool_name === "Glob") {
@@ -2085,7 +2125,8 @@ async function processPreToolUse(input, deps = {}) {
           lines.push(name + (info.isDir ? "/" : ""));
         }
       }
-      return buildAllowDecision(`echo ${JSON.stringify(lines.join("\n") || "(empty directory)")}`, `[DeepLake direct] ls ${dir}`);
+      const lsOutput = capOutputForClaude(lines.join("\n") || "(empty directory)", { kind: "ls" });
+      return buildAllowDecision(`echo ${JSON.stringify(lsOutput)}`, `[DeepLake direct] ls ${dir}`);
     }
     if (input.tool_name === "Bash") {
       const findMatch = shellCmd.match(/^find\s+(\S+)\s+(?:-type\s+\S+\s+)?-name\s+'([^']+)'/);
@@ -2097,7 +2138,8 @@ async function processPreToolUse(input, deps = {}) {
         let result = paths.join("\n") || "";
         if (/\|\s*wc\s+-l\s*$/.test(shellCmd))
           result = String(paths.length);
-        return buildAllowDecision(`echo ${JSON.stringify(result || "(no matches)")}`, `[DeepLake direct] find ${dir}`);
+        const capped = capOutputForClaude(result || "(no matches)", { kind: "find" });
+        return buildAllowDecision(`echo ${JSON.stringify(capped)}`, `[DeepLake direct] find ${dir}`);
       }
     }
   } catch (e) {
