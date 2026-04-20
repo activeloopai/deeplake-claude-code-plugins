@@ -407,7 +407,7 @@ async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, 
   wikiLog(`SessionSetup: created placeholder for ${sessionId} (${cwd})`);
 }
 async function main() {
-  if ((process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1")
+  if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
   const input = await readStdin();
   const creds = loadCredentials();
@@ -424,7 +424,7 @@ async function main() {
     } catch {
     }
   }
-  const captureEnabled = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
+  const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
   if (input.session_id) {
     try {
       const config = loadConfig();
