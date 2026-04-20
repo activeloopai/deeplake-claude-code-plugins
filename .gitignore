@@ -6,6 +6,7 @@ tmp/
 .env
 .env.*
 coverage/
+jscpd-report/
 bench/
 .claude/
 CLAUDE.md

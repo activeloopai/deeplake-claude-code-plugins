@@ -1,48 +1,61 @@
 #!/usr/bin/env node
 
 /**
- * Codex Capture hook — appends session events to a local queue on the hot path.
+ * Codex Capture hook — writes each session event as a row in the sessions table.
  *
  * Used by: UserPromptSubmit, PostToolUse
+ *
+ * Codex input fields:
+ *   All events: session_id, transcript_path, cwd, hook_event_name, model
+ *   UserPromptSubmit: prompt (user text)
+ *   PostToolUse: tool_name, tool_use_id, tool_input, tool_response
+ *   Stop: (no extra fields — Codex has no last_assistant_message equivalent)
  */
 
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig, type Config } from "../../config.js";
+import { DeeplakeApi } from "../../deeplake-api.js";
+import { sqlStr } from "../../utils/sql.js";
 import { log as _log } from "../../utils/debug.js";
-import { isDirectRun } from "../../utils/direct-run.js";
+import { buildSessionPath } from "../../utils/session-path.js";
 import {
   bumpTotalCount,
   loadTriggerConfig,
   shouldTrigger,
   tryAcquireLock,
+  releaseLock,
 } from "../summary-state.js";
 import { bundleDirFromImportMeta, spawnCodexWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
-import {
-  appendQueuedSessionRow,
-  buildQueuedSessionRow,
-  buildSessionPath,
-} from "../session-queue.js";
-import { clearSessionQueryCache } from "../query-cache.js";
-
 const log = (msg: string) => _log("codex-capture", msg);
 
-export interface CodexHookInput {
+interface CodexHookInput {
   session_id: string;
   transcript_path?: string | null;
   cwd: string;
   hook_event_name: string;
   model: string;
   turn_id?: string;
+  // UserPromptSubmit
   prompt?: string;
+  // PostToolUse (Bash only in Codex)
   tool_name?: string;
   tool_use_id?: string;
   tool_input?: { command?: string };
   tool_response?: Record<string, unknown>;
 }
 
-const CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
+const CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 
-export function buildCodexCaptureEntry(input: CodexHookInput, timestamp: string): Record<string, unknown> | null {
+async function main(): Promise<void> {
+  if (!CAPTURE) return;
+  const input = await readStdin<CodexHookInput>();
+  const config = loadConfig();
+  if (!config) { log("no config"); return; }
+
+  const sessionsTable = config.sessionsTableName;
+  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
+
+  const ts = new Date().toISOString();
   const meta = {
     session_id: input.session_id,
     transcript_path: input.transcript_path,
@@ -50,20 +63,22 @@ export function buildCodexCaptureEntry(input: CodexHookInput, timestamp: string)
     hook_event_name: input.hook_event_name,
     model: input.model,
     turn_id: input.turn_id,
-    timestamp,
+    timestamp: ts,
   };
 
+  let entry: Record<string, unknown>;
+
   if (input.hook_event_name === "UserPromptSubmit" && input.prompt !== undefined) {
-    return {
+    log(`user session=${input.session_id}`);
+    entry = {
       id: crypto.randomUUID(),
       ...meta,
       type: "user_message",
       content: input.prompt,
     };
-  }
-
-  if (input.hook_event_name === "PostToolUse" && input.tool_name !== undefined) {
-    return {
+  } else if (input.hook_event_name === "PostToolUse" && input.tool_name !== undefined) {
+    log(`tool=${input.tool_name} session=${input.session_id}`);
+    entry = {
       id: crypto.randomUUID(),
       ...meta,
       type: "tool_call",
@@ -72,132 +87,75 @@ export function buildCodexCaptureEntry(input: CodexHookInput, timestamp: string)
       tool_input: JSON.stringify(input.tool_input),
       tool_response: JSON.stringify(input.tool_response),
     };
-  }
-
-  return null;
-}
-
-interface PeriodicSummaryDeps {
-  bundleDir?: string;
-  wikiWorker?: boolean;
-  logFn?: (msg: string) => void;
-  bumpTotalCountFn?: typeof bumpTotalCount;
-  loadTriggerConfigFn?: typeof loadTriggerConfig;
-  shouldTriggerFn?: typeof shouldTrigger;
-  tryAcquireLockFn?: typeof tryAcquireLock;
-  wikiLogFn?: typeof wikiLog;
-  spawnCodexWikiWorkerFn?: typeof spawnCodexWikiWorker;
-}
-
-export function maybeTriggerPeriodicSummary(sessionId: string, cwd: string, config: Config, deps: PeriodicSummaryDeps = {}): void {
-  const {
-    bundleDir = bundleDirFromImportMeta(import.meta.url),
-    wikiWorker = process.env.HIVEMIND_WIKI_WORKER === "1",
-    logFn = log,
-    bumpTotalCountFn = bumpTotalCount,
-    loadTriggerConfigFn = loadTriggerConfig,
-    shouldTriggerFn = shouldTrigger,
-    tryAcquireLockFn = tryAcquireLock,
-    wikiLogFn = wikiLog,
-    spawnCodexWikiWorkerFn = spawnCodexWikiWorker,
-  } = deps;
-
-  if (wikiWorker) return;
-
-  try {
-    const state = bumpTotalCountFn(sessionId);
-    const cfg = loadTriggerConfigFn();
-    if (!shouldTriggerFn(state, cfg)) return;
-
-    if (!tryAcquireLockFn(sessionId)) {
-      logFn(`periodic trigger suppressed (lock held) session=${sessionId}`);
-      return;
-    }
-
-    wikiLogFn(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
-    spawnCodexWikiWorkerFn({
-      config,
-      sessionId,
-      cwd,
-      bundleDir,
-      reason: "Periodic",
-    });
-  } catch (e: any) {
-    logFn(`periodic trigger error: ${e.message}`);
-  }
-}
-
-interface CodexCaptureDeps {
-  captureEnabled?: boolean;
-  config?: Config | null;
-  now?: () => string;
-  appendQueuedSessionRowFn?: typeof appendQueuedSessionRow;
-  buildQueuedSessionRowFn?: typeof buildQueuedSessionRow;
-  clearSessionQueryCacheFn?: typeof clearSessionQueryCache;
-  maybeTriggerPeriodicSummaryFn?: typeof maybeTriggerPeriodicSummary;
-  logFn?: (msg: string) => void;
-}
-
-export async function runCodexCaptureHook(input: CodexHookInput, deps: CodexCaptureDeps = {}): Promise<{
-  status: "disabled" | "no_config" | "ignored" | "queued";
-  entry?: Record<string, unknown>;
-}> {
-  const {
-    captureEnabled = CAPTURE,
-    config = loadConfig(),
-    now = () => new Date().toISOString(),
-    appendQueuedSessionRowFn = appendQueuedSessionRow,
-    buildQueuedSessionRowFn = buildQueuedSessionRow,
-    clearSessionQueryCacheFn = clearSessionQueryCache,
-    maybeTriggerPeriodicSummaryFn = maybeTriggerPeriodicSummary,
-    logFn = log,
-  } = deps;
-
-  if (!captureEnabled) return { status: "disabled" };
-  if (!config) {
-    logFn("no config");
-    return { status: "no_config" };
-  }
-
-  const ts = now();
-  const entry = buildCodexCaptureEntry(input, ts);
-  if (!entry) {
-    logFn(`unknown event: ${input.hook_event_name}, skipping`);
-    return { status: "ignored" };
-  }
-
-  if (input.hook_event_name === "UserPromptSubmit") logFn(`user session=${input.session_id}`);
-  else logFn(`tool=${input.tool_name} session=${input.session_id}`);
-
-  if (input.hook_event_name === "UserPromptSubmit") {
-    clearSessionQueryCacheFn(input.session_id);
+  } else {
+    log(`unknown event: ${input.hook_event_name}, skipping`);
+    return;
   }
 
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);
+  log(`writing to ${sessionPath}`);
+
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-  appendQueuedSessionRowFn(buildQueuedSessionRowFn({
-    sessionPath,
-    line,
-    userName: config.userName,
-    projectName,
-    description: input.hook_event_name ?? "",
-    agent: "codex",
-    timestamp: ts,
-  }));
-  logFn(`queued ${input.hook_event_name} for ${sessionPath}`);
+  const filename = sessionPath.split("/").pop() ?? "";
+  const jsonForSql = sqlStr(line);
 
-  maybeTriggerPeriodicSummaryFn(input.session_id, input.cwd ?? "", config);
-  return { status: "queued", entry };
+  const insertSql =
+    `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ` +
+    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'codex', '${ts}', '${ts}')`;
+
+  try {
+    await api.query(insertSql);
+  } catch (e: any) {
+    if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
+      log("table missing, creating and retrying");
+      await api.ensureSessionsTable(sessionsTable);
+      await api.query(insertSql);
+    } else {
+      throw e;
+    }
+  }
+
+  log("capture ok");
+
+  maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
 }
 
-/* c8 ignore start */
-async function main(): Promise<void> {
-  const input = await readStdin<CodexHookInput>();
-  await runCodexCaptureHook(input);
+function maybeTriggerPeriodicSummary(sessionId: string, cwd: string, config: Config): void {
+  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
+
+  try {
+    const state = bumpTotalCount(sessionId);
+    const cfg = loadTriggerConfig();
+    if (!shouldTrigger(state, cfg)) return;
+
+    if (!tryAcquireLock(sessionId)) {
+      log(`periodic trigger suppressed (lock held) session=${sessionId}`);
+      return;
+    }
+
+    wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
+    try {
+      spawnCodexWikiWorker({
+        config,
+        sessionId,
+        cwd,
+        bundleDir: bundleDirFromImportMeta(import.meta.url),
+        reason: "Periodic",
+      });
+    } catch (e: any) {
+      log(`periodic spawn failed: ${e.message}`);
+      try {
+        releaseLock(sessionId);
+      } catch (releaseErr: any) {
+        log(`releaseLock after periodic spawn failure also failed: ${releaseErr.message}`);
+      }
+      throw e;
+    }
+  } catch (e: any) {
+    log(`periodic trigger error: ${e.message}`);
+  }
 }
 
-if (isDirectRun(import.meta.url)) {
-  main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
-}
-/* c8 ignore stop */
+main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });

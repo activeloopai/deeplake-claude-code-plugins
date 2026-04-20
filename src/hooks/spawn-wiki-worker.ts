@@ -6,13 +6,14 @@
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import type { Config } from "../config.js";
-import { utcTimestamp } from "../utils/debug.js";
+import { makeWikiLogger } from "../utils/wiki-log.js";
 
 const HOME = homedir();
-export const WIKI_LOG = join(HOME, ".claude", "hooks", "deeplake-wiki.log");
+const wikiLogger = makeWikiLogger(join(HOME, ".claude", "hooks"));
+export const WIKI_LOG = wikiLogger.path;
 
 export const WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge — entities, decisions, relationships, and facts — into a structured, searchable wiki entry. Think of this as building a knowledge graph, not writing a summary.
 
@@ -67,12 +68,7 @@ PRIVACY: Never include absolute filesystem paths (e.g. /home/user/..., /Users/..
 
 LENGTH LIMIT: Keep the total summary under 4000 characters. Be dense and concise — prioritize facts over prose. If a session is short, the summary should be short too.`;
 
-export function wikiLog(msg: string): void {
-  try {
-    mkdirSync(join(HOME, ".claude", "hooks"), { recursive: true });
-    appendFileSync(WIKI_LOG, `[${utcTimestamp()}] ${msg}\n`);
-  } catch { /* ignore */ }
-}
+export const wikiLog = wikiLogger.log;
 
 export function findClaudeBin(): string {
   try {
