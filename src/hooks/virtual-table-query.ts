@@ -53,7 +53,7 @@ function buildInList(paths: string[]): string {
 function buildDirFilter(dirs: string[]): string {
   const cleaned = [...new Set(dirs.map(dir => dir.replace(/\/+$/, "") || "/"))];
   if (cleaned.length === 0 || cleaned.includes("/")) return "";
-  const clauses = cleaned.map((dir) => `path LIKE '${sqlLike(dir)}/%'`);
+  const clauses = cleaned.map((dir) => `path LIKE '${sqlLike(dir)}/%' ESCAPE '\\'`);
   return ` WHERE ${clauses.join(" OR ")}`;
 }
 
@@ -196,8 +196,8 @@ export async function findVirtualPaths(
   const likePath = `${sqlLike(normalizedDir === "/" ? "" : normalizedDir)}/%`;
   const rows = await queryUnionRows(
     api,
-    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`,
-    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`,
+    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`,
+    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`,
   );
 
   return [...new Set(

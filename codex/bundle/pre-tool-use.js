@@ -616,13 +616,13 @@ function buildPathCondition(targetPath) {
   const clean = targetPath.replace(/\/+$/, "");
   if (/[*?]/.test(clean)) {
     const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
-    return `path LIKE '${likePattern}'`;
+    return `path LIKE '${likePattern}' ESCAPE '\\'`;
   }
   const base = clean.split("/").pop() ?? "";
   if (base.includes(".")) {
     return `path = '${sqlStr(clean)}'`;
   }
-  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%' ESCAPE '\\')`;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
@@ -1066,7 +1066,7 @@ function buildDirFilter(dirs) {
   const cleaned = [...new Set(dirs.map((dir) => dir.replace(/\/+$/, "") || "/"))];
   if (cleaned.length === 0 || cleaned.includes("/"))
     return "";
-  const clauses = cleaned.map((dir) => `path LIKE '${sqlLike(dir)}/%'`);
+  const clauses = cleaned.map((dir) => `path LIKE '${sqlLike(dir)}/%' ESCAPE '\\'`);
   return ` WHERE ${clauses.join(" OR ")}`;
 }
 async function queryUnionRows(api, memoryQuery, sessionsQuery) {
@@ -1156,7 +1156,7 @@ async function listVirtualPathRows(api, memoryTable, sessionsTable, dir) {
 async function findVirtualPaths(api, memoryTable, sessionsTable, dir, filenamePattern) {
   const normalizedDir = dir.replace(/\/+$/, "") || "/";
   const likePath = `${sqlLike(normalizedDir === "/" ? "" : normalizedDir)}/%`;
-  const rows = await queryUnionRows(api, `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`, `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`);
+  const rows = await queryUnionRows(api, `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`, `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`);
   return [...new Set(rows.map((row) => row["path"]).filter((value) => typeof value === "string" && value.length > 0))];
 }
 function dedupeRowsByPath(rows) {
