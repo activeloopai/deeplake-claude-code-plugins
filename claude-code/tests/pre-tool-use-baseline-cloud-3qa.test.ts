@@ -129,8 +129,9 @@ describe("baseline_cloud 3-QA regression: sessions-only workspace", () => {
 
   for (const qa of REAL_QAS) {
     describe(qa.name, () => {
-      it("Read /home/.deeplake/memory/index.md intercept returns the real session listing (not '1 sessions:')", async () => {
+      it("Read /home/.deeplake/memory/index.md intercept returns file_path (Read-tool shape) pointing to the real session listing", async () => {
         const api = makeBaselineWorkspaceApi();
+        const capturedReadFiles: Array<{ sessionId: string; virtualPath: string; content: string; returnedPath: string }> = [];
 
         const decision = await processPreToolUse(
           {
@@ -145,21 +146,39 @@ describe("baseline_cloud 3-QA regression: sessions-only workspace", () => {
             executeCompiledBashCommandFn: vi.fn(async () => null) as any,
             readCachedIndexContentFn: () => null,
             writeCachedIndexContentFn: () => undefined,
+            writeReadCacheFileFn: ((sessionId: string, virtualPath: string, content: string) => {
+              const returnedPath = `/tmp/baseline-cloud-3qa-test-${sessionId.replace(/[^a-zA-Z0-9._-]/g, "_")}${virtualPath}`;
+              capturedReadFiles.push({ sessionId, virtualPath, content, returnedPath });
+              return returnedPath;
+            }) as any,
           },
         );
 
+        // Regression guard for bug #2: Read intercept MUST return a decision
+        // that causes main() to emit `updatedInput: {file_path}`. Today that
+        // means the decision carries `file_path`. If this asserts "undefined",
+        // Claude Code's Read tool will error with "path must be of type string".
         expect(decision).not.toBeNull();
-        const body = decision?.command ?? "";
+        expect(decision?.file_path).toBeDefined();
+        expect(typeof decision?.file_path).toBe("string");
+
+        // Content must be materialized once, with the real index shape.
+        expect(capturedReadFiles).toHaveLength(1);
+        const materialized = capturedReadFiles[0];
+        expect(materialized?.virtualPath).toBe("/index.md");
+        expect(decision?.file_path).toBe(materialized?.returnedPath);
+
+        const body = materialized?.content ?? "";
         expect(body).toContain("# Memory Index");
         expect(body).toContain("272 entries (0 summaries, 272 sessions):");
         expect(body).toContain(qa.expected_session_file);
-        // Regression guard: the old (buggy) synthesized index printed
-        // "<n> sessions:" where n was the count of summary rows only.
+        // Fix #1 regression guard (still important after fix #2): the old
+        // synthesized index reported sessions from the memory table only.
         expect(body).not.toMatch(/\b0 sessions:/);
         expect(body).not.toMatch(/\b1 sessions:/);
       });
 
-      it("Bash cat index.md intercept returns the same real session listing", async () => {
+      it("Bash cat index.md intercept returns the same listing via {command} (bash shape preserved)", async () => {
         const api = makeBaselineWorkspaceApi();
 
         const decision = await processPreToolUse(
@@ -179,6 +198,10 @@ describe("baseline_cloud 3-QA regression: sessions-only workspace", () => {
         );
 
         expect(decision).not.toBeNull();
+        // Bash intercepts keep the historical {command, description} shape —
+        // Claude Code's Bash tool reads `command`. The content is inlined as
+        // an `echo "..."` payload so the virtual shell isn't needed here.
+        expect(decision?.file_path).toBeUndefined();
         const body = decision?.command ?? "";
         expect(body).toContain("272 entries (0 summaries, 272 sessions):");
         expect(body).toContain(qa.expected_session_file);

@@ -329,6 +329,7 @@ describe("claude pre-tool source", () => {
         },
       ]),
     };
+    const capturedReadFiles: Array<{ path: string; content: string }> = [];
     const readDecision = await processPreToolUse({
       session_id: "s1",
       tool_name: "Read",
@@ -339,8 +340,17 @@ describe("claude pre-tool source", () => {
       createApi: vi.fn(() => api as any),
       readVirtualPathContentFn: vi.fn(async () => null) as any,
       executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+      writeReadCacheFileFn: ((sessionId: string, virtualPath: string, content: string) => {
+        const tmp = `/tmp/hooks-source.test-${sessionId}${virtualPath}`;
+        capturedReadFiles.push({ path: tmp, content });
+        return tmp;
+      }) as any,
     });
-    expect(readDecision?.command).toContain("# Memory Index");
+    // Read-tool intercepts return {file_path} (Claude Code's Read expects that);
+    // the index content is written to disk at that path, not inlined in command.
+    expect(readDecision?.file_path).toBe("/tmp/hooks-source.test-s1/index.md");
+    expect(capturedReadFiles).toHaveLength(1);
+    expect(capturedReadFiles[0]?.content).toContain("# Memory Index");
 
     const readDirDecision = await processPreToolUse({
       session_id: "s1",
@@ -403,6 +413,12 @@ describe("claude pre-tool source", () => {
     const readCachedIndexContentFn = vi.fn(() => "cached index");
     const writeCachedIndexContentFn = vi.fn();
 
+    const capturedReadFiles: Array<{ sessionId: string; virtualPath: string; content: string }> = [];
+    const writeReadCacheFileFn = vi.fn((sessionId: string, virtualPath: string, content: string) => {
+      capturedReadFiles.push({ sessionId, virtualPath, content });
+      return `/tmp/read-cache-${sessionId}${virtualPath}`;
+    });
+
     const directDecision = await processPreToolUse({
       session_id: "s1",
       tool_name: "Read",
@@ -414,8 +430,14 @@ describe("claude pre-tool source", () => {
       writeCachedIndexContentFn: writeCachedIndexContentFn as any,
       readVirtualPathContentFn: readVirtualPathContentFn as any,
       executeCompiledBashCommandFn: vi.fn(async () => null) as any,
+      writeReadCacheFileFn: writeReadCacheFileFn as any,
     });
-    expect(directDecision?.command).toContain("cached index");
+    // Read-tool intercepts emit {file_path}; content is materialized to disk
+    // via writeReadCacheFileFn, not inlined in command.
+    expect(directDecision?.file_path).toBe("/tmp/read-cache-s1/index.md");
+    expect(capturedReadFiles).toEqual([
+      { sessionId: "s1", virtualPath: "/index.md", content: "cached index" },
+    ]);
     expect(readVirtualPathContentFn).not.toHaveBeenCalled();
     expect(writeCachedIndexContentFn).toHaveBeenCalledWith("s1", "cached index");
 

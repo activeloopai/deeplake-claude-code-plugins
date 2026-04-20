@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readStdin } from "../utils/stdin.js";
@@ -42,6 +43,43 @@ export interface PreToolUseInput {
 export interface ClaudePreToolDecision {
   command: string;
   description: string;
+  /**
+   * When set, main() emits the hook response as `updatedInput: {file_path}`
+   * instead of `updatedInput: {command, description}`. This is required for
+   * Read-tool intercepts: Claude Code's Read implementation reads
+   * `updatedInput.file_path` and errors with "path must be of type string,
+   * got undefined" if the hook hands it the Bash-shaped input.
+   */
+  file_path?: string;
+}
+
+const READ_CACHE_ROOT = join(homedir(), ".deeplake", "query-cache");
+
+/**
+ * Materialize fetched content for a Read intercept into a real file on disk
+ * so Claude Code's Read tool can read it via `updatedInput.file_path`. The
+ * file lives under `~/.deeplake/query-cache/<session_id>/read/` and mirrors
+ * the virtual path structure (e.g. `/sessions/conv_0_session_1.json` →
+ * `.../read/sessions/conv_0_session_1.json`). Per-session dirs are cleaned
+ * alongside the index cache at session end.
+ */
+export function writeReadCacheFile(
+  sessionId: string,
+  virtualPath: string,
+  content: string,
+  deps: { cacheRoot?: string } = {},
+): string {
+  const { cacheRoot = READ_CACHE_ROOT } = deps;
+  const safeSessionId = sessionId.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown";
+  const rel = virtualPath.replace(/^\/+/, "") || "content";
+  const absPath = join(cacheRoot, safeSessionId, "read", rel);
+  mkdirSync(dirname(absPath), { recursive: true });
+  writeFileSync(absPath, content, "utf-8");
+  return absPath;
+}
+
+export function buildReadDecision(file_path: string, description: string): ClaudePreToolDecision {
+  return { command: "", description, file_path };
 }
 
 function getReadTargetPath(toolInput: Record<string, unknown>): string | null {
@@ -141,6 +179,7 @@ interface ClaudePreToolDeps {
   findVirtualPathsFn?: typeof findVirtualPaths;
   readCachedIndexContentFn?: typeof readCachedIndexContent;
   writeCachedIndexContentFn?: typeof writeCachedIndexContent;
+  writeReadCacheFileFn?: typeof writeReadCacheFile;
   shellBundle?: string;
   logFn?: (msg: string) => void;
 }
@@ -163,6 +202,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
     findVirtualPathsFn = findVirtualPaths,
     readCachedIndexContentFn = readCachedIndexContent,
     writeCachedIndexContentFn = writeCachedIndexContent,
+    writeReadCacheFileFn = writeReadCacheFile,
     shellBundle = SHELL_BUNDLE,
     logFn = log,
   } = deps;
@@ -314,6 +354,10 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
           content = fromEnd ? lines.slice(-lineLimit).join("\n") : lines.slice(0, lineLimit).join("\n");
         }
         const label = lineLimit > 0 ? (fromEnd ? `tail -${lineLimit}` : `head -${lineLimit}`) : "cat";
+        if (input.tool_name === "Read") {
+          const file_path = writeReadCacheFileFn(input.session_id, virtualPath, content);
+          return buildReadDecision(file_path, `[DeepLake direct] ${label} ${virtualPath}`);
+        }
         return buildAllowDecision(`echo ${JSON.stringify(content)}`, `[DeepLake direct] ${label} ${virtualPath}`);
       }
     }
@@ -385,11 +429,14 @@ async function main(): Promise<void> {
   const input = await readStdin<PreToolUseInput>();
   const decision = await processPreToolUse(input);
   if (!decision) return;
+  const updatedInput: Record<string, unknown> = decision.file_path !== undefined
+    ? { file_path: decision.file_path }
+    : { command: decision.command, description: decision.description };
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "allow",
-      updatedInput: decision,
+      updatedInput,
     },
   }));
 }

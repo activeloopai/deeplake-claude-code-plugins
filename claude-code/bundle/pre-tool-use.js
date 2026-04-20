@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/pre-tool-use.js
-import { existsSync as existsSync3 } from "node:fs";
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { homedir as homedir5 } from "node:os";
 import { join as join6, dirname } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
@@ -1806,6 +1807,19 @@ function rewritePaths(cmd) {
 var log4 = (msg) => log("pre", msg);
 var __bundleDir = dirname(fileURLToPath2(import.meta.url));
 var SHELL_BUNDLE = existsSync3(join6(__bundleDir, "shell", "deeplake-shell.js")) ? join6(__bundleDir, "shell", "deeplake-shell.js") : join6(__bundleDir, "..", "shell", "deeplake-shell.js");
+var READ_CACHE_ROOT = join6(homedir5(), ".deeplake", "query-cache");
+function writeReadCacheFile(sessionId, virtualPath, content, deps = {}) {
+  const { cacheRoot = READ_CACHE_ROOT } = deps;
+  const safeSessionId = sessionId.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown";
+  const rel = virtualPath.replace(/^\/+/, "") || "content";
+  const absPath = join6(cacheRoot, safeSessionId, "read", rel);
+  mkdirSync3(dirname(absPath), { recursive: true });
+  writeFileSync3(absPath, content, "utf-8");
+  return absPath;
+}
+function buildReadDecision(file_path, description) {
+  return { command: "", description, file_path };
+}
 function getReadTargetPath(toolInput) {
   const rawPath = toolInput.file_path ?? toolInput.path;
   return rawPath ? rawPath : null;
@@ -1886,7 +1900,7 @@ function buildFallbackDecision(shellCmd, shellBundle = SHELL_BUNDLE) {
   return buildAllowDecision(`node "${shellBundle}" -c "${shellCmd.replace(/"/g, '\\"')}"`, `[DeepLake shell] ${shellCmd}`);
 }
 async function processPreToolUse(input, deps = {}) {
-  const { config = loadConfig(), createApi = (table2, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table2), executeCompiledBashCommandFn = executeCompiledBashCommand, handleGrepDirectFn = handleGrepDirect, readVirtualPathContentsFn = readVirtualPathContents, readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, readCachedIndexContentFn = readCachedIndexContent, writeCachedIndexContentFn = writeCachedIndexContent, shellBundle = SHELL_BUNDLE, logFn = log4 } = deps;
+  const { config = loadConfig(), createApi = (table2, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table2), executeCompiledBashCommandFn = executeCompiledBashCommand, handleGrepDirectFn = handleGrepDirect, readVirtualPathContentsFn = readVirtualPathContents, readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, readCachedIndexContentFn = readCachedIndexContent, writeCachedIndexContentFn = writeCachedIndexContent, writeReadCacheFileFn = writeReadCacheFile, shellBundle = SHELL_BUNDLE, logFn = log4 } = deps;
   const cmd = input.tool_input.command ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
   const toolPath = getReadTargetPath(input.tool_input) ?? input.tool_input.path ?? "";
@@ -2022,6 +2036,10 @@ async function processPreToolUse(input, deps = {}) {
           content = fromEnd ? lines.slice(-lineLimit).join("\n") : lines.slice(0, lineLimit).join("\n");
         }
         const label = lineLimit > 0 ? fromEnd ? `tail -${lineLimit}` : `head -${lineLimit}` : "cat";
+        if (input.tool_name === "Read") {
+          const file_path = writeReadCacheFileFn(input.session_id, virtualPath, content);
+          return buildReadDecision(file_path, `[DeepLake direct] ${label} ${virtualPath}`);
+        }
         return buildAllowDecision(`echo ${JSON.stringify(content)}`, `[DeepLake direct] ${label} ${virtualPath}`);
       }
     }
@@ -2092,11 +2110,12 @@ async function main() {
   const decision = await processPreToolUse(input);
   if (!decision)
     return;
+  const updatedInput = decision.file_path !== void 0 ? { file_path: decision.file_path } : { command: decision.command, description: decision.description };
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "allow",
-      updatedInput: decision
+      updatedInput
     }
   }));
 }
@@ -2108,10 +2127,12 @@ if (isDirectRun(import.meta.url)) {
 }
 export {
   buildAllowDecision,
+  buildReadDecision,
   extractGrepParams,
   getShellCommand,
   isSafe,
   processPreToolUse,
   rewritePaths,
-  touchesMemory
+  touchesMemory,
+  writeReadCacheFile
 };
