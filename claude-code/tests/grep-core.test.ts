@@ -447,11 +447,16 @@ describe("buildPathFilter", () => {
     );
   });
   it("uses LIKE matching for glob targets instead of exact file matching", () => {
+    // Fix #4 appends `ESCAPE '\'` so sqlLike-escaped underscores (`\_`) and
+    // percent signs (`\%`) in the pattern match their literal characters on
+    // the Deeplake backend. Without the ESCAPE clause `\_` was treated as
+    // two literal characters and `/sessions/conv_0_session_*.json`-style
+    // globs silently returned zero rows.
     expect(buildPathFilter("/summaries/projects/*.md")).toBe(
-      " AND path LIKE '/summaries/projects/%.md'",
+      " AND path LIKE '/summaries/projects/%.md' ESCAPE '\\'",
     );
     const filter = buildPathFilter("/sessions/alice/chat_?.json");
-    expect(filter).toMatch(/^ AND path LIKE '\/sessions\/alice\/chat.*\.json'$/);
+    expect(filter).toMatch(/^ AND path LIKE '\/sessions\/alice\/chat.*\.json' ESCAPE '\\'$/);
   });
 });
 
