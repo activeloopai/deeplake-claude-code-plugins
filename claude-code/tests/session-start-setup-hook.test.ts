@@ -227,3 +227,36 @@ describe("session-start-setup hook — fatal catch", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 });
+
+// Extra branch coverage: getLatestVersion edge cases + version-compare chain
+describe("session-start-setup hook — version helpers edge cases", () => {
+  it("treats fetch with ok:false as no-new-version (line 61 branch)", async () => {
+    fetchMock.mockResolvedValue({ ok: false, json: async () => ({ version: "999.0.0" }) });
+    await runHook();
+    expect(execSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("treats a response missing the 'version' field as null (?? null fallback)", async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+    await runHook();
+    expect(execSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("treats latest == current as 'up to date' (isNewer false)", async () => {
+    // Force current to be a version that fetchMock exactly matches.
+    // We can't change what getInstalledVersion reads from disk, but we
+    // can make fetch return the installed version. With equal strings,
+    // isNewer returns false and the else-branch fires.
+    const pkg = JSON.parse(
+      require("node:fs").readFileSync(
+        require("node:path").join(
+          __dirname, "..", ".claude-plugin", "plugin.json",
+        ),
+        "utf-8",
+      ),
+    );
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ version: pkg.version }) });
+    await runHook();
+    expect(execSyncMock).not.toHaveBeenCalled();
+  });
+});

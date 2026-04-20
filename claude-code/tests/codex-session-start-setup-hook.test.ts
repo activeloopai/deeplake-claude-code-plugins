@@ -230,3 +230,47 @@ describe("codex session-start-setup hook — fatal catch", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 });
+
+// Additional branch coverage for version helpers
+describe("codex session-start-setup hook — version helpers edge cases", () => {
+  it("fetch ok:false short-circuits getLatestVersion", async () => {
+    fetchMock.mockResolvedValue({ ok: false, json: async () => ({ version: "999.0.0" }) });
+    await runHook();
+    expect(execSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("response without 'version' field falls through to null", async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+    await runHook();
+    expect(execSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsafe version tags without executing git clone", async () => {
+    // The hook builds `v${latest}` and validates against /^v\d+\.\d+\.\d+$/.
+    // Feed a version that fails the regex; the inner try throws the
+    // 'unsafe version tag' guard error, which is caught and surfaces
+    // the manual-upgrade path.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ version: "999.0.0-dangerous;rm -rf" }),
+    });
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    await runHook();
+    expect(execSyncMock).not.toHaveBeenCalled();
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Auto-update failed"),
+    );
+  });
+
+  it("treats latest == current as 'up to date' (isNewer false)", async () => {
+    const pkg = JSON.parse(
+      require("node:fs").readFileSync(
+        require("node:path").join(__dirname, "..", ".claude-plugin", "plugin.json"),
+        "utf-8",
+      ),
+    );
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ version: pkg.version }) });
+    await runHook();
+    expect(execSyncMock).not.toHaveBeenCalled();
+  });
+});

@@ -311,3 +311,28 @@ describe("session-start hook — fatal catch", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 });
+
+// Additional branch coverage
+describe("session-start hook — version helpers edge cases", () => {
+  it("fetch ok:false short-circuits getLatestVersion (no autoupdate)", async () => {
+    fetchMock.mockResolvedValue({ ok: false, json: async () => ({ version: "999.0.0" }) });
+    await runHook();
+    expect(execSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("GitHub response without a version field falls through to null", async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+    await runHook();
+    expect(execSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("workspaceId missing on creds falls back to 'default' in context", async () => {
+    loadCredsMock.mockReturnValue({
+      token: "t", orgId: "o", orgName: "acme", userName: "alice",
+      // workspaceId omitted
+    });
+    const out = await runHook();
+    const parsed = JSON.parse(out!);
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("workspace: default");
+  });
+});

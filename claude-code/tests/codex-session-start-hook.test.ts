@@ -153,3 +153,23 @@ describe("codex session-start hook — fatal catch", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 });
+
+describe("codex session-start hook — spawn pipes the hook input verbatim", () => {
+  it("forwards the full CodexSessionStartInput JSON to the setup process stdin", async () => {
+    // The detached setup process parses the SAME stdin input that was
+    // fed to this hook. If the contract breaks (e.g. we re-serialize a
+    // subset), the async setup would receive a different payload and
+    // the placeholder row would have the wrong session/cwd. Assert the
+    // exact JSON round-trips.
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const customInput = {
+      session_id: "custom-sid", cwd: "/custom/path",
+      hook_event_name: "SessionStart", model: "gpt-5", source: "codex-cli",
+    };
+    stdinMock.mockResolvedValue(customInput);
+    await runHook();
+    const written = fake.stdin.write.mock.calls[0][0];
+    expect(JSON.parse(written)).toMatchObject(customInput);
+  });
+});
