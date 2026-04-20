@@ -1,10 +1,12 @@
 /**
- * Shared grep handler — single SQL query + in-memory regex refinement.
- * Used by both Claude Code and Codex pre-tool-use hooks.
+ * Fast-path grep handler invoked from the pre-tool-use hook. Parses a Bash
+ * grep/egrep/fgrep command (or accepts pre-parsed Grep-tool params) and
+ * delegates the actual search to the shared core in ../shell/grep-core.ts,
+ * which handles dual-table SQL + session-JSON normalization + regex refinement.
  */
 
 import type { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr, sqlLike } from "../utils/sql.js";
+import { grepBothTables, type GrepMatchParams } from "../shell/grep-core.js";
 
 export interface GrepParams {
   pattern: string;
@@ -89,7 +91,7 @@ export function parseBashGrep(cmd: string): GrepParams | null {
   };
 }
 
-/** Run grep via single SQL query + in-memory regex refinement. */
+/** Run grep via the shared dual-table core. Returns formatted grep output. */
 export async function handleGrepDirect(
   api: DeeplakeApi,
   table: string,
@@ -98,85 +100,17 @@ export async function handleGrepDirect(
 ): Promise<string | null> {
   if (!params.pattern) return null;
 
-  const { pattern, targetPath, ignoreCase, wordMatch, filesOnly, countOnly,
-          lineNumber, invertMatch, fixedString } = params;
+  const matchParams: GrepMatchParams = {
+    pattern: params.pattern,
+    ignoreCase: params.ignoreCase,
+    wordMatch: params.wordMatch,
+    filesOnly: params.filesOnly,
+    countOnly: params.countOnly,
+    lineNumber: params.lineNumber,
+    invertMatch: params.invertMatch,
+    fixedString: params.fixedString,
+  };
 
-  const likeOp = ignoreCase ? "ILIKE" : "LIKE";
-  const escapedLike = sqlLike(pattern);
-
-  // ── path filter ──
-  let pathFilter = "";
-  if (targetPath && targetPath !== "/") {
-    const clean = targetPath.replace(/\/+$/, "");
-    pathFilter = ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
-  }
-
-  // For regex patterns, can't use BM25 or LIKE — fetch all files under path
-  const hasRegexMeta = !fixedString && /[.*+?^${}()|[\]\\]/.test(pattern);
-
-  // Search only the memory/summaries table — sessions contain raw JSONB
-  // (prompts, tool calls) which is slow to scan and produces noisy results.
-  // Summaries already contain all useful content from sessions.
-  //
-  // Strategy: BM25 first (ranked, fast with index), LIKE fallback if BM25 fails.
-  let rows: Record<string, unknown>[] = [];
-
-  if (!hasRegexMeta) {
-    // BM25 ranked search disabled — CREATE INDEX causes oid errors on fresh tables.
-    // See bm25-oid-bug.sh. Using LIKE until Deeplake fixes the oid invalidation.
-    // When re-enabling, uncomment the BM25 block and make LIKE the fallback.
-    const contentFilter = ` AND summary ${likeOp} '%${escapedLike}%'`;
-    try {
-      rows = await api.query(
-        `SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter}${contentFilter} LIMIT 100`,
-      );
-    } catch { rows = []; }
-  } else {
-    // Regex pattern — fetch all files under path, filter in-memory
-    try {
-      rows = await api.query(
-        `SELECT path, summary AS content FROM "${table}" WHERE 1=1${pathFilter} LIMIT 100`,
-      );
-    } catch { rows = []; }
-  }
-
-  // ── regex refinement ──
-  let reStr = fixedString
-    ? pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    : pattern;
-  if (wordMatch) reStr = `\\b${reStr}\\b`;
-  let re: RegExp;
-  try { re = new RegExp(reStr, ignoreCase ? "i" : ""); }
-  catch { re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : ""); }
-
-  const output: string[] = [];
-  const multi = rows.length > 1;
-
-  for (const row of rows) {
-    const p = row["path"] as string;
-    const text = row["content"] as string;
-    if (!text) continue;
-
-    const lines = text.split("\n");
-    const matched: string[] = [];
-
-    for (let i = 0; i < lines.length; i++) {
-      if (re.test(lines[i]) !== !!invertMatch) {
-        if (filesOnly) { output.push(p); break; }
-        const prefix = multi ? `${p}:` : "";
-        const ln = lineNumber ? `${i + 1}:` : "";
-        matched.push(`${prefix}${ln}${lines[i]}`);
-      }
-    }
-
-    if (!filesOnly) {
-      if (countOnly) {
-        output.push(`${multi ? `${p}:` : ""}${matched.length}`);
-      } else {
-        output.push(...matched);
-      }
-    }
-  }
-
+  const output = await grepBothTables(api, table, sessionsTable, matchParams, params.targetPath);
   return output.join("\n") || "(no matches)";
 }

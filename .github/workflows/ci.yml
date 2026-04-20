@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, dev]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   test:
     name: Typecheck and Test
@@ -13,6 +17,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the "Build PR coverage comment" step can do
+          # `git diff origin/<base>...HEAD` to detect touched src/ files.
+          # Default shallow checkout (depth=1) produces "no merge base".
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -26,13 +35,16 @@ jobs:
         run: npm run typecheck
 
       - name: Run tests with coverage
-        run: npx vitest run --coverage --coverage.reporter=text --coverage.reporter=json-summary
+        # Per-file 80% thresholds for PR #60 files are declared in
+        # vitest.config.ts under `coverage.thresholds`. Vitest exits non-zero
+        # if any of them regress below 80%, which fails the job.
+        run: npx vitest run --coverage
 
-      - name: Coverage summary
+      - name: Write coverage summary to job page
         if: always()
         run: |
           if [ -f coverage/coverage-summary.json ]; then
-            echo "### Test Coverage" >> $GITHUB_STEP_SUMMARY
+            echo "### Test Coverage (overall)" >> $GITHUB_STEP_SUMMARY
             node -e "
               const c = require('./coverage/coverage-summary.json').total;
               const fmt = (v) => v.pct.toFixed(1) + '%';
@@ -43,7 +55,119 @@ jobs:
               console.log('| Functions | ' + fmt(c.functions) + ' |');
               console.log('| Lines | ' + fmt(c.lines) + ' |');
             " >> $GITHUB_STEP_SUMMARY
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### PR-tracked files (must stay ≥ 80 %)" >> $GITHUB_STEP_SUMMARY
+            node -e "
+              const summary = require('./coverage/coverage-summary.json');
+              const tracked = [
+                'src/shell/grep-core.ts',
+                'src/shell/grep-interceptor.ts',
+                'src/hooks/grep-direct.ts',
+              ];
+              console.log('| File | Stmts | Branch | Funcs | Lines |');
+              console.log('|------|------:|-------:|------:|------:|');
+              const fmt = v => v == null ? '—' : v.toFixed(1) + '%';
+              for (const rel of tracked) {
+                const key = Object.keys(summary).find(k => k.endsWith(rel));
+                const c = key ? summary[key] : null;
+                if (!c) { console.log('| \`' + rel + '\` | — | — | — | — |'); continue; }
+                console.log('| \`' + rel + '\` | ' + fmt(c.statements.pct) + ' | ' + fmt(c.branches.pct) + ' | ' + fmt(c.functions.pct) + ' | ' + fmt(c.lines.pct) + ' |');
+              }
+            " >> $GITHUB_STEP_SUMMARY
           fi
+
+      - name: Build PR coverage comment
+        if: github.event_name == 'pull_request' && always()
+        id: pr-coverage
+        continue-on-error: true
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ ! -f coverage/coverage-summary.json ]; then
+            echo "no coverage summary — skipping PR comment"
+            echo "body-file=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          node <<'NODE' > /tmp/pr-coverage.md
+          const { execSync } = require('node:child_process');
+          const fs = require('node:fs');
+          const summary = JSON.parse(fs.readFileSync('coverage/coverage-summary.json', 'utf8'));
+          const baseRef = process.env.BASE_REF || 'main';
+          const diff = execSync(`git diff --name-only origin/${baseRef}...HEAD`, { encoding: 'utf8' });
+          const changed = diff.split('\n')
+            .filter(f => f.startsWith('src/') && f.endsWith('.ts') && !f.endsWith('.test.ts') && !f.endsWith('.d.ts'))
+            .sort();
+
+          // Aggregate totals across ONLY the PR-touched files. Same shape
+          // as the davelosert "Coverage Report" box, but scoped to this PR
+          // instead of the whole src/ tree.
+          const agg = {
+            statements: { total: 0, covered: 0 },
+            branches:   { total: 0, covered: 0 },
+            functions:  { total: 0, covered: 0 },
+            lines:      { total: 0, covered: 0 },
+          };
+          const perFile = [];
+          for (const f of changed) {
+            const key = Object.keys(summary).find(k => k.endsWith(f));
+            if (!key) { perFile.push({ f, c: null }); continue; }
+            const c = summary[key];
+            for (const k of Object.keys(agg)) {
+              agg[k].total   += c[k].total;
+              agg[k].covered += c[k].covered;
+            }
+            perFile.push({ f, c });
+          }
+
+          const THRESHOLD = 90;
+          const pct = (m) => m.total === 0 ? null : (m.covered / m.total) * 100;
+          const icon = (p) => p == null ? '⚪' : (p >= THRESHOLD ? '🟢' : '🔴');
+          const fmtPct = (p) => p == null ? '—' : p.toFixed(2) + '%';
+          const fmtCell = (c, k) => c ? ((c[k].pct >= THRESHOLD ? '🟢 ' : '🔴 ') + c[k].pct.toFixed(1) + '%') : '—';
+
+          const out = [];
+          out.push('## Coverage Report');
+          out.push('');
+          if (changed.length === 0) {
+            out.push('_No `src/*.ts` files changed in this PR._');
+          } else {
+            out.push('Scope: files changed in this PR. Enforced threshold: **' + THRESHOLD + '%** per metric (per file via `vitest.config.ts`).');
+            out.push('');
+            out.push('| Status | Category | Percentage | Covered / Total |');
+            out.push('|--------|----------|-----------:|----------------:|');
+            for (const [label, key] of [["Lines","lines"],["Statements","statements"],["Functions","functions"],["Branches","branches"]]) {
+              const p = pct(agg[key]);
+              out.push(`| ${icon(p)} | ${label} | ${fmtPct(p)} (🎯 ${THRESHOLD}%) | ${agg[key].covered} / ${agg[key].total} |`);
+            }
+            out.push('');
+            // File-level breakdown inside a <details> dropdown so a PR that
+            // touches dozens/hundreds of files does not produce an endless
+            // comment. Summary text shows the file count so you can see at
+            // a glance how much is inside before expanding.
+            out.push('<details>');
+            out.push(`<summary><strong>File Coverage</strong> — ${perFile.length} file${perFile.length === 1 ? '' : 's'} changed</summary>`);
+            out.push('');
+            out.push('| File | Stmts | Branches | Functions | Lines |');
+            out.push('|------|------:|---------:|----------:|------:|');
+            for (const { f, c } of perFile) {
+              out.push(`| \`${f}\` | ${fmtCell(c, 'statements')} | ${fmtCell(c, 'branches')} | ${fmtCell(c, 'functions')} | ${fmtCell(c, 'lines')} |`);
+            }
+            out.push('');
+            out.push('</details>');
+          }
+          out.push('');
+          out.push(`<sub>Generated for commit ${(process.env.GITHUB_SHA || '?').slice(0,7)}.</sub>`);
+          console.log(out.join('\n'));
+          NODE
+          echo "body-file=/tmp/pr-coverage.md" >> "$GITHUB_OUTPUT"
+
+      - name: Post coverage comment on PR
+        if: github.event_name == 'pull_request' && always() && steps.pr-coverage.outputs.body-file != ''
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: pr-coverage-report
+          path: /tmp/pr-coverage.md
 
       - name: Build bundles
         run: npm run build
