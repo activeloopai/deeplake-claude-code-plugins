@@ -55,7 +55,12 @@ async function main(): Promise<void> {
     // Spawn threw before the worker took ownership of the lock: release
     // it here so a --resume can retrigger periodic summaries without
     // waiting for the 10-minute stale reclaim.
-    try { releaseLock(sessionId); } catch { /* ignore */ }
+    log(`spawn failed: ${e.message}`);
+    try {
+      releaseLock(sessionId);
+    } catch (releaseErr: any) {
+      log(`releaseLock after spawn failure also failed: ${releaseErr.message}`);
+    }
     throw e;
   }
 }

@@ -182,6 +182,7 @@ function bundleDirFromImportMeta(importMetaUrl) {
 import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, writeSync, mkdirSync as mkdirSync2, renameSync, existsSync as existsSync2, unlinkSync, openSync, closeSync } from "node:fs";
 import { homedir as homedir4 } from "node:os";
 import { join as join4 } from "node:path";
+var dlog = (msg) => log("summary-state", msg);
 var STATE_DIR = join4(homedir4(), ".claude", "hooks", "summary-state");
 var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
 function lockPath(sessionId) {
@@ -195,11 +196,13 @@ function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
       const ageMs = Date.now() - parseInt(readFileSync2(p, "utf-8"), 10);
       if (Number.isFinite(ageMs) && ageMs < maxAgeMs)
         return false;
-    } catch {
+    } catch (readErr) {
+      dlog(`lock file unreadable for ${sessionId}, treating as stale: ${readErr.message}`);
     }
     try {
       unlinkSync(p);
-    } catch {
+    } catch (unlinkErr) {
+      dlog(`could not unlink stale lock for ${sessionId}: ${unlinkErr.message}`);
       return false;
     }
   }
@@ -220,7 +223,10 @@ function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
 function releaseLock(sessionId) {
   try {
     unlinkSync(lockPath(sessionId));
-  } catch {
+  } catch (e) {
+    if (e?.code !== "ENOENT") {
+      dlog(`releaseLock unlink failed for ${sessionId}: ${e.message}`);
+    }
   }
 }
 
@@ -255,9 +261,11 @@ async function main() {
       reason: "SessionEnd"
     });
   } catch (e) {
+    log2(`spawn failed: ${e.message}`);
     try {
       releaseLock(sessionId);
-    } catch {
+    } catch (releaseErr) {
+      log2(`releaseLock after spawn failure also failed: ${releaseErr.message}`);
     }
     throw e;
   }

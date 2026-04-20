@@ -148,7 +148,12 @@ function maybeTriggerPeriodicSummary(sessionId: string, cwd: string, config: Con
         reason: "Periodic",
       });
     } catch (e: any) {
-      try { releaseLock(sessionId); } catch { /* ignore */ }
+      log(`periodic spawn failed: ${e.message}`);
+      try {
+        releaseLock(sessionId);
+      } catch (releaseErr: any) {
+        log(`releaseLock after periodic spawn failure also failed: ${releaseErr.message}`);
+      }
       throw e;
     }
   } catch (e: any) {
