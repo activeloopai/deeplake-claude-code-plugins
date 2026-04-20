@@ -19,6 +19,7 @@ import { sqlStr } from "../../utils/sql.js";
 import { log as _log } from "../../utils/debug.js";
 import { bundleDirFromImportMeta, spawnCodexWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 import { tryAcquireLock, releaseLock } from "../summary-state.js";
+import { buildSessionPath } from "../../utils/session-path.js";
 
 const log = (msg: string) => _log("codex-stop", msg);
 
@@ -31,10 +32,6 @@ interface CodexStopInput {
 }
 
 const CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
-
-function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
-  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
-}
 
 async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;

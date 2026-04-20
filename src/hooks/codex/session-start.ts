@@ -13,10 +13,10 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { readFileSync } from "node:fs";
 import { loadCredentials } from "../../commands/auth.js";
 import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
+import { getInstalledVersion } from "../../utils/version-check.js";
 const log = (msg: string) => _log("codex-session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -28,26 +28,6 @@ Structure: index.md (start here) → summaries/*.md → sessions/*.jsonl (last r
 Search: grep -r "keyword" ~/.deeplake/memory/
 IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem.
 Do NOT spawn subagents to read deeplake memory.`;
-
-function getInstalledVersion(): string | null {
-  try {
-    const pluginJson = join(__bundleDir, "..", ".codex-plugin", "plugin.json");
-    const plugin = JSON.parse(readFileSync(pluginJson, "utf-8"));
-    if (plugin.version) return plugin.version;
-  } catch { /* fall through */ }
-  let dir = __bundleDir;
-  for (let i = 0; i < 5; i++) {
-    const candidate = join(dir, "package.json");
-    try {
-      const pkg = JSON.parse(readFileSync(candidate, "utf-8"));
-      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version) return pkg.version;
-    } catch { /* not here, keep looking */ }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
 
 interface CodexSessionStartInput {
   session_id: string;
@@ -88,7 +68,7 @@ async function main(): Promise<void> {
   }
 
   let versionNotice = "";
-  const current = getInstalledVersion();
+  const current = getInstalledVersion(__bundleDir, ".codex-plugin");
   if (current) {
     versionNotice = `\nHivemind v${current}`;
   }

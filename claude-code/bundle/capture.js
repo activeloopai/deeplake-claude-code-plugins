@@ -302,6 +302,12 @@ var DeeplakeApi = class {
   }
 };
 
+// dist/src/utils/session-path.js
+function buildSessionPath(config, sessionId) {
+  const workspace = config.workspaceId ?? "default";
+  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${workspace}_${sessionId}.jsonl`;
+}
+
 // dist/src/hooks/summary-state.js
 import { readFileSync as readFileSync2, writeFileSync, writeSync, mkdirSync, renameSync, existsSync as existsSync2, unlinkSync, openSync, closeSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
@@ -439,11 +445,32 @@ function releaseLock(sessionId) {
 // dist/src/hooks/spawn-wiki-worker.js
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join as join4 } from "node:path";
-import { writeFileSync as writeFileSync2, mkdirSync as mkdirSync2, appendFileSync as appendFileSync2 } from "node:fs";
+import { dirname, join as join5 } from "node:path";
+import { writeFileSync as writeFileSync2, mkdirSync as mkdirSync3 } from "node:fs";
 import { homedir as homedir4, tmpdir } from "node:os";
+
+// dist/src/utils/wiki-log.js
+import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2 } from "node:fs";
+import { join as join4 } from "node:path";
+function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
+  const path = join4(hooksDir, filename);
+  return {
+    path,
+    log(msg) {
+      try {
+        mkdirSync2(hooksDir, { recursive: true });
+        appendFileSync2(path, `[${utcTimestamp()}] ${msg}
+`);
+      } catch {
+      }
+    }
+  };
+}
+
+// dist/src/hooks/spawn-wiki-worker.js
 var HOME = homedir4();
-var WIKI_LOG = join4(HOME, ".claude", "hooks", "deeplake-wiki.log");
+var wikiLogger = makeWikiLogger(join5(HOME, ".claude", "hooks"));
+var WIKI_LOG = wikiLogger.path;
 var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry. Think of this as building a knowledge graph, not writing a summary.
 
 SESSION JSONL path: __JSONL__
@@ -496,27 +523,20 @@ IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact. Future you w
 PRIVACY: Never include absolute filesystem paths (e.g. /home/user/..., /Users/..., C:\\\\...) in the summary. Use only project-relative paths or the project name. The Source and Project fields above are already correct \u2014 do not change them.
 
 LENGTH LIMIT: Keep the total summary under 4000 characters. Be dense and concise \u2014 prioritize facts over prose. If a session is short, the summary should be short too.`;
-function wikiLog(msg) {
-  try {
-    mkdirSync2(join4(HOME, ".claude", "hooks"), { recursive: true });
-    appendFileSync2(WIKI_LOG, `[${utcTimestamp()}] ${msg}
-`);
-  } catch {
-  }
-}
+var wikiLog = wikiLogger.log;
 function findClaudeBin() {
   try {
     return execSync("which claude 2>/dev/null", { encoding: "utf-8" }).trim();
   } catch {
-    return join4(HOME, ".claude", "local", "claude");
+    return join5(HOME, ".claude", "local", "claude");
   }
 }
 function spawnWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
   const projectName = cwd.split("/").pop() || "unknown";
-  const tmpDir = join4(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
-  mkdirSync2(tmpDir, { recursive: true });
-  const configFile = join4(tmpDir, "config.json");
+  const tmpDir = join5(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  mkdirSync3(tmpDir, { recursive: true });
+  const configFile = join5(tmpDir, "config.json");
   writeFileSync2(configFile, JSON.stringify({
     apiUrl: config.apiUrl,
     token: config.token,
@@ -530,11 +550,11 @@ function spawnWikiWorker(opts) {
     tmpDir,
     claudeBin: findClaudeBin(),
     wikiLog: WIKI_LOG,
-    hooksDir: join4(HOME, ".claude", "hooks"),
+    hooksDir: join5(HOME, ".claude", "hooks"),
     promptTemplate: WIKI_PROMPT_TEMPLATE
   }));
   wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
-  const workerPath = join4(bundleDir, "wiki-worker.js");
+  const workerPath = join5(bundleDir, "wiki-worker.js");
   spawn("nohup", ["node", workerPath, configFile], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"]
@@ -548,12 +568,6 @@ function bundleDirFromImportMeta(importMetaUrl) {
 // dist/src/hooks/capture.js
 var log3 = (msg) => log("capture", msg);
 var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
-function buildSessionPath(config, sessionId) {
-  const userName = config.userName;
-  const orgName = config.orgName;
-  const workspace = config.workspaceId ?? "default";
-  return `/sessions/${userName}/${userName}_${orgName}_${workspace}_${sessionId}.jsonl`;
-}
 async function main() {
   if (!CAPTURE)
     return;

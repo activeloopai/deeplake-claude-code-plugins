@@ -17,6 +17,7 @@ import { loadConfig, type Config } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { log as _log } from "../../utils/debug.js";
+import { buildSessionPath } from "../../utils/session-path.js";
 import {
   bumpTotalCount,
   loadTriggerConfig,
@@ -44,10 +45,6 @@ interface CodexHookInput {
 }
 
 const CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
-
-function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
-  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
-}
 
 async function main(): Promise<void> {
   if (!CAPTURE) return;

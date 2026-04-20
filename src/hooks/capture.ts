@@ -12,6 +12,7 @@ import { loadConfig, type Config } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { sqlStr } from "../utils/sql.js";
 import { log as _log } from "../utils/debug.js";
+import { buildSessionPath } from "../utils/session-path.js";
 import {
   bumpTotalCount,
   loadTriggerConfig,
@@ -44,16 +45,6 @@ interface HookInput {
 }
 
 const CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
-
-/** Build the session path matching the CLI convention:
- *  /sessions/<username>/<username>_<org>_<workspace>_<slug>.jsonl */
-function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
-  const userName = config.userName;
-  const orgName = config.orgName;
-  const workspace = config.workspaceId ?? "default";
-
-  return `/sessions/${userName}/${userName}_${orgName}_${workspace}_${sessionId}.jsonl`;
-}
 
 async function main(): Promise<void> {
   if (!CAPTURE) return;

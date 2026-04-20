@@ -2,8 +2,7 @@
 
 // dist/src/hooks/codex/session-start-setup.js
 import { fileURLToPath } from "node:url";
-import { dirname, join as join4 } from "node:path";
-import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2, readFileSync as readFileSync3 } from "node:fs";
+import { dirname as dirname2, join as join6 } from "node:path";
 import { execSync as execSync2 } from "node:child_process";
 import { homedir as homedir4 } from "node:os";
 
@@ -74,6 +73,9 @@ import { join as join3 } from "node:path";
 import { homedir as homedir3 } from "node:os";
 var DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 var LOG = join3(homedir3(), ".deeplake", "hook-debug.log");
+function utcTimestamp(d = /* @__PURE__ */ new Date()) {
+  return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
+}
 function log(tag, msg) {
   if (!DEBUG)
     return;
@@ -328,30 +330,19 @@ function readStdin() {
   });
 }
 
-// dist/src/hooks/codex/session-start-setup.js
-var log3 = (msg) => log("codex-session-setup", msg);
-var __bundleDir = dirname(fileURLToPath(import.meta.url));
+// dist/src/utils/version-check.js
+import { readFileSync as readFileSync3 } from "node:fs";
+import { dirname, join as join4 } from "node:path";
 var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
-var VERSION_CHECK_TIMEOUT = 3e3;
-var HOME = homedir4();
-var WIKI_LOG = join4(HOME, ".codex", "hooks", "deeplake-wiki.log");
-function wikiLog(msg) {
+function getInstalledVersion(bundleDir, pluginManifestDir) {
   try {
-    mkdirSync2(join4(HOME, ".codex", "hooks"), { recursive: true });
-    appendFileSync2(WIKI_LOG, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] ${msg}
-`);
-  } catch {
-  }
-}
-function getInstalledVersion() {
-  try {
-    const pluginJson = join4(__bundleDir, "..", ".codex-plugin", "plugin.json");
+    const pluginJson = join4(bundleDir, "..", pluginManifestDir, "plugin.json");
     const plugin = JSON.parse(readFileSync3(pluginJson, "utf-8"));
     if (plugin.version)
       return plugin.version;
   } catch {
   }
-  let dir = __bundleDir;
+  let dir = bundleDir;
   for (let i = 0; i < 5; i++) {
     const candidate = join4(dir, "package.json");
     try {
@@ -367,9 +358,9 @@ function getInstalledVersion() {
   }
   return null;
 }
-async function getLatestVersion() {
+async function getLatestVersion(timeoutMs = 3e3) {
   try {
-    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(VERSION_CHECK_TIMEOUT) });
+    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok)
       return null;
     const pkg = await res.json();
@@ -384,6 +375,29 @@ function isNewer(latest, current) {
   const [ca, cb, cc] = parse(current);
   return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
 }
+
+// dist/src/utils/wiki-log.js
+import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2 } from "node:fs";
+import { join as join5 } from "node:path";
+function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
+  const path = join5(hooksDir, filename);
+  return {
+    path,
+    log(msg) {
+      try {
+        mkdirSync2(hooksDir, { recursive: true });
+        appendFileSync2(path, `[${utcTimestamp()}] ${msg}
+`);
+      } catch {
+      }
+    }
+  };
+}
+
+// dist/src/hooks/codex/session-start-setup.js
+var log3 = (msg) => log("codex-session-setup", msg);
+var __bundleDir = dirname2(fileURLToPath(import.meta.url));
+var { log: wikiLog } = makeWikiLogger(join6(homedir4(), ".codex", "hooks"));
 async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, workspaceId) {
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
   const existing = await api.query(`SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`);
@@ -444,7 +458,7 @@ async function main() {
   }
   const autoupdate = creds.autoupdate !== false;
   try {
-    const current = getInstalledVersion();
+    const current = getInstalledVersion(__bundleDir, ".codex-plugin");
     if (current) {
       const latest = await getLatestVersion();
       if (latest && isNewer(latest, current)) {
