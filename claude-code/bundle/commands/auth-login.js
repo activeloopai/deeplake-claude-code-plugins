@@ -233,6 +233,11 @@ function loadConfig() {
     apiUrl: env.HIVEMIND_API_URL ?? env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: env.HIVEMIND_TABLE ?? env.DEEPLAKE_TABLE ?? "memory",
     sessionsTableName: env.HIVEMIND_SESSIONS_TABLE ?? env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
+    graphNodesTableName: env.HIVEMIND_GRAPH_NODES_TABLE ?? env.DEEPLAKE_GRAPH_NODES_TABLE ?? "graph_nodes",
+    graphEdgesTableName: env.HIVEMIND_GRAPH_EDGES_TABLE ?? env.DEEPLAKE_GRAPH_EDGES_TABLE ?? "graph_edges",
+    factsTableName: env.HIVEMIND_FACTS_TABLE ?? env.DEEPLAKE_FACTS_TABLE ?? "memory_facts",
+    entitiesTableName: env.HIVEMIND_ENTITIES_TABLE ?? env.DEEPLAKE_ENTITIES_TABLE ?? "memory_entities",
+    factEntityLinksTableName: env.HIVEMIND_FACT_ENTITY_LINKS_TABLE ?? env.DEEPLAKE_FACT_ENTITY_LINKS_TABLE ?? "fact_entity_links",
     memoryPath: env.HIVEMIND_MEMORY_PATH ?? env.DEEPLAKE_MEMORY_PATH ?? join2(home, ".deeplake", "memory")
   };
 }
@@ -277,6 +282,22 @@ function traceSql(msg) {
   if (debugFileLog)
     log2(msg);
 }
+var DeeplakeQueryError = class extends Error {
+  sqlSummary;
+  status;
+  responseBody;
+  sql;
+  cause;
+  constructor(message, args = {}) {
+    super(message);
+    this.name = "DeeplakeQueryError";
+    this.sql = args.sql;
+    this.sqlSummary = args.sql ? summarizeSql(args.sql) : "";
+    this.status = args.status;
+    this.responseBody = args.responseBody;
+    this.cause = args.cause;
+  }
+};
 var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
@@ -380,10 +401,10 @@ var DeeplakeApi = class {
         });
       } catch (e) {
         if (isTimeoutError(e)) {
-          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
+          lastError = new DeeplakeQueryError(`Query timeout after ${QUERY_TIMEOUT_MS}ms`, { sql, cause: e });
           throw lastError;
         }
-        lastError = e instanceof Error ? e : new Error(String(e));
+        lastError = e instanceof Error ? new DeeplakeQueryError(e.message, { sql, cause: e }) : new DeeplakeQueryError(String(e), { sql, cause: e });
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
           log2(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
@@ -406,9 +427,13 @@ var DeeplakeApi = class {
         await sleep(delay);
         continue;
       }
-      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
+      throw new DeeplakeQueryError(`Query failed: ${resp.status}: ${text.slice(0, 200)}`, {
+        sql,
+        status: resp.status,
+        responseBody: text.slice(0, 4e3)
+      });
     }
-    throw lastError ?? new Error("Query failed: max retries exceeded");
+    throw lastError ?? new DeeplakeQueryError("Query failed: max retries exceeded", { sql });
   }
   // ── Writes ──────────────────────────────────────────────────────────────────
   /** Queue rows for writing. Call commit() to flush. */
@@ -464,6 +489,29 @@ var DeeplakeApi = class {
   /** Create a BM25 search index on a column. */
   async createIndex(column) {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
+  }
+  /** Create the standard BM25 summary index for a memory table. */
+  async createSummaryBm25Index(tableName) {
+    const table = tableName ?? this.tableName;
+    const indexName = this.buildLookupIndexName(table, "summary_bm25");
+    await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" USING deeplake_index ("summary")`);
+  }
+  /** Ensure the standard BM25 summary index exists, using a local freshness marker to avoid repeated CREATEs. */
+  async ensureSummaryBm25Index(tableName) {
+    const table = tableName ?? this.tableName;
+    const suffix = "summary_bm25";
+    if (this.hasFreshLookupIndexMarker(table, suffix))
+      return;
+    try {
+      await this.createSummaryBm25Index(table);
+      this.markLookupIndexReady(table, suffix);
+    } catch (e) {
+      if (isDuplicateIndexError(e)) {
+        this.markLookupIndexReady(table, suffix);
+        return;
+      }
+      throw e;
+    }
   }
   buildLookupIndexName(table, suffix) {
     return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
@@ -562,17 +610,242 @@ var DeeplakeApi = class {
         this._tablesCache = [...tables, tbl];
     }
   }
-  /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
+  /** Create the sessions table (one physical row per message/event, with direct search columns). */
   async ensureSessionsTable(name) {
+    const sessionColumns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `message JSONB`,
+      `session_id TEXT NOT NULL DEFAULT ''`,
+      `event_type TEXT NOT NULL DEFAULT ''`,
+      `turn_index BIGINT NOT NULL DEFAULT 0`,
+      `dia_id TEXT NOT NULL DEFAULT ''`,
+      `speaker TEXT NOT NULL DEFAULT ''`,
+      `text TEXT NOT NULL DEFAULT ''`,
+      `turn_summary TEXT NOT NULL DEFAULT ''`,
+      `source_date_time TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (` + sessionColumns.join(", ") + `) USING deeplake`);
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
     }
-    await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
+    const alterColumns = [
+      ["session_id", `TEXT NOT NULL DEFAULT ''`],
+      ["event_type", `TEXT NOT NULL DEFAULT ''`],
+      ["turn_index", `BIGINT NOT NULL DEFAULT 0`],
+      ["dia_id", `TEXT NOT NULL DEFAULT ''`],
+      ["speaker", `TEXT NOT NULL DEFAULT ''`],
+      ["text", `TEXT NOT NULL DEFAULT ''`],
+      ["turn_summary", `TEXT NOT NULL DEFAULT ''`],
+      ["source_date_time", `TEXT NOT NULL DEFAULT ''`]
+    ];
+    for (const [column, ddl] of alterColumns) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "path_creation_date_turn_index", `("path", "creation_date", "turn_index")`);
+  }
+  async ensureGraphNodesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `node_id TEXT NOT NULL DEFAULT ''`,
+      `canonical_name TEXT NOT NULL DEFAULT ''`,
+      `node_type TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `aliases TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    for (const [column, ddl] of [
+      ["source_session_ids", `TEXT NOT NULL DEFAULT ''`],
+      ["source_paths", `TEXT NOT NULL DEFAULT ''`]
+    ]) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "source_session_id", `("source_session_id")`);
+    await this.ensureLookupIndex(name, "node_id", `("node_id")`);
+  }
+  async ensureGraphEdgesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `edge_id TEXT NOT NULL DEFAULT ''`,
+      `source_node_id TEXT NOT NULL DEFAULT ''`,
+      `target_node_id TEXT NOT NULL DEFAULT ''`,
+      `relation TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `evidence TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    for (const [column, ddl] of [
+      ["source_session_ids", `TEXT NOT NULL DEFAULT ''`],
+      ["source_paths", `TEXT NOT NULL DEFAULT ''`]
+    ]) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "source_session_id", `("source_session_id")`);
+    await this.ensureLookupIndex(name, "source_target_relation", `("source_node_id", "target_node_id", "relation")`);
+  }
+  async ensureFactsTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `fact_id TEXT NOT NULL DEFAULT ''`,
+      `subject_entity_id TEXT NOT NULL DEFAULT ''`,
+      `subject_name TEXT NOT NULL DEFAULT ''`,
+      `subject_type TEXT NOT NULL DEFAULT ''`,
+      `predicate TEXT NOT NULL DEFAULT ''`,
+      `object_entity_id TEXT NOT NULL DEFAULT ''`,
+      `object_name TEXT NOT NULL DEFAULT ''`,
+      `object_type TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `evidence TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `confidence TEXT NOT NULL DEFAULT ''`,
+      `valid_at TEXT NOT NULL DEFAULT ''`,
+      `valid_from TEXT NOT NULL DEFAULT ''`,
+      `valid_to TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "fact_id", `("fact_id")`);
+    await this.ensureLookupIndex(name, "session_predicate", `("source_session_id", "predicate")`);
+    await this.ensureLookupIndex(name, "subject_object", `("subject_entity_id", "object_entity_id")`);
+  }
+  async ensureEntitiesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `entity_id TEXT NOT NULL DEFAULT ''`,
+      `canonical_name TEXT NOT NULL DEFAULT ''`,
+      `entity_type TEXT NOT NULL DEFAULT ''`,
+      `aliases TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "entity_id", `("entity_id")`);
+    await this.ensureLookupIndex(name, "canonical_name", `("canonical_name")`);
+  }
+  async ensureFactEntityLinksTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `link_id TEXT NOT NULL DEFAULT ''`,
+      `fact_id TEXT NOT NULL DEFAULT ''`,
+      `entity_id TEXT NOT NULL DEFAULT ''`,
+      `entity_role TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "fact_id", `("fact_id")`);
+    await this.ensureLookupIndex(name, "entity_id", `("entity_id")`);
+    await this.ensureLookupIndex(name, "session_entity_role", `("source_session_id", "entity_id", "entity_role")`);
   }
 };
 

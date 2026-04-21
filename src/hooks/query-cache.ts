@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { log as _log } from "../utils/debug.js";
@@ -6,6 +6,7 @@ import { log as _log } from "../utils/debug.js";
 const log = (msg: string) => _log("query-cache", msg);
 const DEFAULT_CACHE_ROOT = join(homedir(), ".deeplake", "query-cache");
 const INDEX_CACHE_FILE = "index.md";
+const INDEX_CACHE_TTL_MS = 15 * 60 * 1000;
 
 interface QueryCacheDeps {
   cacheRoot?: string;
@@ -29,7 +30,13 @@ export function clearSessionQueryCache(sessionId: string, deps: QueryCacheDeps =
 export function readCachedIndexContent(sessionId: string, deps: QueryCacheDeps = {}): string | null {
   const { logFn = log } = deps;
   try {
-    return readFileSync(join(getSessionQueryCacheDir(sessionId, deps), INDEX_CACHE_FILE), "utf-8");
+    const cachePath = join(getSessionQueryCacheDir(sessionId, deps), INDEX_CACHE_FILE);
+    const stats = statSync(cachePath);
+    if ((Date.now() - stats.mtimeMs) > INDEX_CACHE_TTL_MS) {
+      clearSessionQueryCache(sessionId, deps);
+      return null;
+    }
+    return readFileSync(cachePath, "utf-8");
   } catch (e: any) {
     if (e?.code === "ENOENT") return null;
     logFn(`read failed for session=${sessionId}: ${e.message}`);

@@ -2,13 +2,13 @@
 
 // dist/src/utils/stdin.js
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let data = "";
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => data += chunk);
     process.stdin.on("end", () => {
       try {
-        resolve(JSON.parse(data));
+        resolve2(JSON.parse(data));
       } catch (err) {
         reject(new Error(`Failed to parse hook input: ${err}`));
       }
@@ -49,6 +49,11 @@ function loadConfig() {
     apiUrl: env.HIVEMIND_API_URL ?? env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: env.HIVEMIND_TABLE ?? env.DEEPLAKE_TABLE ?? "memory",
     sessionsTableName: env.HIVEMIND_SESSIONS_TABLE ?? env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
+    graphNodesTableName: env.HIVEMIND_GRAPH_NODES_TABLE ?? env.DEEPLAKE_GRAPH_NODES_TABLE ?? "graph_nodes",
+    graphEdgesTableName: env.HIVEMIND_GRAPH_EDGES_TABLE ?? env.DEEPLAKE_GRAPH_EDGES_TABLE ?? "graph_edges",
+    factsTableName: env.HIVEMIND_FACTS_TABLE ?? env.DEEPLAKE_FACTS_TABLE ?? "memory_facts",
+    entitiesTableName: env.HIVEMIND_ENTITIES_TABLE ?? env.DEEPLAKE_ENTITIES_TABLE ?? "memory_entities",
+    factEntityLinksTableName: env.HIVEMIND_FACT_ENTITY_LINKS_TABLE ?? env.DEEPLAKE_FACT_ENTITY_LINKS_TABLE ?? "fact_entity_links",
     memoryPath: env.HIVEMIND_MEMORY_PATH ?? env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory")
   };
 }
@@ -79,6 +84,12 @@ function log(tag, msg) {
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
+function sqlIdent(name) {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
+    throw new Error(`Invalid SQL identifier: ${JSON.stringify(name)}`);
+  }
+  return name;
+}
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
@@ -96,6 +107,22 @@ function traceSql(msg) {
   if (debugFileLog)
     log2(msg);
 }
+var DeeplakeQueryError = class extends Error {
+  sqlSummary;
+  status;
+  responseBody;
+  sql;
+  cause;
+  constructor(message, args = {}) {
+    super(message);
+    this.name = "DeeplakeQueryError";
+    this.sql = args.sql;
+    this.sqlSummary = args.sql ? summarizeSql(args.sql) : "";
+    this.status = args.status;
+    this.responseBody = args.responseBody;
+    this.cause = args.cause;
+  }
+};
 var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
@@ -103,7 +130,7 @@ var MAX_CONCURRENCY = 5;
 var QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 1e4);
 var INDEX_MARKER_TTL_MS = Number(process.env["HIVEMIND_INDEX_MARKER_TTL_MS"] ?? 6 * 60 * 6e4);
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 function isTimeoutError(error) {
   const name = error instanceof Error ? error.name.toLowerCase() : "";
@@ -136,7 +163,7 @@ var Semaphore = class {
       this.active++;
       return;
     }
-    await new Promise((resolve) => this.waiting.push(resolve));
+    await new Promise((resolve2) => this.waiting.push(resolve2));
   }
   release() {
     this.active--;
@@ -199,10 +226,10 @@ var DeeplakeApi = class {
         });
       } catch (e) {
         if (isTimeoutError(e)) {
-          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
+          lastError = new DeeplakeQueryError(`Query timeout after ${QUERY_TIMEOUT_MS}ms`, { sql, cause: e });
           throw lastError;
         }
-        lastError = e instanceof Error ? e : new Error(String(e));
+        lastError = e instanceof Error ? new DeeplakeQueryError(e.message, { sql, cause: e }) : new DeeplakeQueryError(String(e), { sql, cause: e });
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
           log2(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
@@ -225,9 +252,13 @@ var DeeplakeApi = class {
         await sleep(delay);
         continue;
       }
-      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
+      throw new DeeplakeQueryError(`Query failed: ${resp.status}: ${text.slice(0, 200)}`, {
+        sql,
+        status: resp.status,
+        responseBody: text.slice(0, 4e3)
+      });
     }
-    throw lastError ?? new Error("Query failed: max retries exceeded");
+    throw lastError ?? new DeeplakeQueryError("Query failed: max retries exceeded", { sql });
   }
   // ── Writes ──────────────────────────────────────────────────────────────────
   /** Queue rows for writing. Call commit() to flush. */
@@ -283,6 +314,29 @@ var DeeplakeApi = class {
   /** Create a BM25 search index on a column. */
   async createIndex(column) {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
+  }
+  /** Create the standard BM25 summary index for a memory table. */
+  async createSummaryBm25Index(tableName) {
+    const table = tableName ?? this.tableName;
+    const indexName = this.buildLookupIndexName(table, "summary_bm25");
+    await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" USING deeplake_index ("summary")`);
+  }
+  /** Ensure the standard BM25 summary index exists, using a local freshness marker to avoid repeated CREATEs. */
+  async ensureSummaryBm25Index(tableName) {
+    const table = tableName ?? this.tableName;
+    const suffix = "summary_bm25";
+    if (this.hasFreshLookupIndexMarker(table, suffix))
+      return;
+    try {
+      await this.createSummaryBm25Index(table);
+      this.markLookupIndexReady(table, suffix);
+    } catch (e) {
+      if (isDuplicateIndexError(e)) {
+        this.markLookupIndexReady(table, suffix);
+        return;
+      }
+      throw e;
+    }
   }
   buildLookupIndexName(table, suffix) {
     return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
@@ -381,24 +435,257 @@ var DeeplakeApi = class {
         this._tablesCache = [...tables, tbl];
     }
   }
-  /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
+  /** Create the sessions table (one physical row per message/event, with direct search columns). */
   async ensureSessionsTable(name) {
+    const sessionColumns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `message JSONB`,
+      `session_id TEXT NOT NULL DEFAULT ''`,
+      `event_type TEXT NOT NULL DEFAULT ''`,
+      `turn_index BIGINT NOT NULL DEFAULT 0`,
+      `dia_id TEXT NOT NULL DEFAULT ''`,
+      `speaker TEXT NOT NULL DEFAULT ''`,
+      `text TEXT NOT NULL DEFAULT ''`,
+      `turn_summary TEXT NOT NULL DEFAULT ''`,
+      `source_date_time TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (` + sessionColumns.join(", ") + `) USING deeplake`);
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
     }
-    await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
+    const alterColumns = [
+      ["session_id", `TEXT NOT NULL DEFAULT ''`],
+      ["event_type", `TEXT NOT NULL DEFAULT ''`],
+      ["turn_index", `BIGINT NOT NULL DEFAULT 0`],
+      ["dia_id", `TEXT NOT NULL DEFAULT ''`],
+      ["speaker", `TEXT NOT NULL DEFAULT ''`],
+      ["text", `TEXT NOT NULL DEFAULT ''`],
+      ["turn_summary", `TEXT NOT NULL DEFAULT ''`],
+      ["source_date_time", `TEXT NOT NULL DEFAULT ''`]
+    ];
+    for (const [column, ddl] of alterColumns) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "path_creation_date_turn_index", `("path", "creation_date", "turn_index")`);
+  }
+  async ensureGraphNodesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `node_id TEXT NOT NULL DEFAULT ''`,
+      `canonical_name TEXT NOT NULL DEFAULT ''`,
+      `node_type TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `aliases TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    for (const [column, ddl] of [
+      ["source_session_ids", `TEXT NOT NULL DEFAULT ''`],
+      ["source_paths", `TEXT NOT NULL DEFAULT ''`]
+    ]) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "source_session_id", `("source_session_id")`);
+    await this.ensureLookupIndex(name, "node_id", `("node_id")`);
+  }
+  async ensureGraphEdgesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `edge_id TEXT NOT NULL DEFAULT ''`,
+      `source_node_id TEXT NOT NULL DEFAULT ''`,
+      `target_node_id TEXT NOT NULL DEFAULT ''`,
+      `relation TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `evidence TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    for (const [column, ddl] of [
+      ["source_session_ids", `TEXT NOT NULL DEFAULT ''`],
+      ["source_paths", `TEXT NOT NULL DEFAULT ''`]
+    ]) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "source_session_id", `("source_session_id")`);
+    await this.ensureLookupIndex(name, "source_target_relation", `("source_node_id", "target_node_id", "relation")`);
+  }
+  async ensureFactsTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `fact_id TEXT NOT NULL DEFAULT ''`,
+      `subject_entity_id TEXT NOT NULL DEFAULT ''`,
+      `subject_name TEXT NOT NULL DEFAULT ''`,
+      `subject_type TEXT NOT NULL DEFAULT ''`,
+      `predicate TEXT NOT NULL DEFAULT ''`,
+      `object_entity_id TEXT NOT NULL DEFAULT ''`,
+      `object_name TEXT NOT NULL DEFAULT ''`,
+      `object_type TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `evidence TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `confidence TEXT NOT NULL DEFAULT ''`,
+      `valid_at TEXT NOT NULL DEFAULT ''`,
+      `valid_from TEXT NOT NULL DEFAULT ''`,
+      `valid_to TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "fact_id", `("fact_id")`);
+    await this.ensureLookupIndex(name, "session_predicate", `("source_session_id", "predicate")`);
+    await this.ensureLookupIndex(name, "subject_object", `("subject_entity_id", "object_entity_id")`);
+  }
+  async ensureEntitiesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `entity_id TEXT NOT NULL DEFAULT ''`,
+      `canonical_name TEXT NOT NULL DEFAULT ''`,
+      `entity_type TEXT NOT NULL DEFAULT ''`,
+      `aliases TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "entity_id", `("entity_id")`);
+    await this.ensureLookupIndex(name, "canonical_name", `("canonical_name")`);
+  }
+  async ensureFactEntityLinksTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `link_id TEXT NOT NULL DEFAULT ''`,
+      `fact_id TEXT NOT NULL DEFAULT ''`,
+      `entity_id TEXT NOT NULL DEFAULT ''`,
+      `entity_role TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "fact_id", `("fact_id")`);
+    await this.ensureLookupIndex(name, "entity_id", `("entity_id")`);
+    await this.ensureLookupIndex(name, "session_entity_role", `("source_session_id", "entity_id", "entity_role")`);
   }
 };
 
-// dist/src/utils/session-path.js
-function buildSessionPath(config, sessionId) {
-  const workspace = config.workspaceId ?? "default";
-  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${workspace}_${sessionId}.jsonl`;
+// dist/src/utils/direct-run.js
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+function isDirectRun(metaUrl) {
+  const entry = process.argv[1];
+  if (!entry)
+    return false;
+  try {
+    return resolve(fileURLToPath(metaUrl)) === resolve(entry);
+  } catch {
+    return false;
+  }
 }
 
 // dist/src/hooks/summary-state.js
@@ -525,46 +812,75 @@ function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
     throw e;
   }
 }
-function releaseLock(sessionId) {
-  try {
-    unlinkSync(lockPath(sessionId));
-  } catch (e) {
-    if (e?.code !== "ENOENT") {
-      dlog(`releaseLock unlink failed for ${sessionId}: ${e.message}`);
-    }
-  }
-}
 
 // dist/src/hooks/spawn-wiki-worker.js
 import { spawn, execSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { dirname, join as join6 } from "node:path";
-import { writeFileSync as writeFileSync3, mkdirSync as mkdirSync4 } from "node:fs";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { dirname, join as join5 } from "node:path";
+import { writeFileSync as writeFileSync3, mkdirSync as mkdirSync3, appendFileSync as appendFileSync2 } from "node:fs";
 import { homedir as homedir4, tmpdir as tmpdir2 } from "node:os";
 
-// dist/src/utils/wiki-log.js
-import { mkdirSync as mkdirSync3, appendFileSync as appendFileSync2 } from "node:fs";
-import { join as join5 } from "node:path";
-function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
-  const path = join5(hooksDir, filename);
-  return {
-    path,
-    log(msg) {
-      try {
-        mkdirSync3(hooksDir, { recursive: true });
-        appendFileSync2(path, `[${utcTimestamp()}] ${msg}
-`);
-      } catch {
-      }
-    }
-  };
-}
+// dist/src/hooks/knowledge-graph.js
+import { randomUUID as randomUUID3 } from "node:crypto";
+
+// dist/src/hooks/upload-summary.js
+import { randomUUID as randomUUID2 } from "node:crypto";
+
+// dist/src/hooks/knowledge-graph.js
+var GRAPH_PROMPT_TEMPLATE = `You are extracting a compact knowledge graph delta from a session summary.
+
+SESSION ID: __SESSION_ID__
+SOURCE PATH: __SOURCE_PATH__
+PROJECT: __PROJECT__
+
+SUMMARY MARKDOWN:
+__SUMMARY_TEXT__
+
+Return ONLY valid JSON with this exact shape:
+{"nodes":[{"name":"canonical entity name","type":"person|organization|place|artifact|project|tool|file|event|goal|status|preference|concept|other","summary":"short factual description","aliases":["optional alias"]}],"edges":[{"source":"canonical source entity","target":"canonical target entity","relation":"snake_case_relation","summary":"short factual relation summary","evidence":"short supporting phrase"}]}
+
+Rules:
+- Use canonical names for repeated entities.
+- Include people, places, organizations, books/media, tools, files, goals, status labels, preferences, and notable events when they matter for future recall.
+- Convert relationship/status/origin/preferences into edges when possible. Example relation shapes: home_country, relationship_status, enjoys, decided_to_pursue, works_on, uses_tool, located_in, recommended, plans, supports.
+- Keep summaries short and factual. Do not invent facts beyond the summary.
+- If a source or target appears in an edge but not in nodes, also include it in nodes.
+- Prefer stable canonical names over pronouns.
+- Return no markdown, no prose, no code fences, only JSON.`;
+
+// dist/src/hooks/memory-facts.js
+import { randomUUID as randomUUID4 } from "node:crypto";
+var MEMORY_FACT_PROMPT_TEMPLATE = `You are extracting durable long-term memory facts from raw session transcript rows.
+
+SESSION ID: __SESSION_ID__
+SOURCE PATH: __SOURCE_PATH__
+PROJECT: __PROJECT__
+
+TRANSCRIPT ROWS:
+__TRANSCRIPT_TEXT__
+
+Return ONLY valid JSON with this exact shape:
+{"facts":[{"subject":"canonical entity","subject_type":"person|organization|place|artifact|project|tool|file|event|goal|status|preference|concept|other","subject_aliases":["optional alias"],"predicate":"snake_case_relation","object":"canonical object text","object_type":"person|organization|place|artifact|project|tool|file|event|goal|status|preference|concept|other","object_aliases":["optional alias"],"summary":"short factual claim","evidence":"short supporting phrase","confidence":0.0,"valid_at":"optional date/time text","valid_from":"optional date/time text","valid_to":"optional date/time text"}]}
+
+Rules:
+- The transcript rows are the only source of truth for this extraction. Do not rely on summaries or inferred rewrites.
+- Extract atomic facts that are useful for later recall. One durable claim per fact.
+- Prefer canonical names for repeated people, organizations, places, projects, tools, and artifacts.
+- Use relation-style predicates such as works_on, home_country, relationship_status, prefers, plans, decided_to_pursue, located_in, uses_tool, recommended, supports, owns, read, attends, moved_from, moved_to.
+- Facts should preserve temporal history instead of overwriting it. If the transcript says something changed, emit the new fact and include timing in valid_at / valid_from / valid_to when the transcript supports it.
+- Include assistant-confirmed or tool-confirmed actions when they are stated as completed facts in the transcript.
+- If a speaker explicitly self-identifies or states a status, preserve that exact label instead of broadening it.
+- Preserve exact named places, titles, organizations, and relative time phrases when they are the stated fact.
+- Do not invent facts that are not supported by the transcript.
+- Avoid duplicates or near-duplicates. If two facts say the same thing, keep the more specific one.
+- Return no markdown, no prose, no code fences, only JSON.`;
 
 // dist/src/hooks/spawn-wiki-worker.js
 var HOME = homedir4();
-var wikiLogger = makeWikiLogger(join6(HOME, ".claude", "hooks"));
-var WIKI_LOG = wikiLogger.path;
-var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry. Think of this as building a knowledge graph, not writing a summary.
+var WIKI_LOG = join5(HOME, ".claude", "hooks", "deeplake-wiki.log");
+var WIKI_PROMPT_TEMPLATE = `You are maintaining a persistent wiki from a session transcript. This page will become part of a long-lived knowledge base that future agents will search through index.md before opening the source session. Write for retrieval, not storytelling.
+
+The session may be a coding session, a meeting, or a personal conversation. Your job is to turn the raw transcript into a dense, factual wiki page that preserves names, dates, relationships, preferences, plans, titles, and exact status changes.
 
 SESSION JSONL path: __JSONL__
 SUMMARY FILE to write: __SUMMARY__
@@ -578,58 +894,75 @@ Steps:
    - If PREVIOUS JSONL OFFSET > 0, this is a resumed session. Read the existing summary file first,
      then focus on lines AFTER the offset for new content. Merge new facts into the existing summary.
    - If offset is 0, generate from scratch.
+   - Treat the JSONL as the source of truth. Do not invent facts.
 
 2. Write the summary file at the path above with this EXACT format. The header fields (Source, Project) are pre-filled \u2014 copy them VERBATIM, do NOT replace them with paths from the JSONL content:
 
 # Session __SESSION_ID__
 - **Source**: __JSONL_SERVER_PATH__
+- **Date**: <primary real-world date/time for the session if the transcript contains one; otherwise "unknown">
+- **Participants**: <comma-separated names or roles of the main participants>
 - **Started**: <extract from JSONL>
 - **Ended**: <now>
 - **Project**: __PROJECT__
+- **Topics**: <comma-separated topics, themes, or workstreams>
 - **JSONL offset**: __JSONL_LINES__
 
 ## What Happened
-<2-3 dense sentences. What was the goal, what was accomplished, what's left.>
+<2-4 dense sentences. What happened, why it mattered, and what changed. Prefer specific names/titles/dates over abstractions.>
+
+## Searchable Facts
+<Bullet list of atomic facts. One fact per bullet. Each bullet should be able to answer a future query on its own.
+Include exact names, titles, identity labels, relationship status clues, home countries/origins, occupations, preferences, collections, books/media titles, pets, family details, goals, plans, locations, organizations, bugs, APIs, dates, and relative-time resolutions when the session date makes them unambiguous.>
 
 ## People
-<For each person mentioned: name, role, what they did/said. Format: **Name** \u2014 role \u2014 action>
+<For each person mentioned: name, role/relationship, notable traits/preferences/goals, and what they did or said. Format: **Name** \u2014 role/relationship \u2014 facts>
 
 ## Entities
-<Every named thing: repos, branches, files, APIs, tools, services, tables, features, bugs.
-Format: **entity** (type) \u2014 what was done with it, its current state>
+<Every named thing: repos, branches, files, APIs, tools, services, tables, features, bugs, places, organizations, events, books, songs, artworks, pets, or products.
+Format: **entity** (type) \u2014 why it matters, relevant state/details>
 
 ## Decisions & Reasoning
-<Every decision made and WHY. Not just "did X" but "did X because Y, considered Z but rejected it because W">
-
-## Key Facts
-<Bullet list of atomic facts that could answer future questions. Each fact should stand alone.
-Example: "- The memory table uses DELETE+INSERT, not UPDATE (WASM doesn't support upsert)">
+<Every decision made and WHY. Not just "did X" but "did X because Y, considered Z but rejected it because W". If no explicit decision happened, say "- None explicit.">
 
 ## Files Modified
-<bullet list: path (new/modified/deleted) \u2014 what changed>
+<bullet list: path (new/modified/deleted) \u2014 what changed. If none, say "- None.">
 
 ## Open Questions / TODO
-<Anything unresolved, blocked, or explicitly deferred>
+<Anything unresolved, blocked, explicitly deferred, or worth following up later. If none, say "- None explicit.">
 
-IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact. Future you will search this wiki to answer questions like "who worked on X", "why did we choose Y", "what's the status of Z". If a detail exists in the session, it should be in the wiki.
+IMPORTANT:
+- Be exhaustive. If a detail exists in the session and could answer a later question, it should be in the wiki.
+- Favor exact nouns and titles over generic paraphrases. Preserve exact book names, organization names, file names, feature names, and self-descriptions.
+- Keep facts canonical and query-friendly: "Ava is single", "Leo's home country is Brazil", "The team chose retries because the API returned 429s".
+- Resolve relative dates like "last year" or "next month" against the session's own date when the source makes that possible. If it is ambiguous, keep the relative phrase instead of guessing.
+- Do not omit beneficiary groups or targets of goals (for example who a project, career, or effort is meant to help).
+- Do not leak absolute filesystem paths beyond the pre-filled Source field.
 
 PRIVACY: Never include absolute filesystem paths (e.g. /home/user/..., /Users/..., C:\\\\...) in the summary. Use only project-relative paths or the project name. The Source and Project fields above are already correct \u2014 do not change them.
 
 LENGTH LIMIT: Keep the total summary under 4000 characters. Be dense and concise \u2014 prioritize facts over prose. If a session is short, the summary should be short too.`;
-var wikiLog = wikiLogger.log;
+function wikiLog(msg) {
+  try {
+    mkdirSync3(join5(HOME, ".claude", "hooks"), { recursive: true });
+    appendFileSync2(WIKI_LOG, `[${utcTimestamp()}] ${msg}
+`);
+  } catch {
+  }
+}
 function findClaudeBin() {
   try {
     return execSync("which claude 2>/dev/null", { encoding: "utf-8" }).trim();
   } catch {
-    return join6(HOME, ".claude", "local", "claude");
+    return join5(HOME, ".claude", "local", "claude");
   }
 }
 function spawnWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
   const projectName = cwd.split("/").pop() || "unknown";
-  const tmpDir = join6(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
-  mkdirSync4(tmpDir, { recursive: true });
-  const configFile = join6(tmpDir, "config.json");
+  const tmpDir = join5(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  mkdirSync3(tmpDir, { recursive: true });
+  const configFile = join5(tmpDir, "config.json");
   writeFileSync3(configFile, JSON.stringify({
     apiUrl: config.apiUrl,
     token: config.token,
@@ -637,17 +970,24 @@ function spawnWikiWorker(opts) {
     workspaceId: config.workspaceId,
     memoryTable: config.tableName,
     sessionsTable: config.sessionsTableName,
+    graphNodesTable: config.graphNodesTableName,
+    graphEdgesTable: config.graphEdgesTableName,
+    factsTable: config.factsTableName,
+    entitiesTable: config.entitiesTableName,
+    factEntityLinksTable: config.factEntityLinksTableName,
     sessionId,
     userName: config.userName,
     project: projectName,
     tmpDir,
     claudeBin: findClaudeBin(),
     wikiLog: WIKI_LOG,
-    hooksDir: join6(HOME, ".claude", "hooks"),
-    promptTemplate: WIKI_PROMPT_TEMPLATE
+    hooksDir: join5(HOME, ".claude", "hooks"),
+    promptTemplate: WIKI_PROMPT_TEMPLATE,
+    graphPromptTemplate: GRAPH_PROMPT_TEMPLATE,
+    factPromptTemplate: MEMORY_FACT_PROMPT_TEMPLATE
   }));
   wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
-  const workerPath = join6(bundleDir, "wiki-worker.js");
+  const workerPath = join5(bundleDir, "wiki-worker.js");
   spawn("nohup", ["node", workerPath, configFile], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"]
@@ -655,24 +995,343 @@ function spawnWikiWorker(opts) {
   wikiLog(`${reason}: spawned summary worker for ${sessionId}`);
 }
 function bundleDirFromImportMeta(importMetaUrl) {
-  return dirname(fileURLToPath(importMetaUrl));
+  return dirname(fileURLToPath2(importMetaUrl));
+}
+
+// dist/src/hooks/session-queue.js
+import { appendFileSync as appendFileSync3, closeSync as closeSync2, existsSync as existsSync4, mkdirSync as mkdirSync4, openSync as openSync2, readFileSync as readFileSync4, readdirSync, renameSync as renameSync2, rmSync, statSync, writeFileSync as writeFileSync4 } from "node:fs";
+import { dirname as dirname2, join as join6 } from "node:path";
+import { homedir as homedir5 } from "node:os";
+var DEFAULT_QUEUE_DIR = join6(homedir5(), ".deeplake", "queue");
+var DEFAULT_MAX_BATCH_ROWS = 50;
+var DEFAULT_STALE_INFLIGHT_MS = 6e4;
+var DEFAULT_AUTH_FAILURE_TTL_MS = 5 * 6e4;
+var BUSY_WAIT_STEP_MS = 100;
+var SessionWriteDisabledError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "SessionWriteDisabledError";
+  }
+};
+function buildSessionPath(config, sessionId) {
+  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
+}
+function buildQueuedSessionRow(args) {
+  const structured = extractStructuredSessionFields(args.line, args.sessionId);
+  return {
+    id: crypto.randomUUID(),
+    path: args.sessionPath,
+    filename: args.sessionPath.split("/").pop() ?? "",
+    message: args.line,
+    sessionId: structured.sessionId,
+    eventType: structured.eventType,
+    turnIndex: structured.turnIndex,
+    diaId: structured.diaId,
+    speaker: structured.speaker,
+    text: structured.text,
+    turnSummary: structured.turnSummary,
+    sourceDateTime: structured.sourceDateTime,
+    author: args.userName,
+    sizeBytes: Buffer.byteLength(args.line, "utf-8"),
+    project: args.projectName,
+    description: args.description,
+    agent: args.agent,
+    creationDate: args.timestamp,
+    lastUpdateDate: args.timestamp
+  };
+}
+function appendQueuedSessionRow(row, queueDir = DEFAULT_QUEUE_DIR) {
+  mkdirSync4(queueDir, { recursive: true });
+  const sessionId = extractSessionId(row.path);
+  const queuePath = getQueuePath(queueDir, sessionId);
+  appendFileSync3(queuePath, `${JSON.stringify(row)}
+`);
+  return queuePath;
+}
+function buildSessionInsertSql(sessionsTable, rows) {
+  if (rows.length === 0)
+    throw new Error("buildSessionInsertSql: rows must not be empty");
+  const table = sqlIdent(sessionsTable);
+  const values = rows.map((row) => {
+    const jsonForSql = escapeJsonbLiteral(coerceJsonbPayload(row.message));
+    return `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, '${sqlStr(row.sessionId)}', '${sqlStr(row.eventType)}', ${row.turnIndex}, '${sqlStr(row.diaId)}', '${sqlStr(row.speaker)}', '${sqlStr(row.text)}', '${sqlStr(row.turnSummary)}', '${sqlStr(row.sourceDateTime)}', '${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', '${sqlStr(row.agent)}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`;
+  }).join(", ");
+  return `INSERT INTO "${table}" (id, path, filename, message, session_id, event_type, turn_index, dia_id, speaker, text, turn_summary, source_date_time, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ${values}`;
+}
+function coerceJsonbPayload(message) {
+  try {
+    return JSON.stringify(JSON.parse(message));
+  } catch {
+    return JSON.stringify({
+      type: "raw_message",
+      content: message
+    });
+  }
+}
+function escapeJsonbLiteral(value) {
+  return value.replace(/'/g, "''").replace(/\0/g, "");
+}
+function extractString(value) {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+function extractNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value))
+    return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed))
+      return parsed;
+  }
+  return 0;
+}
+function extractStructuredSessionFields(message, fallbackSessionId = "") {
+  let parsed = null;
+  try {
+    const raw = JSON.parse(message);
+    if (raw && typeof raw === "object")
+      parsed = raw;
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) {
+    return {
+      sessionId: fallbackSessionId,
+      eventType: "raw_message",
+      turnIndex: 0,
+      diaId: "",
+      speaker: "",
+      text: message,
+      turnSummary: "",
+      sourceDateTime: ""
+    };
+  }
+  const eventType = extractString(parsed["type"]);
+  const content = extractString(parsed["content"]);
+  const toolName = extractString(parsed["tool_name"]);
+  const speaker = extractString(parsed["speaker"]) || (eventType === "user_message" ? "user" : eventType === "assistant_message" ? "assistant" : "");
+  const text = extractString(parsed["text"]) || content || (eventType === "tool_call" ? toolName : "");
+  return {
+    sessionId: extractString(parsed["session_id"]) || fallbackSessionId,
+    eventType,
+    turnIndex: extractNumber(parsed["turn_index"]),
+    diaId: extractString(parsed["dia_id"]),
+    speaker,
+    text,
+    turnSummary: extractString(parsed["summary"]) || extractString(parsed["message_summary"]) || extractString(parsed["msg_summary"]),
+    sourceDateTime: extractString(parsed["source_date_time"]) || extractString(parsed["date_time"]) || extractString(parsed["date"])
+  };
+}
+async function flushSessionQueue(api, opts) {
+  const queueDir = opts.queueDir ?? DEFAULT_QUEUE_DIR;
+  const maxBatchRows = opts.maxBatchRows ?? DEFAULT_MAX_BATCH_ROWS;
+  const staleInflightMs = opts.staleInflightMs ?? DEFAULT_STALE_INFLIGHT_MS;
+  const waitIfBusyMs = opts.waitIfBusyMs ?? 0;
+  const drainAll = opts.drainAll ?? false;
+  mkdirSync4(queueDir, { recursive: true });
+  const queuePath = getQueuePath(queueDir, opts.sessionId);
+  const inflightPath = getInflightPath(queueDir, opts.sessionId);
+  if (isSessionWriteDisabled(opts.sessionsTable, queueDir)) {
+    return existsSync4(queuePath) || existsSync4(inflightPath) ? { status: "disabled", rows: 0, batches: 0 } : { status: "empty", rows: 0, batches: 0 };
+  }
+  let totalRows = 0;
+  let totalBatches = 0;
+  let flushedAny = false;
+  while (true) {
+    if (opts.allowStaleInflight)
+      recoverStaleInflight(queuePath, inflightPath, staleInflightMs);
+    if (existsSync4(inflightPath)) {
+      if (waitIfBusyMs > 0) {
+        await waitForInflightToClear(inflightPath, waitIfBusyMs);
+        if (opts.allowStaleInflight)
+          recoverStaleInflight(queuePath, inflightPath, staleInflightMs);
+      }
+      if (existsSync4(inflightPath)) {
+        return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "busy", rows: 0, batches: 0 };
+      }
+    }
+    if (!existsSync4(queuePath)) {
+      return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "empty", rows: 0, batches: 0 };
+    }
+    try {
+      renameSync2(queuePath, inflightPath);
+    } catch (e) {
+      if (e?.code === "ENOENT") {
+        return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "empty", rows: 0, batches: 0 };
+      }
+      throw e;
+    }
+    try {
+      const { rows, batches } = await flushInflightFile(api, opts.sessionsTable, inflightPath, maxBatchRows);
+      totalRows += rows;
+      totalBatches += batches;
+      flushedAny = flushedAny || rows > 0;
+    } catch (e) {
+      requeueInflight(queuePath, inflightPath);
+      if (e instanceof SessionWriteDisabledError) {
+        return { status: "disabled", rows: totalRows, batches: totalBatches };
+      }
+      throw e;
+    }
+    if (!drainAll) {
+      return { status: "flushed", rows: totalRows, batches: totalBatches };
+    }
+  }
+}
+function getQueuePath(queueDir, sessionId) {
+  return join6(queueDir, `${sessionId}.jsonl`);
+}
+function getInflightPath(queueDir, sessionId) {
+  return join6(queueDir, `${sessionId}.inflight`);
+}
+function extractSessionId(sessionPath) {
+  const filename = sessionPath.split("/").pop() ?? "";
+  return filename.replace(/\.jsonl$/, "").split("_").pop() ?? filename;
+}
+async function flushInflightFile(api, sessionsTable, inflightPath, maxBatchRows) {
+  const rows = readQueuedRows(inflightPath);
+  if (rows.length === 0) {
+    rmSync(inflightPath, { force: true });
+    return { rows: 0, batches: 0 };
+  }
+  let ensured = false;
+  let batches = 0;
+  const queueDir = dirname2(inflightPath);
+  for (let i = 0; i < rows.length; i += maxBatchRows) {
+    const chunk = rows.slice(i, i + maxBatchRows);
+    const sql = buildSessionInsertSql(sessionsTable, chunk);
+    try {
+      await api.query(sql);
+    } catch (e) {
+      if (isSessionWriteAuthError(e)) {
+        markSessionWriteDisabled(sessionsTable, errorMessage(e), queueDir);
+        throw new SessionWriteDisabledError(errorMessage(e));
+      }
+      if (!ensured && isEnsureSessionsTableRetryable(e)) {
+        try {
+          await api.ensureSessionsTable(sessionsTable);
+        } catch (ensureError) {
+          if (isSessionWriteAuthError(ensureError)) {
+            markSessionWriteDisabled(sessionsTable, errorMessage(ensureError), queueDir);
+            throw new SessionWriteDisabledError(errorMessage(ensureError));
+          }
+          throw ensureError;
+        }
+        ensured = true;
+        try {
+          await api.query(sql);
+        } catch (retryError) {
+          if (isSessionWriteAuthError(retryError)) {
+            markSessionWriteDisabled(sessionsTable, errorMessage(retryError), queueDir);
+            throw new SessionWriteDisabledError(errorMessage(retryError));
+          }
+          throw retryError;
+        }
+      } else {
+        throw e;
+      }
+    }
+    batches += 1;
+  }
+  clearSessionWriteDisabled(sessionsTable, queueDir);
+  rmSync(inflightPath, { force: true });
+  return { rows: rows.length, batches };
+}
+function readQueuedRows(path) {
+  const raw = readFileSync4(path, "utf-8");
+  return raw.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
+}
+function requeueInflight(queuePath, inflightPath) {
+  if (!existsSync4(inflightPath))
+    return;
+  const inflight = readFileSync4(inflightPath, "utf-8");
+  appendFileSync3(queuePath, inflight);
+  rmSync(inflightPath, { force: true });
+}
+function recoverStaleInflight(queuePath, inflightPath, staleInflightMs) {
+  if (!existsSync4(inflightPath) || !isStale(inflightPath, staleInflightMs))
+    return;
+  requeueInflight(queuePath, inflightPath);
+}
+function isStale(path, staleInflightMs) {
+  return Date.now() - statSync(path).mtimeMs >= staleInflightMs;
+}
+function isEnsureSessionsTableRetryable(error) {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("does not exist") || message.includes("doesn't exist") || message.includes("relation") || message.includes("not found");
+}
+function isSessionWriteAuthError(error) {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("403") || message.includes("401") || message.includes("forbidden") || message.includes("unauthorized");
+}
+function markSessionWriteDisabled(sessionsTable, reason, queueDir = DEFAULT_QUEUE_DIR) {
+  mkdirSync4(queueDir, { recursive: true });
+  writeFileSync4(getSessionWriteDisabledPath(queueDir, sessionsTable), JSON.stringify({
+    disabledAt: (/* @__PURE__ */ new Date()).toISOString(),
+    reason,
+    sessionsTable
+  }));
+}
+function clearSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR) {
+  rmSync(getSessionWriteDisabledPath(queueDir, sessionsTable), { force: true });
+}
+function isSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR, ttlMs = DEFAULT_AUTH_FAILURE_TTL_MS) {
+  const path = getSessionWriteDisabledPath(queueDir, sessionsTable);
+  if (!existsSync4(path))
+    return false;
+  try {
+    const raw = readFileSync4(path, "utf-8");
+    const state = JSON.parse(raw);
+    const ageMs = Date.now() - new Date(state.disabledAt).getTime();
+    if (Number.isNaN(ageMs) || ageMs >= ttlMs) {
+      rmSync(path, { force: true });
+      return false;
+    }
+    return true;
+  } catch {
+    rmSync(path, { force: true });
+    return false;
+  }
+}
+function getSessionWriteDisabledPath(queueDir, sessionsTable) {
+  return join6(queueDir, `.${sessionsTable}.disabled.json`);
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+async function waitForInflightToClear(inflightPath, waitIfBusyMs) {
+  const startedAt = Date.now();
+  while (existsSync4(inflightPath) && Date.now() - startedAt < waitIfBusyMs) {
+    await sleep2(BUSY_WAIT_STEP_MS);
+  }
+}
+function sleep2(ms) {
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
+}
+
+// dist/src/hooks/query-cache.js
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync5, rmSync as rmSync2, statSync as statSync2, writeFileSync as writeFileSync5 } from "node:fs";
+import { join as join7 } from "node:path";
+import { homedir as homedir6 } from "node:os";
+var log3 = (msg) => log("query-cache", msg);
+var DEFAULT_CACHE_ROOT = join7(homedir6(), ".deeplake", "query-cache");
+var INDEX_CACHE_TTL_MS = 15 * 60 * 1e3;
+function getSessionQueryCacheDir(sessionId, deps = {}) {
+  const { cacheRoot = DEFAULT_CACHE_ROOT } = deps;
+  return join7(cacheRoot, sessionId);
+}
+function clearSessionQueryCache(sessionId, deps = {}) {
+  const { logFn = log3 } = deps;
+  try {
+    rmSync2(getSessionQueryCacheDir(sessionId, deps), { recursive: true, force: true });
+  } catch (e) {
+    logFn(`clear failed for session=${sessionId}: ${e.message}`);
+  }
 }
 
 // dist/src/hooks/capture.js
-var log3 = (msg) => log("capture", msg);
-var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
-async function main() {
-  if (!CAPTURE)
-    return;
-  const input = await readStdin();
-  const config = loadConfig();
-  if (!config) {
-    log3("no config");
-    return;
-  }
-  const sessionsTable = config.sessionsTableName;
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
-  const ts = (/* @__PURE__ */ new Date()).toISOString();
+var log4 = (msg) => log("capture", msg);
+var CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
+function buildCaptureEntry(input, timestamp) {
   const meta = {
     session_id: input.session_id,
     transcript_path: input.transcript_path,
@@ -681,20 +1340,18 @@ async function main() {
     hook_event_name: input.hook_event_name,
     agent_id: input.agent_id,
     agent_type: input.agent_type,
-    timestamp: ts
+    timestamp
   };
-  let entry;
   if (input.prompt !== void 0) {
-    log3(`user session=${input.session_id}`);
-    entry = {
+    return {
       id: crypto.randomUUID(),
       ...meta,
       type: "user_message",
       content: input.prompt
     };
-  } else if (input.tool_name !== void 0) {
-    log3(`tool=${input.tool_name} session=${input.session_id}`);
-    entry = {
+  }
+  if (input.tool_name !== void 0) {
+    return {
       id: crypto.randomUUID(),
       ...meta,
       type: "tool_call",
@@ -703,75 +1360,104 @@ async function main() {
       tool_input: JSON.stringify(input.tool_input),
       tool_response: JSON.stringify(input.tool_response)
     };
-  } else if (input.last_assistant_message !== void 0) {
-    log3(`assistant session=${input.session_id}`);
-    entry = {
+  }
+  if (input.last_assistant_message !== void 0) {
+    return {
       id: crypto.randomUUID(),
       ...meta,
       type: "assistant_message",
       content: input.last_assistant_message,
       ...input.agent_transcript_path ? { agent_transcript_path: input.agent_transcript_path } : {}
     };
-  } else {
-    log3("unknown event, skipping");
+  }
+  return null;
+}
+function maybeTriggerPeriodicSummary(sessionId, cwd, config, deps = {}) {
+  const { bundleDir = bundleDirFromImportMeta(import.meta.url), wikiWorker = process.env.HIVEMIND_WIKI_WORKER === "1", logFn = log4, bumpTotalCountFn = bumpTotalCount, loadTriggerConfigFn = loadTriggerConfig, shouldTriggerFn = shouldTrigger, tryAcquireLockFn = tryAcquireLock, wikiLogFn = wikiLog, spawnWikiWorkerFn = spawnWikiWorker } = deps;
+  if (wikiWorker)
     return;
+  try {
+    const state = bumpTotalCountFn(sessionId);
+    const cfg = loadTriggerConfigFn();
+    if (!shouldTriggerFn(state, cfg))
+      return;
+    if (!tryAcquireLockFn(sessionId)) {
+      logFn(`periodic trigger suppressed (lock held) session=${sessionId}`);
+      return;
+    }
+    wikiLogFn(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
+    spawnWikiWorkerFn({
+      config,
+      sessionId,
+      cwd,
+      bundleDir,
+      reason: "Periodic"
+    });
+  } catch (e) {
+    logFn(`periodic trigger error: ${e.message}`);
+  }
+}
+async function runCaptureHook(input, deps = {}) {
+  const { captureEnabled = CAPTURE, config = loadConfig(), now = () => (/* @__PURE__ */ new Date()).toISOString(), createApi = (activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, activeConfig.sessionsTableName), appendQueuedSessionRowFn = appendQueuedSessionRow, buildQueuedSessionRowFn = buildQueuedSessionRow, flushSessionQueueFn = flushSessionQueue, clearSessionQueryCacheFn = clearSessionQueryCache, maybeTriggerPeriodicSummaryFn = maybeTriggerPeriodicSummary, logFn = log4 } = deps;
+  if (!captureEnabled)
+    return { status: "disabled" };
+  if (!config) {
+    logFn("no config");
+    return { status: "no_config" };
+  }
+  const ts = now();
+  const entry = buildCaptureEntry(input, ts);
+  if (!entry) {
+    logFn("unknown event, skipping");
+    return { status: "ignored" };
+  }
+  if (input.prompt !== void 0)
+    logFn(`user session=${input.session_id}`);
+  else if (input.tool_name !== void 0)
+    logFn(`tool=${input.tool_name} session=${input.session_id}`);
+  else
+    logFn(`assistant session=${input.session_id}`);
+  if (input.hook_event_name === "UserPromptSubmit") {
+    clearSessionQueryCacheFn(input.session_id);
   }
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);
-  log3(`writing to ${sessionPath}`);
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-  const filename = sessionPath.split("/").pop() ?? "";
-  const jsonForSql = line.replace(/'/g, "''");
-  const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'claude_code', '${ts}', '${ts}')`;
-  try {
-    await api.query(insertSql);
-  } catch (e) {
-    if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
-      log3("table missing, creating and retrying");
-      await api.ensureSessionsTable(sessionsTable);
-      await api.query(insertSql);
-    } else {
-      throw e;
-    }
+  appendQueuedSessionRowFn(buildQueuedSessionRowFn({
+    sessionPath,
+    line,
+    sessionId: input.session_id,
+    userName: config.userName,
+    projectName,
+    description: input.hook_event_name ?? "",
+    agent: "claude_code",
+    timestamp: ts
+  }));
+  logFn(`queued ${input.hook_event_name ?? "event"} for ${sessionPath}`);
+  maybeTriggerPeriodicSummaryFn(input.session_id, input.cwd ?? "", config);
+  if (input.hook_event_name === "Stop" || input.hook_event_name === "SubagentStop") {
+    const result = await flushSessionQueueFn(createApi(config), {
+      sessionId: input.session_id,
+      sessionsTable: config.sessionsTableName,
+      drainAll: true
+    });
+    logFn(`flush ${result.status}: rows=${result.rows} batches=${result.batches}`);
+    return { status: "queued", entry, flushStatus: result.status };
   }
-  log3("capture ok \u2192 cloud");
-  maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
+  return { status: "queued", entry };
 }
-function maybeTriggerPeriodicSummary(sessionId, cwd, config) {
-  if (process.env.HIVEMIND_WIKI_WORKER === "1")
-    return;
-  try {
-    const state = bumpTotalCount(sessionId);
-    const cfg = loadTriggerConfig();
-    if (!shouldTrigger(state, cfg))
-      return;
-    if (!tryAcquireLock(sessionId)) {
-      log3(`periodic trigger suppressed (lock held) session=${sessionId}`);
-      return;
-    }
-    wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
-    try {
-      spawnWikiWorker({
-        config,
-        sessionId,
-        cwd,
-        bundleDir: bundleDirFromImportMeta(import.meta.url),
-        reason: "Periodic"
-      });
-    } catch (e) {
-      log3(`periodic spawn failed: ${e.message}`);
-      try {
-        releaseLock(sessionId);
-      } catch (releaseErr) {
-        log3(`releaseLock after periodic spawn failure also failed: ${releaseErr.message}`);
-      }
-      throw e;
-    }
-  } catch (e) {
-    log3(`periodic trigger error: ${e.message}`);
-  }
+async function main() {
+  const input = await readStdin();
+  await runCaptureHook(input);
 }
-main().catch((e) => {
-  log3(`fatal: ${e.message}`);
-  process.exit(0);
-});
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => {
+    log4(`fatal: ${e.message}`);
+    process.exit(0);
+  });
+}
+export {
+  buildCaptureEntry,
+  maybeTriggerPeriodicSummary,
+  runCaptureHook
+};

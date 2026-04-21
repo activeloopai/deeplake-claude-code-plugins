@@ -23,12 +23,12 @@ function makeCtx(fs: DeeplakeFs, cwd = "/memory") {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 //
-// The interceptor now queries both `memory` and `sessions` in parallel with
-// LIKE/ILIKE (no more BM25 — the `<#>` query returned 400 on every call),
-// and each SQL row returns { path, content } so we no longer need a
-// prefetch round-trip to read file content for the regex pass. Prefetch is
-// only used as a fallback when SQL returns zero rows and we scan the FS
-// cache. Tests below assert that new contract.
+// The interceptor now queries both `memory` and `sessions` through grep-core.
+// Summary retrieval may use BM25 (`<#>`) while sessions keep LIKE/ILIKE
+// filtering, and each SQL row returns { path, content } so we no longer need
+// a prefetch round-trip to read file content for the regex pass. Prefetch is
+// only used as a fallback when SQL returns zero rows and we scan the FS cache.
+// Tests below assert that contract.
 
 describe("grep interceptor", () => {
   it("returns exitCode=1 when the pattern is missing", async () => {
@@ -78,8 +78,7 @@ describe("grep interceptor", () => {
     const sqls = client.query.mock.calls.map((c: unknown[]) => c[0] as string);
     expect(sqls.some(s => /FROM "test"/.test(s) && /ILIKE|LIKE/.test(s))).toBe(true);
     expect(sqls.some(s => /FROM "sessions"/.test(s) && /ILIKE|LIKE/.test(s))).toBe(true);
-    // No BM25 in the new path
-    expect(sqls.some(s => s.includes("<#>"))).toBe(false);
+    expect(sqls.some(s => s.includes("<#>"))).toBe(true);
     expect(result.stdout).toContain("hello world");
     expect(result.exitCode).toBe(0);
   });

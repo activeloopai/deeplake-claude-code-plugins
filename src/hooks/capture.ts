@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Capture hook — writes each session event as a separate row in the sessions table.
- * One INSERT per event, no concat, no race conditions.
+ * Capture hook — appends session events to a local queue on the hot path.
+ * Stop/SubagentStop flush that queue to the sessions table in batched INSERTs.
  *
  * Used by: UserPromptSubmit, PostToolUse (async), Stop, SubagentStop
  */
@@ -10,20 +10,26 @@
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig, type Config } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr } from "../utils/sql.js";
 import { log as _log } from "../utils/debug.js";
-import { buildSessionPath } from "../utils/session-path.js";
+import { isDirectRun } from "../utils/direct-run.js";
 import {
   bumpTotalCount,
   loadTriggerConfig,
   shouldTrigger,
   tryAcquireLock,
-  releaseLock,
 } from "./summary-state.js";
 import { bundleDirFromImportMeta, spawnWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
+import {
+  appendQueuedSessionRow,
+  buildQueuedSessionRow,
+  buildSessionPath,
+  flushSessionQueue,
+} from "./session-queue.js";
+import { clearSessionQueryCache } from "./query-cache.js";
+
 const log = (msg: string) => _log("capture", msg);
 
-interface HookInput {
+export interface HookInput {
   session_id: string;
   transcript_path?: string;
   cwd?: string;
@@ -31,32 +37,19 @@ interface HookInput {
   hook_event_name?: string;
   agent_id?: string;
   agent_type?: string;
-  // UserPromptSubmit
   prompt?: string;
-  // PostToolUse
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   tool_response?: Record<string, unknown>;
   tool_use_id?: string;
-  // Stop / SubagentStop
   last_assistant_message?: string;
   stop_hook_active?: boolean;
   agent_transcript_path?: string;
 }
 
-const CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
+const CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
 
-async function main(): Promise<void> {
-  if (!CAPTURE) return;
-  const input = await readStdin<HookInput>();
-  const config = loadConfig();
-  if (!config) { log("no config"); return; }
-
-  const sessionsTable = config.sessionsTableName;
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
-
-  // Build the event entry
-  const ts = new Date().toISOString();
+export function buildCaptureEntry(input: HookInput, timestamp: string): Record<string, unknown> | null {
   const meta = {
     session_id: input.session_id,
     transcript_path: input.transcript_path,
@@ -65,22 +58,20 @@ async function main(): Promise<void> {
     hook_event_name: input.hook_event_name,
     agent_id: input.agent_id,
     agent_type: input.agent_type,
-    timestamp: ts,
+    timestamp,
   };
 
-  let entry: Record<string, unknown>;
-
   if (input.prompt !== undefined) {
-    log(`user session=${input.session_id}`);
-    entry = {
+    return {
       id: crypto.randomUUID(),
       ...meta,
       type: "user_message",
       content: input.prompt,
     };
-  } else if (input.tool_name !== undefined) {
-    log(`tool=${input.tool_name} session=${input.session_id}`);
-    entry = {
+  }
+
+  if (input.tool_name !== undefined) {
+    return {
       id: crypto.randomUUID(),
       ...meta,
       type: "tool_call",
@@ -89,91 +80,166 @@ async function main(): Promise<void> {
       tool_input: JSON.stringify(input.tool_input),
       tool_response: JSON.stringify(input.tool_response),
     };
-  } else if (input.last_assistant_message !== undefined) {
-    log(`assistant session=${input.session_id}`);
-    entry = {
+  }
+
+  if (input.last_assistant_message !== undefined) {
+    return {
       id: crypto.randomUUID(),
       ...meta,
       type: "assistant_message",
       content: input.last_assistant_message,
       ...(input.agent_transcript_path ? { agent_transcript_path: input.agent_transcript_path } : {}),
     };
-  } else {
-    log("unknown event, skipping");
-    return;
+  }
+
+  return null;
+}
+
+interface PeriodicSummaryDeps {
+  bundleDir?: string;
+  wikiWorker?: boolean;
+  logFn?: (msg: string) => void;
+  bumpTotalCountFn?: typeof bumpTotalCount;
+  loadTriggerConfigFn?: typeof loadTriggerConfig;
+  shouldTriggerFn?: typeof shouldTrigger;
+  tryAcquireLockFn?: typeof tryAcquireLock;
+  wikiLogFn?: typeof wikiLog;
+  spawnWikiWorkerFn?: typeof spawnWikiWorker;
+}
+
+export function maybeTriggerPeriodicSummary(sessionId: string, cwd: string, config: Config, deps: PeriodicSummaryDeps = {}): void {
+  const {
+    bundleDir = bundleDirFromImportMeta(import.meta.url),
+    wikiWorker = process.env.HIVEMIND_WIKI_WORKER === "1",
+    logFn = log,
+    bumpTotalCountFn = bumpTotalCount,
+    loadTriggerConfigFn = loadTriggerConfig,
+    shouldTriggerFn = shouldTrigger,
+    tryAcquireLockFn = tryAcquireLock,
+    wikiLogFn = wikiLog,
+    spawnWikiWorkerFn = spawnWikiWorker,
+  } = deps;
+
+  if (wikiWorker) return;
+
+  try {
+    const state = bumpTotalCountFn(sessionId);
+    const cfg = loadTriggerConfigFn();
+    if (!shouldTriggerFn(state, cfg)) return;
+
+    if (!tryAcquireLockFn(sessionId)) {
+      logFn(`periodic trigger suppressed (lock held) session=${sessionId}`);
+      return;
+    }
+
+    wikiLogFn(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
+    spawnWikiWorkerFn({
+      config,
+      sessionId,
+      cwd,
+      bundleDir,
+      reason: "Periodic",
+    });
+  } catch (e: any) {
+    logFn(`periodic trigger error: ${e.message}`);
+  }
+}
+
+interface CaptureHookDeps {
+  captureEnabled?: boolean;
+  config?: Config | null;
+  now?: () => string;
+  createApi?: (config: Config) => DeeplakeApi;
+  appendQueuedSessionRowFn?: typeof appendQueuedSessionRow;
+  buildQueuedSessionRowFn?: typeof buildQueuedSessionRow;
+  flushSessionQueueFn?: typeof flushSessionQueue;
+  clearSessionQueryCacheFn?: typeof clearSessionQueryCache;
+  maybeTriggerPeriodicSummaryFn?: typeof maybeTriggerPeriodicSummary;
+  logFn?: (msg: string) => void;
+}
+
+export async function runCaptureHook(input: HookInput, deps: CaptureHookDeps = {}): Promise<{
+  status: "disabled" | "no_config" | "ignored" | "queued";
+  entry?: Record<string, unknown>;
+  flushStatus?: string;
+}> {
+  const {
+    captureEnabled = CAPTURE,
+    config = loadConfig(),
+    now = () => new Date().toISOString(),
+    createApi = (activeConfig) => new DeeplakeApi(
+      activeConfig.token,
+      activeConfig.apiUrl,
+      activeConfig.orgId,
+      activeConfig.workspaceId,
+      activeConfig.sessionsTableName,
+    ),
+    appendQueuedSessionRowFn = appendQueuedSessionRow,
+    buildQueuedSessionRowFn = buildQueuedSessionRow,
+    flushSessionQueueFn = flushSessionQueue,
+    clearSessionQueryCacheFn = clearSessionQueryCache,
+    maybeTriggerPeriodicSummaryFn = maybeTriggerPeriodicSummary,
+    logFn = log,
+  } = deps;
+
+  if (!captureEnabled) return { status: "disabled" };
+  if (!config) {
+    logFn("no config");
+    return { status: "no_config" };
+  }
+
+  const ts = now();
+  const entry = buildCaptureEntry(input, ts);
+  if (!entry) {
+    logFn("unknown event, skipping");
+    return { status: "ignored" };
+  }
+
+  if (input.prompt !== undefined) logFn(`user session=${input.session_id}`);
+  else if (input.tool_name !== undefined) logFn(`tool=${input.tool_name} session=${input.session_id}`);
+  else logFn(`assistant session=${input.session_id}`);
+
+  if (input.hook_event_name === "UserPromptSubmit") {
+    clearSessionQueryCacheFn(input.session_id);
   }
 
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);
-  log(`writing to ${sessionPath}`);
-
-  // Simple INSERT — one row per event, no concat, no race conditions.
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-  const filename = sessionPath.split("/").pop() ?? "";
+  appendQueuedSessionRowFn(buildQueuedSessionRowFn({
+    sessionPath,
+    line,
+    sessionId: input.session_id,
+    userName: config.userName,
+    projectName,
+    description: input.hook_event_name ?? "",
+    agent: "claude_code",
+    timestamp: ts,
+  }));
+  logFn(`queued ${input.hook_event_name ?? "event"} for ${sessionPath}`);
 
-  // For JSONB: only escape single quotes for the SQL literal, keep JSON structure intact.
-  // sqlStr() would also escape backslashes and strip control chars, corrupting the JSON.
-  const jsonForSql = line.replace(/'/g, "''");
+  maybeTriggerPeriodicSummaryFn(input.session_id, input.cwd ?? "", config);
 
-  const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'claude_code', '${ts}', '${ts}')`;
-
-  try {
-    await api.query(insertSql);
-  } catch (e: any) {
-    // Fallback: table might not exist (session-start failed or org switched mid-session).
-    // Create it and retry once.
-    if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
-      log("table missing, creating and retrying");
-      await api.ensureSessionsTable(sessionsTable);
-      await api.query(insertSql);
-    } else {
-      throw e;
-    }
+  if (input.hook_event_name === "Stop" || input.hook_event_name === "SubagentStop") {
+    const result = await flushSessionQueueFn(createApi(config), {
+      sessionId: input.session_id,
+      sessionsTable: config.sessionsTableName,
+      drainAll: true,
+    });
+    logFn(`flush ${result.status}: rows=${result.rows} batches=${result.batches}`);
+    return { status: "queued", entry, flushStatus: result.status };
   }
 
-  log("capture ok → cloud");
-
-  maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
+  return { status: "queued", entry };
 }
 
-/** Increment the event counter and, if the threshold is crossed, spawn a background wiki worker. */
-function maybeTriggerPeriodicSummary(sessionId: string, cwd: string, config: Config): void {
-  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
-
-  try {
-    const state = bumpTotalCount(sessionId);
-    const cfg = loadTriggerConfig();
-    if (!shouldTrigger(state, cfg)) return;
-
-    if (!tryAcquireLock(sessionId)) {
-      log(`periodic trigger suppressed (lock held) session=${sessionId}`);
-      return;
-    }
-
-    wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
-    try {
-      spawnWikiWorker({
-        config,
-        sessionId,
-        cwd,
-        bundleDir: bundleDirFromImportMeta(import.meta.url),
-        reason: "Periodic",
-      });
-    } catch (e: any) {
-      log(`periodic spawn failed: ${e.message}`);
-      try {
-        releaseLock(sessionId);
-      } catch (releaseErr: any) {
-        log(`releaseLock after periodic spawn failure also failed: ${releaseErr.message}`);
-      }
-      throw e;
-    }
-  } catch (e: any) {
-    log(`periodic trigger error: ${e.message}`);
-  }
+/* c8 ignore start */
+async function main(): Promise<void> {
+  const input = await readStdin<HookInput>();
+  await runCaptureHook(input);
 }
 
-main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
+}
+/* c8 ignore stop */

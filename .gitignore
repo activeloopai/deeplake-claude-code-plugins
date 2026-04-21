@@ -8,7 +8,17 @@ tmp/
 coverage/
 jscpd-report/
 bench/
+.uv-cache/
+.venv/
+.venv-harrier/
 .claude/
 CLAUDE.md
 RESULTS-fast-path-all-commands.md
 PLAN-fast-path-all-commands.md
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/

@@ -1,6 +1,8 @@
 import type { DeeplakeApi } from "../deeplake-api.js";
 import { sqlLike, sqlStr } from "../utils/sql.js";
 import { normalizeContent } from "../shell/grep-core.js";
+import { isIndexDisabled, isSessionsOnlyMode } from "../utils/retrieval-mode.js";
+import { buildSummaryIndexEntry, buildSummaryIndexLine, type SummaryIndexEntry } from "../utils/summary-format.js";
 
 type Row = Record<string, unknown>;
 
@@ -8,34 +10,108 @@ function normalizeSessionPart(path: string, content: string): string {
   return normalizeContent(path, content);
 }
 
-export function buildVirtualIndexContent(summaryRows: Row[], sessionRows: Row[] = []): string {
-  const total = summaryRows.length + sessionRows.length;
+export function buildVirtualIndexContent(rows: Row[]): string {
+  const entries = rows
+    .map((row) => buildSummaryIndexEntry(row))
+    .filter((entry): entry is SummaryIndexEntry => entry !== null)
+    .sort((a, b) => (b.sortDate || "").localeCompare(a.sortDate || "") || a.path.localeCompare(b.path));
+
   const lines = [
     "# Memory Index",
     "",
-    `${total} entries (${summaryRows.length} summaries, ${sessionRows.length} sessions):`,
+    "Persistent wiki directory. Start here, open the linked summary first, then open the paired raw session if you need exact wording or temporal grounding.",
+    "",
+    "## How To Use",
+    "",
+    "- Use the People section when the question names a person.",
+    "- In the catalog, each row links to both the summary page and its source session.",
+    "- Once you have a likely match, open that exact summary or session instead of broadening into wide grep scans.",
     "",
   ];
-  if (summaryRows.length > 0) {
-    lines.push("## Summaries", "");
-    for (const row of summaryRows) {
-      const path = row["path"] as string;
-      const project = row["project"] as string || "";
-      const description = (row["description"] as string || "").slice(0, 120);
-      const date = (row["creation_date"] as string || "").slice(0, 10);
-      lines.push(`- [${path}](${path}) ${date} ${project ? `[${project}]` : ""} ${description}`);
-    }
+
+  const peopleLines = buildPeopleDirectory(entries);
+  if (peopleLines.length > 0) {
+    lines.push("## People");
+    lines.push("");
+    lines.push(...peopleLines);
     lines.push("");
   }
-  if (sessionRows.length > 0) {
-    lines.push("## Sessions", "");
-    for (const row of sessionRows) {
-      const path = row["path"] as string;
-      const description = (row["description"] as string || "").slice(0, 120);
-      lines.push(`- [${path}](${path}) ${description}`);
-    }
+
+  const projectLines = buildProjectDirectory(entries);
+  if (projectLines.length > 0) {
+    lines.push("## Projects");
+    lines.push("");
+    lines.push(...projectLines);
+    lines.push("");
+  }
+
+  lines.push("## Summary To Session Catalog");
+  lines.push("");
+  for (const entry of entries) {
+    const line = buildSummaryIndexLine(entry);
+    if (line) lines.push(line);
   }
   return lines.join("\n");
+}
+
+function formatEntryLink(entry: SummaryIndexEntry): string {
+  const session = entry.source ? ` -> [session](${entry.source})` : "";
+  return `[${entry.label}](${entry.path})${session}`;
+}
+
+function topList(counts: Map<string, number>, limit: number): string[] {
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([value]) => value);
+}
+
+function buildPeopleDirectory(entries: SummaryIndexEntry[]): string[] {
+  const people = new Map<string, { count: number; topics: Map<string, number>; recent: SummaryIndexEntry[] }>();
+
+  for (const entry of entries) {
+    for (const person of entry.participants) {
+      const current = people.get(person) ?? { count: 0, topics: new Map<string, number>(), recent: [] };
+      current.count += 1;
+      for (const topic of entry.topics) {
+        current.topics.set(topic, (current.topics.get(topic) ?? 0) + 1);
+      }
+      current.recent.push(entry);
+      people.set(person, current);
+    }
+  }
+
+  return [...people.entries()]
+    .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
+    .map(([person, info]) => {
+      const topics = topList(info.topics, 3);
+      const recent = info.recent.slice(0, 2).map((entry) => formatEntryLink(entry)).join(", ");
+      const parts = [`- ${person} — ${info.count} summaries`];
+      if (topics.length > 0) parts.push(`topics: ${topics.join("; ")}`);
+      if (recent) parts.push(`recent: ${recent}`);
+      return parts.join(" — ");
+    });
+}
+
+function buildProjectDirectory(entries: SummaryIndexEntry[]): string[] {
+  const projects = new Map<string, { count: number; recent: SummaryIndexEntry[] }>();
+
+  for (const entry of entries) {
+    if (!entry.project) continue;
+    const current = projects.get(entry.project) ?? { count: 0, recent: [] };
+    current.count += 1;
+    current.recent.push(entry);
+    projects.set(entry.project, current);
+  }
+
+  return [...projects.entries()]
+    .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
+    .map(([project, info]) => {
+      const recent = info.recent.slice(0, 2).map((entry) => formatEntryLink(entry)).join(", ");
+      const parts = [`- ${project} — ${info.count} summaries`];
+      if (recent) parts.push(`recent: ${recent}`);
+      return parts.join(" — ");
+    });
 }
 
 function buildUnionQuery(memoryQuery: string, sessionsQuery: string): string {
@@ -53,7 +129,7 @@ function buildInList(paths: string[]): string {
 function buildDirFilter(dirs: string[]): string {
   const cleaned = [...new Set(dirs.map(dir => dir.replace(/\/+$/, "") || "/"))];
   if (cleaned.length === 0 || cleaned.includes("/")) return "";
-  const clauses = cleaned.map((dir) => `path LIKE '${sqlLike(dir)}/%' ESCAPE '\\'`);
+  const clauses = cleaned.map((dir) => `path LIKE '${sqlLike(dir)}/%'`);
   return ` WHERE ${clauses.join(" OR ")}`;
 }
 
@@ -62,6 +138,12 @@ async function queryUnionRows(
   memoryQuery: string,
   sessionsQuery: string,
 ): Promise<Row[]> {
+  if (isSessionsOnlyMode()) {
+    return api.query(
+      `SELECT path, content, size_bytes, creation_date, source_order FROM (${sessionsQuery}) AS combined ORDER BY path, source_order, creation_date`
+    );
+  }
+
   const unionQuery = buildUnionQuery(memoryQuery, sessionsQuery);
   try {
     return await api.query(unionQuery);
@@ -83,8 +165,16 @@ export async function readVirtualPathContents(
   const uniquePaths = [...new Set(virtualPaths)];
   const result = new Map<string, string | null>(uniquePaths.map(path => [path, null]));
   if (uniquePaths.length === 0) return result;
+  if (isIndexDisabled() && uniquePaths.includes("/index.md")) {
+    result.set("/index.md", null);
+  }
 
-  const inList = buildInList(uniquePaths);
+  const queryPaths = isIndexDisabled()
+    ? uniquePaths.filter((path) => path !== "/index.md")
+    : uniquePaths;
+  if (queryPaths.length === 0) return result;
+
+  const inList = buildInList(queryPaths);
   const rows = await queryUnionRows(
     api,
     `SELECT path, summary::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path IN (${inList})`,
@@ -107,7 +197,7 @@ export async function readVirtualPathContents(
     }
   }
 
-  for (const path of uniquePaths) {
+  for (const path of queryPaths) {
     if (memoryHits.has(path)) {
       result.set(path, memoryHits.get(path) ?? null);
       continue;
@@ -118,16 +208,11 @@ export async function readVirtualPathContents(
     }
   }
 
-  if (result.get("/index.md") === null && uniquePaths.includes("/index.md")) {
-    const [summaryRows, sessionRows] = await Promise.all([
-      api.query(
-        `SELECT path, project, description, creation_date FROM "${memoryTable}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
-      ).catch(() => [] as Row[]),
-      api.query(
-        `SELECT path, description FROM "${sessionsTable}" WHERE path LIKE '/sessions/%' ORDER BY path`
-      ).catch(() => [] as Row[]),
-    ]);
-    result.set("/index.md", buildVirtualIndexContent(summaryRows, sessionRows));
+  if (!isSessionsOnlyMode() && !isIndexDisabled() && result.get("/index.md") === null && uniquePaths.includes("/index.md")) {
+    const rows = await api.query(
+      `SELECT path, project, description, summary, creation_date, last_update_date FROM "${memoryTable}" WHERE path LIKE '/summaries/%' ORDER BY last_update_date DESC, creation_date DESC`
+    ).catch(() => []);
+    result.set("/index.md", buildVirtualIndexContent(rows));
   }
 
   return result;
@@ -196,8 +281,8 @@ export async function findVirtualPaths(
   const likePath = `${sqlLike(normalizedDir === "/" ? "" : normalizedDir)}/%`;
   const rows = await queryUnionRows(
     api,
-    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`,
-    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`,
+    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`,
+    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`,
   );
 
   return [...new Set(

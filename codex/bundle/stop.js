@@ -5,13 +5,13 @@ import { readFileSync as readFileSync4, existsSync as existsSync4 } from "node:f
 
 // dist/src/utils/stdin.js
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let data = "";
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => data += chunk);
     process.stdin.on("end", () => {
       try {
-        resolve(JSON.parse(data));
+        resolve2(JSON.parse(data));
       } catch (err) {
         reject(new Error(`Failed to parse hook input: ${err}`));
       }
@@ -52,6 +52,11 @@ function loadConfig() {
     apiUrl: env.HIVEMIND_API_URL ?? env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: env.HIVEMIND_TABLE ?? env.DEEPLAKE_TABLE ?? "memory",
     sessionsTableName: env.HIVEMIND_SESSIONS_TABLE ?? env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
+    graphNodesTableName: env.HIVEMIND_GRAPH_NODES_TABLE ?? env.DEEPLAKE_GRAPH_NODES_TABLE ?? "graph_nodes",
+    graphEdgesTableName: env.HIVEMIND_GRAPH_EDGES_TABLE ?? env.DEEPLAKE_GRAPH_EDGES_TABLE ?? "graph_edges",
+    factsTableName: env.HIVEMIND_FACTS_TABLE ?? env.DEEPLAKE_FACTS_TABLE ?? "memory_facts",
+    entitiesTableName: env.HIVEMIND_ENTITIES_TABLE ?? env.DEEPLAKE_ENTITIES_TABLE ?? "memory_entities",
+    factEntityLinksTableName: env.HIVEMIND_FACT_ENTITY_LINKS_TABLE ?? env.DEEPLAKE_FACT_ENTITY_LINKS_TABLE ?? "fact_entity_links",
     memoryPath: env.HIVEMIND_MEMORY_PATH ?? env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory")
   };
 }
@@ -68,9 +73,6 @@ import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 var DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
-function utcTimestamp(d = /* @__PURE__ */ new Date()) {
-  return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
-}
 function log(tag, msg) {
   if (!DEBUG)
     return;
@@ -81,6 +83,12 @@ function log(tag, msg) {
 // dist/src/utils/sql.js
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+}
+function sqlIdent(name) {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
+    throw new Error(`Invalid SQL identifier: ${JSON.stringify(name)}`);
+  }
+  return name;
 }
 
 // dist/src/deeplake-api.js
@@ -99,6 +107,22 @@ function traceSql(msg) {
   if (debugFileLog)
     log2(msg);
 }
+var DeeplakeQueryError = class extends Error {
+  sqlSummary;
+  status;
+  responseBody;
+  sql;
+  cause;
+  constructor(message, args = {}) {
+    super(message);
+    this.name = "DeeplakeQueryError";
+    this.sql = args.sql;
+    this.sqlSummary = args.sql ? summarizeSql(args.sql) : "";
+    this.status = args.status;
+    this.responseBody = args.responseBody;
+    this.cause = args.cause;
+  }
+};
 var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
@@ -106,7 +130,7 @@ var MAX_CONCURRENCY = 5;
 var QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 1e4);
 var INDEX_MARKER_TTL_MS = Number(process.env["HIVEMIND_INDEX_MARKER_TTL_MS"] ?? 6 * 60 * 6e4);
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 function isTimeoutError(error) {
   const name = error instanceof Error ? error.name.toLowerCase() : "";
@@ -139,7 +163,7 @@ var Semaphore = class {
       this.active++;
       return;
     }
-    await new Promise((resolve) => this.waiting.push(resolve));
+    await new Promise((resolve2) => this.waiting.push(resolve2));
   }
   release() {
     this.active--;
@@ -202,10 +226,10 @@ var DeeplakeApi = class {
         });
       } catch (e) {
         if (isTimeoutError(e)) {
-          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
+          lastError = new DeeplakeQueryError(`Query timeout after ${QUERY_TIMEOUT_MS}ms`, { sql, cause: e });
           throw lastError;
         }
-        lastError = e instanceof Error ? e : new Error(String(e));
+        lastError = e instanceof Error ? new DeeplakeQueryError(e.message, { sql, cause: e }) : new DeeplakeQueryError(String(e), { sql, cause: e });
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
           log2(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
@@ -228,9 +252,13 @@ var DeeplakeApi = class {
         await sleep(delay);
         continue;
       }
-      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
+      throw new DeeplakeQueryError(`Query failed: ${resp.status}: ${text.slice(0, 200)}`, {
+        sql,
+        status: resp.status,
+        responseBody: text.slice(0, 4e3)
+      });
     }
-    throw lastError ?? new Error("Query failed: max retries exceeded");
+    throw lastError ?? new DeeplakeQueryError("Query failed: max retries exceeded", { sql });
   }
   // ── Writes ──────────────────────────────────────────────────────────────────
   /** Queue rows for writing. Call commit() to flush. */
@@ -286,6 +314,29 @@ var DeeplakeApi = class {
   /** Create a BM25 search index on a column. */
   async createIndex(column) {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
+  }
+  /** Create the standard BM25 summary index for a memory table. */
+  async createSummaryBm25Index(tableName) {
+    const table = tableName ?? this.tableName;
+    const indexName = this.buildLookupIndexName(table, "summary_bm25");
+    await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" USING deeplake_index ("summary")`);
+  }
+  /** Ensure the standard BM25 summary index exists, using a local freshness marker to avoid repeated CREATEs. */
+  async ensureSummaryBm25Index(tableName) {
+    const table = tableName ?? this.tableName;
+    const suffix = "summary_bm25";
+    if (this.hasFreshLookupIndexMarker(table, suffix))
+      return;
+    try {
+      await this.createSummaryBm25Index(table);
+      this.markLookupIndexReady(table, suffix);
+    } catch (e) {
+      if (isDuplicateIndexError(e)) {
+        this.markLookupIndexReady(table, suffix);
+        return;
+      }
+      throw e;
+    }
   }
   buildLookupIndexName(table, suffix) {
     return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
@@ -384,50 +435,327 @@ var DeeplakeApi = class {
         this._tablesCache = [...tables, tbl];
     }
   }
-  /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
+  /** Create the sessions table (one physical row per message/event, with direct search columns). */
   async ensureSessionsTable(name) {
+    const sessionColumns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `message JSONB`,
+      `session_id TEXT NOT NULL DEFAULT ''`,
+      `event_type TEXT NOT NULL DEFAULT ''`,
+      `turn_index BIGINT NOT NULL DEFAULT 0`,
+      `dia_id TEXT NOT NULL DEFAULT ''`,
+      `speaker TEXT NOT NULL DEFAULT ''`,
+      `text TEXT NOT NULL DEFAULT ''`,
+      `turn_summary TEXT NOT NULL DEFAULT ''`,
+      `source_date_time TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (` + sessionColumns.join(", ") + `) USING deeplake`);
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
     }
-    await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
-  }
-};
-
-// dist/src/hooks/codex/spawn-wiki-worker.js
-import { spawn, execSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { dirname, join as join5 } from "node:path";
-import { writeFileSync as writeFileSync2, mkdirSync as mkdirSync3 } from "node:fs";
-import { homedir as homedir3, tmpdir as tmpdir2 } from "node:os";
-
-// dist/src/utils/wiki-log.js
-import { mkdirSync as mkdirSync2, appendFileSync as appendFileSync2 } from "node:fs";
-import { join as join4 } from "node:path";
-function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
-  const path = join4(hooksDir, filename);
-  return {
-    path,
-    log(msg) {
+    const alterColumns = [
+      ["session_id", `TEXT NOT NULL DEFAULT ''`],
+      ["event_type", `TEXT NOT NULL DEFAULT ''`],
+      ["turn_index", `BIGINT NOT NULL DEFAULT 0`],
+      ["dia_id", `TEXT NOT NULL DEFAULT ''`],
+      ["speaker", `TEXT NOT NULL DEFAULT ''`],
+      ["text", `TEXT NOT NULL DEFAULT ''`],
+      ["turn_summary", `TEXT NOT NULL DEFAULT ''`],
+      ["source_date_time", `TEXT NOT NULL DEFAULT ''`]
+    ];
+    for (const [column, ddl] of alterColumns) {
       try {
-        mkdirSync2(hooksDir, { recursive: true });
-        appendFileSync2(path, `[${utcTimestamp()}] ${msg}
-`);
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
       } catch {
       }
     }
-  };
+    await this.ensureLookupIndex(name, "path_creation_date_turn_index", `("path", "creation_date", "turn_index")`);
+  }
+  async ensureGraphNodesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `node_id TEXT NOT NULL DEFAULT ''`,
+      `canonical_name TEXT NOT NULL DEFAULT ''`,
+      `node_type TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `aliases TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    for (const [column, ddl] of [
+      ["source_session_ids", `TEXT NOT NULL DEFAULT ''`],
+      ["source_paths", `TEXT NOT NULL DEFAULT ''`]
+    ]) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "source_session_id", `("source_session_id")`);
+    await this.ensureLookupIndex(name, "node_id", `("node_id")`);
+  }
+  async ensureGraphEdgesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `edge_id TEXT NOT NULL DEFAULT ''`,
+      `source_node_id TEXT NOT NULL DEFAULT ''`,
+      `target_node_id TEXT NOT NULL DEFAULT ''`,
+      `relation TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `evidence TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    for (const [column, ddl] of [
+      ["source_session_ids", `TEXT NOT NULL DEFAULT ''`],
+      ["source_paths", `TEXT NOT NULL DEFAULT ''`]
+    ]) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "source_session_id", `("source_session_id")`);
+    await this.ensureLookupIndex(name, "source_target_relation", `("source_node_id", "target_node_id", "relation")`);
+  }
+  async ensureFactsTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `fact_id TEXT NOT NULL DEFAULT ''`,
+      `subject_entity_id TEXT NOT NULL DEFAULT ''`,
+      `subject_name TEXT NOT NULL DEFAULT ''`,
+      `subject_type TEXT NOT NULL DEFAULT ''`,
+      `predicate TEXT NOT NULL DEFAULT ''`,
+      `object_entity_id TEXT NOT NULL DEFAULT ''`,
+      `object_name TEXT NOT NULL DEFAULT ''`,
+      `object_type TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `evidence TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `confidence TEXT NOT NULL DEFAULT ''`,
+      `valid_at TEXT NOT NULL DEFAULT ''`,
+      `valid_from TEXT NOT NULL DEFAULT ''`,
+      `valid_to TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "fact_id", `("fact_id")`);
+    await this.ensureLookupIndex(name, "session_predicate", `("source_session_id", "predicate")`);
+    await this.ensureLookupIndex(name, "subject_object", `("subject_entity_id", "object_entity_id")`);
+  }
+  async ensureEntitiesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `entity_id TEXT NOT NULL DEFAULT ''`,
+      `canonical_name TEXT NOT NULL DEFAULT ''`,
+      `entity_type TEXT NOT NULL DEFAULT ''`,
+      `aliases TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "entity_id", `("entity_id")`);
+    await this.ensureLookupIndex(name, "canonical_name", `("canonical_name")`);
+  }
+  async ensureFactEntityLinksTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `link_id TEXT NOT NULL DEFAULT ''`,
+      `fact_id TEXT NOT NULL DEFAULT ''`,
+      `entity_id TEXT NOT NULL DEFAULT ''`,
+      `entity_role TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "fact_id", `("fact_id")`);
+    await this.ensureLookupIndex(name, "entity_id", `("entity_id")`);
+    await this.ensureLookupIndex(name, "session_entity_role", `("source_session_id", "entity_id", "entity_role")`);
+  }
+};
+
+// dist/src/utils/direct-run.js
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+function isDirectRun(metaUrl) {
+  const entry = process.argv[1];
+  if (!entry)
+    return false;
+  try {
+    return resolve(fileURLToPath(metaUrl)) === resolve(entry);
+  } catch {
+    return false;
+  }
 }
 
 // dist/src/hooks/codex/spawn-wiki-worker.js
+import { spawn, execSync } from "node:child_process";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { dirname, join as join4 } from "node:path";
+import { writeFileSync as writeFileSync2, mkdirSync as mkdirSync2, appendFileSync as appendFileSync2 } from "node:fs";
+import { homedir as homedir3, tmpdir as tmpdir2 } from "node:os";
+
+// dist/src/hooks/knowledge-graph.js
+import { randomUUID as randomUUID3 } from "node:crypto";
+
+// dist/src/hooks/upload-summary.js
+import { randomUUID as randomUUID2 } from "node:crypto";
+
+// dist/src/hooks/knowledge-graph.js
+var GRAPH_PROMPT_TEMPLATE = `You are extracting a compact knowledge graph delta from a session summary.
+
+SESSION ID: __SESSION_ID__
+SOURCE PATH: __SOURCE_PATH__
+PROJECT: __PROJECT__
+
+SUMMARY MARKDOWN:
+__SUMMARY_TEXT__
+
+Return ONLY valid JSON with this exact shape:
+{"nodes":[{"name":"canonical entity name","type":"person|organization|place|artifact|project|tool|file|event|goal|status|preference|concept|other","summary":"short factual description","aliases":["optional alias"]}],"edges":[{"source":"canonical source entity","target":"canonical target entity","relation":"snake_case_relation","summary":"short factual relation summary","evidence":"short supporting phrase"}]}
+
+Rules:
+- Use canonical names for repeated entities.
+- Include people, places, organizations, books/media, tools, files, goals, status labels, preferences, and notable events when they matter for future recall.
+- Convert relationship/status/origin/preferences into edges when possible. Example relation shapes: home_country, relationship_status, enjoys, decided_to_pursue, works_on, uses_tool, located_in, recommended, plans, supports.
+- Keep summaries short and factual. Do not invent facts beyond the summary.
+- If a source or target appears in an edge but not in nodes, also include it in nodes.
+- Prefer stable canonical names over pronouns.
+- Return no markdown, no prose, no code fences, only JSON.`;
+
+// dist/src/hooks/memory-facts.js
+import { randomUUID as randomUUID4 } from "node:crypto";
+var MEMORY_FACT_PROMPT_TEMPLATE = `You are extracting durable long-term memory facts from raw session transcript rows.
+
+SESSION ID: __SESSION_ID__
+SOURCE PATH: __SOURCE_PATH__
+PROJECT: __PROJECT__
+
+TRANSCRIPT ROWS:
+__TRANSCRIPT_TEXT__
+
+Return ONLY valid JSON with this exact shape:
+{"facts":[{"subject":"canonical entity","subject_type":"person|organization|place|artifact|project|tool|file|event|goal|status|preference|concept|other","subject_aliases":["optional alias"],"predicate":"snake_case_relation","object":"canonical object text","object_type":"person|organization|place|artifact|project|tool|file|event|goal|status|preference|concept|other","object_aliases":["optional alias"],"summary":"short factual claim","evidence":"short supporting phrase","confidence":0.0,"valid_at":"optional date/time text","valid_from":"optional date/time text","valid_to":"optional date/time text"}]}
+
+Rules:
+- The transcript rows are the only source of truth for this extraction. Do not rely on summaries or inferred rewrites.
+- Extract atomic facts that are useful for later recall. One durable claim per fact.
+- Prefer canonical names for repeated people, organizations, places, projects, tools, and artifacts.
+- Use relation-style predicates such as works_on, home_country, relationship_status, prefers, plans, decided_to_pursue, located_in, uses_tool, recommended, supports, owns, read, attends, moved_from, moved_to.
+- Facts should preserve temporal history instead of overwriting it. If the transcript says something changed, emit the new fact and include timing in valid_at / valid_from / valid_to when the transcript supports it.
+- Include assistant-confirmed or tool-confirmed actions when they are stated as completed facts in the transcript.
+- If a speaker explicitly self-identifies or states a status, preserve that exact label instead of broadening it.
+- Preserve exact named places, titles, organizations, and relative time phrases when they are the stated fact.
+- Do not invent facts that are not supported by the transcript.
+- Avoid duplicates or near-duplicates. If two facts say the same thing, keep the more specific one.
+- Return no markdown, no prose, no code fences, only JSON.`;
+
+// dist/src/hooks/codex/spawn-wiki-worker.js
 var HOME = homedir3();
-var wikiLogger = makeWikiLogger(join5(HOME, ".codex", "hooks"));
-var WIKI_LOG = wikiLogger.path;
-var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry.
+var WIKI_LOG = join4(HOME, ".codex", "hooks", "deeplake-wiki.log");
+var WIKI_PROMPT_TEMPLATE = `You are maintaining a persistent wiki from a session transcript. This page will become part of a long-lived knowledge base that future agents will search through index.md before opening the source session. Write for retrieval, not storytelling.
+
+The session may be a coding session, a meeting, or a personal conversation. Your job is to turn the raw transcript into a dense, factual wiki page that preserves names, dates, relationships, preferences, plans, titles, and exact status changes.
 
 SESSION JSONL path: __JSONL__
 SUMMARY FILE to write: __SUMMARY__
@@ -441,42 +769,59 @@ Steps:
    - If PREVIOUS JSONL OFFSET > 0, this is a resumed session. Read the existing summary file first,
      then focus on lines AFTER the offset for new content. Merge new facts into the existing summary.
    - If offset is 0, generate from scratch.
+   - Treat the JSONL as the source of truth. Do not invent facts.
 
 2. Write the summary file at the path above with this EXACT format:
 
 # Session __SESSION_ID__
 - **Source**: __JSONL_SERVER_PATH__
+- **Date**: <primary real-world date/time for the session if the transcript contains one; otherwise "unknown">
+- **Participants**: <comma-separated names or roles of the main participants>
 - **Started**: <extract from JSONL>
 - **Ended**: <now>
 - **Project**: __PROJECT__
+- **Topics**: <comma-separated topics, themes, or workstreams>
 - **JSONL offset**: __JSONL_LINES__
 
 ## What Happened
-<2-3 dense sentences. What was the goal, what was accomplished, what's left.>
+<2-4 dense sentences. What happened, why it mattered, and what changed. Prefer specific names/titles/dates over abstractions.>
+
+## Searchable Facts
+<Bullet list of atomic facts. One fact per bullet. Each bullet should be able to answer a future query on its own.
+Include exact names, titles, identity labels, relationship status clues, home countries/origins, occupations, preferences, collections, books/media titles, pets, family details, goals, plans, locations, organizations, bugs, APIs, dates, and relative-time resolutions when the session date makes them unambiguous.>
 
 ## People
-<For each person mentioned: name, role, what they did/said. Format: **Name** \u2014 role \u2014 action>
+<For each person mentioned: name, role/relationship, notable traits/preferences/goals, and what they did or said. Format: **Name** \u2014 role/relationship \u2014 facts>
 
 ## Entities
-<Every named thing: repos, branches, files, APIs, tools, services, tables, features, bugs.
-Format: **entity** (type) \u2014 what was done with it, its current state>
+<Every named thing: repos, branches, files, APIs, tools, services, tables, features, bugs, places, organizations, events, books, songs, artworks, pets, or products.
+Format: **entity** (type) \u2014 why it matters, relevant state/details>
 
 ## Decisions & Reasoning
-<Every decision made and WHY.>
-
-## Key Facts
-<Bullet list of atomic facts that could answer future questions.>
+<Every decision made and WHY. Not just "did X" but "did X because Y, considered Z but rejected it because W". If no explicit decision happened, say "- None explicit.">
 
 ## Files Modified
-<bullet list: path (new/modified/deleted) \u2014 what changed>
+<bullet list: path (new/modified/deleted) \u2014 what changed. If none, say "- None.">
 
 ## Open Questions / TODO
-<Anything unresolved, blocked, or explicitly deferred>
+<Anything unresolved, blocked, explicitly deferred, or worth following up later. If none, say "- None explicit.">
 
-IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact.
+IMPORTANT:
+- Be exhaustive. If a detail exists in the session and could answer a later question, it should be in the wiki.
+- Favor exact nouns and titles over generic paraphrases. Preserve exact book names, organization names, file names, feature names, and self-descriptions.
+- Keep facts canonical and query-friendly: "Ava is single", "Leo's home country is Brazil", "The team chose retries because the API returned 429s".
+- Resolve relative dates like "last year" or "next month" against the session's own date when the source makes that possible. If it is ambiguous, keep the relative phrase instead of guessing.
+- Do not omit beneficiary groups or targets of goals.
 PRIVACY: Never include absolute filesystem paths in the summary.
 LENGTH LIMIT: Keep the total summary under 4000 characters.`;
-var wikiLog = wikiLogger.log;
+function wikiLog(msg) {
+  try {
+    mkdirSync2(join4(HOME, ".codex", "hooks"), { recursive: true });
+    appendFileSync2(WIKI_LOG, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] ${msg}
+`);
+  } catch {
+  }
+}
 function findCodexBin() {
   try {
     return execSync("which codex 2>/dev/null", { encoding: "utf-8" }).trim();
@@ -487,9 +832,9 @@ function findCodexBin() {
 function spawnCodexWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
   const projectName = cwd.split("/").pop() || "unknown";
-  const tmpDir = join5(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
-  mkdirSync3(tmpDir, { recursive: true });
-  const configFile = join5(tmpDir, "config.json");
+  const tmpDir = join4(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  mkdirSync2(tmpDir, { recursive: true });
+  const configFile = join4(tmpDir, "config.json");
   writeFileSync2(configFile, JSON.stringify({
     apiUrl: config.apiUrl,
     token: config.token,
@@ -497,17 +842,24 @@ function spawnCodexWikiWorker(opts) {
     workspaceId: config.workspaceId,
     memoryTable: config.tableName,
     sessionsTable: config.sessionsTableName,
+    graphNodesTable: config.graphNodesTableName,
+    graphEdgesTable: config.graphEdgesTableName,
+    factsTable: config.factsTableName,
+    entitiesTable: config.entitiesTableName,
+    factEntityLinksTable: config.factEntityLinksTableName,
     sessionId,
     userName: config.userName,
     project: projectName,
     tmpDir,
     codexBin: findCodexBin(),
     wikiLog: WIKI_LOG,
-    hooksDir: join5(HOME, ".codex", "hooks"),
-    promptTemplate: WIKI_PROMPT_TEMPLATE
+    hooksDir: join4(HOME, ".codex", "hooks"),
+    promptTemplate: WIKI_PROMPT_TEMPLATE,
+    graphPromptTemplate: GRAPH_PROMPT_TEMPLATE,
+    factPromptTemplate: MEMORY_FACT_PROMPT_TEMPLATE
   }));
   wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
-  const workerPath = join5(bundleDir, "wiki-worker.js");
+  const workerPath = join4(bundleDir, "wiki-worker.js");
   spawn("nohup", ["node", workerPath, configFile], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"]
@@ -515,164 +867,426 @@ function spawnCodexWikiWorker(opts) {
   wikiLog(`${reason}: spawned summary worker for ${sessionId}`);
 }
 function bundleDirFromImportMeta(importMetaUrl) {
-  return dirname(fileURLToPath(importMetaUrl));
+  return dirname(fileURLToPath2(importMetaUrl));
 }
 
-// dist/src/hooks/summary-state.js
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync3, writeSync, mkdirSync as mkdirSync4, renameSync, existsSync as existsSync3, unlinkSync, openSync, closeSync } from "node:fs";
+// dist/src/hooks/session-queue.js
+import { appendFileSync as appendFileSync3, closeSync, existsSync as existsSync3, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync3, readdirSync, renameSync, rmSync, statSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname as dirname2, join as join5 } from "node:path";
 import { homedir as homedir4 } from "node:os";
-import { join as join6 } from "node:path";
-var dlog = (msg) => log("summary-state", msg);
-var STATE_DIR = join6(homedir4(), ".claude", "hooks", "summary-state");
-var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
-function lockPath(sessionId) {
-  return join6(STATE_DIR, `${sessionId}.lock`);
+var DEFAULT_QUEUE_DIR = join5(homedir4(), ".deeplake", "queue");
+var DEFAULT_MAX_BATCH_ROWS = 50;
+var DEFAULT_STALE_INFLIGHT_MS = 6e4;
+var DEFAULT_AUTH_FAILURE_TTL_MS = 5 * 6e4;
+var BUSY_WAIT_STEP_MS = 100;
+var SessionWriteDisabledError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "SessionWriteDisabledError";
+  }
+};
+function buildSessionPath(config, sessionId) {
+  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
 }
-function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
-  mkdirSync4(STATE_DIR, { recursive: true });
-  const p = lockPath(sessionId);
-  if (existsSync3(p)) {
-    try {
-      const ageMs = Date.now() - parseInt(readFileSync3(p, "utf-8"), 10);
-      if (Number.isFinite(ageMs) && ageMs < maxAgeMs)
-        return false;
-    } catch (readErr) {
-      dlog(`lock file unreadable for ${sessionId}, treating as stale: ${readErr.message}`);
+function buildQueuedSessionRow(args) {
+  const structured = extractStructuredSessionFields(args.line, args.sessionId);
+  return {
+    id: crypto.randomUUID(),
+    path: args.sessionPath,
+    filename: args.sessionPath.split("/").pop() ?? "",
+    message: args.line,
+    sessionId: structured.sessionId,
+    eventType: structured.eventType,
+    turnIndex: structured.turnIndex,
+    diaId: structured.diaId,
+    speaker: structured.speaker,
+    text: structured.text,
+    turnSummary: structured.turnSummary,
+    sourceDateTime: structured.sourceDateTime,
+    author: args.userName,
+    sizeBytes: Buffer.byteLength(args.line, "utf-8"),
+    project: args.projectName,
+    description: args.description,
+    agent: args.agent,
+    creationDate: args.timestamp,
+    lastUpdateDate: args.timestamp
+  };
+}
+function appendQueuedSessionRow(row, queueDir = DEFAULT_QUEUE_DIR) {
+  mkdirSync3(queueDir, { recursive: true });
+  const sessionId = extractSessionId(row.path);
+  const queuePath = getQueuePath(queueDir, sessionId);
+  appendFileSync3(queuePath, `${JSON.stringify(row)}
+`);
+  return queuePath;
+}
+function buildSessionInsertSql(sessionsTable, rows) {
+  if (rows.length === 0)
+    throw new Error("buildSessionInsertSql: rows must not be empty");
+  const table = sqlIdent(sessionsTable);
+  const values = rows.map((row) => {
+    const jsonForSql = escapeJsonbLiteral(coerceJsonbPayload(row.message));
+    return `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, '${sqlStr(row.sessionId)}', '${sqlStr(row.eventType)}', ${row.turnIndex}, '${sqlStr(row.diaId)}', '${sqlStr(row.speaker)}', '${sqlStr(row.text)}', '${sqlStr(row.turnSummary)}', '${sqlStr(row.sourceDateTime)}', '${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', '${sqlStr(row.agent)}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`;
+  }).join(", ");
+  return `INSERT INTO "${table}" (id, path, filename, message, session_id, event_type, turn_index, dia_id, speaker, text, turn_summary, source_date_time, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ${values}`;
+}
+function coerceJsonbPayload(message) {
+  try {
+    return JSON.stringify(JSON.parse(message));
+  } catch {
+    return JSON.stringify({
+      type: "raw_message",
+      content: message
+    });
+  }
+}
+function escapeJsonbLiteral(value) {
+  return value.replace(/'/g, "''").replace(/\0/g, "");
+}
+function extractString(value) {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+function extractNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value))
+    return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed))
+      return parsed;
+  }
+  return 0;
+}
+function extractStructuredSessionFields(message, fallbackSessionId = "") {
+  let parsed = null;
+  try {
+    const raw = JSON.parse(message);
+    if (raw && typeof raw === "object")
+      parsed = raw;
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) {
+    return {
+      sessionId: fallbackSessionId,
+      eventType: "raw_message",
+      turnIndex: 0,
+      diaId: "",
+      speaker: "",
+      text: message,
+      turnSummary: "",
+      sourceDateTime: ""
+    };
+  }
+  const eventType = extractString(parsed["type"]);
+  const content = extractString(parsed["content"]);
+  const toolName = extractString(parsed["tool_name"]);
+  const speaker = extractString(parsed["speaker"]) || (eventType === "user_message" ? "user" : eventType === "assistant_message" ? "assistant" : "");
+  const text = extractString(parsed["text"]) || content || (eventType === "tool_call" ? toolName : "");
+  return {
+    sessionId: extractString(parsed["session_id"]) || fallbackSessionId,
+    eventType,
+    turnIndex: extractNumber(parsed["turn_index"]),
+    diaId: extractString(parsed["dia_id"]),
+    speaker,
+    text,
+    turnSummary: extractString(parsed["summary"]) || extractString(parsed["message_summary"]) || extractString(parsed["msg_summary"]),
+    sourceDateTime: extractString(parsed["source_date_time"]) || extractString(parsed["date_time"]) || extractString(parsed["date"])
+  };
+}
+async function flushSessionQueue(api, opts) {
+  const queueDir = opts.queueDir ?? DEFAULT_QUEUE_DIR;
+  const maxBatchRows = opts.maxBatchRows ?? DEFAULT_MAX_BATCH_ROWS;
+  const staleInflightMs = opts.staleInflightMs ?? DEFAULT_STALE_INFLIGHT_MS;
+  const waitIfBusyMs = opts.waitIfBusyMs ?? 0;
+  const drainAll = opts.drainAll ?? false;
+  mkdirSync3(queueDir, { recursive: true });
+  const queuePath = getQueuePath(queueDir, opts.sessionId);
+  const inflightPath = getInflightPath(queueDir, opts.sessionId);
+  if (isSessionWriteDisabled(opts.sessionsTable, queueDir)) {
+    return existsSync3(queuePath) || existsSync3(inflightPath) ? { status: "disabled", rows: 0, batches: 0 } : { status: "empty", rows: 0, batches: 0 };
+  }
+  let totalRows = 0;
+  let totalBatches = 0;
+  let flushedAny = false;
+  while (true) {
+    if (opts.allowStaleInflight)
+      recoverStaleInflight(queuePath, inflightPath, staleInflightMs);
+    if (existsSync3(inflightPath)) {
+      if (waitIfBusyMs > 0) {
+        await waitForInflightToClear(inflightPath, waitIfBusyMs);
+        if (opts.allowStaleInflight)
+          recoverStaleInflight(queuePath, inflightPath, staleInflightMs);
+      }
+      if (existsSync3(inflightPath)) {
+        return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "busy", rows: 0, batches: 0 };
+      }
+    }
+    if (!existsSync3(queuePath)) {
+      return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "empty", rows: 0, batches: 0 };
     }
     try {
-      unlinkSync(p);
-    } catch (unlinkErr) {
-      dlog(`could not unlink stale lock for ${sessionId}: ${unlinkErr.message}`);
-      return false;
+      renameSync(queuePath, inflightPath);
+    } catch (e) {
+      if (e?.code === "ENOENT") {
+        return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "empty", rows: 0, batches: 0 };
+      }
+      throw e;
+    }
+    try {
+      const { rows, batches } = await flushInflightFile(api, opts.sessionsTable, inflightPath, maxBatchRows);
+      totalRows += rows;
+      totalBatches += batches;
+      flushedAny = flushedAny || rows > 0;
+    } catch (e) {
+      requeueInflight(queuePath, inflightPath);
+      if (e instanceof SessionWriteDisabledError) {
+        return { status: "disabled", rows: totalRows, batches: totalBatches };
+      }
+      throw e;
+    }
+    if (!drainAll) {
+      return { status: "flushed", rows: totalRows, batches: totalBatches };
     }
   }
-  try {
-    const fd = openSync(p, "wx");
+}
+function getQueuePath(queueDir, sessionId) {
+  return join5(queueDir, `${sessionId}.jsonl`);
+}
+function getInflightPath(queueDir, sessionId) {
+  return join5(queueDir, `${sessionId}.inflight`);
+}
+function extractSessionId(sessionPath) {
+  const filename = sessionPath.split("/").pop() ?? "";
+  return filename.replace(/\.jsonl$/, "").split("_").pop() ?? filename;
+}
+async function flushInflightFile(api, sessionsTable, inflightPath, maxBatchRows) {
+  const rows = readQueuedRows(inflightPath);
+  if (rows.length === 0) {
+    rmSync(inflightPath, { force: true });
+    return { rows: 0, batches: 0 };
+  }
+  let ensured = false;
+  let batches = 0;
+  const queueDir = dirname2(inflightPath);
+  for (let i = 0; i < rows.length; i += maxBatchRows) {
+    const chunk = rows.slice(i, i + maxBatchRows);
+    const sql = buildSessionInsertSql(sessionsTable, chunk);
     try {
-      writeSync(fd, String(Date.now()));
-    } finally {
-      closeSync(fd);
+      await api.query(sql);
+    } catch (e) {
+      if (isSessionWriteAuthError(e)) {
+        markSessionWriteDisabled(sessionsTable, errorMessage(e), queueDir);
+        throw new SessionWriteDisabledError(errorMessage(e));
+      }
+      if (!ensured && isEnsureSessionsTableRetryable(e)) {
+        try {
+          await api.ensureSessionsTable(sessionsTable);
+        } catch (ensureError) {
+          if (isSessionWriteAuthError(ensureError)) {
+            markSessionWriteDisabled(sessionsTable, errorMessage(ensureError), queueDir);
+            throw new SessionWriteDisabledError(errorMessage(ensureError));
+          }
+          throw ensureError;
+        }
+        ensured = true;
+        try {
+          await api.query(sql);
+        } catch (retryError) {
+          if (isSessionWriteAuthError(retryError)) {
+            markSessionWriteDisabled(sessionsTable, errorMessage(retryError), queueDir);
+            throw new SessionWriteDisabledError(errorMessage(retryError));
+          }
+          throw retryError;
+        }
+      } else {
+        throw e;
+      }
+    }
+    batches += 1;
+  }
+  clearSessionWriteDisabled(sessionsTable, queueDir);
+  rmSync(inflightPath, { force: true });
+  return { rows: rows.length, batches };
+}
+function readQueuedRows(path) {
+  const raw = readFileSync3(path, "utf-8");
+  return raw.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
+}
+function requeueInflight(queuePath, inflightPath) {
+  if (!existsSync3(inflightPath))
+    return;
+  const inflight = readFileSync3(inflightPath, "utf-8");
+  appendFileSync3(queuePath, inflight);
+  rmSync(inflightPath, { force: true });
+}
+function recoverStaleInflight(queuePath, inflightPath, staleInflightMs) {
+  if (!existsSync3(inflightPath) || !isStale(inflightPath, staleInflightMs))
+    return;
+  requeueInflight(queuePath, inflightPath);
+}
+function isStale(path, staleInflightMs) {
+  return Date.now() - statSync(path).mtimeMs >= staleInflightMs;
+}
+function isEnsureSessionsTableRetryable(error) {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("does not exist") || message.includes("doesn't exist") || message.includes("relation") || message.includes("not found");
+}
+function isSessionWriteAuthError(error) {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("403") || message.includes("401") || message.includes("forbidden") || message.includes("unauthorized");
+}
+function markSessionWriteDisabled(sessionsTable, reason, queueDir = DEFAULT_QUEUE_DIR) {
+  mkdirSync3(queueDir, { recursive: true });
+  writeFileSync3(getSessionWriteDisabledPath(queueDir, sessionsTable), JSON.stringify({
+    disabledAt: (/* @__PURE__ */ new Date()).toISOString(),
+    reason,
+    sessionsTable
+  }));
+}
+function clearSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR) {
+  rmSync(getSessionWriteDisabledPath(queueDir, sessionsTable), { force: true });
+}
+function isSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR, ttlMs = DEFAULT_AUTH_FAILURE_TTL_MS) {
+  const path = getSessionWriteDisabledPath(queueDir, sessionsTable);
+  if (!existsSync3(path))
+    return false;
+  try {
+    const raw = readFileSync3(path, "utf-8");
+    const state = JSON.parse(raw);
+    const ageMs = Date.now() - new Date(state.disabledAt).getTime();
+    if (Number.isNaN(ageMs) || ageMs >= ttlMs) {
+      rmSync(path, { force: true });
+      return false;
     }
     return true;
-  } catch (e) {
-    if (e.code === "EEXIST")
-      return false;
-    throw e;
+  } catch {
+    rmSync(path, { force: true });
+    return false;
   }
 }
-function releaseLock(sessionId) {
-  try {
-    unlinkSync(lockPath(sessionId));
-  } catch (e) {
-    if (e?.code !== "ENOENT") {
-      dlog(`releaseLock unlink failed for ${sessionId}: ${e.message}`);
-    }
+function getSessionWriteDisabledPath(queueDir, sessionsTable) {
+  return join5(queueDir, `.${sessionsTable}.disabled.json`);
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+async function waitForInflightToClear(inflightPath, waitIfBusyMs) {
+  const startedAt = Date.now();
+  while (existsSync3(inflightPath) && Date.now() - startedAt < waitIfBusyMs) {
+    await sleep2(BUSY_WAIT_STEP_MS);
   }
 }
-
-// dist/src/utils/session-path.js
-function buildSessionPath(config, sessionId) {
-  const workspace = config.workspaceId ?? "default";
-  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${workspace}_${sessionId}.jsonl`;
+function sleep2(ms) {
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 
 // dist/src/hooks/codex/stop.js
 var log3 = (msg) => log("codex-stop", msg);
-var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
-async function main() {
-  if (process.env.HIVEMIND_WIKI_WORKER === "1")
-    return;
-  const input = await readStdin();
-  const sessionId = input.session_id;
-  if (!sessionId)
-    return;
-  const config = loadConfig();
-  if (!config) {
-    log3("no config");
-    return;
-  }
-  if (CAPTURE) {
+var CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
+function extractLastAssistantMessage(transcript) {
+  const lines = transcript.trim().split("\n").reverse();
+  for (const line of lines) {
     try {
-      const sessionsTable = config.sessionsTableName;
-      const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
-      const ts = (/* @__PURE__ */ new Date()).toISOString();
+      const entry = JSON.parse(line);
+      const msg = entry.payload ?? entry;
+      if (msg.role === "assistant" && msg.content) {
+        const content = typeof msg.content === "string" ? msg.content : Array.isArray(msg.content) ? msg.content.filter((b) => b.type === "output_text" || b.type === "text").map((b) => b.text).join("\n") : "";
+        if (content)
+          return content.slice(0, 4e3);
+      }
+    } catch {
+    }
+  }
+  return "";
+}
+function buildCodexStopEntry(input, timestamp, lastAssistantMessage) {
+  return {
+    id: crypto.randomUUID(),
+    session_id: input.session_id,
+    transcript_path: input.transcript_path,
+    cwd: input.cwd,
+    hook_event_name: input.hook_event_name,
+    model: input.model,
+    timestamp,
+    type: lastAssistantMessage ? "assistant_message" : "assistant_stop",
+    content: lastAssistantMessage
+  };
+}
+async function runCodexStopHook(input, deps = {}) {
+  const { wikiWorker = (process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1", captureEnabled = CAPTURE, config = loadConfig(), now = () => (/* @__PURE__ */ new Date()).toISOString(), transcriptExists = existsSync4, readTranscript = (path) => readFileSync4(path, "utf-8"), createApi = (activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, activeConfig.sessionsTableName), appendQueuedSessionRowFn = appendQueuedSessionRow, buildQueuedSessionRowFn = buildQueuedSessionRow, flushSessionQueueFn = flushSessionQueue, spawnCodexWikiWorkerFn = spawnCodexWikiWorker, wikiLogFn = wikiLog, bundleDir = bundleDirFromImportMeta(import.meta.url), logFn = log3 } = deps;
+  if (wikiWorker || !input.session_id)
+    return { status: "skipped" };
+  if (!config) {
+    logFn("no config");
+    return { status: "no_config" };
+  }
+  let entry;
+  let flushStatus;
+  if (captureEnabled) {
+    try {
+      const ts = now();
       let lastAssistantMessage = "";
       if (input.transcript_path) {
         try {
-          const transcriptPath = input.transcript_path;
-          if (existsSync4(transcriptPath)) {
-            const transcript = readFileSync4(transcriptPath, "utf-8");
-            const lines = transcript.trim().split("\n").reverse();
-            for (const line2 of lines) {
-              try {
-                const entry2 = JSON.parse(line2);
-                const msg = entry2.payload ?? entry2;
-                if (msg.role === "assistant" && msg.content) {
-                  const content = typeof msg.content === "string" ? msg.content : Array.isArray(msg.content) ? msg.content.filter((b) => b.type === "output_text" || b.type === "text").map((b) => b.text).join("\n") : "";
-                  if (content) {
-                    lastAssistantMessage = content.slice(0, 4e3);
-                    break;
-                  }
-                }
-              } catch {
-              }
+          if (transcriptExists(input.transcript_path)) {
+            lastAssistantMessage = extractLastAssistantMessage(readTranscript(input.transcript_path));
+            if (lastAssistantMessage) {
+              logFn(`extracted assistant message from transcript (${lastAssistantMessage.length} chars)`);
             }
-            if (lastAssistantMessage)
-              log3(`extracted assistant message from transcript (${lastAssistantMessage.length} chars)`);
           }
         } catch (e) {
-          log3(`transcript read failed: ${e.message}`);
+          logFn(`transcript read failed: ${e.message}`);
         }
       }
-      const entry = {
-        id: crypto.randomUUID(),
-        session_id: sessionId,
-        transcript_path: input.transcript_path,
-        cwd: input.cwd,
-        hook_event_name: input.hook_event_name,
-        model: input.model,
-        timestamp: ts,
-        type: lastAssistantMessage ? "assistant_message" : "assistant_stop",
-        content: lastAssistantMessage
-      };
+      entry = buildCodexStopEntry(input, ts, lastAssistantMessage);
       const line = JSON.stringify(entry);
-      const sessionPath = buildSessionPath(config, sessionId);
+      const sessionPath = buildSessionPath(config, input.session_id);
       const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-      const filename = sessionPath.split("/").pop() ?? "";
-      const jsonForSql = sqlStr(line);
-      const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', 'Stop', 'codex', '${ts}', '${ts}')`;
-      await api.query(insertSql);
-      log3("stop event captured");
+      appendQueuedSessionRowFn(buildQueuedSessionRowFn({
+        sessionPath,
+        line,
+        sessionId: input.session_id,
+        userName: config.userName,
+        projectName,
+        description: "Stop",
+        agent: "codex",
+        timestamp: ts
+      }));
+      const flush = await flushSessionQueueFn(createApi(config), {
+        sessionId: input.session_id,
+        sessionsTable: config.sessionsTableName,
+        drainAll: true
+      });
+      flushStatus = flush.status;
+      logFn(`stop flush ${flush.status}: rows=${flush.rows} batches=${flush.batches}`);
     } catch (e) {
-      log3(`capture failed: ${e.message}`);
+      logFn(`capture failed: ${e.message}`);
     }
   }
-  if (!CAPTURE)
-    return;
-  if (!tryAcquireLock(sessionId)) {
-    wikiLog(`Stop: periodic worker already running for ${sessionId}, skipping`);
-    return;
-  }
-  wikiLog(`Stop: triggering summary for ${sessionId}`);
-  try {
-    spawnCodexWikiWorker({
-      config,
-      sessionId,
-      cwd: input.cwd ?? "",
-      bundleDir: bundleDirFromImportMeta(import.meta.url),
-      reason: "Stop"
-    });
-  } catch (e) {
-    log3(`spawn failed: ${e.message}`);
-    try {
-      releaseLock(sessionId);
-    } catch (releaseErr) {
-      log3(`releaseLock after spawn failure also failed: ${releaseErr.message}`);
-    }
-    throw e;
-  }
+  if (!captureEnabled)
+    return { status: "complete", entry };
+  wikiLogFn(`Stop: triggering summary for ${input.session_id}`);
+  spawnCodexWikiWorkerFn({
+    config,
+    sessionId: input.session_id,
+    cwd: input.cwd ?? "",
+    bundleDir,
+    reason: "Stop"
+  });
+  return { status: "complete", flushStatus, entry };
 }
-main().catch((e) => {
-  log3(`fatal: ${e.message}`);
-  process.exit(0);
-});
+async function main() {
+  const input = await readStdin();
+  await runCodexStopHook(input);
+}
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => {
+    log3(`fatal: ${e.message}`);
+    process.exit(0);
+  });
+}
+export {
+  buildCodexStopEntry,
+  extractLastAssistantMessage,
+  runCodexStopHook
+};

@@ -314,6 +314,29 @@ describe("DeeplakeApi.createIndex", () => {
   });
 });
 
+describe("DeeplakeApi.createSummaryBm25Index", () => {
+  it("generates correct CREATE INDEX SQL for summary BM25", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    const api = makeApi("memory");
+    await api.createSummaryBm25Index();
+    const sql = JSON.parse(mockFetch.mock.calls[0][1].body).query;
+    expect(sql).toContain("CREATE INDEX IF NOT EXISTS");
+    expect(sql).toContain("idx_memory_summary_bm25");
+    expect(sql).toContain('ON "memory" USING deeplake_index ("summary")');
+  });
+});
+
+describe("DeeplakeApi.ensureSummaryBm25Index", () => {
+  it("creates the summary BM25 index when no fresh marker exists", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    const api = makeApi("memory");
+    await api.ensureSummaryBm25Index();
+    const sql = JSON.parse(mockFetch.mock.calls[0][1].body).query;
+    expect(sql).toContain("CREATE INDEX IF NOT EXISTS");
+    expect(sql).toContain("idx_memory_summary_bm25");
+  });
+});
+
 // ── listTables ──────────────────────────────────────────────────────────────
 
 describe("DeeplakeApi.listTables", () => {
@@ -434,21 +457,25 @@ describe("DeeplakeApi.ensureTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "memory" }] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({}));
-    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    mockFetch.mockResolvedValue(jsonResponse({}));
     const api = makeApi("memory");
 
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(mockFetch).toHaveBeenCalledTimes(3);
-    const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    const tableListCalls = mockFetch.mock.calls.filter(([url]) => String(url).endsWith("/tables"));
+    expect(tableListCalls).toHaveLength(1);
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    const createSql = querySqls.find((sql) => sql.includes("CREATE TABLE IF NOT EXISTS")) ?? "";
     expect(createSql).toContain("CREATE TABLE IF NOT EXISTS");
     expect(createSql).toContain("sessions");
-    const indexSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
+    const indexSql = querySqls.find((sql) => sql.includes("CREATE INDEX IF NOT EXISTS")) ?? "";
     expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
     expect(indexSql).toContain("\"path\"");
     expect(indexSql).toContain("\"creation_date\"");
+    expect(indexSql).toContain("\"turn_index\"");
   });
 });
 
@@ -460,19 +487,26 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({}));
-    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    mockFetch.mockResolvedValue(jsonResponse({}));
     const api = makeApi();
     await api.ensureSessionsTable("sessions");
-    const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    const createSql = querySqls.find((sql) => sql.includes("CREATE TABLE IF NOT EXISTS")) ?? "";
     expect(createSql).toContain("CREATE TABLE IF NOT EXISTS");
     expect(createSql).toContain("sessions");
     expect(createSql).toContain("JSONB");
     expect(createSql).toContain("USING deeplake");
-    const indexSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
+    expect(createSql).toContain("session_id TEXT");
+    expect(createSql).toContain("turn_index BIGINT");
+    expect(createSql).toContain("text TEXT");
+    const alterSqls = querySqls.filter((sql) => sql.startsWith("ALTER TABLE"));
+    expect(alterSqls).toHaveLength(8);
+    const indexSql = querySqls.find((sql) => sql.includes("CREATE INDEX IF NOT EXISTS")) ?? "";
     expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
     expect(indexSql).toContain("\"sessions\"");
-    expect(indexSql).toContain("(\"path\", \"creation_date\")");
+    expect(indexSql).toContain("(\"path\", \"creation_date\", \"turn_index\")");
   });
 
   it("ensures the lookup index when sessions table already exists", async () => {
@@ -480,11 +514,14 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "sessions" }] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    mockFetch.mockResolvedValue(jsonResponse({}));
     const api = makeApi();
     await api.ensureSessionsTable("sessions");
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-    const indexSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    expect(querySqls.filter((sql) => sql.startsWith("ALTER TABLE"))).toHaveLength(8);
+    const indexSql = querySqls.find((sql) => sql.includes("CREATE INDEX IF NOT EXISTS")) ?? "";
     expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
   });
 
@@ -493,11 +530,16 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "sessions" }] }),
     });
+    for (let i = 0; i < 8; i++) mockFetch.mockResolvedValueOnce(jsonResponse({}));
     mockFetch.mockResolvedValueOnce(jsonResponse("forbidden", 403));
     const api = makeApi();
 
     await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    expect(querySqls.filter((sql) => sql.startsWith("ALTER TABLE"))).toHaveLength(8);
+    expect(querySqls.some((sql) => sql.includes("CREATE INDEX IF NOT EXISTS"))).toBe(true);
   });
 
   it("treats duplicate concurrent index creation errors as success and records a local marker", async () => {
@@ -505,14 +547,124 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "sessions" }] }),
     });
+    for (let i = 0; i < 8; i++) mockFetch.mockResolvedValueOnce(jsonResponse({}));
     mockFetch.mockResolvedValueOnce(jsonResponse("duplicate key value violates unique constraint \"pg_class_relname_nsp_index\"", 400));
 
     const api = makeApi();
     await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
 
     mockFetch.mockReset();
+    mockFetch.mockResolvedValue(jsonResponse({}));
     await api.ensureSessionsTable("sessions");
 
-    expect(mockFetch).not.toHaveBeenCalled();
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    expect(querySqls.filter((sql) => sql.startsWith("ALTER TABLE"))).toHaveLength(8);
+    expect(querySqls.some((sql) => sql.includes("CREATE INDEX IF NOT EXISTS"))).toBe(false);
+  });
+});
+
+describe("DeeplakeApi graph tables", () => {
+  it("creates graph_nodes with searchable graph columns", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [] }),
+    });
+    mockFetch.mockResolvedValue(jsonResponse({}));
+    const api = makeApi();
+    await api.ensureGraphNodesTable("graph_nodes");
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    const createSql = querySqls.find((sql) => sql.includes("CREATE TABLE IF NOT EXISTS")) ?? "";
+    expect(createSql).toContain("graph_nodes");
+    expect(createSql).toContain("node_id TEXT");
+    expect(createSql).toContain("canonical_name TEXT");
+    expect(createSql).toContain("search_text TEXT");
+    expect(querySqls.some((sql) => sql.includes(`"source_session_id"`))).toBe(true);
+    expect(querySqls.some((sql) => sql.includes(`"node_id"`))).toBe(true);
+  });
+
+  it("creates graph_edges with relation columns", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [] }),
+    });
+    mockFetch.mockResolvedValue(jsonResponse({}));
+    const api = makeApi();
+    await api.ensureGraphEdgesTable("graph_edges");
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    const createSql = querySqls.find((sql) => sql.includes("CREATE TABLE IF NOT EXISTS")) ?? "";
+    expect(createSql).toContain("graph_edges");
+    expect(createSql).toContain("source_node_id TEXT");
+    expect(createSql).toContain("target_node_id TEXT");
+    expect(createSql).toContain("relation TEXT");
+    expect(querySqls.some((sql) => sql.includes(`"source_session_id"`))).toBe(true);
+    expect(querySqls.some((sql) => sql.includes(`"source_node_id", "target_node_id", "relation"`))).toBe(true);
+  });
+});
+
+describe("DeeplakeApi fact tables", () => {
+  it("creates memory_facts with fact and temporal columns", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [] }),
+    });
+    mockFetch.mockResolvedValue(jsonResponse({}));
+    const api = makeApi();
+    await api.ensureFactsTable("memory_facts");
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    const createSql = querySqls.find((sql) => sql.includes("CREATE TABLE IF NOT EXISTS")) ?? "";
+    expect(createSql).toContain("memory_facts");
+    expect(createSql).toContain("fact_id TEXT");
+    expect(createSql).toContain("subject_entity_id TEXT");
+    expect(createSql).toContain("predicate TEXT");
+    expect(createSql).toContain("valid_from TEXT");
+    expect(querySqls.some((sql) => sql.includes(`"fact_id"`))).toBe(true);
+    expect(querySqls.some((sql) => sql.includes(`"source_session_id", "predicate"`))).toBe(true);
+  });
+
+  it("creates memory_entities with canonical entity columns", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [] }),
+    });
+    mockFetch.mockResolvedValue(jsonResponse({}));
+    const api = makeApi();
+    await api.ensureEntitiesTable("memory_entities");
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    const createSql = querySqls.find((sql) => sql.includes("CREATE TABLE IF NOT EXISTS")) ?? "";
+    expect(createSql).toContain("memory_entities");
+    expect(createSql).toContain("entity_id TEXT");
+    expect(createSql).toContain("canonical_name TEXT");
+    expect(createSql).toContain("aliases TEXT");
+    expect(querySqls.some((sql) => sql.includes(`"entity_id"`))).toBe(true);
+    expect(querySqls.some((sql) => sql.includes(`"canonical_name"`))).toBe(true);
+  });
+
+  it("creates fact_entity_links with linking columns", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [] }),
+    });
+    mockFetch.mockResolvedValue(jsonResponse({}));
+    const api = makeApi();
+    await api.ensureFactEntityLinksTable("fact_entity_links");
+    const querySqls = mockFetch.mock.calls
+      .map(([, init]) => init?.body ? JSON.parse(init.body).query : null)
+      .filter((sql): sql is string => typeof sql === "string");
+    const createSql = querySqls.find((sql) => sql.includes("CREATE TABLE IF NOT EXISTS")) ?? "";
+    expect(createSql).toContain("fact_entity_links");
+    expect(createSql).toContain("link_id TEXT");
+    expect(createSql).toContain("fact_id TEXT");
+    expect(createSql).toContain("entity_id TEXT");
+    expect(querySqls.some((sql) => sql.includes(`"source_session_id", "entity_id", "entity_role"`))).toBe(true);
   });
 });

@@ -49,6 +49,11 @@ function loadConfig() {
     apiUrl: env.HIVEMIND_API_URL ?? env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: env.HIVEMIND_TABLE ?? env.DEEPLAKE_TABLE ?? "memory",
     sessionsTableName: env.HIVEMIND_SESSIONS_TABLE ?? env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
+    graphNodesTableName: env.HIVEMIND_GRAPH_NODES_TABLE ?? env.DEEPLAKE_GRAPH_NODES_TABLE ?? "graph_nodes",
+    graphEdgesTableName: env.HIVEMIND_GRAPH_EDGES_TABLE ?? env.DEEPLAKE_GRAPH_EDGES_TABLE ?? "graph_edges",
+    factsTableName: env.HIVEMIND_FACTS_TABLE ?? env.DEEPLAKE_FACTS_TABLE ?? "memory_facts",
+    entitiesTableName: env.HIVEMIND_ENTITIES_TABLE ?? env.DEEPLAKE_ENTITIES_TABLE ?? "memory_entities",
+    factEntityLinksTableName: env.HIVEMIND_FACT_ENTITY_LINKS_TABLE ?? env.DEEPLAKE_FACT_ENTITY_LINKS_TABLE ?? "fact_entity_links",
     memoryPath: env.HIVEMIND_MEMORY_PATH ?? env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory")
   };
 }
@@ -72,33 +77,71 @@ function log(tag, msg) {
 // dist/src/hooks/spawn-wiki-worker.js
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join as join4 } from "node:path";
-import { writeFileSync, mkdirSync as mkdirSync2 } from "node:fs";
+import { dirname, join as join3 } from "node:path";
+import { writeFileSync, mkdirSync, appendFileSync as appendFileSync2 } from "node:fs";
 import { homedir as homedir3, tmpdir } from "node:os";
 
-// dist/src/utils/wiki-log.js
-import { mkdirSync, appendFileSync as appendFileSync2 } from "node:fs";
-import { join as join3 } from "node:path";
-function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
-  const path = join3(hooksDir, filename);
-  return {
-    path,
-    log(msg) {
-      try {
-        mkdirSync(hooksDir, { recursive: true });
-        appendFileSync2(path, `[${utcTimestamp()}] ${msg}
-`);
-      } catch {
-      }
-    }
-  };
-}
+// dist/src/hooks/knowledge-graph.js
+import { randomUUID as randomUUID2 } from "node:crypto";
+
+// dist/src/hooks/upload-summary.js
+import { randomUUID } from "node:crypto";
+
+// dist/src/hooks/knowledge-graph.js
+var GRAPH_PROMPT_TEMPLATE = `You are extracting a compact knowledge graph delta from a session summary.
+
+SESSION ID: __SESSION_ID__
+SOURCE PATH: __SOURCE_PATH__
+PROJECT: __PROJECT__
+
+SUMMARY MARKDOWN:
+__SUMMARY_TEXT__
+
+Return ONLY valid JSON with this exact shape:
+{"nodes":[{"name":"canonical entity name","type":"person|organization|place|artifact|project|tool|file|event|goal|status|preference|concept|other","summary":"short factual description","aliases":["optional alias"]}],"edges":[{"source":"canonical source entity","target":"canonical target entity","relation":"snake_case_relation","summary":"short factual relation summary","evidence":"short supporting phrase"}]}
+
+Rules:
+- Use canonical names for repeated entities.
+- Include people, places, organizations, books/media, tools, files, goals, status labels, preferences, and notable events when they matter for future recall.
+- Convert relationship/status/origin/preferences into edges when possible. Example relation shapes: home_country, relationship_status, enjoys, decided_to_pursue, works_on, uses_tool, located_in, recommended, plans, supports.
+- Keep summaries short and factual. Do not invent facts beyond the summary.
+- If a source or target appears in an edge but not in nodes, also include it in nodes.
+- Prefer stable canonical names over pronouns.
+- Return no markdown, no prose, no code fences, only JSON.`;
+
+// dist/src/hooks/memory-facts.js
+import { randomUUID as randomUUID3 } from "node:crypto";
+var MEMORY_FACT_PROMPT_TEMPLATE = `You are extracting durable long-term memory facts from raw session transcript rows.
+
+SESSION ID: __SESSION_ID__
+SOURCE PATH: __SOURCE_PATH__
+PROJECT: __PROJECT__
+
+TRANSCRIPT ROWS:
+__TRANSCRIPT_TEXT__
+
+Return ONLY valid JSON with this exact shape:
+{"facts":[{"subject":"canonical entity","subject_type":"person|organization|place|artifact|project|tool|file|event|goal|status|preference|concept|other","subject_aliases":["optional alias"],"predicate":"snake_case_relation","object":"canonical object text","object_type":"person|organization|place|artifact|project|tool|file|event|goal|status|preference|concept|other","object_aliases":["optional alias"],"summary":"short factual claim","evidence":"short supporting phrase","confidence":0.0,"valid_at":"optional date/time text","valid_from":"optional date/time text","valid_to":"optional date/time text"}]}
+
+Rules:
+- The transcript rows are the only source of truth for this extraction. Do not rely on summaries or inferred rewrites.
+- Extract atomic facts that are useful for later recall. One durable claim per fact.
+- Prefer canonical names for repeated people, organizations, places, projects, tools, and artifacts.
+- Use relation-style predicates such as works_on, home_country, relationship_status, prefers, plans, decided_to_pursue, located_in, uses_tool, recommended, supports, owns, read, attends, moved_from, moved_to.
+- Facts should preserve temporal history instead of overwriting it. If the transcript says something changed, emit the new fact and include timing in valid_at / valid_from / valid_to when the transcript supports it.
+- Include assistant-confirmed or tool-confirmed actions when they are stated as completed facts in the transcript.
+- If a speaker explicitly self-identifies or states a status, preserve that exact label instead of broadening it.
+- Preserve exact named places, titles, organizations, and relative time phrases when they are the stated fact.
+- Do not invent facts that are not supported by the transcript.
+- Avoid duplicates or near-duplicates. If two facts say the same thing, keep the more specific one.
+- Return no markdown, no prose, no code fences, only JSON.`;
 
 // dist/src/hooks/spawn-wiki-worker.js
 var HOME = homedir3();
-var wikiLogger = makeWikiLogger(join4(HOME, ".claude", "hooks"));
-var WIKI_LOG = wikiLogger.path;
-var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry. Think of this as building a knowledge graph, not writing a summary.
+var WIKI_LOG = join3(HOME, ".claude", "hooks", "deeplake-wiki.log");
+var WIKI_PROMPT_TEMPLATE = `You are maintaining a persistent wiki from a session transcript. This page will become part of a long-lived knowledge base that future agents will search through index.md before opening the source session. Write for retrieval, not storytelling.
+
+The session may be a coding session, a meeting, or a personal conversation. Your job is to turn the raw transcript into a dense, factual wiki page that preserves names, dates, relationships, preferences, plans, titles, and exact status changes.
 
 SESSION JSONL path: __JSONL__
 SUMMARY FILE to write: __SUMMARY__
@@ -112,58 +155,75 @@ Steps:
    - If PREVIOUS JSONL OFFSET > 0, this is a resumed session. Read the existing summary file first,
      then focus on lines AFTER the offset for new content. Merge new facts into the existing summary.
    - If offset is 0, generate from scratch.
+   - Treat the JSONL as the source of truth. Do not invent facts.
 
 2. Write the summary file at the path above with this EXACT format. The header fields (Source, Project) are pre-filled \u2014 copy them VERBATIM, do NOT replace them with paths from the JSONL content:
 
 # Session __SESSION_ID__
 - **Source**: __JSONL_SERVER_PATH__
+- **Date**: <primary real-world date/time for the session if the transcript contains one; otherwise "unknown">
+- **Participants**: <comma-separated names or roles of the main participants>
 - **Started**: <extract from JSONL>
 - **Ended**: <now>
 - **Project**: __PROJECT__
+- **Topics**: <comma-separated topics, themes, or workstreams>
 - **JSONL offset**: __JSONL_LINES__
 
 ## What Happened
-<2-3 dense sentences. What was the goal, what was accomplished, what's left.>
+<2-4 dense sentences. What happened, why it mattered, and what changed. Prefer specific names/titles/dates over abstractions.>
+
+## Searchable Facts
+<Bullet list of atomic facts. One fact per bullet. Each bullet should be able to answer a future query on its own.
+Include exact names, titles, identity labels, relationship status clues, home countries/origins, occupations, preferences, collections, books/media titles, pets, family details, goals, plans, locations, organizations, bugs, APIs, dates, and relative-time resolutions when the session date makes them unambiguous.>
 
 ## People
-<For each person mentioned: name, role, what they did/said. Format: **Name** \u2014 role \u2014 action>
+<For each person mentioned: name, role/relationship, notable traits/preferences/goals, and what they did or said. Format: **Name** \u2014 role/relationship \u2014 facts>
 
 ## Entities
-<Every named thing: repos, branches, files, APIs, tools, services, tables, features, bugs.
-Format: **entity** (type) \u2014 what was done with it, its current state>
+<Every named thing: repos, branches, files, APIs, tools, services, tables, features, bugs, places, organizations, events, books, songs, artworks, pets, or products.
+Format: **entity** (type) \u2014 why it matters, relevant state/details>
 
 ## Decisions & Reasoning
-<Every decision made and WHY. Not just "did X" but "did X because Y, considered Z but rejected it because W">
-
-## Key Facts
-<Bullet list of atomic facts that could answer future questions. Each fact should stand alone.
-Example: "- The memory table uses DELETE+INSERT, not UPDATE (WASM doesn't support upsert)">
+<Every decision made and WHY. Not just "did X" but "did X because Y, considered Z but rejected it because W". If no explicit decision happened, say "- None explicit.">
 
 ## Files Modified
-<bullet list: path (new/modified/deleted) \u2014 what changed>
+<bullet list: path (new/modified/deleted) \u2014 what changed. If none, say "- None.">
 
 ## Open Questions / TODO
-<Anything unresolved, blocked, or explicitly deferred>
+<Anything unresolved, blocked, explicitly deferred, or worth following up later. If none, say "- None explicit.">
 
-IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact. Future you will search this wiki to answer questions like "who worked on X", "why did we choose Y", "what's the status of Z". If a detail exists in the session, it should be in the wiki.
+IMPORTANT:
+- Be exhaustive. If a detail exists in the session and could answer a later question, it should be in the wiki.
+- Favor exact nouns and titles over generic paraphrases. Preserve exact book names, organization names, file names, feature names, and self-descriptions.
+- Keep facts canonical and query-friendly: "Ava is single", "Leo's home country is Brazil", "The team chose retries because the API returned 429s".
+- Resolve relative dates like "last year" or "next month" against the session's own date when the source makes that possible. If it is ambiguous, keep the relative phrase instead of guessing.
+- Do not omit beneficiary groups or targets of goals (for example who a project, career, or effort is meant to help).
+- Do not leak absolute filesystem paths beyond the pre-filled Source field.
 
 PRIVACY: Never include absolute filesystem paths (e.g. /home/user/..., /Users/..., C:\\\\...) in the summary. Use only project-relative paths or the project name. The Source and Project fields above are already correct \u2014 do not change them.
 
 LENGTH LIMIT: Keep the total summary under 4000 characters. Be dense and concise \u2014 prioritize facts over prose. If a session is short, the summary should be short too.`;
-var wikiLog = wikiLogger.log;
+function wikiLog(msg) {
+  try {
+    mkdirSync(join3(HOME, ".claude", "hooks"), { recursive: true });
+    appendFileSync2(WIKI_LOG, `[${utcTimestamp()}] ${msg}
+`);
+  } catch {
+  }
+}
 function findClaudeBin() {
   try {
     return execSync("which claude 2>/dev/null", { encoding: "utf-8" }).trim();
   } catch {
-    return join4(HOME, ".claude", "local", "claude");
+    return join3(HOME, ".claude", "local", "claude");
   }
 }
 function spawnWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
   const projectName = cwd.split("/").pop() || "unknown";
-  const tmpDir = join4(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
-  mkdirSync2(tmpDir, { recursive: true });
-  const configFile = join4(tmpDir, "config.json");
+  const tmpDir = join3(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  mkdirSync(tmpDir, { recursive: true });
+  const configFile = join3(tmpDir, "config.json");
   writeFileSync(configFile, JSON.stringify({
     apiUrl: config.apiUrl,
     token: config.token,
@@ -171,17 +231,24 @@ function spawnWikiWorker(opts) {
     workspaceId: config.workspaceId,
     memoryTable: config.tableName,
     sessionsTable: config.sessionsTableName,
+    graphNodesTable: config.graphNodesTableName,
+    graphEdgesTable: config.graphEdgesTableName,
+    factsTable: config.factsTableName,
+    entitiesTable: config.entitiesTableName,
+    factEntityLinksTable: config.factEntityLinksTableName,
     sessionId,
     userName: config.userName,
     project: projectName,
     tmpDir,
     claudeBin: findClaudeBin(),
     wikiLog: WIKI_LOG,
-    hooksDir: join4(HOME, ".claude", "hooks"),
-    promptTemplate: WIKI_PROMPT_TEMPLATE
+    hooksDir: join3(HOME, ".claude", "hooks"),
+    promptTemplate: WIKI_PROMPT_TEMPLATE,
+    graphPromptTemplate: GRAPH_PROMPT_TEMPLATE,
+    factPromptTemplate: MEMORY_FACT_PROMPT_TEMPLATE
   }));
   wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
-  const workerPath = join4(bundleDir, "wiki-worker.js");
+  const workerPath = join3(bundleDir, "wiki-worker.js");
   spawn("nohup", ["node", workerPath, configFile], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"]
@@ -193,17 +260,17 @@ function bundleDirFromImportMeta(importMetaUrl) {
 }
 
 // dist/src/hooks/summary-state.js
-import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, writeSync, mkdirSync as mkdirSync3, renameSync, existsSync as existsSync2, unlinkSync, openSync, closeSync } from "node:fs";
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, writeSync, mkdirSync as mkdirSync2, renameSync, existsSync as existsSync2, unlinkSync, openSync, closeSync } from "node:fs";
 import { homedir as homedir4 } from "node:os";
-import { join as join5 } from "node:path";
+import { join as join4 } from "node:path";
 var dlog = (msg) => log("summary-state", msg);
-var STATE_DIR = join5(homedir4(), ".claude", "hooks", "summary-state");
+var STATE_DIR = join4(homedir4(), ".claude", "hooks", "summary-state");
 var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
 function lockPath(sessionId) {
-  return join5(STATE_DIR, `${sessionId}.lock`);
+  return join4(STATE_DIR, `${sessionId}.lock`);
 }
 function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
-  mkdirSync3(STATE_DIR, { recursive: true });
+  mkdirSync2(STATE_DIR, { recursive: true });
   const p = lockPath(sessionId);
   if (existsSync2(p)) {
     try {

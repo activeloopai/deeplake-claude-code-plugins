@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { DeeplakeFs, guessMime } from "../../src/shell/deeplake-fs.js";
+import { extractDescription } from "../../src/hooks/upload-summary.js";
 
 // ── Mock client (same pattern as deeplake-fs.test.ts) ────────────────────────
 type Row = {
@@ -33,11 +34,11 @@ function makeClient(seed: Record<string, Buffer> = {}) {
         const row = match ? rows.find(r => r.path === match[1]) : undefined;
         return row ? [{ summary: row.summary }] : [];
       }
-      if (sql.includes("SELECT path, project, description, creation_date, last_update_date")) {
+      if (sql.includes("SELECT path, project, description, summary, creation_date")) {
         return rows
           .filter(r => r.path.startsWith("/summaries/"))
           .map(r => ({
-            path: r.path, project: r.project, description: r.description,
+            path: r.path, project: r.project, description: r.description, summary: r.summary,
             creation_date: r.creation_date, last_update_date: r.last_update_date,
           }));
       }
@@ -186,7 +187,7 @@ async function uploadSummary(
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
   await fs.writeFileWithMeta(summaryPath, summaryContent, {
     project: projectName,
-    description: summaryContent.match(/## What Happened\n([\s\S]*?)(?=\n##|$)/)?.[1]?.trim().slice(0, 80) ?? "completed",
+    description: extractDescription(summaryContent),
     lastUpdateDate: new Date().toISOString(),
   });
   await fs.flush();
@@ -302,7 +303,7 @@ describe("session summary — resumed sessions update last_update_date", () => {
     // last_update_date must have changed
     expect(rowAfterEnd.last_update_date).not.toBe(initialDate);
     // description must be extracted from What Happened section
-    expect(rowAfterEnd.description).toBe("Fixed authentication bug in the login flow. Added retry logic for token refresh.");
+    expect(rowAfterEnd.description).toBe("Auth tokens now refresh automatically");
     // content must be the full summary
     expect(rowAfterEnd.summary).toContain("## What Happened");
     expect(rowAfterEnd.summary).toContain("## Key Facts");

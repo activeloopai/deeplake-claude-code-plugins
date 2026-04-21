@@ -77,6 +77,32 @@ function makeClient(memoryRows: Row[] = [], sessionRows: Row[] = []) {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe("DeeplakeFs — sessions table multi-row read", () => {
+  it("reads transcript-shaped session files as canonical pretty JSON", async () => {
+    const transcript = {
+      conversation_id: 0,
+      session_number: 6,
+      turns: [
+        { dia_id: "D6:1", speaker: "Melanie", text: "Charlotte's Web was my favorite book as a kid." },
+        { dia_id: "D6:2", speaker: "Caroline", text: "I can recommend another book if you want." },
+      ],
+    };
+    const sessionRows: Row[] = [
+      {
+        path: "/sessions/conv_0_session_6.json",
+        text_content: JSON.stringify(transcript),
+        size_bytes: 128,
+        mime_type: "application/json",
+        creation_date: "2026-01-01T00:00:01Z",
+      },
+    ];
+
+    const client = makeClient([], sessionRows);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const content = await fs.readFile("/sessions/conv_0_session_6.json");
+    expect(content).toBe(`${JSON.stringify(transcript, null, 2)}\n`);
+  });
+
   it("reads session file by normalizing rows ordered by creation_date", async () => {
     const sessionRows: Row[] = [
       { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"user_message","content":"hello"}', size_bytes: 40, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },

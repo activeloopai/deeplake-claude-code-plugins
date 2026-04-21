@@ -18,7 +18,7 @@ const MAX_FALLBACK_CANDIDATES = 500;
 /**
  * grep implementation for the deeplake-shell (virtual bash). Two paths:
  *   1. SQL-first: dual-table LIKE/ILIKE search via grep-core, with session
- *      JSON normalized to per-turn lines for sane output.
+ *      content projected into the same file-like view used by local reads.
  *   2. Fallback: if SQL returns nothing (or races past a 3s timeout), scan
  *      the in-memory FS cache using the same regex refinement.
  *
@@ -76,7 +76,6 @@ export function createGrepCommand(
       const searchOptions = {
         ...buildGrepSearchOptions(matchParams, targets[0] ?? ctx.cwd),
         pathFilter: buildPathFilterForTargets(targets),
-        limit: 100,
       };
       const queryRows = await Promise.race([
         searchDeeplakeTables(client, table, sessionsTable ?? "sessions", searchOptions),
@@ -106,9 +105,10 @@ export function createGrepCommand(
       }
     }
 
-    // Normalize session JSON blobs to per-turn lines before the regex pass.
+    // Normalize session blobs into the same file-like text view used by reads.
     const normalized = rows.map(r => ({ path: r.path, content: normalizeContent(r.path, r.content) }));
-    const output = refineGrepMatches(normalized, matchParams);
+    const forceMultiFilePrefix = parsed.r || parsed.R || parsed.recursive ? true : undefined;
+    const output = refineGrepMatches(normalized, matchParams, forceMultiFilePrefix);
 
     return {
       stdout: output.length > 0 ? output.join("\n") + "\n" : "",

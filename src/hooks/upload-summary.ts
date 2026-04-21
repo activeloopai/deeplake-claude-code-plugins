@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { buildSummaryBlurb } from "../utils/summary-format.js";
 
 export type QueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
 
@@ -39,10 +40,9 @@ export function esc(s: string): string {
     .replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 
-/** Derive the short description from the "## What Happened" section of a wiki summary. */
+/** Derive the short catalog description from the structured summary. */
 export function extractDescription(text: string): string {
-  const match = text.match(/## What Happened\n([\s\S]*?)(?=\n##|$)/);
-  return match ? match[1].trim().slice(0, 300) : "completed";
+  return buildSummaryBlurb(text);
 }
 
 /**

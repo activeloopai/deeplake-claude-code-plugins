@@ -12,6 +12,7 @@ import { capOutputForClaude } from "../utils/output-cap.js";
 export interface GrepParams {
   pattern: string;
   targetPath: string;
+  recursive: boolean;
   ignoreCase: boolean;
   wordMatch: boolean;
   filesOnly: boolean;
@@ -108,7 +109,7 @@ export function parseBashGrep(cmd: string): GrepParams | null {
   const tokens = tokenizeGrepStage(first);
   if (!tokens || tokens.length === 0) return null;
 
-  let ignoreCase = false, wordMatch = false, filesOnly = false, countOnly = false,
+  let recursive = false, ignoreCase = false, wordMatch = false, filesOnly = false, countOnly = false,
       lineNumber = false, invertMatch = false, fixedString = isFixed;
   const explicitPatterns: string[] = [];
 
@@ -166,6 +167,8 @@ export function parseBashGrep(cmd: string): GrepParams | null {
         case "F": fixedString = true; break;
         case "r":
         case "R":
+          recursive = true;
+          break;
         case "E":
           break;
         case "A":
@@ -205,6 +208,7 @@ export function parseBashGrep(cmd: string): GrepParams | null {
 
   return {
     pattern, targetPath: target,
+    recursive,
     ignoreCase, wordMatch, filesOnly, countOnly, lineNumber, invertMatch, fixedString,
   };
 }
@@ -229,7 +233,14 @@ export async function handleGrepDirect(
     fixedString: params.fixedString,
   };
 
-  const output = await grepBothTables(api, table, sessionsTable, matchParams, params.targetPath);
+  const output = await grepBothTables(
+    api,
+    table,
+    sessionsTable,
+    matchParams,
+    params.targetPath,
+    params.recursive ? true : undefined,
+  );
   const joined = output.join("\n") || "(no matches)";
   return capOutputForClaude(joined, { kind: "grep" });
 }

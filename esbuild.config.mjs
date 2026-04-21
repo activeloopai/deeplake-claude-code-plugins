@@ -29,7 +29,7 @@ await build({
   platform: "node",
   format: "esm",
   outdir: "claude-code/bundle",
-  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  external: ["node:*", "node-liblzma", "@mongodb-js/zstd", "@huggingface/transformers", "onnxruntime-node"],
 });
 
 for (const h of ccAll) {
@@ -63,7 +63,7 @@ await build({
   platform: "node",
   format: "esm",
   outdir: "codex/bundle",
-  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  external: ["node:*", "node-liblzma", "@mongodb-js/zstd", "@huggingface/transformers", "onnxruntime-node"],
 });
 
 for (const h of codexAll) {

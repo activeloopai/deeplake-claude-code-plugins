@@ -1,11 +1,8 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/session-start.js
-import { fileURLToPath } from "node:url";
-import { dirname as dirname2, join as join7 } from "node:path";
-import { readdirSync, rmSync } from "node:fs";
-import { execSync as execSync2 } from "node:child_process";
-import { homedir as homedir4 } from "node:os";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { dirname as dirname2, join as join4 } from "node:path";
 
 // dist/src/commands/auth.js
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
@@ -29,393 +26,15 @@ function saveCredentials(creds) {
   writeFileSync(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
 }
 
-// dist/src/config.js
-import { readFileSync as readFileSync2, existsSync as existsSync2 } from "node:fs";
-import { join as join2 } from "node:path";
-import { homedir as homedir2, userInfo } from "node:os";
-function loadConfig() {
-  const home = homedir2();
-  const credPath = join2(home, ".deeplake", "credentials.json");
-  let creds = null;
-  if (existsSync2(credPath)) {
-    try {
-      creds = JSON.parse(readFileSync2(credPath, "utf-8"));
-    } catch {
-      return null;
-    }
-  }
-  const env = process.env;
-  if (!env.HIVEMIND_TOKEN && env.DEEPLAKE_TOKEN) {
-    process.stderr.write("[hivemind] DEEPLAKE_* env vars are deprecated; use HIVEMIND_* instead\n");
-  }
-  const token = env.HIVEMIND_TOKEN ?? env.DEEPLAKE_TOKEN ?? creds?.token;
-  const orgId = env.HIVEMIND_ORG_ID ?? env.DEEPLAKE_ORG_ID ?? creds?.orgId;
-  if (!token || !orgId)
-    return null;
-  return {
-    token,
-    orgId,
-    orgName: creds?.orgName ?? orgId,
-    userName: creds?.userName || userInfo().username || "unknown",
-    workspaceId: env.HIVEMIND_WORKSPACE_ID ?? env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
-    apiUrl: env.HIVEMIND_API_URL ?? env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: env.HIVEMIND_TABLE ?? env.DEEPLAKE_TABLE ?? "memory",
-    sessionsTableName: env.HIVEMIND_SESSIONS_TABLE ?? env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
-    memoryPath: env.HIVEMIND_MEMORY_PATH ?? env.DEEPLAKE_MEMORY_PATH ?? join2(home, ".deeplake", "memory")
-  };
-}
-
-// dist/src/deeplake-api.js
-import { randomUUID } from "node:crypto";
-import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join4 } from "node:path";
-import { tmpdir } from "node:os";
-
-// dist/src/utils/debug.js
-import { appendFileSync } from "node:fs";
-import { join as join3 } from "node:path";
-import { homedir as homedir3 } from "node:os";
-var DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-var LOG = join3(homedir3(), ".deeplake", "hook-debug.log");
-function utcTimestamp(d = /* @__PURE__ */ new Date()) {
-  return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
-}
-function log(tag, msg) {
-  if (!DEBUG)
-    return;
-  appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
-`);
-}
-
-// dist/src/utils/sql.js
-function sqlStr(value) {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
-}
-
-// dist/src/deeplake-api.js
-var log2 = (msg) => log("sdk", msg);
-function summarizeSql(sql, maxLen = 220) {
-  const compact = sql.replace(/\s+/g, " ").trim();
-  return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
-}
-function traceSql(msg) {
-  const traceEnabled = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-  if (!traceEnabled)
-    return;
-  process.stderr.write(`[deeplake-sql] ${msg}
-`);
-  const debugFileLog = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-  if (debugFileLog)
-    log2(msg);
-}
-var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
-var MAX_RETRIES = 3;
-var BASE_DELAY_MS = 500;
-var MAX_CONCURRENCY = 5;
-var QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 1e4);
-var INDEX_MARKER_TTL_MS = Number(process.env["HIVEMIND_INDEX_MARKER_TTL_MS"] ?? 6 * 60 * 6e4);
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-function isTimeoutError(error) {
-  const name = error instanceof Error ? error.name.toLowerCase() : "";
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return name.includes("timeout") || name === "aborterror" || message.includes("timeout") || message.includes("timed out");
-}
-function isDuplicateIndexError(error) {
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return message.includes("duplicate key value violates unique constraint") || message.includes("pg_class_relname_nsp_index") || message.includes("already exists");
-}
-function isSessionInsertQuery(sql) {
-  return /^\s*insert\s+into\s+"[^"]+"\s*\(\s*id\s*,\s*path\s*,\s*filename\s*,\s*message\s*,/i.test(sql);
-}
-function isTransientHtml403(text) {
-  const body = text.toLowerCase();
-  return body.includes("<html") || body.includes("403 forbidden") || body.includes("cloudflare") || body.includes("nginx");
-}
-function getIndexMarkerDir() {
-  return process.env["HIVEMIND_INDEX_MARKER_DIR"] ?? join4(tmpdir(), "hivemind-deeplake-indexes");
-}
-var Semaphore = class {
-  max;
-  waiting = [];
-  active = 0;
-  constructor(max) {
-    this.max = max;
-  }
-  async acquire() {
-    if (this.active < this.max) {
-      this.active++;
-      return;
-    }
-    await new Promise((resolve) => this.waiting.push(resolve));
-  }
-  release() {
-    this.active--;
-    const next = this.waiting.shift();
-    if (next) {
-      this.active++;
-      next();
-    }
-  }
-};
-var DeeplakeApi = class {
-  token;
-  apiUrl;
-  orgId;
-  workspaceId;
-  tableName;
-  _pendingRows = [];
-  _sem = new Semaphore(MAX_CONCURRENCY);
-  _tablesCache = null;
-  constructor(token, apiUrl, orgId, workspaceId, tableName) {
-    this.token = token;
-    this.apiUrl = apiUrl;
-    this.orgId = orgId;
-    this.workspaceId = workspaceId;
-    this.tableName = tableName;
-  }
-  /** Execute SQL with retry on transient errors and bounded concurrency. */
-  async query(sql) {
-    const startedAt = Date.now();
-    const summary = summarizeSql(sql);
-    traceSql(`query start: ${summary}`);
-    await this._sem.acquire();
-    try {
-      const rows = await this._queryWithRetry(sql);
-      traceSql(`query ok (${Date.now() - startedAt}ms, rows=${rows.length}): ${summary}`);
-      return rows;
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      traceSql(`query fail (${Date.now() - startedAt}ms): ${summary} :: ${message}`);
-      throw e;
-    } finally {
-      this._sem.release();
-    }
-  }
-  async _queryWithRetry(sql) {
-    let lastError;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      let resp;
-      try {
-        const signal = AbortSignal.timeout(QUERY_TIMEOUT_MS);
-        resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.token}`,
-            "Content-Type": "application/json",
-            "X-Activeloop-Org-Id": this.orgId
-          },
-          signal,
-          body: JSON.stringify({ query: sql })
-        });
-      } catch (e) {
-        if (isTimeoutError(e)) {
-          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
-          throw lastError;
-        }
-        lastError = e instanceof Error ? e : new Error(String(e));
-        if (attempt < MAX_RETRIES) {
-          const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
-          log2(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
-          await sleep(delay);
-          continue;
-        }
-        throw lastError;
-      }
-      if (resp.ok) {
-        const raw = await resp.json();
-        if (!raw?.rows || !raw?.columns)
-          return [];
-        return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i) => [col, row[i]])));
-      }
-      const text = await resp.text().catch(() => "");
-      const retryable403 = isSessionInsertQuery(sql) && (resp.status === 401 || resp.status === 403 && (text.length === 0 || isTransientHtml403(text)));
-      if (attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
-        const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
-        log2(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
-        await sleep(delay);
-        continue;
-      }
-      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
-    }
-    throw lastError ?? new Error("Query failed: max retries exceeded");
-  }
-  // ── Writes ──────────────────────────────────────────────────────────────────
-  /** Queue rows for writing. Call commit() to flush. */
-  appendRows(rows) {
-    this._pendingRows.push(...rows);
-  }
-  /** Flush pending rows via SQL. */
-  async commit() {
-    if (this._pendingRows.length === 0)
-      return;
-    const rows = this._pendingRows;
-    this._pendingRows = [];
-    const CONCURRENCY = 10;
-    for (let i = 0; i < rows.length; i += CONCURRENCY) {
-      const chunk = rows.slice(i, i + CONCURRENCY);
-      await Promise.allSettled(chunk.map((r) => this.upsertRowSql(r)));
-    }
-    log2(`commit: ${rows.length} rows`);
-  }
-  async upsertRowSql(row) {
-    const ts = (/* @__PURE__ */ new Date()).toISOString();
-    const cd = row.creationDate ?? ts;
-    const lud = row.lastUpdateDate ?? ts;
-    const exists = await this.query(`SELECT path FROM "${this.tableName}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`);
-    if (exists.length > 0) {
-      let setClauses = `summary = E'${sqlStr(row.contentText)}', mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
-      if (row.project !== void 0)
-        setClauses += `, project = '${sqlStr(row.project)}'`;
-      if (row.description !== void 0)
-        setClauses += `, description = '${sqlStr(row.description)}'`;
-      await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(row.path)}'`);
-    } else {
-      const id = randomUUID();
-      let cols = "id, path, filename, summary, mime_type, size_bytes, creation_date, last_update_date";
-      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
-      if (row.project !== void 0) {
-        cols += ", project";
-        vals += `, '${sqlStr(row.project)}'`;
-      }
-      if (row.description !== void 0) {
-        cols += ", description";
-        vals += `, '${sqlStr(row.description)}'`;
-      }
-      await this.query(`INSERT INTO "${this.tableName}" (${cols}) VALUES (${vals})`);
-    }
-  }
-  /** Update specific columns on a row by path. */
-  async updateColumns(path, columns) {
-    const setClauses = Object.entries(columns).map(([col, val]) => typeof val === "number" ? `${col} = ${val}` : `${col} = '${sqlStr(String(val))}'`).join(", ");
-    await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(path)}'`);
-  }
-  // ── Convenience ─────────────────────────────────────────────────────────────
-  /** Create a BM25 search index on a column. */
-  async createIndex(column) {
-    await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
-  }
-  buildLookupIndexName(table, suffix) {
-    return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
-  }
-  getLookupIndexMarkerPath(table, suffix) {
-    const markerKey = [
-      this.workspaceId,
-      this.orgId,
-      table,
-      suffix
-    ].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
-    return join4(getIndexMarkerDir(), `${markerKey}.json`);
-  }
-  hasFreshLookupIndexMarker(table, suffix) {
-    const markerPath = this.getLookupIndexMarkerPath(table, suffix);
-    if (!existsSync3(markerPath))
-      return false;
-    try {
-      const raw = JSON.parse(readFileSync3(markerPath, "utf-8"));
-      const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
-      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS)
-        return false;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  markLookupIndexReady(table, suffix) {
-    mkdirSync2(getIndexMarkerDir(), { recursive: true });
-    writeFileSync2(this.getLookupIndexMarkerPath(table, suffix), JSON.stringify({ updatedAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf-8");
-  }
-  async ensureLookupIndex(table, suffix, columnsSql) {
-    if (this.hasFreshLookupIndexMarker(table, suffix))
-      return;
-    const indexName = this.buildLookupIndexName(table, suffix);
-    try {
-      await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
-      this.markLookupIndexReady(table, suffix);
-    } catch (e) {
-      if (isDuplicateIndexError(e)) {
-        this.markLookupIndexReady(table, suffix);
-        return;
-      }
-      log2(`index "${indexName}" skipped: ${e.message}`);
-    }
-  }
-  /** List all tables in the workspace (with retry). */
-  async listTables(forceRefresh = false) {
-    if (!forceRefresh && this._tablesCache)
-      return [...this._tablesCache];
-    const { tables, cacheable } = await this._fetchTables();
-    if (cacheable)
-      this._tablesCache = [...tables];
-    return tables;
-  }
-  async _fetchTables() {
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
-          headers: {
-            Authorization: `Bearer ${this.token}`,
-            "X-Activeloop-Org-Id": this.orgId
-          }
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          return {
-            tables: (data.tables ?? []).map((t) => t.table_name),
-            cacheable: true
-          };
-        }
-        if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
-          await sleep(BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200);
-          continue;
-        }
-        return { tables: [], cacheable: false };
-      } catch {
-        if (attempt < MAX_RETRIES) {
-          await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
-          continue;
-        }
-        return { tables: [], cacheable: false };
-      }
-    }
-    return { tables: [], cacheable: false };
-  }
-  /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
-  async ensureTable(name) {
-    const tbl = name ?? this.tableName;
-    const tables = await this.listTables();
-    if (!tables.includes(tbl)) {
-      log2(`table "${tbl}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
-      log2(`table "${tbl}" created`);
-      if (!tables.includes(tbl))
-        this._tablesCache = [...tables, tbl];
-    }
-  }
-  /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
-  async ensureSessionsTable(name) {
-    const tables = await this.listTables();
-    if (!tables.includes(name)) {
-      log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
-      log2(`table "${name}" created`);
-      if (!tables.includes(name))
-        this._tablesCache = [...tables, name];
-    }
-    await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
-  }
-};
-
 // dist/src/utils/stdin.js
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let data = "";
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => data += chunk);
     process.stdin.on("end", () => {
       try {
-        resolve(JSON.parse(data));
+        resolve2(JSON.parse(data));
       } catch (err) {
         reject(new Error(`Failed to parse hook input: ${err}`));
       }
@@ -424,23 +43,70 @@ function readStdin() {
   });
 }
 
-// dist/src/utils/version-check.js
-import { readFileSync as readFileSync4 } from "node:fs";
-import { dirname, join as join5 } from "node:path";
-var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
+// dist/src/utils/debug.js
+import { appendFileSync } from "node:fs";
+import { join as join2 } from "node:path";
+import { homedir as homedir2 } from "node:os";
+var DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
+function log(tag, msg) {
+  if (!DEBUG)
+    return;
+  appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
+`);
+}
+
+// dist/src/utils/direct-run.js
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+function isDirectRun(metaUrl) {
+  const entry = process.argv[1];
+  if (!entry)
+    return false;
+  try {
+    return resolve(fileURLToPath(metaUrl)) === resolve(entry);
+  } catch {
+    return false;
+  }
+}
+
+// dist/src/utils/retrieval-mode.js
+function isSessionsOnlyMode() {
+  const raw = process.env["HIVEMIND_SESSIONS_ONLY"] ?? process.env["DEEPLAKE_SESSIONS_ONLY"] ?? "";
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
+function isIndexDisabled() {
+  const raw = process.env["HIVEMIND_DISABLE_INDEX"] ?? process.env["DEEPLAKE_DISABLE_INDEX"] ?? "";
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
+function isPsqlMode() {
+  const raw = process.env["HIVEMIND_PSQL_MODE"] ?? process.env["DEEPLAKE_PSQL_MODE"] ?? "";
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
+function isFactsSessionsOnlyPsqlMode() {
+  const raw = process.env["HIVEMIND_PSQL_FACTS_SESSIONS_ONLY"] ?? process.env["DEEPLAKE_PSQL_FACTS_SESSIONS_ONLY"] ?? "";
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
+
+// dist/src/hooks/version-check.js
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { dirname, join as join3 } from "node:path";
+import { homedir as homedir3 } from "node:os";
+var DEFAULT_VERSION_CACHE_PATH = join3(homedir3(), ".deeplake", ".version-check.json");
+var DEFAULT_VERSION_CACHE_TTL_MS = 60 * 60 * 1e3;
 function getInstalledVersion(bundleDir, pluginManifestDir) {
   try {
-    const pluginJson = join5(bundleDir, "..", pluginManifestDir, "plugin.json");
-    const plugin = JSON.parse(readFileSync4(pluginJson, "utf-8"));
+    const pluginJson = join3(bundleDir, "..", pluginManifestDir, "plugin.json");
+    const plugin = JSON.parse(readFileSync2(pluginJson, "utf-8"));
     if (plugin.version)
       return plugin.version;
   } catch {
   }
   let dir = bundleDir;
   for (let i = 0; i < 5; i++) {
-    const candidate = join5(dir, "package.json");
+    const candidate = join3(dir, "package.json");
     try {
-      const pkg = JSON.parse(readFileSync4(candidate, "utf-8"));
+      const pkg = JSON.parse(readFileSync2(candidate, "utf-8"));
       if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version)
         return pkg.version;
     } catch {
@@ -452,47 +118,38 @@ function getInstalledVersion(bundleDir, pluginManifestDir) {
   }
   return null;
 }
-async function getLatestVersion(timeoutMs = 3e3) {
-  try {
-    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(timeoutMs) });
-    if (!res.ok)
-      return null;
-    const pkg = await res.json();
-    return pkg.version ?? null;
-  } catch {
-    return null;
-  }
-}
 function isNewer(latest, current) {
-  const parse = (v) => v.split(".").map(Number);
+  const parse = (v) => v.replace(/-.*$/, "").split(".").map(Number);
   const [la, lb, lc] = parse(latest);
   const [ca, cb, cc] = parse(current);
   return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
 }
-
-// dist/src/utils/wiki-log.js
-import { mkdirSync as mkdirSync3, appendFileSync as appendFileSync2 } from "node:fs";
-import { join as join6 } from "node:path";
-function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
-  const path = join6(hooksDir, filename);
-  return {
-    path,
-    log(msg) {
-      try {
-        mkdirSync3(hooksDir, { recursive: true });
-        appendFileSync2(path, `[${utcTimestamp()}] ${msg}
-`);
-      } catch {
-      }
+function readVersionCache(cachePath = DEFAULT_VERSION_CACHE_PATH) {
+  if (!existsSync2(cachePath))
+    return null;
+  try {
+    const parsed = JSON.parse(readFileSync2(cachePath, "utf-8"));
+    if (parsed && typeof parsed.checkedAt === "number" && typeof parsed.url === "string" && (typeof parsed.latest === "string" || parsed.latest === null)) {
+      return parsed;
     }
-  };
+  } catch {
+  }
+  return null;
+}
+function readFreshCachedLatestVersion(url, ttlMs = DEFAULT_VERSION_CACHE_TTL_MS, cachePath = DEFAULT_VERSION_CACHE_PATH, nowMs = Date.now()) {
+  const cached = readVersionCache(cachePath);
+  if (!cached || cached.url !== url)
+    return void 0;
+  if (nowMs - cached.checkedAt > ttlMs)
+    return void 0;
+  return cached.latest;
 }
 
 // dist/src/hooks/session-start.js
-var log3 = (msg) => log("session-start", msg);
-var __bundleDir = dirname2(fileURLToPath(import.meta.url));
-var AUTH_CMD = join7(__bundleDir, "commands", "auth-login.js");
-var context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
+var log2 = (msg) => log("session-start", msg);
+var __bundleDir = dirname2(fileURLToPath2(import.meta.url));
+var AUTH_CMD = join4(__bundleDir, "commands", "auth-login.js");
+var CLAUDE_SESSION_START_CONTEXT = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
 
 1. Your built-in memory (~/.claude/) \u2014 personal per-project notes
 2. Deeplake global memory (~/.deeplake/memory/) \u2014 global memory shared across all sessions, users, and agents in the org
@@ -500,9 +157,19 @@ var context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH w
 Deeplake memory structure:
 - ~/.deeplake/memory/index.md \u2014 START HERE, table of all sessions
 - ~/.deeplake/memory/summaries/username/*.md \u2014 AI-generated wiki summaries per session
-- ~/.deeplake/memory/sessions/username/*.jsonl \u2014 raw session data (last resort)
+- ~/.deeplake/memory/sessions/{author}/* \u2014 raw session data (last resort)
 
-SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw JSONL if summaries don't have enough detail. Do NOT jump straight to JSONL files.
+SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw session files if summaries don't have enough detail. Do NOT jump straight to raw session files.
+When index.md points to a likely match, read that exact summary or session file directly before trying broader grep variants.
+If index.md already points to likely candidate files, open those exact files before broadening into synonym greps or wide exploratory scans.
+Do NOT probe unrelated local paths such as ~/.claude/projects/, arbitrary home directories, or guessed summary roots when the question is about Deeplake memory.
+TEMPORAL GROUNDING: If a summary or transcript uses relative time like "last year", "last week", or "next month", resolve it against that session's own date/date_time metadata, not today's date.
+TEMPORAL FOLLOW-THROUGH: If a summary only gives a relative time, open the linked source session and use its date/date_time to convert the final answer into an absolute month/date/year or explicit range before responding.
+ANSWER SHAPE: Once you have enough evidence, answer with the smallest exact phrase supported by memory. For identity or relationship questions, use just the noun phrase. For education questions, answer with the likely field or credential directly, not the broader life story. For "when" questions, prefer absolute dates/months/years over relative phrases. Avoid extra biography, explanation, or hedging.
+NOT-FOUND BAR: Do NOT answer "not found" until you have checked index.md plus at least one likely summary or raw session file for the named person. If keyword grep is empty, grep the person's name alone and inspect the candidate files.
+NEGATIVE-EVIDENCE QUESTIONS: For identity, relationship status, and research-topic questions, summaries may omit the exact phrase. If likely summaries are ambiguous, read the candidate raw session transcript and look for positive clues before concluding the answer is absent.
+SELF-LABEL PRIORITY: For identity questions, prefer the person's own explicit self-label from the transcript over broader category descriptions or paraphrases.
+RELATIONSHIP STATUS INFERENCE: For relationship-status questions, treat explicit self-descriptions about partnership, dating, marriage, or parenting plans as status evidence. If the transcript strongly supports an unpartnered status, answer with the concise status phrase instead of "not found."
 
 Search command: Grep pattern="keyword" path="~/.deeplake/memory"
 
@@ -522,142 +189,282 @@ IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
-var HOME = homedir4();
-var { log: wikiLog } = makeWikiLogger(join7(HOME, ".claude", "hooks"));
-async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, workspaceId) {
-  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
-  const existing = await api.query(`SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`);
-  if (existing.length > 0) {
-    wikiLog(`SessionStart: summary exists for ${sessionId} (resumed)`);
-    return;
+var CLAUDE_SESSION_START_CONTEXT_SESSIONS_ONLY = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
+
+1. Your built-in memory (~/.claude/) \u2014 personal per-project notes
+2. Deeplake global memory (~/.deeplake/memory/) \u2014 shared org memory, currently exposed in SESSIONS-ONLY mode for benchmark comparison
+
+Deeplake memory structure available in this mode:
+- ~/.deeplake/memory/sessions/{author}/* \u2014 raw session data
+
+SEARCH STRATEGY: Search raw session files directly. In this mode, do NOT start with index.md or summaries and do NOT assume those paths exist.
+Open the most likely session file directly before broadening into synonym greps or wide exploratory scans.
+Do NOT probe unrelated local paths such as ~/.claude/projects/, arbitrary home directories, or guessed summary roots when the question is about Deeplake memory.
+TEMPORAL GROUNDING: If a transcript uses relative time like "last year", "last week", or "next month", resolve it against that session's own date/date_time metadata, not today's date.
+TEMPORAL FOLLOW-THROUGH: If a session only gives a relative time, use that session's date/date_time to convert the final answer into an absolute month/date/year or explicit range before responding.
+ANSWER SHAPE: Once you have enough evidence, answer with the smallest exact phrase supported by memory. For identity or relationship questions, use just the noun phrase. For education questions, answer with the likely field or credential directly, not the broader life story. For "when" questions, prefer absolute dates/months/years over relative phrases. Avoid extra biography, explanation, or hedging.
+NOT-FOUND BAR: Do NOT answer "not found" until you have checked at least one likely raw session file for the named person. If keyword grep is empty, grep the person's name alone and inspect the candidate session files.
+NEGATIVE-EVIDENCE QUESTIONS: For identity, relationship status, and research-topic questions, raw sessions may contain the exact phrase even when broad keyword grep looks sparse. Read the candidate transcript and look for positive clues before concluding the answer is absent.
+SELF-LABEL PRIORITY: For identity questions, prefer the person's own explicit self-label from the transcript over broader category descriptions or paraphrases.
+RELATIONSHIP STATUS INFERENCE: For relationship-status questions, treat explicit self-descriptions about partnership, dating, marriage, or parenting plans as status evidence. If the transcript strongly supports an unpartnered status, answer with the concise status phrase instead of "not found."
+
+Search command: Grep pattern="keyword" path="~/.deeplake/memory"
+
+Organization management \u2014 each argument is SEPARATE (do NOT quote subcommands together):
+- node "HIVEMIND_AUTH_CMD" login                              \u2014 SSO login
+- node "HIVEMIND_AUTH_CMD" whoami                             \u2014 show current user/org
+- node "HIVEMIND_AUTH_CMD" org list                           \u2014 list organizations
+- node "HIVEMIND_AUTH_CMD" org switch <name-or-id>            \u2014 switch organization
+- node "HIVEMIND_AUTH_CMD" workspaces                         \u2014 list workspaces
+- node "HIVEMIND_AUTH_CMD" workspace <id>                     \u2014 switch workspace
+- node "HIVEMIND_AUTH_CMD" invite <email> <ADMIN|WRITE|READ>  \u2014 invite member (ALWAYS ask user which role before inviting)
+- node "HIVEMIND_AUTH_CMD" members                            \u2014 list members
+- node "HIVEMIND_AUTH_CMD" remove <user-id>                   \u2014 remove member
+
+IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem. If a task seems to require Python, rewrite it using bash commands and standard text-processing tools (awk, sed, jq, grep, etc.).
+
+LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
+
+Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
+var CLAUDE_SESSION_START_CONTEXT_NO_INDEX = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
+
+1. Your built-in memory (~/.claude/) \u2014 personal per-project notes
+2. Deeplake global memory (~/.deeplake/memory/) \u2014 global memory shared across all sessions, users, and agents in the org
+
+Deeplake memory structure in this mode:
+- ~/.deeplake/memory/summaries/username/*.md \u2014 AI-generated wiki summaries per session
+- ~/.deeplake/memory/sessions/{author}/* \u2014 raw session data (last resort)
+
+INDEX MODE: /index.md is intentionally unavailable for this run. Do NOT try to read it or rely on it.
+SEARCH STRATEGY: Start by grepping summaries for the named person, topic, or keyword. Then read the specific matching summaries. Only read raw session files if the summaries don't have enough detail. Do NOT jump straight to raw session files.
+If a summary points to a likely source session, open that exact raw session before broadening into synonym greps or wide exploratory scans.
+Do NOT probe unrelated local paths such as ~/.claude/projects/, arbitrary home directories, or guessed summary roots when the question is about Deeplake memory.
+TEMPORAL GROUNDING: If a summary or transcript uses relative time like "last year", "last week", or "next month", resolve it against that session's own date/date_time metadata, not today's date.
+TEMPORAL FOLLOW-THROUGH: If a summary only gives a relative time, open the linked source session and use its date/date_time to convert the final answer into an absolute month/date/year or explicit range before responding.
+ANSWER SHAPE: Once you have enough evidence, answer with the smallest exact phrase supported by memory. For identity or relationship questions, use just the noun phrase. For education questions, answer with the likely field or credential directly, not the broader life story. For "when" questions, prefer absolute dates/months/years over relative phrases. Avoid extra biography, explanation, or hedging.
+NOT-FOUND BAR: Do NOT answer "not found" until you have checked at least one likely summary plus one likely raw session file for the named person when the summary is ambiguous. If keyword grep is empty, grep the person's name alone and inspect the candidate files.
+NEGATIVE-EVIDENCE QUESTIONS: For identity, relationship status, and research-topic questions, summaries may omit the exact phrase. If likely summaries are ambiguous, read the candidate raw session transcript and look for positive clues before concluding the answer is absent.
+SELF-LABEL PRIORITY: For identity questions, prefer the person's own explicit self-label from the transcript over broader category descriptions or paraphrases.
+RELATIONSHIP STATUS INFERENCE: For relationship-status questions, treat explicit self-descriptions about partnership, dating, marriage, or parenting plans as status evidence. If the transcript strongly supports an unpartnered status, answer with the concise status phrase instead of "not found."
+
+Search command: Grep pattern="keyword" path="~/.deeplake/memory"
+
+Organization management \u2014 each argument is SEPARATE (do NOT quote subcommands together):
+- node "HIVEMIND_AUTH_CMD" login                              \u2014 SSO login
+- node "HIVEMIND_AUTH_CMD" whoami                             \u2014 show current user/org
+- node "HIVEMIND_AUTH_CMD" org list                           \u2014 list organizations
+- node "HIVEMIND_AUTH_CMD" org switch <name-or-id>            \u2014 switch organization
+- node "HIVEMIND_AUTH_CMD" workspaces                         \u2014 list workspaces
+- node "HIVEMIND_AUTH_CMD" workspace <id>                     \u2014 switch workspace
+- node "HIVEMIND_AUTH_CMD" invite <email> <ADMIN|WRITE|READ>  \u2014 invite member (ALWAYS ask user which role before inviting)
+- node "HIVEMIND_AUTH_CMD" members                            \u2014 list members
+- node "HIVEMIND_AUTH_CMD" remove <user-id>                   \u2014 remove member
+
+IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem. If a task seems to require Python, rewrite it using bash commands and standard text-processing tools (awk, sed, jq, grep, etc.).
+
+LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
+
+Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
+var CLAUDE_SESSION_START_CONTEXT_PSQL = `DEEPLAKE MEMORY SQL MODE: For this run, use SQL only when answering recall questions.
+
+Available Deeplake tables:
+- memory(path, summary, project, description, creation_date, last_update_date)
+- sessions(path, creation_date, turn_index, event_type, dia_id, speaker, text, turn_summary, source_date_time, message)
+- memory_facts(path, fact_id, subject_entity_id, subject_name, subject_type, predicate, object_entity_id, object_name, object_type, summary, evidence, search_text, confidence, valid_at, valid_from, valid_to, source_session_id, source_path)
+- memory_entities(path, entity_id, canonical_name, entity_type, aliases, summary, search_text, source_session_ids, source_paths)
+- fact_entity_links(path, link_id, fact_id, entity_id, entity_role, source_session_id, source_path)
+
+Use this command shape:
+- psql -At -F '|' -c "SELECT ..."
+
+SQL strategy:
+1. Start with targeted SELECTs against memory to find likely sessions or summaries.
+2. In the first pass, combine the named person/entity term with one or more topic terms. Prefer narrow AND filters over broad OR filters.
+3. Graph-backed entity and relation resolution is applied automatically behind the scenes to narrow likely sessions before memory/sessions queries run. You do not need to query graph tables manually for normal recall.
+3a. For stable person/project/place facts, use memory_facts first. Use memory_entities to resolve aliases or canonical names, then join through fact_entity_links when you need all facts connected to an entity.
+4. After finding candidate summary rows, re-query memory by exact path.
+5. If the answer needs exact wording, exact dates, or transcript grounding, query sessions by exact path for those candidate sessions.
+6. Prefer precise WHERE filters, ORDER BY creation_date/last_update_date, and LIMIT 5-10.
+7. Do not use filesystem commands, grep, cat, ls, Read, or Glob for recall in this mode.
+8. If the first literal query returns 0-3 weak rows or the answer still seems semantically off, retry with BM25 ranking on memory.summary before concluding the data is absent.
+9. Use sessions.text, sessions.speaker, sessions.turn_index, and sessions.source_date_time for transcript retrieval. Use sessions.message only when you need the raw JSON payload.
+10. If a summary, node, or edge answer is vague or relative (for example "home country", "next month", "last week"), immediately open the linked sessions rows and convert it to the most concrete answer supported there.
+11. For identity, origin, relationship, preference, and "what did they decide" questions, prefer transcript grounding over a paraphrased summary label.
+12. When memory_entities resolves a canonical entity, use fact_entity_links to expand the connected facts before deciding the fact layer is sparse.
+13. For identity or relationship questions, prefer the narrowest explicit self-label or status label over broader biography or community descriptions.
+14. For "when" questions, if the best evidence is already phrased relative to another dated event, return that relative phrase instead of inventing a different absolute date.
+15. For list/profile questions, return a minimal comma-separated set of directly supported items. Do not pad the answer with adjacent hobbies, events, or explanations.
+16. For artifact/title questions such as books, talks, projects, or artworks, prefer exact titled objects from facts or transcript over generic phrases like "a book" or "a speech".
+
+Good query patterns:
+- Candidate summaries:
+  psql -At -F '|' -c "SELECT path, summary, creation_date FROM memory WHERE summary ILIKE '%<person>%' AND (summary ILIKE '%<topic1>%' OR summary ILIKE '%<topic2>%') ORDER BY creation_date DESC LIMIT 5"
+- Canonical entity lookup:
+  psql -At -F '|' -c "SELECT entity_id, canonical_name, entity_type, aliases, summary FROM memory_entities WHERE canonical_name ILIKE '%<name>%' OR aliases ILIKE '%<name>%' LIMIT 5"
+- Fact lookup by entity:
+  psql -At -F '|' -c "SELECT fact_id, subject_name, predicate, object_name, summary, valid_at, valid_from, valid_to, source_session_id FROM memory_facts WHERE subject_name ILIKE '%<name>%' AND (predicate ILIKE '%<topic>%' OR object_name ILIKE '%<topic>%') ORDER BY creation_date DESC LIMIT 10"
+- Entity-linked fact expansion:
+  psql -At -F '|' -c "SELECT f.fact_id, f.subject_name, f.predicate, f.object_name, f.summary FROM fact_entity_links l JOIN memory_facts f ON f.fact_id = l.fact_id WHERE l.entity_id = '<entity_id>' ORDER BY f.creation_date DESC LIMIT 10"
+- Exact summary reread:
+  psql -At -F '|' -c "SELECT path, summary FROM memory WHERE path IN ('/summaries/...', '/summaries/...')"
+- Transcript grounding by exact path:
+  psql -At -F '|' -c "SELECT path, creation_date, turn_index, speaker, text, source_date_time FROM sessions WHERE path IN ('/sessions/...', '/sessions/...') ORDER BY path ASC, turn_index ASC"
+- Transcript search inside known sessions:
+  psql -At -F '|' -c "SELECT path, creation_date, turn_index, speaker, text, source_date_time FROM sessions WHERE path IN ('/sessions/...', '/sessions/...') AND (speaker ILIKE '%<person>%' OR text ILIKE '%<keyword>%') ORDER BY path ASC, turn_index ASC"
+- If literal ILIKE retrieval is sparse or semantically weak, retry with BM25 text ranking on summaries:
+  psql -At -F '|' -c "SELECT path, summary, summary <#> '<person> <topic terms>' AS score FROM memory WHERE summary ILIKE '%<person>%' ORDER BY score DESC LIMIT 5"
+
+Avoid these mistakes:
+- Do NOT search person names via path ILIKE. Person names live in summary text, not session paths.
+- Do NOT filter sessions.message directly when sessions.text / sessions.speaker already contain the needed transcript fields.
+- Do NOT use fact tables for exact quoted wording when a transcript row is available; use them to narrow and aggregate, then ground on sessions.
+- Do NOT stop at graph rows alone when the question asks for exact wording or time grounding. Use graph rows to narrow the search, then open the linked sessions.
+- Do NOT blend multiple different events when the question asks about one specific event. Prefer the most direct supporting row.
+- Do NOT replace an exact status or self-label with a broader biography.
+- Do NOT recalculate a relative-time answer against today's date when the stored phrase already answers the question.
+- Do NOT turn a short list question into a narrative list of loosely related activities.
+
+Answer rules:
+- Return the smallest exact answer supported by the data.
+- Resolve relative dates against the session's own creation_date or transcript date metadata, not today's date.
+- Do not answer "not found" until you have checked both memory and a likely sessions row for the named person.
+- For duration or age-style answers, preserve the stored relative phrase when it directly answers the question instead of over-converting it.
+- If the transcript already directly answers with a relative duration like "10 years ago", return that phrase instead of recalculating to today's date.
+- If the transcript or fact row says something like "the week before June 9, 2023", return that phrase instead of converting it to June 9, 2023.
+- If a summary says something vague like "home country", search sessions for the exact named place before answering.
+- For list or profile questions, aggregate across the small set of candidate sessions before answering.
+- For "likely", "would", or profile questions, a concise inference from strong summary evidence is allowed even if the exact final phrase is not quoted verbatim.
+
+IMPORTANT: Only psql SELECT queries over memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links are intercepted in this mode. For normal recall, query memory_facts for distilled claims, memory_entities for canonical names, and sessions for exact grounding; graph-based restriction is applied automatically where relevant. Do NOT use python, python3, node, curl, or filesystem paths for recall in this mode.
+
+Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
+var CLAUDE_SESSION_START_CONTEXT_PSQL_FACTS_SESSIONS_ONLY = `DEEPLAKE MEMORY SQL MODE: For this run, use SQL only when answering recall questions.
+
+Available Deeplake tables:
+- sessions(path, creation_date, turn_index, event_type, dia_id, speaker, text, turn_summary, source_date_time, message)
+- memory_facts(path, fact_id, subject_entity_id, subject_name, subject_type, predicate, object_entity_id, object_name, object_type, summary, evidence, search_text, confidence, valid_at, valid_from, valid_to, source_session_id, source_path)
+- memory_entities(path, entity_id, canonical_name, entity_type, aliases, summary, search_text, source_session_ids, source_paths)
+- fact_entity_links(path, link_id, fact_id, entity_id, entity_role, source_session_id, source_path)
+
+The summary and graph tables are intentionally unavailable in this mode. Treat them as if they do not exist.
+
+Use this command shape:
+- psql -At -F '|' -c "SELECT ..."
+
+SQL strategy:
+1. Start with memory_entities to resolve the named person, project, place, or organization into a canonical entity.
+2. Expand connected facts through fact_entity_links and memory_facts.
+3. Use memory_facts to identify the small set of likely source sessions.
+4. Ground every final answer on sessions rows from those source sessions.
+5. Prefer small targeted SELECTs with ORDER BY and LIMIT 5-10.
+6. Do not use filesystem commands, grep, cat, ls, Read, or Glob for recall in this mode.
+7. Use sessions.text, sessions.speaker, sessions.turn_index, and sessions.source_date_time for transcript retrieval. Use sessions.message only when you need the raw JSON payload.
+8. Sessions are the source of truth. Facts are only a helper index and synthesis layer.
+9. For identity, origin, relationship, preference, and "what did they decide" questions, prefer transcript grounding over paraphrased fact labels.
+10. For list/profile questions, facts are for narrowing and aggregation; sessions are for final verification.
+
+Good query patterns:
+- Canonical entity lookup:
+  psql -At -F '|' -c "SELECT entity_id, canonical_name, entity_type, aliases, summary FROM memory_entities WHERE canonical_name ILIKE '%<name>%' OR aliases ILIKE '%<name>%' LIMIT 5"
+- Fact lookup by name/topic:
+  psql -At -F '|' -c "SELECT fact_id, subject_name, predicate, object_name, summary, valid_at, valid_from, valid_to, source_session_id, source_path FROM memory_facts WHERE subject_name ILIKE '%<name>%' AND (predicate ILIKE '%<topic>%' OR object_name ILIKE '%<topic>%') ORDER BY creation_date DESC LIMIT 10"
+- Entity-linked fact expansion:
+  psql -At -F '|' -c "SELECT f.fact_id, f.subject_name, f.predicate, f.object_name, f.summary, f.source_session_id, f.source_path FROM fact_entity_links l JOIN memory_facts f ON f.fact_id = l.fact_id WHERE l.entity_id = '<entity_id>' ORDER BY f.creation_date DESC LIMIT 10"
+- Transcript grounding by exact path:
+  psql -At -F '|' -c "SELECT path, creation_date, turn_index, speaker, text, source_date_time FROM sessions WHERE path IN ('/sessions/...', '/sessions/...') ORDER BY path ASC, turn_index ASC"
+- Transcript search inside known sessions:
+  psql -At -F '|' -c "SELECT path, creation_date, turn_index, speaker, text, source_date_time FROM sessions WHERE path IN ('/sessions/...', '/sessions/...') AND (speaker ILIKE '%<person>%' OR text ILIKE '%<keyword>%') ORDER BY path ASC, turn_index ASC"
+
+Avoid these mistakes:
+- Do NOT query memory, graph_nodes, or graph_edges in this mode.
+- Do NOT answer directly from memory_facts.summary, memory_entities.summary, or aliases when a relevant transcript row is available.
+- Do NOT use fact tables for exact quoted wording when a transcript row is available; use them to narrow and aggregate, then ground on sessions.
+- Do NOT filter sessions.message directly when sessions.text / sessions.speaker already contain the needed transcript fields.
+- Do NOT blend multiple different events when the question asks about one specific event. Prefer the most direct supporting row.
+- Do NOT replace an exact status or self-label with a broader biography.
+- Do NOT recalculate a relative-time answer against today's date when the stored phrase already answers the question.
+
+Answer rules:
+- Return the smallest exact answer supported by the data.
+- Sessions win over facts if they differ in detail or specificity.
+- Resolve relative dates against the session's own creation_date or transcript date metadata, not today's date.
+- Do not answer "not found" until you have checked both the fact layer and a likely sessions row for the named person.
+- For duration or age-style answers, preserve the stored relative phrase when it directly answers the question instead of over-converting it.
+- For list or profile questions, aggregate across the small set of candidate sessions before answering.
+
+IMPORTANT: Only psql SELECT queries over sessions, memory_facts, memory_entities, and fact_entity_links are intercepted in this mode. Do NOT use python, python3, node, curl, filesystem paths, memory, or graph tables for recall in this mode.
+
+Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
+var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
+function buildSessionStartAdditionalContext(args) {
+  const template = isPsqlMode() ? isFactsSessionsOnlyPsqlMode() ? CLAUDE_SESSION_START_CONTEXT_PSQL_FACTS_SESSIONS_ONLY : CLAUDE_SESSION_START_CONTEXT_PSQL : isSessionsOnlyMode() ? CLAUDE_SESSION_START_CONTEXT_SESSIONS_ONLY : isIndexDisabled() ? CLAUDE_SESSION_START_CONTEXT_NO_INDEX : CLAUDE_SESSION_START_CONTEXT;
+  const resolvedContext = template.replace(/HIVEMIND_AUTH_CMD/g, args.authCommand);
+  let updateNotice = "";
+  if (args.currentVersion) {
+    if (args.latestVersion && isNewer(args.latestVersion, args.currentVersion)) {
+      updateNotice = `
+
+\u2B06\uFE0F Hivemind update available: ${args.currentVersion} \u2192 ${args.latestVersion}.`;
+    } else {
+      updateNotice = `
+
+\u2705 Hivemind v${args.currentVersion}`;
+    }
   }
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const projectName = cwd.split("/").pop() ?? "unknown";
-  const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
-  const content = [
-    `# Session ${sessionId}`,
-    `- **Source**: ${sessionSource}`,
-    `- **Started**: ${now}`,
-    `- **Project**: ${projectName}`,
-    `- **Status**: in-progress`,
-    ""
-  ].join("\n");
-  const filename = `${sessionId}.md`;
-  await api.query(`INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${now}', '${now}')`);
-  wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
+  return args.creds?.token ? `${resolvedContext}
+
+Logged in to Deeplake as org: ${args.creds.orgName ?? args.creds.orgId} (workspace: ${args.creds.workspaceId ?? "default"})${updateNotice}` : `${resolvedContext}
+
+\u26A0\uFE0F Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${updateNotice}`;
 }
-async function main() {
-  if (process.env.HIVEMIND_WIKI_WORKER === "1")
-    return;
-  const input = await readStdin();
-  let creds = loadCredentials();
+async function runSessionStartHook(_input, deps = {}) {
+  const { wikiWorker = (process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1", creds = loadCredentials(), saveCredentialsFn = saveCredentials, currentVersion = getInstalledVersion(__bundleDir, ".claude-plugin"), latestVersion = currentVersion ? readFreshCachedLatestVersion(GITHUB_RAW_PKG, DEFAULT_VERSION_CACHE_TTL_MS) ?? null : null, authCommand = AUTH_CMD, logFn = log2 } = deps;
+  if (wikiWorker)
+    return null;
   if (!creds?.token) {
-    log3("no credentials found \u2014 run /hivemind:login to authenticate");
+    logFn("no credentials found \u2014 run /hivemind:login to authenticate");
   } else {
-    log3(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
+    logFn(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
     if (creds.token && !creds.userName) {
       try {
-        const { userInfo: userInfo2 } = await import("node:os");
-        creds.userName = userInfo2().username ?? "unknown";
-        saveCredentials(creds);
-        log3(`backfilled and persisted userName: ${creds.userName}`);
+        const { userInfo } = await import("node:os");
+        creds.userName = userInfo().username ?? "unknown";
+        saveCredentialsFn(creds);
+        logFn(`backfilled and persisted userName: ${creds.userName}`);
       } catch {
       }
     }
   }
-  const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
-  if (input.session_id && creds?.token) {
-    try {
-      const config = loadConfig();
-      if (config) {
-        const table = config.tableName;
-        const sessionsTable = config.sessionsTableName;
-        const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
-        await api.ensureTable();
-        await api.ensureSessionsTable(sessionsTable);
-        if (captureEnabled) {
-          await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
-          log3("placeholder created");
-        } else {
-          log3("placeholder skipped (HIVEMIND_CAPTURE=false)");
-        }
-      }
-    } catch (e) {
-      log3(`placeholder failed: ${e.message}`);
-      wikiLog(`SessionStart: placeholder failed for ${input.session_id}: ${e.message}`);
-    }
-  }
-  const autoupdate = creds?.autoupdate !== false;
-  let updateNotice = "";
-  try {
-    const current = getInstalledVersion(__bundleDir, ".claude-plugin");
-    if (current) {
-      const latest = await getLatestVersion();
-      if (latest && isNewer(latest, current)) {
-        if (autoupdate) {
-          log3(`autoupdate: updating ${current} \u2192 ${latest}`);
-          try {
-            const scopes = ["user", "project", "local", "managed"];
-            const cmd = scopes.map((s) => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null || true`).join("; ");
-            execSync2(cmd, { stdio: "ignore", timeout: 6e4 });
-            try {
-              const cacheParent = join7(homedir4(), ".claude", "plugins", "cache", "hivemind", "hivemind");
-              const entries = readdirSync(cacheParent, { withFileTypes: true });
-              for (const e of entries) {
-                if (e.isDirectory() && e.name !== latest) {
-                  rmSync(join7(cacheParent, e.name), { recursive: true, force: true });
-                  log3(`cache cleanup: removed old version ${e.name}`);
-                }
-              }
-            } catch (e) {
-              log3(`cache cleanup failed: ${e.message}`);
-            }
-            updateNotice = `
-
-\u2705 Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.`;
-            process.stderr.write(`\u2705 Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.
-`);
-            log3(`autoupdate succeeded: ${current} \u2192 ${latest}`);
-          } catch (e) {
-            updateNotice = `
-
-\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /hivemind:update to upgrade manually.`;
-            process.stderr.write(`\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /hivemind:update to upgrade manually.
-`);
-            log3(`autoupdate failed: ${e.message}`);
-          }
-        } else {
-          updateNotice = `
-
-\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Run /hivemind:update to upgrade.`;
-          process.stderr.write(`\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Run /hivemind:update to upgrade.
-`);
-          log3(`update available (autoupdate off): ${current} \u2192 ${latest}`);
-        }
-      } else {
-        log3(`version up to date: ${current}`);
-        updateNotice = `
-
-\u2705 Hivemind v${current} (up to date)`;
-      }
-    }
-  } catch (e) {
-    log3(`version check failed: ${e.message}`);
-  }
-  const resolvedContext = context.replace(/HIVEMIND_AUTH_CMD/g, AUTH_CMD);
-  const additionalContext = creds?.token ? `${resolvedContext}
-
-Logged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}` : `${resolvedContext}
-
-\u26A0\uFE0F Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${updateNotice}`;
-  console.log(JSON.stringify({
+  return {
     hookSpecificOutput: {
       hookEventName: "SessionStart",
-      additionalContext
+      additionalContext: buildSessionStartAdditionalContext({
+        authCommand,
+        creds,
+        currentVersion,
+        latestVersion
+      })
     }
-  }));
+  };
 }
-main().catch((e) => {
-  log3(`fatal: ${e.message}`);
-  process.exit(0);
-});
+async function main() {
+  await readStdin();
+  const result = await runSessionStartHook({});
+  if (result)
+    console.log(JSON.stringify(result));
+}
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => {
+    log2(`fatal: ${e.message}`);
+    process.exit(0);
+  });
+}
+export {
+  CLAUDE_SESSION_START_CONTEXT,
+  CLAUDE_SESSION_START_CONTEXT_NO_INDEX,
+  CLAUDE_SESSION_START_CONTEXT_PSQL,
+  CLAUDE_SESSION_START_CONTEXT_PSQL_FACTS_SESSIONS_ONLY,
+  CLAUDE_SESSION_START_CONTEXT_SESSIONS_ONLY,
+  buildSessionStartAdditionalContext,
+  runSessionStartHook
+};

@@ -115,6 +115,20 @@ describe("codex integration: session-start", () => {
     });
     expect(raw).toContain("Do NOT jump straight to JSONL");
   });
+
+  it("switches to sessions-only recall guidance when the env flag is set", () => {
+    const raw = runHook("session-start.js", {
+      session_id: "test-session-004c",
+      cwd: "/tmp",
+      hook_event_name: "SessionStart",
+      model: "gpt-5.2",
+    }, {
+      HIVEMIND_SESSIONS_ONLY: "1",
+    });
+    expect(raw).toContain("SESSIONS-ONLY mode");
+    expect(raw).toContain("Do NOT start with index.md or summaries");
+    expect(raw).not.toContain("index.md (start here)");
+  });
 });
 
 // ── Capture (UserPromptSubmit) ───────────────────────────────────────────────

@@ -10,6 +10,10 @@
     "build": "tsc && node esbuild.config.mjs",
     "bundle": "node esbuild.config.mjs",
     "dev": "tsc --watch",
+    "embeddings:backfill": "node --import tsx src/tools/backfill-harrier-embeddings.ts",
+    "embeddings:embed:python": "UV_CACHE_DIR=.uv-cache uv run python scripts/backfill_harrier_embeddings.py embed",
+    "embeddings:run:python": "UV_CACHE_DIR=.uv-cache uv run python scripts/backfill_harrier_embeddings.py run",
+    "embeddings:upload:python": "UV_CACHE_DIR=.uv-cache uv run python scripts/backfill_harrier_embeddings.py upload",
     "shell": "tsx src/shell/deeplake-shell.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
@@ -24,6 +28,7 @@
     "*.md": []
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.1.0",
     "deeplake": "^0.3.30",
     "just-bash": "^2.14.0",
     "yargs-parser": "^22.0.0"

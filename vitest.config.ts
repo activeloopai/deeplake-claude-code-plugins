@@ -65,6 +65,12 @@ export default defineConfig({
           functions: 80,
           lines: 80,
         },
+        "src/embeddings/text.ts": {
+          statements: 80,
+          branches: 80,
+          functions: 80,
+          lines: 80,
+        },
         // fix/index-md-include-sessions — 5-fix PR stacked on PR #61.
         // output-cap.ts is new in this PR (fix #5); virtual-table-query.ts was
         // heavily modified by fix #1 (index.md builder / fallback) and fix #4

@@ -3,7 +3,7 @@ import { parseBashGrep, handleGrepDirect, type GrepParams } from "../../src/hook
 
 describe("handleGrepDirect", () => {
   const baseParams: GrepParams = {
-    pattern: "foo", targetPath: "/",
+    pattern: "foo", targetPath: "/", recursive: false,
     ignoreCase: false, wordMatch: false, filesOnly: false, countOnly: false,
     lineNumber: false, invertMatch: false, fixedString: false,
   };
@@ -188,7 +188,7 @@ describe("parseBashGrep", () => {
   it("parses combined flags -ri", () => {
     const r = parseBashGrep("grep -ri 'pattern' /dir");
     expect(r!.ignoreCase).toBe(true);
-    // -r is no-op (recursive implied)
+    expect(r!.recursive).toBe(true);
   });
 
   it("parses combined flags -wni", () => {
@@ -201,6 +201,7 @@ describe("parseBashGrep", () => {
   it("parses -rl flags", () => {
     const r = parseBashGrep("grep -rl 'pattern' /dir");
     expect(r!.filesOnly).toBe(true);
+    expect(r!.recursive).toBe(true);
   });
 
   // ── Variants ──

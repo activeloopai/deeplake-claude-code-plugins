@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, dirname, sep } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
@@ -11,21 +11,82 @@ import { sqlLike } from "../utils/sql.js";
 import { log as _log } from "../utils/debug.js";
 import { isDirectRun } from "../utils/direct-run.js";
 import { type GrepParams, parseBashGrep, handleGrepDirect } from "./grep-direct.js";
-import { executeCompiledBashCommand } from "./bash-command-compiler.js";
+import {
+  executeCompiledBashCommand,
+  extractPsqlQueryFromCommand,
+  queryReferencesInterceptedTables,
+  queryUsesOnlyInterceptedTables,
+} from "./bash-command-compiler.js";
 import {
   findVirtualPaths,
   readVirtualPathContents,
   listVirtualPathRows,
   readVirtualPathContent,
+  buildVirtualIndexContent,
 } from "./virtual-table-query.js";
 import {
   readCachedIndexContent,
   writeCachedIndexContent,
 } from "./query-cache.js";
 import { isSafe, touchesMemory, rewritePaths } from "./memory-path-utils.js";
+import { isFactsSessionsOnlyPsqlMode, isIndexDisabled, isPsqlMode, isSessionsOnlyMode } from "../utils/retrieval-mode.js";
 import { capOutputForClaude } from "../utils/output-cap.js";
 
 export { isSafe, touchesMemory, rewritePaths };
+
+const READ_CACHE_ROOT = join(homedir(), ".deeplake", "query-cache");
+
+function touchesVirtualMemoryPath(value: string): boolean {
+  const rewritten = rewritePaths(value).trim();
+  return (
+    rewritten === "/index.md" ||
+    rewritten === "/summaries" ||
+    rewritten.startsWith("/summaries/") ||
+    rewritten === "/sessions" ||
+    rewritten.startsWith("/sessions/") ||
+    /(^|[\s"'`])\/(?:index\.md|summaries(?:\/|\b)|sessions(?:\/|\b))/.test(rewritten)
+  );
+}
+
+function touchesAnyMemoryPath(value: string): boolean {
+  return touchesMemory(value) || touchesVirtualMemoryPath(value);
+}
+
+function isAnyPsqlCommand(cmd: string): boolean {
+  return /^\s*psql\b/.test(cmd.trim());
+}
+
+function isHivemindPsqlCommand(cmd: string): boolean {
+  if (!isPsqlMode()) return false;
+  const query = extractPsqlQueryFromCommand(cmd);
+  return !!query && queryUsesOnlyInterceptedTables(query);
+}
+
+function needsHivemindPsqlRewrite(cmd: string): boolean {
+  if (!isPsqlMode() || !isAnyPsqlCommand(cmd)) return false;
+  const query = extractPsqlQueryFromCommand(cmd);
+  return !!query && queryReferencesInterceptedTables(query) && !queryUsesOnlyInterceptedTables(query);
+}
+
+function buildPsqlOnlyGuidance(): string {
+  if (isFactsSessionsOnlyPsqlMode()) {
+    return "[RETRY REQUIRED] Hivemind recall is SQL-only in this mode. " +
+      "Use psql with the sessions, memory_facts, memory_entities, and fact_entity_links tables only. " +
+      "Do NOT use grep, cat, ls, Read, Glob, memory, graph, or filesystem paths for memory lookups.";
+  }
+  return "[RETRY REQUIRED] Hivemind recall is SQL-only in this mode. " +
+    "Use psql with the memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links tables only. " +
+    "Do NOT use grep, cat, ls, Read, Glob, or filesystem paths for memory lookups.";
+}
+
+function buildPsqlSchemaGuidance(): string {
+  if (isFactsSessionsOnlyPsqlMode()) {
+    return "[RETRY REQUIRED] Only psql SELECT queries over sessions, memory_facts, memory_entities, and fact_entity_links are intercepted in SQL mode. " +
+      "Rewrite the query to reference only those tables with normal psql SELECT syntax.";
+  }
+  return "[RETRY REQUIRED] Only psql SELECT queries over memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links are intercepted in SQL mode. " +
+    "Rewrite the query to reference only those tables with normal psql SELECT syntax.";
+}
 
 const log = (msg: string) => _log("pre", msg);
 
@@ -44,26 +105,9 @@ export interface PreToolUseInput {
 export interface ClaudePreToolDecision {
   command: string;
   description: string;
-  /**
-   * When set, main() emits the hook response as `updatedInput: {file_path}`
-   * instead of `updatedInput: {command, description}`. This is required for
-   * Read-tool intercepts: Claude Code's Read implementation reads
-   * `updatedInput.file_path` and errors with "path must be of type string,
-   * got undefined" if the hook hands it the Bash-shaped input.
-   */
   file_path?: string;
 }
 
-const READ_CACHE_ROOT = join(homedir(), ".deeplake", "query-cache");
-
-/**
- * Materialize fetched content for a Read intercept into a real file on disk
- * so Claude Code's Read tool can read it via `updatedInput.file_path`. The
- * file lives under `~/.deeplake/query-cache/<session_id>/read/` and mirrors
- * the virtual path structure (e.g. `/sessions/conv_0_session_1.json` →
- * `.../read/sessions/conv_0_session_1.json`). Per-session dirs are cleaned
- * alongside the index cache at session end.
- */
 export function writeReadCacheFile(
   sessionId: string,
   virtualPath: string,
@@ -75,9 +119,6 @@ export function writeReadCacheFile(
   const rel = virtualPath.replace(/^\/+/, "") || "content";
   const expectedRoot = join(cacheRoot, safeSessionId, "read");
   const absPath = join(expectedRoot, rel);
-  // Containment guard: if the DB-derived virtualPath contains `..` segments,
-  // `join` resolves them and absPath can escape the per-session cache dir.
-  // Refuse the write rather than silently writing outside the sandbox.
   if (absPath !== expectedRoot && !absPath.startsWith(expectedRoot + sep)) {
     throw new Error(`writeReadCacheFile: path escapes cache root: ${absPath}`);
   }
@@ -106,7 +147,8 @@ export function getShellCommand(toolName: string, toolInput: Record<string, unkn
   switch (toolName) {
     case "Grep": {
       const p = toolInput.path as string | undefined;
-      if (p && touchesMemory(p)) {
+      if (isPsqlMode() && p && touchesAnyMemoryPath(p)) return null;
+      if (p && touchesAnyMemoryPath(p)) {
         const pattern = toolInput.pattern as string ?? "";
         const flags: string[] = ["-r"];
         if (toolInput["-i"]) flags.push("-i");
@@ -117,7 +159,8 @@ export function getShellCommand(toolName: string, toolInput: Record<string, unkn
     }
     case "Read": {
       const fp = getReadTargetPath(toolInput);
-      if (fp && touchesMemory(fp)) {
+      if (isPsqlMode() && fp && touchesAnyMemoryPath(fp)) return null;
+      if (fp && touchesAnyMemoryPath(fp)) {
         const rewritten = rewritePaths(fp) || "/";
         return `${isLikelyDirectoryPath(rewritten) ? "ls" : "cat"} ${rewritten}`;
       }
@@ -125,7 +168,10 @@ export function getShellCommand(toolName: string, toolInput: Record<string, unkn
     }
     case "Bash": {
       const cmd = toolInput.command as string | undefined;
-      if (!cmd || !touchesMemory(cmd)) break;
+      if (!cmd) break;
+      if (isHivemindPsqlCommand(cmd)) return cmd.trim();
+      if (isPsqlMode() && (touchesAnyMemoryPath(cmd) || needsHivemindPsqlRewrite(cmd))) return null;
+      if (!touchesAnyMemoryPath(cmd)) break;
       const rewritten = rewritePaths(cmd);
       if (!isSafe(rewritten)) {
         log(`unsafe command blocked: ${rewritten}`);
@@ -135,7 +181,8 @@ export function getShellCommand(toolName: string, toolInput: Record<string, unkn
     }
     case "Glob": {
       const p = toolInput.path as string | undefined;
-      if (p && touchesMemory(p)) return "ls /";
+      if (isPsqlMode() && p && touchesAnyMemoryPath(p)) return null;
+      if (p && touchesAnyMemoryPath(p)) return "ls /";
       break;
     }
   }
@@ -156,6 +203,7 @@ export function extractGrepParams(
     return {
       pattern: (toolInput.pattern as string) ?? "",
       targetPath: rewritePaths((toolInput.path as string) ?? "") || "/",
+      recursive: true,
       ignoreCase: !!toolInput["-i"],
       wordMatch: false,
       filesOnly: outputMode === "files_with_matches",
@@ -218,22 +266,35 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
   const cmd = (input.tool_input.command as string) ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
   const toolPath = (getReadTargetPath(input.tool_input) ?? input.tool_input.path ?? "") as string;
+  const psqlRewriteNeeded = needsHivemindPsqlRewrite(cmd);
 
-  if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
-    const guidance = "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. " +
-      "This virtual filesystem only supports bash builtins: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. " +
-      "python, python3, node, and curl are NOT available. " +
-      "You MUST rewrite your command using only the bash tools listed above and try again. " +
-      "For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
+  if (!shellCmd && (touchesAnyMemoryPath(cmd) || touchesAnyMemoryPath(toolPath) || psqlRewriteNeeded)) {
+    const guidance = isPsqlMode()
+      ? (psqlRewriteNeeded ? buildPsqlSchemaGuidance() : buildPsqlOnlyGuidance())
+      : "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. " +
+        "This virtual filesystem only supports bash builtins plus benchmark SQL mode via psql -At -F '|' -c \"SELECT ...\". " +
+        "python, python3, node, and curl are NOT available. " +
+        "You MUST rewrite your command using only the bash tools listed above and try again. " +
+        "For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
     logFn(`unsupported command, returning guidance: ${cmd}`);
     return buildAllowDecision(
       `echo ${JSON.stringify(guidance)}`,
-      "[DeepLake] unsupported command — rewrite using bash builtins",
+      isPsqlMode()
+        ? "[DeepLake SQL] unsupported command — rewrite using psql over memory/sessions"
+        : "[DeepLake] unsupported command — rewrite using bash builtins",
     );
   }
 
   if (!shellCmd) return null;
-  if (!config) return buildFallbackDecision(shellCmd, shellBundle);
+  if (!config) {
+    if (isHivemindPsqlCommand(shellCmd)) {
+      return buildAllowDecision(
+        `echo ${JSON.stringify("[RETRY REQUIRED] Hivemind SQL mode is unavailable because Deeplake credentials are missing.")}`,
+        "[DeepLake SQL] unavailable",
+      );
+    }
+    return buildFallbackDecision(shellCmd, shellBundle);
+  }
 
   const table = process.env["HIVEMIND_TABLE"] ?? "memory";
   const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
@@ -244,7 +305,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
   ): Promise<Map<string, string | null>> => {
     const uniquePaths = [...new Set(cachePaths)];
     const result = new Map<string, string | null>(uniquePaths.map((path) => [path, null]));
-    const cachedIndex = uniquePaths.includes("/index.md")
+    const cachedIndex = !isIndexDisabled() && uniquePaths.includes("/index.md")
       ? readCachedIndexContentFn(input.session_id)
       : null;
 
@@ -331,16 +392,18 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
 
     if (virtualPath && !virtualPath.endsWith("/")) {
       logFn(`direct read: ${virtualPath}`);
-      let content = virtualPath === "/index.md"
+      let content = !isIndexDisabled() && virtualPath === "/index.md"
         ? readCachedIndexContentFn(input.session_id)
         : null;
 
       if (content === null) {
-        // `/index.md` goes through the dual-table builder inside
-        // `readVirtualPathContents` (fix #1). Other paths fall back to the
-        // same helper which returns null when neither table has a row, at
-        // which point we let the shell bundle handle the miss below.
         content = await readVirtualPathContentFn(api, table, sessionsTable, virtualPath);
+      }
+      if (content === null && virtualPath === "/index.md" && !isSessionsOnlyMode() && !isIndexDisabled()) {
+        const idxRows = await api.query(
+          `SELECT path, project, description, summary, creation_date, last_update_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY last_update_date DESC, creation_date DESC`
+        );
+        content = buildVirtualIndexContent(idxRows);
       }
       if (content !== null) {
         if (virtualPath === "/index.md") {
@@ -352,9 +415,6 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
           content = fromEnd ? lines.slice(-lineLimit).join("\n") : lines.slice(0, lineLimit).join("\n");
         }
         const label = lineLimit > 0 ? (fromEnd ? `tail -${lineLimit}` : `head -${lineLimit}`) : "cat";
-        // Read tool writes content to disk and Claude Code reads the file directly,
-        // so no size pressure; keep full content. Bash intercepts flow through
-        // Claude Code's 16 KB tool_result threshold so we cap before reaching it.
         if (input.tool_name === "Read") {
           const file_path = writeReadCacheFileFn(input.session_id, virtualPath, content);
           return buildReadDecision(file_path, `[DeepLake direct] ${label} ${virtualPath}`);
@@ -425,6 +485,12 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
     logFn(`direct query failed, falling back to shell: ${e.message}`);
   }
 
+  if (isHivemindPsqlCommand(shellCmd)) {
+    return buildAllowDecision(
+      `echo ${JSON.stringify("[RETRY REQUIRED] Hivemind SQL mode could not satisfy the query. Rewrite it as a narrower SELECT over memory or sessions.")}`,
+      "[DeepLake SQL] query rewrite required",
+    );
+  }
   return buildFallbackDecision(shellCmd, shellBundle);
 }
 
