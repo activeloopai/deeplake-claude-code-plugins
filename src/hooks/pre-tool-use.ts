@@ -2,7 +2,7 @@
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
@@ -73,7 +73,14 @@ export function writeReadCacheFile(
   const { cacheRoot = READ_CACHE_ROOT } = deps;
   const safeSessionId = sessionId.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown";
   const rel = virtualPath.replace(/^\/+/, "") || "content";
-  const absPath = join(cacheRoot, safeSessionId, "read", rel);
+  const expectedRoot = join(cacheRoot, safeSessionId, "read");
+  const absPath = join(expectedRoot, rel);
+  // Containment guard: if the DB-derived virtualPath contains `..` segments,
+  // `join` resolves them and absPath can escape the per-session cache dir.
+  // Refuse the write rather than silently writing outside the sandbox.
+  if (absPath !== expectedRoot && !absPath.startsWith(expectedRoot + sep)) {
+    throw new Error(`writeReadCacheFile: path escapes cache root: ${absPath}`);
+  }
   mkdirSync(dirname(absPath), { recursive: true });
   writeFileSync(absPath, content, "utf-8");
   return absPath;
@@ -329,21 +336,11 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
         : null;
 
       if (content === null) {
+        // `/index.md` goes through the dual-table builder inside
+        // `readVirtualPathContents` (fix #1). Other paths fall back to the
+        // same helper which returns null when neither table has a row, at
+        // which point we let the shell bundle handle the miss below.
         content = await readVirtualPathContentFn(api, table, sessionsTable, virtualPath);
-      }
-      if (content === null && virtualPath === "/index.md") {
-        const idxRows = await api.query(
-          `SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
-        );
-        const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
-        for (const r of idxRows) {
-          const p = r["path"] as string;
-          const proj = r["project"] as string || "";
-          const desc = (r["description"] as string || "").slice(0, 120);
-          const date = (r["creation_date"] as string || "").slice(0, 10);
-          lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
-        }
-        content = lines.join("\n");
       }
       if (content !== null) {
         if (virtualPath === "/index.md") {

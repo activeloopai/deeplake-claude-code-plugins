@@ -793,7 +793,6 @@ function capOutputForClaude(output, options = {}) {
   const kind = options.kind ?? "output";
   const footerReserve = 220;
   const budget = Math.max(1, maxBytes - footerReserve);
-  let cut = 0;
   let running = 0;
   const lines = output.split("\n");
   const keptLines = [];
@@ -803,7 +802,6 @@ function capOutputForClaude(output, options = {}) {
       break;
     keptLines.push(line);
     running += lineBytes;
-    cut += lineBytes;
   }
   if (keptLines.length === 0) {
     const slice = Buffer.from(output, "utf8").slice(0, budget).toString("utf8");
@@ -811,8 +809,8 @@ function capOutputForClaude(output, options = {}) {
 ... [${kind} truncated: ${(byteLen(output) / 1024).toFixed(1)} KB total; refine with '| head -N' or a tighter pattern]`;
     return slice + footer2;
   }
-  const totalLines = lines.length;
-  const elidedLines = totalLines - keptLines.length;
+  const totalLines = lines.length - (lines[lines.length - 1] === "" ? 1 : 0);
+  const elidedLines = Math.max(0, totalLines - keptLines.length);
   const elidedBytes = byteLen(output) - byteLen(keptLines.join("\n"));
   const footer = `
 ... [${kind} truncated: ${elidedLines} more lines (${(elidedBytes / 1024).toFixed(1)} KB) elided \u2014 refine with '| head -N' or a tighter pattern]`;

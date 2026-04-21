@@ -3,7 +3,7 @@
 // dist/src/hooks/pre-tool-use.js
 import { existsSync as existsSync3, mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { homedir as homedir5 } from "node:os";
-import { join as join6, dirname } from "node:path";
+import { join as join6, dirname, sep } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // dist/src/utils/stdin.js
@@ -807,7 +807,6 @@ function capOutputForClaude(output, options = {}) {
   const kind = options.kind ?? "output";
   const footerReserve = 220;
   const budget = Math.max(1, maxBytes - footerReserve);
-  let cut = 0;
   let running = 0;
   const lines = output.split("\n");
   const keptLines = [];
@@ -817,7 +816,6 @@ function capOutputForClaude(output, options = {}) {
       break;
     keptLines.push(line);
     running += lineBytes;
-    cut += lineBytes;
   }
   if (keptLines.length === 0) {
     const slice = Buffer.from(output, "utf8").slice(0, budget).toString("utf8");
@@ -825,8 +823,8 @@ function capOutputForClaude(output, options = {}) {
 ... [${kind} truncated: ${(byteLen(output) / 1024).toFixed(1)} KB total; refine with '| head -N' or a tighter pattern]`;
     return slice + footer2;
   }
-  const totalLines = lines.length;
-  const elidedLines = totalLines - keptLines.length;
+  const totalLines = lines.length - (lines[lines.length - 1] === "" ? 1 : 0);
+  const elidedLines = Math.max(0, totalLines - keptLines.length);
   const elidedBytes = byteLen(output) - byteLen(keptLines.join("\n"));
   const footer = `
 ... [${kind} truncated: ${elidedLines} more lines (${(elidedBytes / 1024).toFixed(1)} KB) elided \u2014 refine with '| head -N' or a tighter pattern]`;
@@ -1851,7 +1849,11 @@ function writeReadCacheFile(sessionId, virtualPath, content, deps = {}) {
   const { cacheRoot = READ_CACHE_ROOT } = deps;
   const safeSessionId = sessionId.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown";
   const rel = virtualPath.replace(/^\/+/, "") || "content";
-  const absPath = join6(cacheRoot, safeSessionId, "read", rel);
+  const expectedRoot = join6(cacheRoot, safeSessionId, "read");
+  const absPath = join6(expectedRoot, rel);
+  if (absPath !== expectedRoot && !absPath.startsWith(expectedRoot + sep)) {
+    throw new Error(`writeReadCacheFile: path escapes cache root: ${absPath}`);
+  }
   mkdirSync3(dirname(absPath), { recursive: true });
   writeFileSync3(absPath, content, "utf-8");
   return absPath;
@@ -2051,18 +2053,6 @@ async function processPreToolUse(input, deps = {}) {
       let content = virtualPath === "/index.md" ? readCachedIndexContentFn(input.session_id) : null;
       if (content === null) {
         content = await readVirtualPathContentFn(api, table, sessionsTable, virtualPath);
-      }
-      if (content === null && virtualPath === "/index.md") {
-        const idxRows = await api.query(`SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`);
-        const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
-        for (const r of idxRows) {
-          const p = r["path"];
-          const proj = r["project"] || "";
-          const desc = (r["description"] || "").slice(0, 120);
-          const date = (r["creation_date"] || "").slice(0, 10);
-          lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
-        }
-        content = lines.join("\n");
       }
       if (content !== null) {
         if (virtualPath === "/index.md") {

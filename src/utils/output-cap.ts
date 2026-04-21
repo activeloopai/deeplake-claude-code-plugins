@@ -47,7 +47,6 @@ export function capOutputForClaude(output: string, options: CapOutputOptions = {
 
   // Find the last newline before the byte budget. Walk forward building
   // the slice so the byte boundary stays valid even for multibyte UTF-8.
-  let cut = 0;
   let running = 0;
   const lines = output.split("\n");
   const keptLines: string[] = [];
@@ -56,7 +55,6 @@ export function capOutputForClaude(output: string, options: CapOutputOptions = {
     if (running + lineBytes > budget) break;
     keptLines.push(line);
     running += lineBytes;
-    cut += lineBytes;
   }
 
   if (keptLines.length === 0) {
@@ -66,8 +64,11 @@ export function capOutputForClaude(output: string, options: CapOutputOptions = {
     return slice + footer;
   }
 
-  const totalLines = lines.length;
-  const elidedLines = totalLines - keptLines.length;
+  // `split("\n")` on `"a\nb\n"` produces `["a", "b", ""]` — the trailing
+  // empty entry is a newline terminator, not a real extra line. Counting
+  // it would over-report the elided-line tally in the footer.
+  const totalLines = lines.length - (lines[lines.length - 1] === "" ? 1 : 0);
+  const elidedLines = Math.max(0, totalLines - keptLines.length);
   const elidedBytes = byteLen(output) - byteLen(keptLines.join("\n"));
   const footer = `\n... [${kind} truncated: ${elidedLines} more lines (${(elidedBytes / 1024).toFixed(1)} KB) elided — refine with '| head -N' or a tighter pattern]`;
   return keptLines.join("\n") + footer;

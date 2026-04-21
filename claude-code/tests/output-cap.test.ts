@@ -91,4 +91,44 @@ describe("capOutputForClaude", () => {
     expect(Buffer.byteLength(out, "utf8")).toBeGreaterThan(4 * 1024);
     expect(Buffer.byteLength(out, "utf8")).toBeLessThanOrEqual(CLAUDE_OUTPUT_CAP_BYTES);
   });
+
+  // ── Regression: trailing newline shouldn't inflate the elided-line count ──
+  //
+  // `output.split("\n")` on "a\nb\n" returns ["a", "b", ""]. Treating the
+  // trailing empty entry as a "real" line made the footer's "N more lines
+  // elided" number off by one whenever the original input ended with a
+  // newline (which grep and cat both do in practice).
+
+  it("does not count a trailing newline as an extra line when reporting elided lines", () => {
+    const line = "x".repeat(100);
+    // 500 real content lines followed by a terminating "\n". Input ends with \n.
+    const input = Array.from({ length: 500 }, () => line).join("\n") + "\n";
+    const out = capOutputForClaude(input, { kind: "grep" });
+
+    const footerMatch = out.match(/(\d+) more lines/);
+    expect(footerMatch).not.toBeNull();
+    const elided = Number(footerMatch![1]);
+
+    // Parse the kept-body to count surviving real lines. Split produces a
+    // trailing "" entry when the kept body itself ends with a newline; drop
+    // it the same way the production code does.
+    const body = out.split("\n... [")[0];
+    const bodySplit = body.split("\n");
+    const keptLines = bodySplit[bodySplit.length - 1] === "" ? bodySplit.length - 1 : bodySplit.length;
+
+    // The 500 real lines must be accounted for exactly once — no double
+    // counting of the trailing newline.
+    expect(keptLines + elided).toBe(500);
+  });
+
+  it("the elided count matches exactly when there is no trailing newline", () => {
+    const line = "x".repeat(100);
+    const input = Array.from({ length: 500 }, () => line).join("\n"); // no trailing \n
+    const out = capOutputForClaude(input, { kind: "grep" });
+
+    const bodyLines = out.split("\n... [")[0].split("\n").length;
+    const footerMatch = out.match(/(\d+) more lines/);
+    expect(footerMatch).not.toBeNull();
+    expect(bodyLines + Number(footerMatch![1])).toBe(500);
+  });
 });

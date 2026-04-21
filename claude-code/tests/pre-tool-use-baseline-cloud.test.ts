@@ -16,7 +16,10 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { processPreToolUse } from "../../src/hooks/pre-tool-use.js";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { processPreToolUse, writeReadCacheFile } from "../../src/hooks/pre-tool-use.js";
 import {
   buildVirtualIndexContent,
   readVirtualPathContents,
@@ -289,5 +292,120 @@ describe("baseline_cloud 3-QA regression: sessions-only workspace", () => {
     expect(capturedReadFiles[0]?.virtualPath).toBe("/sessions/conv_0_session_1.json");
     expect(capturedReadFiles[0]?.content).toContain("Caroline");
     expect(capturedReadFiles[0]?.content).toContain("8 May, 2023");
+  });
+
+  // ── writeReadCacheFile security guard ─────────────────────────────────────
+  //
+  // Claude Code's Read intercept materializes fetched content into
+  // ~/.deeplake/query-cache/<session_id>/read/<virtualPath>. DB-derived
+  // virtualPaths are user-controlled (anyone with write access to the
+  // `sessions` / `memory` tables controls them), so `..` segments must not
+  // be allowed to escape the per-session cache dir. The PR #63 bot review
+  // flagged this.
+
+  describe("writeReadCacheFile path-traversal guard", () => {
+    it("writes a well-formed virtualPath inside the per-session cache root", () => {
+      const cacheRoot = mkdtempSync(join(tmpdir(), "writeReadCache-ok-"));
+      try {
+        const abs = writeReadCacheFile("sess-1", "/sessions/conv_0_session_1.json", "hello", { cacheRoot });
+        expect(abs).toBe(join(cacheRoot, "sess-1", "read", "sessions", "conv_0_session_1.json"));
+        expect(existsSync(abs)).toBe(true);
+        expect(readFileSync(abs, "utf-8")).toBe("hello");
+      } finally {
+        rmSync(cacheRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("refuses a virtualPath that escapes the cache root via ../ segments", () => {
+      const cacheRoot = mkdtempSync(join(tmpdir(), "writeReadCache-trav-"));
+      try {
+        expect(() =>
+          writeReadCacheFile("sess-2", "/sessions/../../../etc/passwd", "pwned", { cacheRoot })
+        ).toThrow(/path escapes cache root/);
+        // Guard must fire BEFORE any write lands anywhere under cacheRoot.
+        expect(existsSync(join(cacheRoot, "sess-2", "read", "sessions"))).toBe(false);
+        expect(existsSync(join(cacheRoot, "etc"))).toBe(false);
+      } finally {
+        rmSync(cacheRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("refuses traversal that lands outside the cache root entirely", () => {
+      const cacheRoot = mkdtempSync(join(tmpdir(), "writeReadCache-out-"));
+      try {
+        // Resolves to something like /tmp/writeReadCache-out-XXX/sess-3/read/../../../../../../etc/shadow
+        // → /etc/shadow — fully outside cacheRoot.
+        expect(() =>
+          writeReadCacheFile("sess-3", "/../../../../../../etc/shadow", "x", { cacheRoot })
+        ).toThrow(/path escapes cache root/);
+      } finally {
+        rmSync(cacheRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("accepts a path that normalizes back inside the cache root", () => {
+      const cacheRoot = mkdtempSync(join(tmpdir(), "writeReadCache-norm-"));
+      try {
+        // `/sessions/foo/../bar.json` → `/sessions/bar.json`, still inside.
+        const abs = writeReadCacheFile("sess-4", "/sessions/foo/../bar.json", "ok", { cacheRoot });
+        expect(abs).toBe(join(cacheRoot, "sess-4", "read", "sessions", "bar.json"));
+        expect(readFileSync(abs, "utf-8")).toBe("ok");
+      } finally {
+        rmSync(cacheRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // ── /index.md fallback lives in virtual-table-query.ts only ───────────────
+  //
+  // An earlier draft of fix #1 duplicated the synthesized-index builder
+  // inside pre-tool-use.ts. The bot review flagged that duplicate as
+  // unreachable + using the old single-table SQL ("N sessions:" header,
+  // missing `## Sessions`). The duplicate has since been removed; this
+  // test locks in that removal — `processPreToolUse` must use the dual-
+  // table builder and never synthesize its own broken fallback.
+
+  it("index.md intercept never falls back to the single-table inline builder", async () => {
+    // readVirtualPathContentFn returns non-null for /index.md (fix #1
+    // guarantee), so the old inline fallback is now unreachable. If
+    // somebody re-introduces it, this test fails because the bad string
+    // "${n} sessions:" would appear in the output instead of the dual-
+    // table "${total} entries (${s} summaries, ${n} sessions):" header.
+    const api = { query: vi.fn(async () => []) } as any;
+    const readVirtualPathContentFn = vi.fn(async () => "# Memory Index\n\n272 entries (0 summaries, 272 sessions):\n");
+    let materialized: string | undefined;
+
+    const decision = await processPreToolUse(
+      {
+        session_id: "s-index-fallback",
+        tool_name: "Read",
+        tool_input: { file_path: "~/.deeplake/memory/index.md" },
+        tool_use_id: "tu-fallback",
+      },
+      {
+        config: BASE_CONFIG,
+        createApi: vi.fn(() => api),
+        readVirtualPathContentFn: readVirtualPathContentFn as any,
+        readCachedIndexContentFn: () => null,
+        writeCachedIndexContentFn: () => undefined,
+        writeReadCacheFileFn: ((_sid: string, _vp: string, content: string) => {
+          materialized = content;
+          return "/tmp/fake-index-path";
+        }) as any,
+      },
+    );
+
+    expect(decision).not.toBeNull();
+    expect(materialized).toBeDefined();
+    // The dual-table builder's content was materialized, not the
+    // single-table "N sessions:" fallback.
+    expect(materialized).toContain("272 entries (0 summaries, 272 sessions):");
+    expect(materialized).not.toMatch(/\n\d+ sessions:\n/);
+    // Production code must not issue its own fallback SELECT against
+    // memory for /index.md — it delegates entirely to readVirtualPath.
+    const summariesOnlyFallback = api.query.mock.calls.find((call: any[]) =>
+      String(call[0] || "").includes(`FROM "memory" WHERE path LIKE '/summaries/%'`)
+    );
+    expect(summariesOnlyFallback).toBeUndefined();
   });
 });
