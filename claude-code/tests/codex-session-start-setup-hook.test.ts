@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /**
  * Source-level tests for src/hooks/codex/session-start-setup.ts. The
@@ -67,7 +70,11 @@ const validConfig = {
   sessionsTableName: "sessions",
 };
 
+let cacheTmp: string;
+
 beforeEach(() => {
+  cacheTmp = mkdtempSync(join(tmpdir(), "codex-session-start-setup-test-"));
+  process.env.HIVEMIND_VERSION_CACHE_PATH = join(cacheTmp, "cache.json");
   stdinMock.mockReset().mockResolvedValue({
     session_id: "sid-1", cwd: "/workspaces/proj",
     hook_event_name: "SessionStart", model: "gpt-5",
@@ -92,6 +99,8 @@ afterEach(() => {
   vi.restoreAllMocks();
   // @ts-expect-error
   global.fetch = originalFetch;
+  delete process.env.HIVEMIND_VERSION_CACHE_PATH;
+  try { rmSync(cacheTmp, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
 describe("codex session-start-setup hook — guards", () => {

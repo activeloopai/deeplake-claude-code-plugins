@@ -2,9 +2,9 @@
 
 // dist/src/hooks/session-start-setup.js
 import { fileURLToPath } from "node:url";
-import { dirname as dirname2, join as join7 } from "node:path";
+import { dirname as dirname3, join as join8 } from "node:path";
 import { execSync as execSync2 } from "node:child_process";
-import { homedir as homedir4 } from "node:os";
+import { homedir as homedir5 } from "node:os";
 
 // dist/src/commands/auth.js
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
@@ -451,17 +451,6 @@ function getInstalledVersion(bundleDir, pluginManifestDir) {
   }
   return null;
 }
-async function getLatestVersion(timeoutMs = 3e3) {
-  try {
-    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(timeoutMs) });
-    if (!res.ok)
-      return null;
-    const pkg = await res.json();
-    return pkg.version ?? null;
-  } catch {
-    return null;
-  }
-}
 function isNewer(latest, current) {
   const parse = (v) => v.split(".").map(Number);
   const [la, lb, lc] = parse(latest);
@@ -469,16 +458,75 @@ function isNewer(latest, current) {
   return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
 }
 
+// dist/src/hooks/version-check.js
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync5, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname as dirname2, join as join6 } from "node:path";
+import { homedir as homedir4 } from "node:os";
+var DEFAULT_VERSION_CACHE_PATH = join6(homedir4(), ".deeplake", ".version-check.json");
+var DEFAULT_VERSION_CACHE_TTL_MS = 60 * 60 * 1e3;
+function readVersionCache(cachePath = DEFAULT_VERSION_CACHE_PATH) {
+  if (!existsSync4(cachePath))
+    return null;
+  try {
+    const parsed = JSON.parse(readFileSync5(cachePath, "utf-8"));
+    if (parsed && typeof parsed.checkedAt === "number" && typeof parsed.url === "string" && (typeof parsed.latest === "string" || parsed.latest === null)) {
+      return parsed;
+    }
+  } catch {
+  }
+  return null;
+}
+function writeVersionCache(entry, cachePath = DEFAULT_VERSION_CACHE_PATH) {
+  mkdirSync3(dirname2(cachePath), { recursive: true });
+  writeFileSync3(cachePath, JSON.stringify(entry));
+}
+function readFreshCachedLatestVersion(url, ttlMs = DEFAULT_VERSION_CACHE_TTL_MS, cachePath = DEFAULT_VERSION_CACHE_PATH, nowMs = Date.now()) {
+  const cached = readVersionCache(cachePath);
+  if (!cached || cached.url !== url)
+    return void 0;
+  if (nowMs - cached.checkedAt > ttlMs)
+    return void 0;
+  return cached.latest;
+}
+async function getLatestVersionCached(opts) {
+  const ttlMs = opts.ttlMs ?? DEFAULT_VERSION_CACHE_TTL_MS;
+  const cachePath = opts.cachePath ?? DEFAULT_VERSION_CACHE_PATH;
+  const nowMs = opts.nowMs ?? Date.now();
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const fresh = readFreshCachedLatestVersion(opts.url, ttlMs, cachePath, nowMs);
+  if (fresh !== void 0)
+    return fresh;
+  const stale = readVersionCache(cachePath);
+  try {
+    const res = await fetchImpl(opts.url, { signal: AbortSignal.timeout(opts.timeoutMs) });
+    const latest = res.ok ? (await res.json()).version ?? null : stale?.latest ?? null;
+    writeVersionCache({
+      checkedAt: nowMs,
+      latest,
+      url: opts.url
+    }, cachePath);
+    return latest;
+  } catch {
+    const latest = stale?.latest ?? null;
+    writeVersionCache({
+      checkedAt: nowMs,
+      latest,
+      url: opts.url
+    }, cachePath);
+    return latest;
+  }
+}
+
 // dist/src/utils/wiki-log.js
-import { mkdirSync as mkdirSync3, appendFileSync as appendFileSync2 } from "node:fs";
-import { join as join6 } from "node:path";
+import { mkdirSync as mkdirSync4, appendFileSync as appendFileSync2 } from "node:fs";
+import { join as join7 } from "node:path";
 function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
-  const path = join6(hooksDir, filename);
+  const path = join7(hooksDir, filename);
   return {
     path,
     log(msg) {
       try {
-        mkdirSync3(hooksDir, { recursive: true });
+        mkdirSync4(hooksDir, { recursive: true });
         appendFileSync2(path, `[${utcTimestamp()}] ${msg}
 `);
       } catch {
@@ -489,8 +537,8 @@ function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
 
 // dist/src/hooks/session-start-setup.js
 var log3 = (msg) => log("session-setup", msg);
-var __bundleDir = dirname2(fileURLToPath(import.meta.url));
-var { log: wikiLog } = makeWikiLogger(join7(homedir4(), ".claude", "hooks"));
+var __bundleDir = dirname3(fileURLToPath(import.meta.url));
+var { log: wikiLog } = makeWikiLogger(join8(homedir5(), ".claude", "hooks"));
 async function main() {
   if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
@@ -527,7 +575,7 @@ async function main() {
   try {
     const current = getInstalledVersion(__bundleDir, ".claude-plugin");
     if (current) {
-      const latest = await getLatestVersion();
+      const latest = await getLatestVersionCached({ url: GITHUB_RAW_PKG, timeoutMs: 3e3 });
       if (latest && isNewer(latest, current)) {
         if (autoupdate) {
           log3(`autoupdate: updating ${current} \u2192 ${latest}`);

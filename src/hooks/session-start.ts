@@ -17,7 +17,8 @@ import { DeeplakeApi } from "../deeplake-api.js";
 import { sqlStr } from "../utils/sql.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
-import { getInstalledVersion, getLatestVersion, isNewer } from "../utils/version-check.js";
+import { getInstalledVersion, GITHUB_RAW_PKG, isNewer } from "../utils/version-check.js";
+import { getLatestVersionCached } from "./version-check.js";
 import { makeWikiLogger } from "../utils/wiki-log.js";
 const log = (msg: string) => _log("session-start", msg);
 
@@ -154,7 +155,7 @@ async function main(): Promise<void> {
   try {
     const current = getInstalledVersion(__bundleDir, ".claude-plugin");
     if (current) {
-      const latest = await getLatestVersion();
+      const latest = await getLatestVersionCached({ url: GITHUB_RAW_PKG, timeoutMs: 3000, cachePath: process.env.HIVEMIND_VERSION_CACHE_PATH || undefined });
       if (latest && isNewer(latest, current)) {
         if (autoupdate) {
           log(`autoupdate: updating ${current} → ${latest}`);

@@ -2,10 +2,10 @@
 
 // dist/src/hooks/session-start.js
 import { fileURLToPath } from "node:url";
-import { dirname as dirname2, join as join7 } from "node:path";
+import { dirname as dirname3, join as join8 } from "node:path";
 import { readdirSync, rmSync } from "node:fs";
 import { execSync as execSync2 } from "node:child_process";
-import { homedir as homedir4 } from "node:os";
+import { homedir as homedir5 } from "node:os";
 
 // dist/src/commands/auth.js
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
@@ -452,17 +452,6 @@ function getInstalledVersion(bundleDir, pluginManifestDir) {
   }
   return null;
 }
-async function getLatestVersion(timeoutMs = 3e3) {
-  try {
-    const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(timeoutMs) });
-    if (!res.ok)
-      return null;
-    const pkg = await res.json();
-    return pkg.version ?? null;
-  } catch {
-    return null;
-  }
-}
 function isNewer(latest, current) {
   const parse = (v) => v.split(".").map(Number);
   const [la, lb, lc] = parse(latest);
@@ -470,16 +459,75 @@ function isNewer(latest, current) {
   return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
 }
 
+// dist/src/hooks/version-check.js
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync5, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname as dirname2, join as join6 } from "node:path";
+import { homedir as homedir4 } from "node:os";
+var DEFAULT_VERSION_CACHE_PATH = join6(homedir4(), ".deeplake", ".version-check.json");
+var DEFAULT_VERSION_CACHE_TTL_MS = 60 * 60 * 1e3;
+function readVersionCache(cachePath = DEFAULT_VERSION_CACHE_PATH) {
+  if (!existsSync4(cachePath))
+    return null;
+  try {
+    const parsed = JSON.parse(readFileSync5(cachePath, "utf-8"));
+    if (parsed && typeof parsed.checkedAt === "number" && typeof parsed.url === "string" && (typeof parsed.latest === "string" || parsed.latest === null)) {
+      return parsed;
+    }
+  } catch {
+  }
+  return null;
+}
+function writeVersionCache(entry, cachePath = DEFAULT_VERSION_CACHE_PATH) {
+  mkdirSync3(dirname2(cachePath), { recursive: true });
+  writeFileSync3(cachePath, JSON.stringify(entry));
+}
+function readFreshCachedLatestVersion(url, ttlMs = DEFAULT_VERSION_CACHE_TTL_MS, cachePath = DEFAULT_VERSION_CACHE_PATH, nowMs = Date.now()) {
+  const cached = readVersionCache(cachePath);
+  if (!cached || cached.url !== url)
+    return void 0;
+  if (nowMs - cached.checkedAt > ttlMs)
+    return void 0;
+  return cached.latest;
+}
+async function getLatestVersionCached(opts) {
+  const ttlMs = opts.ttlMs ?? DEFAULT_VERSION_CACHE_TTL_MS;
+  const cachePath = opts.cachePath ?? DEFAULT_VERSION_CACHE_PATH;
+  const nowMs = opts.nowMs ?? Date.now();
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const fresh = readFreshCachedLatestVersion(opts.url, ttlMs, cachePath, nowMs);
+  if (fresh !== void 0)
+    return fresh;
+  const stale = readVersionCache(cachePath);
+  try {
+    const res = await fetchImpl(opts.url, { signal: AbortSignal.timeout(opts.timeoutMs) });
+    const latest = res.ok ? (await res.json()).version ?? null : stale?.latest ?? null;
+    writeVersionCache({
+      checkedAt: nowMs,
+      latest,
+      url: opts.url
+    }, cachePath);
+    return latest;
+  } catch {
+    const latest = stale?.latest ?? null;
+    writeVersionCache({
+      checkedAt: nowMs,
+      latest,
+      url: opts.url
+    }, cachePath);
+    return latest;
+  }
+}
+
 // dist/src/utils/wiki-log.js
-import { mkdirSync as mkdirSync3, appendFileSync as appendFileSync2 } from "node:fs";
-import { join as join6 } from "node:path";
+import { mkdirSync as mkdirSync4, appendFileSync as appendFileSync2 } from "node:fs";
+import { join as join7 } from "node:path";
 function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
-  const path = join6(hooksDir, filename);
+  const path = join7(hooksDir, filename);
   return {
     path,
     log(msg) {
       try {
-        mkdirSync3(hooksDir, { recursive: true });
+        mkdirSync4(hooksDir, { recursive: true });
         appendFileSync2(path, `[${utcTimestamp()}] ${msg}
 `);
       } catch {
@@ -490,8 +538,8 @@ function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
 
 // dist/src/hooks/session-start.js
 var log3 = (msg) => log("session-start", msg);
-var __bundleDir = dirname2(fileURLToPath(import.meta.url));
-var AUTH_CMD = join7(__bundleDir, "commands", "auth-login.js");
+var __bundleDir = dirname3(fileURLToPath(import.meta.url));
+var AUTH_CMD = join8(__bundleDir, "commands", "auth-login.js");
 var context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
 
 1. Your built-in memory (~/.claude/) \u2014 personal per-project notes
@@ -522,8 +570,8 @@ IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
-var HOME = homedir4();
-var { log: wikiLog } = makeWikiLogger(join7(HOME, ".claude", "hooks"));
+var HOME = homedir5();
+var { log: wikiLog } = makeWikiLogger(join8(HOME, ".claude", "hooks"));
 async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, workspaceId) {
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
   const existing = await api.query(`SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`);
@@ -592,7 +640,7 @@ async function main() {
   try {
     const current = getInstalledVersion(__bundleDir, ".claude-plugin");
     if (current) {
-      const latest = await getLatestVersion();
+      const latest = await getLatestVersionCached({ url: GITHUB_RAW_PKG, timeoutMs: 3e3 });
       if (latest && isNewer(latest, current)) {
         if (autoupdate) {
           log3(`autoupdate: updating ${current} \u2192 ${latest}`);
@@ -601,11 +649,11 @@ async function main() {
             const cmd = scopes.map((s) => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null || true`).join("; ");
             execSync2(cmd, { stdio: "ignore", timeout: 6e4 });
             try {
-              const cacheParent = join7(homedir4(), ".claude", "plugins", "cache", "hivemind", "hivemind");
+              const cacheParent = join8(homedir5(), ".claude", "plugins", "cache", "hivemind", "hivemind");
               const entries = readdirSync(cacheParent, { withFileTypes: true });
               for (const e of entries) {
                 if (e.isDirectory() && e.name !== latest) {
-                  rmSync(join7(cacheParent, e.name), { recursive: true, force: true });
+                  rmSync(join8(cacheParent, e.name), { recursive: true, force: true });
                   log3(`cache cleanup: removed old version ${e.name}`);
                 }
               }

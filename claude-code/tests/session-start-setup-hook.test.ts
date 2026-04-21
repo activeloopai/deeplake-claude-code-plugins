@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /**
  * Source-level tests for src/hooks/session-start-setup.ts. This hook
@@ -63,7 +66,11 @@ const validConfig = {
   sessionsTableName: "sessions",
 };
 
+let cacheTmp: string;
+
 beforeEach(() => {
+  cacheTmp = mkdtempSync(join(tmpdir(), "session-start-setup-test-"));
+  process.env.HIVEMIND_VERSION_CACHE_PATH = join(cacheTmp, "cache.json");
   stdinMock.mockReset().mockResolvedValue({ session_id: "sid-1", cwd: "/x" });
   loadCredsMock.mockReset().mockReturnValue({
     token: "tok", orgId: "o", orgName: "acme", userName: "alice",
@@ -84,6 +91,8 @@ afterEach(() => {
   vi.restoreAllMocks();
   // @ts-expect-error
   global.fetch = originalFetch;
+  delete process.env.HIVEMIND_VERSION_CACHE_PATH;
+  try { rmSync(cacheTmp, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
 describe("session-start-setup hook — guards", () => {

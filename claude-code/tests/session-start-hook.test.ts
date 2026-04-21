@@ -99,6 +99,7 @@ let cacheTmp: string;
 
 beforeEach(() => {
   cacheTmp = mkdtempSync(join(tmpdir(), "session-start-test-"));
+  process.env.HIVEMIND_VERSION_CACHE_PATH = join(cacheTmp, "cache.json");
   stdinMock.mockReset().mockResolvedValue({ session_id: "sid-1", cwd: "/workspaces/proj" });
   loadCredsMock.mockReset().mockReturnValue({
     token: "tok", orgId: "o", orgName: "acme", userName: "alice", workspaceId: "default",
@@ -122,6 +123,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   // @ts-expect-error
   global.fetch = originalFetch;
+  delete process.env.HIVEMIND_VERSION_CACHE_PATH;
   try { rmSync(cacheTmp, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
