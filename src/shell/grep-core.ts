@@ -234,13 +234,13 @@ function buildPathCondition(targetPath: string): string {
   const clean = targetPath.replace(/\/+$/, "");
   if (/[*?]/.test(clean)) {
     const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
-    return `path LIKE '${likePattern}'`;
+    return `path LIKE '${likePattern}' ESCAPE '\\'`;
   }
   const base = clean.split("/").pop() ?? "";
   if (base.includes(".")) {
     return `path = '${sqlStr(clean)}'`;
   }
-  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%' ESCAPE '\\')`;
 }
 
 /**

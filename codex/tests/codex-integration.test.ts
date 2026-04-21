@@ -106,27 +106,14 @@ describe("codex integration: session-start", () => {
     expect(raw).toContain("Do NOT spawn subagents");
   });
 
-  it("context includes raw session file warning", () => {
+  it("context includes JSONL warning", () => {
     const raw = runHook("session-start.js", {
       session_id: "test-session-004",
       cwd: "/tmp",
       hook_event_name: "SessionStart",
       model: "gpt-5.2",
     });
-    expect(raw).toContain("Do NOT jump straight to raw session files");
-  });
-
-  it("context steers recall tasks to index-first exact file reads", () => {
-    const raw = runHook("session-start.js", {
-      session_id: "test-session-004b",
-      cwd: "/tmp",
-      hook_event_name: "SessionStart",
-      model: "gpt-5.2",
-    });
-    expect(raw).toContain("read that exact summary or session path directly");
-    expect(raw).toContain("Do NOT probe unrelated local paths");
-    expect(raw).toContain("answer with the smallest exact phrase supported by memory");
-    expect(raw).toContain("convert the final answer into an absolute month/date/year");
+    expect(raw).toContain("Do NOT jump straight to JSONL");
   });
 });
 

@@ -2,6 +2,7 @@ import type { DeeplakeApi } from "../deeplake-api.js";
 import { sqlLike } from "../utils/sql.js";
 import { type GrepParams, handleGrepDirect, parseBashGrep } from "./grep-direct.js";
 import { normalizeContent, refineGrepMatches } from "../shell/grep-core.js";
+import { capOutputForClaude } from "../utils/output-cap.js";
 import {
   listVirtualPathRowsForDirs,
   readVirtualPathContents,
@@ -520,5 +521,5 @@ export async function executeCompiledBashCommand(
     }
   }
 
-  return outputs.join("\n");
+  return capOutputForClaude(outputs.join("\n"), { kind: "bash" });
 }
