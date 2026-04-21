@@ -82,6 +82,18 @@ export default defineConfig({
           functions: 90,
           lines: 90,
         },
+        "src/hooks/pre-tool-use.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/memory-path-utils.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
       },
     },
   },
