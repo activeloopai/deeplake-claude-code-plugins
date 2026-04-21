@@ -11,6 +11,8 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   buildAllowDecision,
   buildReadDecision,
@@ -21,6 +23,11 @@ import {
   rewritePaths,
   touchesMemory,
 } from "../../src/hooks/pre-tool-use.js";
+
+// MEMORY_PATH is `${homedir()}/.deeplake/memory` — differs between CI
+// (`/home/runner/...`) and dev (`/home/<user>/...`), so any test that
+// asserts on the literal form has to build it from homedir() too.
+const MEM_ABS = join(homedir(), ".deeplake", "memory");
 
 const BASE_CONFIG = {
   token: "t",
@@ -48,13 +55,13 @@ describe("pre-tool-use: pure helpers", () => {
   });
 
   it("rewritePaths collapses all memory-path forms to `/`", () => {
-    expect(rewritePaths("/home/emanuele/.deeplake/memory/sessions/a.json")).toBe("/sessions/a.json");
+    expect(rewritePaths(`${MEM_ABS}/sessions/a.json`)).toBe("/sessions/a.json");
     expect(rewritePaths("~/.deeplake/memory/index.md")).toBe("/index.md");
     expect(rewritePaths("$HOME/.deeplake/memory/foo")).toBe("/foo");
   });
 
   it("touchesMemory detects any of the supported memory-path forms", () => {
-    expect(touchesMemory("/home/emanuele/.deeplake/memory/x")).toBe(true);
+    expect(touchesMemory(`${MEM_ABS}/x`)).toBe(true);
     expect(touchesMemory("~/.deeplake/memory/x")).toBe(true);
     expect(touchesMemory("$HOME/.deeplake/memory/x")).toBe(true);
     expect(touchesMemory("/var/log/foo")).toBe(false);
