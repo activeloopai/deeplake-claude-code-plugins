@@ -833,6 +833,38 @@ describe("regex literal prefilter", () => {
     expect(extractRegexLiteralPrefilter("foo.bar")).toBeNull();
   });
 
+  it("rejects alternation containing regex char classes or anchors", () => {
+    expect(extractRegexAlternationPrefilters("a|b|c[xyz]")).toBeNull();
+    expect(extractRegexAlternationPrefilters("foo|^bar")).toBeNull();
+    expect(extractRegexAlternationPrefilters("foo|bar$")).toBeNull();
+    expect(extractRegexAlternationPrefilters("foo|(bar)")).toBeNull();
+    expect(extractRegexAlternationPrefilters("foo|{1,2}")).toBeNull();
+  });
+
+  it("rejects alternation with empty branch or trailing escape", () => {
+    expect(extractRegexAlternationPrefilters("foo||bar")).toBeNull();
+    expect(extractRegexAlternationPrefilters("|foo|bar")).toBeNull();
+    expect(extractRegexAlternationPrefilters("foo|bar|")).toBeNull();
+    expect(extractRegexAlternationPrefilters("foo\\")).toBeNull();
+  });
+
+  it("returns null when every alternation branch has no usable literal", () => {
+    expect(extractRegexAlternationPrefilters("a|b")).toBeNull(); // each branch < 2 chars
+    expect(extractRegexAlternationPrefilters(".|.|.")).toBeNull();
+  });
+
+  it("returns null when input has no alternation pipe", () => {
+    expect(extractRegexAlternationPrefilters("foobar")).toBeNull();
+  });
+
+  it("preserves escaped literals across branches", () => {
+    expect(extractRegexAlternationPrefilters("foo\\.bar|baz")).toEqual(["foo.bar", "baz"]);
+  });
+
+  it("dedupes duplicate literals in alternation", () => {
+    expect(extractRegexAlternationPrefilters("cat|dog|cat")).toEqual(["cat", "dog"]);
+  });
+
   it("builds grep search options with regex prefilter when safe", () => {
     const opts = buildGrepSearchOptions({
       pattern: "foo.*bar",
