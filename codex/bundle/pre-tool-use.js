@@ -3378,6 +3378,13 @@ function rewritePaths(cmd) {
 }
 
 // dist/src/hooks/codex/pre-tool-use.js
+function touchesVirtualMemoryPath(value) {
+  const rewritten = rewritePaths(value).trim();
+  return rewritten === "/index.md" || rewritten === "/summaries" || rewritten.startsWith("/summaries/") || rewritten === "/sessions" || rewritten.startsWith("/sessions/");
+}
+function touchesAnyMemoryPath(value) {
+  return touchesMemory(value) || touchesVirtualMemoryPath(value);
+}
 function isAnyPsqlCommand(cmd) {
   return /^\s*psql\b/.test(cmd.trim());
 }
@@ -3400,9 +3407,15 @@ function buildUnsupportedGuidance() {
   return `This command is not supported for ~/.deeplake/memory/ operations. Only bash builtins are available, plus benchmark SQL mode via psql -At -F '|' -c "SELECT ...". Do NOT use python, python3, node, curl, or other interpreters. Rewrite your command using only bash tools and retry.`;
 }
 function buildPsqlOnlyGuidance() {
+  if (isFactsSessionsOnlyPsqlMode()) {
+    return "Hivemind recall is SQL-only in this mode. Use psql with the sessions, memory_facts, memory_entities, and fact_entity_links tables only. Do NOT use grep, cat, ls, Read, Glob, memory, graph, or filesystem paths for memory lookups.";
+  }
   return "Hivemind recall is SQL-only in this mode. Use psql with the memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links tables only. Do NOT use grep, cat, ls, Read, Glob, or filesystem paths for memory lookups.";
 }
 function buildPsqlSchemaGuidance() {
+  if (isFactsSessionsOnlyPsqlMode()) {
+    return "Only psql SELECT queries over sessions, memory_facts, memory_entities, and fact_entity_links are intercepted in SQL mode. Rewrite the query to reference only those tables with normal psql SELECT syntax.";
+  }
   return "Only psql SELECT queries over memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links are intercepted in SQL mode. Rewrite the query to reference only those tables with normal psql SELECT syntax.";
 }
 function runVirtualShell(cmd, shellBundle = SHELL_BUNDLE, logFn = log4) {
@@ -3422,7 +3435,7 @@ async function processCodexPreToolUse(input, deps = {}) {
   const { config = loadConfig(), createApi = (table, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table), executeCompiledBashCommandFn = executeCompiledBashCommand, readVirtualPathContentsFn = readVirtualPathContents, readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, handleGrepDirectFn = handleGrepDirect, readCachedIndexContentFn = readCachedIndexContent, writeCachedIndexContentFn = writeCachedIndexContent, runVirtualShellFn = runVirtualShell, shellBundle = SHELL_BUNDLE, logFn = log4 } = deps;
   const cmd = input.tool_input?.command ?? "";
   logFn(`hook fired: cmd=${cmd}`);
-  if (!touchesMemory(cmd) && !isAnyPsqlCommand(cmd))
+  if (!touchesAnyMemoryPath(cmd) && !isAnyPsqlCommand(cmd))
     return { action: "pass" };
   if (isAnyPsqlCommand(cmd) && !isHivemindPsqlCommand(cmd)) {
     if (needsHivemindPsqlRewrite(cmd)) {
@@ -3434,7 +3447,7 @@ async function processCodexPreToolUse(input, deps = {}) {
     }
     return { action: "pass" };
   }
-  if (isPsqlMode() && touchesMemory(cmd)) {
+  if (isPsqlMode() && touchesAnyMemoryPath(cmd)) {
     return {
       action: "guide",
       output: buildPsqlOnlyGuidance(),

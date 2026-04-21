@@ -42,9 +42,24 @@ import {
 import { log as _log } from "../../utils/debug.js";
 import { isDirectRun } from "../../utils/direct-run.js";
 import { isSafe, touchesMemory, rewritePaths } from "../memory-path-utils.js";
-import { isIndexDisabled, isPsqlMode, isSessionsOnlyMode } from "../../utils/retrieval-mode.js";
+import { isFactsSessionsOnlyPsqlMode, isIndexDisabled, isPsqlMode, isSessionsOnlyMode } from "../../utils/retrieval-mode.js";
 
 export { isSafe, touchesMemory, rewritePaths };
+
+function touchesVirtualMemoryPath(value: string): boolean {
+  const rewritten = rewritePaths(value).trim();
+  return (
+    rewritten === "/index.md" ||
+    rewritten === "/summaries" ||
+    rewritten.startsWith("/summaries/") ||
+    rewritten === "/sessions" ||
+    rewritten.startsWith("/sessions/")
+  );
+}
+
+function touchesAnyMemoryPath(value: string): boolean {
+  return touchesMemory(value) || touchesVirtualMemoryPath(value);
+}
 
 function isAnyPsqlCommand(cmd: string): boolean {
   return /^\s*psql\b/.test(cmd.trim());
@@ -94,12 +109,21 @@ export function buildUnsupportedGuidance(): string {
 }
 
 export function buildPsqlOnlyGuidance(): string {
+  if (isFactsSessionsOnlyPsqlMode()) {
+    return "Hivemind recall is SQL-only in this mode. " +
+      "Use psql with the sessions, memory_facts, memory_entities, and fact_entity_links tables only. " +
+      "Do NOT use grep, cat, ls, Read, Glob, memory, graph, or filesystem paths for memory lookups.";
+  }
   return "Hivemind recall is SQL-only in this mode. " +
     "Use psql with the memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links tables only. " +
     "Do NOT use grep, cat, ls, Read, Glob, or filesystem paths for memory lookups.";
 }
 
 export function buildPsqlSchemaGuidance(): string {
+  if (isFactsSessionsOnlyPsqlMode()) {
+    return "Only psql SELECT queries over sessions, memory_facts, memory_entities, and fact_entity_links are intercepted in SQL mode. " +
+      "Rewrite the query to reference only those tables with normal psql SELECT syntax.";
+  }
   return "Only psql SELECT queries over memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links are intercepted in SQL mode. " +
     "Rewrite the query to reference only those tables with normal psql SELECT syntax.";
 }
@@ -163,7 +187,7 @@ export async function processCodexPreToolUse(
   const cmd = input.tool_input?.command ?? "";
   logFn(`hook fired: cmd=${cmd}`);
 
-  if (!touchesMemory(cmd) && !isAnyPsqlCommand(cmd)) return { action: "pass" };
+  if (!touchesAnyMemoryPath(cmd) && !isAnyPsqlCommand(cmd)) return { action: "pass" };
 
   if (isAnyPsqlCommand(cmd) && !isHivemindPsqlCommand(cmd)) {
     if (needsHivemindPsqlRewrite(cmd)) {
@@ -176,7 +200,7 @@ export async function processCodexPreToolUse(
     return { action: "pass" };
   }
 
-  if (isPsqlMode() && touchesMemory(cmd)) {
+  if (isPsqlMode() && touchesAnyMemoryPath(cmd)) {
     return {
       action: "guide",
       output: buildPsqlOnlyGuidance(),

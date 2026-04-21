@@ -3377,6 +3377,13 @@ function rewritePaths(cmd) {
 }
 
 // dist/src/hooks/pre-tool-use.js
+function touchesVirtualMemoryPath(value) {
+  const rewritten = rewritePaths(value).trim();
+  return rewritten === "/index.md" || rewritten === "/summaries" || rewritten.startsWith("/summaries/") || rewritten === "/sessions" || rewritten.startsWith("/sessions/");
+}
+function touchesAnyMemoryPath(value) {
+  return touchesMemory(value) || touchesVirtualMemoryPath(value);
+}
 function isAnyPsqlCommand(cmd) {
   return /^\s*psql\b/.test(cmd.trim());
 }
@@ -3393,9 +3400,15 @@ function needsHivemindPsqlRewrite(cmd) {
   return !!query && queryReferencesInterceptedTables(query) && !queryUsesOnlyInterceptedTables(query);
 }
 function buildPsqlOnlyGuidance() {
+  if (isFactsSessionsOnlyPsqlMode()) {
+    return "[RETRY REQUIRED] Hivemind recall is SQL-only in this mode. Use psql with the sessions, memory_facts, memory_entities, and fact_entity_links tables only. Do NOT use grep, cat, ls, Read, Glob, memory, graph, or filesystem paths for memory lookups.";
+  }
   return "[RETRY REQUIRED] Hivemind recall is SQL-only in this mode. Use psql with the memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links tables only. Do NOT use grep, cat, ls, Read, Glob, or filesystem paths for memory lookups.";
 }
 function buildPsqlSchemaGuidance() {
+  if (isFactsSessionsOnlyPsqlMode()) {
+    return "[RETRY REQUIRED] Only psql SELECT queries over sessions, memory_facts, memory_entities, and fact_entity_links are intercepted in SQL mode. Rewrite the query to reference only those tables with normal psql SELECT syntax.";
+  }
   return "[RETRY REQUIRED] Only psql SELECT queries over memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links are intercepted in SQL mode. Rewrite the query to reference only those tables with normal psql SELECT syntax.";
 }
 var log4 = (msg) => log("pre", msg);
@@ -3416,9 +3429,9 @@ function getShellCommand(toolName, toolInput) {
   switch (toolName) {
     case "Grep": {
       const p = toolInput.path;
-      if (isPsqlMode() && p && touchesMemory(p))
+      if (isPsqlMode() && p && touchesAnyMemoryPath(p))
         return null;
-      if (p && touchesMemory(p)) {
+      if (p && touchesAnyMemoryPath(p)) {
         const pattern = toolInput.pattern ?? "";
         const flags = ["-r"];
         if (toolInput["-i"])
@@ -3431,9 +3444,9 @@ function getShellCommand(toolName, toolInput) {
     }
     case "Read": {
       const fp = getReadTargetPath(toolInput);
-      if (isPsqlMode() && fp && touchesMemory(fp))
+      if (isPsqlMode() && fp && touchesAnyMemoryPath(fp))
         return null;
-      if (fp && touchesMemory(fp)) {
+      if (fp && touchesAnyMemoryPath(fp)) {
         const rewritten = rewritePaths(fp) || "/";
         return `${isLikelyDirectoryPath(rewritten) ? "ls" : "cat"} ${rewritten}`;
       }
@@ -3445,9 +3458,9 @@ function getShellCommand(toolName, toolInput) {
         break;
       if (isHivemindPsqlCommand(cmd))
         return cmd.trim();
-      if (isPsqlMode() && (touchesMemory(cmd) || needsHivemindPsqlRewrite(cmd)))
+      if (isPsqlMode() && (touchesAnyMemoryPath(cmd) || needsHivemindPsqlRewrite(cmd)))
         return null;
-      if (!touchesMemory(cmd))
+      if (!touchesAnyMemoryPath(cmd))
         break;
       const rewritten = rewritePaths(cmd);
       if (!isSafe(rewritten)) {
@@ -3458,9 +3471,9 @@ function getShellCommand(toolName, toolInput) {
     }
     case "Glob": {
       const p = toolInput.path;
-      if (isPsqlMode() && p && touchesMemory(p))
+      if (isPsqlMode() && p && touchesAnyMemoryPath(p))
         return null;
-      if (p && touchesMemory(p))
+      if (p && touchesAnyMemoryPath(p))
         return "ls /";
       break;
     }
@@ -3499,7 +3512,7 @@ async function processPreToolUse(input, deps = {}) {
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
   const toolPath = getReadTargetPath(input.tool_input) ?? input.tool_input.path ?? "";
   const psqlRewriteNeeded = needsHivemindPsqlRewrite(cmd);
-  if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath) || psqlRewriteNeeded)) {
+  if (!shellCmd && (touchesAnyMemoryPath(cmd) || touchesAnyMemoryPath(toolPath) || psqlRewriteNeeded)) {
     const guidance = isPsqlMode() ? psqlRewriteNeeded ? buildPsqlSchemaGuidance() : buildPsqlOnlyGuidance() : `[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. This virtual filesystem only supports bash builtins plus benchmark SQL mode via psql -At -F '|' -c "SELECT ...". python, python3, node, and curl are NOT available. You MUST rewrite your command using only the bash tools listed above and try again. For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.`;
     logFn(`unsupported command, returning guidance: ${cmd}`);
     return buildAllowDecision(`echo ${JSON.stringify(guidance)}`, isPsqlMode() ? "[DeepLake SQL] unsupported command \u2014 rewrite using psql over memory/sessions" : "[DeepLake] unsupported command \u2014 rewrite using bash builtins");

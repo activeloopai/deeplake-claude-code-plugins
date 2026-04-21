@@ -355,6 +355,35 @@ describe("claude pre-tool source", () => {
     }
   });
 
+  it("blocks virtual memory filesystem paths in facts-and-sessions-only sql mode", async () => {
+    const prevPsql = process.env.HIVEMIND_PSQL_MODE;
+    const prevFactsSessions = process.env.HIVEMIND_PSQL_FACTS_SESSIONS_ONLY;
+    process.env.HIVEMIND_PSQL_MODE = "1";
+    process.env.HIVEMIND_PSQL_FACTS_SESSIONS_ONLY = "1";
+    try {
+      expect(getShellCommand("Read", { file_path: "/index.md" })).toBeNull();
+      expect(getShellCommand("Grep", { path: "/summaries/locomo", pattern: "Caroline" })).toBeNull();
+      expect(getShellCommand("Bash", { command: "cat /sessions/conv_0_session_1.json" })).toBeNull();
+
+      const guidance = await processPreToolUse({
+        session_id: "s1",
+        tool_name: "Read",
+        tool_input: { file_path: "/index.md" },
+        tool_use_id: "tu-facts-sessions-only-read",
+      }, {
+        config: baseConfig,
+      });
+      expect(guidance?.command).toContain("RETRY REQUIRED");
+      expect(guidance?.command).toContain("sessions, memory_facts, memory_entities, and fact_entity_links");
+      expect(guidance?.description).toContain("unsupported command");
+    } finally {
+      if (prevPsql === undefined) delete process.env.HIVEMIND_PSQL_MODE;
+      else process.env.HIVEMIND_PSQL_MODE = prevPsql;
+      if (prevFactsSessions === undefined) delete process.env.HIVEMIND_PSQL_FACTS_SESSIONS_ONLY;
+      else process.env.HIVEMIND_PSQL_FACTS_SESSIONS_ONLY = prevFactsSessions;
+    }
+  });
+
   it("returns guidance for unsupported memory commands and passthrough for non-memory commands", async () => {
     const guidance = await processPreToolUse({
       session_id: "s1",
