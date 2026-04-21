@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createGrepCommand } from "../../src/shell/grep-interceptor.js";
 import { DeeplakeFs } from "../../src/shell/deeplake-fs.js";
+import * as grepCore from "../../src/shell/grep-core.js";
 
 // ── Minimal mocks ─────────────────────────────────────────────────────────────
 function makeClient(queryResults: Record<string, string>[] = []) {
@@ -30,6 +31,31 @@ function makeCtx(fs: DeeplakeFs, cwd = "/memory") {
 // cache. Tests below assert that new contract.
 
 describe("grep interceptor", () => {
+  it("returns exitCode=1 when the pattern is missing", async () => {
+    const client = makeClient();
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    client.query.mockClear();
+    const cmd = createGrepCommand(client as never, fs, "test");
+    const result = await cmd.execute([], makeCtx(fs) as never);
+    expect(result).toEqual({
+      stdout: "",
+      stderr: "grep: missing pattern\n",
+      exitCode: 1,
+    });
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
+  it("returns exitCode=1 when all target paths resolve to nothing", async () => {
+    const client = makeClient();
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    vi.spyOn(fs, "resolvePath").mockReturnValue("");
+    client.query.mockClear();
+    const cmd = createGrepCommand(client as never, fs, "test");
+    const result = await cmd.execute(["foo", "missing"], makeCtx(fs) as never);
+    expect(result).toEqual({ stdout: "", stderr: "", exitCode: 1 });
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
   it("returns exitCode=127 for paths outside mount (pass-through)", async () => {
     const client = makeClient();
     const fs = await DeeplakeFs.create(client as never, "test", "/memory");
@@ -44,19 +70,35 @@ describe("grep interceptor", () => {
     const client = makeClient([{ path: "/memory/a.txt", content: "hello world" }]);
     const fs = await DeeplakeFs.create(client as never, "test", "/memory");
     client.query.mockClear();
-    // Both mem and sess queries should run; return matching content for both.
     client.query.mockResolvedValue([{ path: "/memory/a.txt", content: "hello world" }]);
 
     const cmd = createGrepCommand(client as never, fs, "test", "sessions");
     const result = await cmd.execute(["hello", "/memory"], makeCtx(fs) as never);
 
-    // At least one call for memory + one for sessions
     const sqls = client.query.mock.calls.map((c: unknown[]) => c[0] as string);
     expect(sqls.some(s => /FROM "test"/.test(s) && /ILIKE|LIKE/.test(s))).toBe(true);
     expect(sqls.some(s => /FROM "sessions"/.test(s) && /ILIKE|LIKE/.test(s))).toBe(true);
     // No BM25 in the new path
     expect(sqls.some(s => s.includes("<#>"))).toBe(false);
     expect(result.stdout).toContain("hello world");
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("uses one SQL query even when grep receives multiple target paths", async () => {
+    const client = makeClient([{ path: "/memory/a.txt", content: "hello world" }]);
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    client.query.mockClear();
+    client.query.mockResolvedValue([{ path: "/memory/a.txt", content: "hello world" }]);
+
+    const cmd = createGrepCommand(client as never, fs, "test", "sessions");
+    const result = await cmd.execute(["hello", "/memory/a", "/memory/b"], makeCtx(fs) as never);
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    const sql = client.query.mock.calls[0][0] as string;
+    expect(sql).toContain('FROM "test"');
+    expect(sql).toContain('FROM "sessions"');
+    expect(sql).toContain("path = '/memory/a'");
+    expect(sql).toContain("path = '/memory/b'");
     expect(result.exitCode).toBe(0);
   });
 
@@ -161,5 +203,18 @@ describe("grep interceptor", () => {
     expect(prefetchSpy).toHaveBeenCalledWith(
       expect.arrayContaining(["/memory/a.txt", "/memory/b.txt"])
     );
+  });
+
+  it("falls back to the FS cache when the SQL search rejects", async () => {
+    const client = makeClient();
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    await fs.writeFile("/memory/a.txt", "hello world");
+    vi.spyOn(grepCore, "searchDeeplakeTables").mockRejectedValueOnce(new Error("timeout"));
+
+    const cmd = createGrepCommand(client as never, fs, "test");
+    const result = await cmd.execute(["hello", "/memory"], makeCtx(fs) as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("hello world");
   });
 });

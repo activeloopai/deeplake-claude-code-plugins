@@ -1,8 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  buildGrepSearchOptions,
   normalizeContent,
   buildPathFilter,
+  buildPathFilterForTargets,
   compileGrepRegex,
+  extractRegexAlternationPrefilters,
+  extractRegexLiteralPrefilter,
   refineGrepMatches,
   searchDeeplakeTables,
   grepBothTables,
@@ -32,31 +36,31 @@ describe("normalizeContent: passthrough for non-session paths", () => {
   });
 });
 
-describe("normalizeContent: LoCoMo benchmark shape", () => {
+describe("normalizeContent: turn-array session shape", () => {
   const raw = JSON.stringify({
     date_time: "1:56 pm on 8 May, 2023",
-    speakers: { speaker_a: "Caroline", speaker_b: "Melanie" },
+    speakers: { speaker_a: "Avery", speaker_b: "Jordan" },
     turns: [
-      { dia_id: "D1:1", speaker: "Caroline", text: "Hey Mel!" },
-      { dia_id: "D1:2", speaker: "Melanie", text: "Hi Caroline." },
+      { dia_id: "D1:1", speaker: "Avery", text: "Hey Jordan!" },
+      { dia_id: "D1:2", speaker: "Jordan", text: "Hi Avery." },
     ],
   });
 
   it("emits date and speakers header", () => {
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
     expect(out).toContain("date: 1:56 pm on 8 May, 2023");
-    expect(out).toContain("speakers: Caroline, Melanie");
+    expect(out).toContain("speakers: Avery, Jordan");
   });
 
   it("emits one line per turn with dia_id tag", () => {
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
-    expect(out).toContain("[D1:1] Caroline: Hey Mel!");
-    expect(out).toContain("[D1:2] Melanie: Hi Caroline.");
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
+    expect(out).toContain("[D1:1] Avery: Hey Jordan!");
+    expect(out).toContain("[D1:2] Jordan: Hi Avery.");
   });
 
   it("falls back gracefully on turns without speaker/text", () => {
     const weird = JSON.stringify({ turns: [{}, { speaker: "X" }] });
-    const out = normalizeContent("/sessions/conv_0_session_1.json", weird);
+    const out = normalizeContent("/sessions/alice/chat_1.json", weird);
     // Must not crash; includes placeholder `?` for missing speaker
     expect(out).toContain("?: ");
     expect(out).toContain("X: ");
@@ -67,7 +71,7 @@ describe("normalizeContent: LoCoMo benchmark shape", () => {
       turns: [{ speaker: "A", text: "hi" }],
       speakers: { speaker_a: "", speaker_b: "" },
     });
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
     expect(out).not.toContain("speakers:");
     expect(out).toContain("A: hi");
   });
@@ -77,32 +81,32 @@ describe("normalizeContent: LoCoMo benchmark shape", () => {
       turns: [{ speaker: "A", text: "hi" }],
       speakers: { speaker_a: "Alice" },
     });
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
     expect(out).toContain("speakers: Alice");
   });
 
   it("falls back speaker->name when speaker field is absent on a turn", () => {
-    const raw = JSON.stringify({ turns: [{ name: "Caroline", text: "hi" }] });
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
-    expect(out).toContain("Caroline: hi");
+    const raw = JSON.stringify({ turns: [{ name: "Avery", text: "hi" }] });
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
+    expect(out).toContain("Avery: hi");
   });
 
   it("falls back text->content when text field is absent on a turn", () => {
     const raw = JSON.stringify({ turns: [{ speaker: "X", content: "fallback" }] });
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
     expect(out).toContain("X: fallback");
   });
 
   it("omits dia_id prefix when the turn has no dia_id", () => {
     const raw = JSON.stringify({ turns: [{ speaker: "A", text: "hi" }] });
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
     expect(out).toContain("A: hi");
     expect(out).not.toMatch(/\[\]/);
   });
 
   it("emits turns without date/speakers when both are missing", () => {
     const raw = JSON.stringify({ turns: [{ speaker: "A", text: "hi" }] });
-    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    const out = normalizeContent("/sessions/alice/chat_1.json", raw);
     expect(out).not.toContain("date:");
     expect(out).not.toContain("speakers:");
     expect(out).toContain("A: hi");
@@ -111,7 +115,7 @@ describe("normalizeContent: LoCoMo benchmark shape", () => {
   it("returns raw when turns produce an empty serialization", () => {
     const empty = JSON.stringify({ turns: [] });
     // No header, no turns → trimmed output is empty → fallback to raw
-    const out = normalizeContent("/sessions/conv_0_session_1.json", empty);
+    const out = normalizeContent("/sessions/alice/chat_1.json", empty);
     expect(out).toBe(empty);
   });
 });
@@ -428,14 +432,48 @@ describe("buildPathFilter", () => {
     expect(buildPathFilter("")).toBe("");
   });
   it("emits equality + prefix match for subpaths", () => {
-    const f = buildPathFilter("/summaries/locomo");
-    expect(f).toContain("path = '/summaries/locomo'");
-    expect(f).toContain("path LIKE '/summaries/locomo/%'");
+    const f = buildPathFilter("/summaries/projects");
+    expect(f).toContain("path = '/summaries/projects'");
+    expect(f).toContain("path LIKE '/summaries/projects/%'");
   });
   it("strips trailing slashes", () => {
     const f = buildPathFilter("/sessions///");
     expect(f).toContain("path = '/sessions'");
     expect(f).toContain("path LIKE '/sessions/%'");
+  });
+  it("uses exact matching for likely file targets", () => {
+    expect(buildPathFilter("/summaries/alice/s1.md")).toBe(
+      " AND path = '/summaries/alice/s1.md'",
+    );
+  });
+  it("uses LIKE matching for glob targets instead of exact file matching", () => {
+    // Fix #4 appends `ESCAPE '\'` so sqlLike-escaped underscores (`\_`) and
+    // percent signs (`\%`) in the pattern match their literal characters on
+    // the Deeplake backend. Without the ESCAPE clause `\_` was treated as
+    // two literal characters and `/sessions/conv_0_session_*.json`-style
+    // globs silently returned zero rows.
+    expect(buildPathFilter("/summaries/projects/*.md")).toBe(
+      " AND path LIKE '/summaries/projects/%.md' ESCAPE '\\'",
+    );
+    const filter = buildPathFilter("/sessions/alice/chat_?.json");
+    expect(filter).toMatch(/^ AND path LIKE '\/sessions\/alice\/chat.*\.json' ESCAPE '\\'$/);
+  });
+});
+
+describe("buildPathFilterForTargets", () => {
+  it("returns empty string when any target is root", () => {
+    expect(buildPathFilterForTargets(["/summaries", "/"])).toBe("");
+  });
+
+  it("joins multiple target filters into one OR clause", () => {
+    const filter = buildPathFilterForTargets([
+      "/summaries/alice",
+      "/sessions/bob/chat.jsonl",
+    ]);
+    expect(filter).toContain("path = '/summaries/alice'");
+    expect(filter).toContain("path LIKE '/summaries/alice/%'");
+    expect(filter).toContain("path = '/sessions/bob/chat.jsonl'");
+    expect(filter).toContain(" OR ");
   });
 });
 
@@ -569,15 +607,14 @@ describe("refineGrepMatches", () => {
 // ── searchDeeplakeTables ─────────────────────────────────────────────────────
 
 describe("searchDeeplakeTables", () => {
-  function mockApi(memRows: unknown[], sessRows: unknown[]) {
+  function mockApi(rows: unknown[]) {
     const query = vi.fn()
-      .mockImplementationOnce(async () => memRows)
-      .mockImplementationOnce(async () => sessRows);
+      .mockImplementationOnce(async () => rows);
     return { query } as any;
   }
 
-  it("issues one LIKE query per table with the escaped pattern and path filter", async () => {
-    const api = mockApi([], []);
+  it("issues one UNION ALL query with the escaped pattern and path filter", async () => {
+    const api = mockApi([]);
     await searchDeeplakeTables(api, "memory", "sessions", {
       pathFilter: " AND (path = '/x' OR path LIKE '/x/%')",
       contentScanOnly: false,
@@ -585,33 +622,64 @@ describe("searchDeeplakeTables", () => {
       escapedPattern: "foo",
       limit: 50,
     });
-    expect(api.query).toHaveBeenCalledTimes(2);
-    const [memCall, sessCall] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(memCall).toContain('FROM "memory"');
-    expect(memCall).toContain("summary::text ILIKE '%foo%'");
-    expect(memCall).toContain("LIMIT 50");
-    expect(sessCall).toContain('FROM "sessions"');
-    expect(sessCall).toContain("message::text ILIKE '%foo%'");
+    expect(api.query).toHaveBeenCalledTimes(1);
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain('FROM "memory"');
+    expect(sql).toContain('FROM "sessions"');
+    expect(sql).toContain("summary::text ILIKE '%foo%'");
+    expect(sql).toContain("message::text ILIKE '%foo%'");
+    expect(sql).toContain("LIMIT 50");
+    expect(sql).toContain("UNION ALL");
   });
 
   it("skips LIKE filter when contentScanOnly is true (regex-in-memory mode)", async () => {
-    const api = mockApi([], []);
+    const api = mockApi([]);
     await searchDeeplakeTables(api, "m", "s", {
       pathFilter: "",
       contentScanOnly: true,
       likeOp: "LIKE",
       escapedPattern: "anything",
     });
-    const [memCall, sessCall] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(memCall).not.toContain("LIKE");
-    expect(sessCall).not.toContain("LIKE");
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).not.toContain("summary::text LIKE");
+    expect(sql).not.toContain("message::text LIKE");
+  });
+
+  it("uses a safe literal prefilter for regex scans when available", async () => {
+    const api = mockApi([]);
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: true,
+      likeOp: "LIKE",
+      escapedPattern: "foo.*bar",
+      prefilterPattern: "foo",
+    });
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain("summary::text LIKE '%foo%'");
+    expect(sql).toContain("message::text LIKE '%foo%'");
+  });
+
+  it("expands alternation prefilters into OR clauses instead of literal pipes", async () => {
+    const api = mockApi([]);
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: true,
+      likeOp: "LIKE",
+      escapedPattern: "relationship|partner|married",
+      prefilterPatterns: ["relationship", "partner", "married"],
+    });
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain("summary::text LIKE '%relationship%'");
+    expect(sql).toContain("summary::text LIKE '%partner%'");
+    expect(sql).toContain("summary::text LIKE '%married%'");
+    expect(sql).not.toContain("relationship|partner|married");
   });
 
   it("concatenates rows from both tables into {path, content}", async () => {
-    const api = mockApi(
-      [{ path: "/summaries/a", content: "aaa" }],
-      [{ path: "/sessions/b", content: "bbb" }],
-    );
+    const api = mockApi([
+      { path: "/summaries/a", content: "aaa" },
+      { path: "/sessions/b", content: "bbb" },
+    ]);
     const rows = await searchDeeplakeTables(api, "m", "s", {
       pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
     });
@@ -622,7 +690,7 @@ describe("searchDeeplakeTables", () => {
   });
 
   it("tolerates null content on memory row (coerces to empty string)", async () => {
-    const api = mockApi([{ path: "/a", content: null }], []);
+    const api = mockApi([{ path: "/a", content: null }]);
     const rows = await searchDeeplakeTables(api, "m", "s", {
       pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
     });
@@ -630,35 +698,22 @@ describe("searchDeeplakeTables", () => {
   });
 
   it("tolerates null content on sessions row too", async () => {
-    const api = mockApi([], [{ path: "/b", content: null }]);
+    const api = mockApi([{ path: "/b", content: null }]);
     const rows = await searchDeeplakeTables(api, "m", "s", {
       pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
     });
     expect(rows[0]).toEqual({ path: "/b", content: "" });
   });
 
-  it("returns partial results when the sessions query fails", async () => {
+  it("keeps grep on a single SQL query when the union query fails", async () => {
     const api = {
       query: vi.fn()
-        .mockImplementationOnce(async () => [{ path: "/a", content: "ok" }])
-        .mockImplementationOnce(async () => { throw new Error("boom"); }),
+        .mockRejectedValueOnce(new Error("bad union"))
     } as any;
-    const rows = await searchDeeplakeTables(api, "m", "s", {
+    await expect(searchDeeplakeTables(api, "m", "s", {
       pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
-    });
-    expect(rows).toEqual([{ path: "/a", content: "ok" }]);
-  });
-
-  it("returns partial results when the memory query fails", async () => {
-    const api = {
-      query: vi.fn()
-        .mockImplementationOnce(async () => { throw new Error("boom"); })
-        .mockImplementationOnce(async () => [{ path: "/b", content: "ok" }]),
-    } as any;
-    const rows = await searchDeeplakeTables(api, "m", "s", {
-      pathFilter: "", contentScanOnly: false, likeOp: "LIKE", escapedPattern: "x",
-    });
-    expect(rows).toEqual([{ path: "/b", content: "ok" }]);
+    })).rejects.toThrow("bad union");
+    expect(api.query).toHaveBeenCalledTimes(1);
   });
 
   it("defaults limit to 100 when omitted", async () => {
@@ -677,8 +732,7 @@ describe("grepBothTables", () => {
   function mockApi(rows: unknown[]) {
     return {
       query: vi.fn()
-        .mockResolvedValueOnce(rows)  // memory
-        .mockResolvedValueOnce([]),   // sessions (empty in these tests)
+        .mockResolvedValueOnce(rows),
     } as any;
   }
 
@@ -698,44 +752,151 @@ describe("grepBothTables", () => {
   it("deduplicates rows by path when memory and sessions return the same path", async () => {
     const api = {
       query: vi.fn()
-        .mockResolvedValueOnce([{ path: "/shared", content: "foo" }])
-        .mockResolvedValueOnce([{ path: "/shared", content: "foo" }]),
+        .mockResolvedValueOnce([{ path: "/shared", content: "foo" }, { path: "/shared", content: "foo" }]),
     } as any;
     const out = await grepBothTables(api, "m", "s", baseParams, "/");
     // only one line for the shared path
     expect(out.length).toBe(1);
   });
 
-  it("normalizes session JSON before refinement (LoCoMo turns)", async () => {
+  it("normalizes session JSON before refinement (turn-array sessions)", async () => {
     const sessionContent = JSON.stringify({
       turns: [
-        { dia_id: "D1:1", speaker: "Alice", text: "greeting foo here" },
+        { dia_id: "D1:1", speaker: "Alice", text: "project foo update" },
         { dia_id: "D1:2", speaker: "Bob", text: "unrelated" },
       ],
     });
     const api = {
       query: vi.fn()
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ path: "/sessions/conv_0_session_1.json", content: sessionContent }]),
+        .mockResolvedValueOnce([{ path: "/sessions/alice/chat_1.json", content: sessionContent }]),
     } as any;
     const out = await grepBothTables(api, "m", "s", baseParams, "/");
     // Only the matching turn is returned, not the whole JSON blob
-    expect(out.some(l => l.includes("[D1:1] Alice: greeting foo here"))).toBe(true);
+    expect(out.some(l => l.includes("[D1:1] Alice: project foo update"))).toBe(true);
     expect(out.some(l => l.includes("unrelated"))).toBe(false);
   });
 
   it("uses contentScanOnly when pattern has regex metacharacters", async () => {
     const api = mockApi([{ path: "/a", content: "this is a test" }]);
     await grepBothTables(api, "m", "s", { ...baseParams, pattern: "t.*t" }, "/");
-    const [memSql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(memSql).not.toContain("ILIKE");
-    expect(memSql).not.toContain("summary::text LIKE");
+    const [sql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(sql).not.toContain("summary::text LIKE");
+    expect(sql).not.toContain("message::text LIKE");
+  });
+
+  it("adds a safe literal prefilter for wildcard regexes with stable anchors", async () => {
+    const api = mockApi([{ path: "/a", content: "foo middle bar" }]);
+    await grepBothTables(api, "m", "s", { ...baseParams, pattern: "foo.*bar" }, "/");
+    const [sql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(sql).toContain("summary::text LIKE '%foo%'");
   });
 
   it("routes to ILIKE when ignoreCase is set", async () => {
     const api = mockApi([]);
     await grepBothTables(api, "m", "s", { ...baseParams, ignoreCase: true }, "/");
-    const [memSql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(memSql).toContain("ILIKE");
+    const [sql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(sql).toContain("ILIKE");
+  });
+
+  it("uses a single union query even for scoped target paths", async () => {
+    const api = mockApi([{ path: "/summaries/a.md", content: "foo line" }]);
+    await grepBothTables(api, "memory", "sessions", baseParams, "/summaries");
+    expect(api.query).toHaveBeenCalledTimes(1);
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain('FROM "memory"');
+    expect(sql).toContain('FROM "sessions"');
+    expect(sql).toContain("UNION ALL");
+  });
+});
+
+describe("regex literal prefilter", () => {
+  it("returns null for an empty pattern", () => {
+    expect(extractRegexLiteralPrefilter("")).toBeNull();
+  });
+
+  it("extracts a literal from simple wildcard regexes", () => {
+    expect(extractRegexLiteralPrefilter("foo.*bar")).toBe("foo");
+    expect(extractRegexLiteralPrefilter("prefix.*suffix")).toBe("prefix");
+    expect(extractRegexLiteralPrefilter("x.*suffix")).toBe("suffix");
+  });
+
+  it("returns null for complex regex features", () => {
+    expect(extractRegexLiteralPrefilter("colou?r")).toBeNull();
+    expect(extractRegexLiteralPrefilter("foo|bar")).toBeNull();
+    expect(extractRegexLiteralPrefilter("[ab]foo")).toBeNull();
+  });
+
+  it("handles escaped literals and rejects dangling escapes or bare dots", () => {
+    expect(extractRegexLiteralPrefilter("foo\\.bar")).toBe("foo.bar");
+    expect(extractRegexLiteralPrefilter("\\d+foo")).toBeNull();
+    expect(extractRegexLiteralPrefilter("foo\\")).toBeNull();
+    expect(extractRegexLiteralPrefilter("foo.bar")).toBeNull();
+  });
+
+  it("builds grep search options with regex prefilter when safe", () => {
+    const opts = buildGrepSearchOptions({
+      pattern: "foo.*bar",
+      ignoreCase: true,
+      wordMatch: false,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: false,
+    }, "/summaries");
+
+    expect(opts.contentScanOnly).toBe(true);
+    expect(opts.likeOp).toBe("ILIKE");
+    expect(opts.prefilterPattern).toBe("foo");
+    expect(opts.pathFilter).toContain("/summaries");
+  });
+
+  it("extracts safe alternation anchors and carries them into grep search options", () => {
+    expect(extractRegexAlternationPrefilters("relationship|partner|married")).toEqual([
+      "relationship",
+      "partner",
+      "married",
+    ]);
+
+    const opts = buildGrepSearchOptions({
+      pattern: "relationship|partner|married",
+      ignoreCase: false,
+      wordMatch: false,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: false,
+    }, "/summaries");
+
+    expect(opts.contentScanOnly).toBe(true);
+    expect(opts.prefilterPatterns).toEqual(["relationship", "partner", "married"]);
+  });
+
+  it("rejects alternation prefilters when grouping makes them unsafe", () => {
+    expect(extractRegexAlternationPrefilters("(foo|bar)")).toBeNull();
+    expect(extractRegexAlternationPrefilters("foo|bar.*baz")).toEqual(["foo", "bar"]);
+  });
+
+  it("preserves escaped alternation characters inside a literal branch", () => {
+    expect(extractRegexAlternationPrefilters("foo\\|bar|baz")).toEqual(["foo|bar", "baz"]);
+    expect(extractRegexAlternationPrefilters("foo|bar\\.md")).toEqual(["foo", "bar.md"]);
+  });
+
+  it("keeps fixed-string searches on the SQL-filtered path even with regex metacharacters", () => {
+    const opts = buildGrepSearchOptions({
+      pattern: "foo.*bar",
+      ignoreCase: false,
+      wordMatch: false,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: true,
+    }, "/summaries/alice/s1.md");
+
+    expect(opts.contentScanOnly).toBe(false);
+    expect(opts.prefilterPattern).toBeUndefined();
+    expect(opts.pathFilter).toBe(" AND path = '/summaries/alice/s1.md'");
   });
 });

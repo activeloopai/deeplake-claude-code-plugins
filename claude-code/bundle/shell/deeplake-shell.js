@@ -46081,14 +46081,14 @@ var require_turndown_cjs = __commonJS({
         } else if (node.nodeType === 1) {
           replacement = replacementForNode.call(self2, node);
         }
-        return join6(output, replacement);
+        return join7(output, replacement);
       }, "");
     }
     function postProcess(output) {
       var self2 = this;
       this.rules.forEach(function(rule) {
         if (typeof rule.append === "function") {
-          output = join6(output, rule.append(self2.options));
+          output = join7(output, rule.append(self2.options));
         }
       });
       return output.replace(/^[\t\r\n]+/, "").replace(/[\t\r\n\s]+$/, "");
@@ -46100,7 +46100,7 @@ var require_turndown_cjs = __commonJS({
       if (whitespace.leading || whitespace.trailing) content = content.trim();
       return whitespace.leading + rule.replacement(content, node, this.options) + whitespace.trailing;
     }
-    function join6(output, replacement) {
+    function join7(output, replacement) {
       var s12 = trimTrailingNewlines(output);
       var s22 = trimLeadingNewlines(replacement);
       var nls = Math.max(output.length - s12.length, replacement.length - s22.length);
@@ -66758,6 +66758,9 @@ function loadConfig() {
 
 // dist/src/deeplake-api.js
 import { randomUUID } from "node:crypto";
+import { existsSync as existsSync3, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "node:fs";
+import { join as join6 } from "node:path";
+import { tmpdir } from "node:os";
 
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
@@ -66782,26 +66785,47 @@ function sqlLike(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
-var TRACE_SQL = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-var DEBUG_FILE_LOG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 function summarizeSql(sql, maxLen = 220) {
   const compact = sql.replace(/\s+/g, " ").trim();
   return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
 }
 function traceSql(msg) {
-  if (!TRACE_SQL)
+  const traceEnabled = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+  if (!traceEnabled)
     return;
   process.stderr.write(`[deeplake-sql] ${msg}
 `);
-  if (DEBUG_FILE_LOG)
+  const debugFileLog = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+  if (debugFileLog)
     log2(msg);
 }
 var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
+var QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 1e4);
+var INDEX_MARKER_TTL_MS = Number(process.env["HIVEMIND_INDEX_MARKER_TTL_MS"] ?? 6 * 60 * 6e4);
 function sleep(ms3) {
   return new Promise((resolve5) => setTimeout(resolve5, ms3));
+}
+function isTimeoutError(error) {
+  const name = error instanceof Error ? error.name.toLowerCase() : "";
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return name.includes("timeout") || name === "aborterror" || message.includes("timeout") || message.includes("timed out");
+}
+function isDuplicateIndexError(error) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return message.includes("duplicate key value violates unique constraint") || message.includes("pg_class_relname_nsp_index") || message.includes("already exists");
+}
+function isSessionInsertQuery(sql) {
+  return /^\s*insert\s+into\s+"[^"]+"\s*\(\s*id\s*,\s*path\s*,\s*filename\s*,\s*message\s*,/i.test(sql);
+}
+function isTransientHtml403(text) {
+  const body = text.toLowerCase();
+  return body.includes("<html") || body.includes("403 forbidden") || body.includes("cloudflare") || body.includes("nginx");
+}
+function getIndexMarkerDir() {
+  return process.env["HIVEMIND_INDEX_MARKER_DIR"] ?? join6(tmpdir(), "hivemind-deeplake-indexes");
 }
 var Semaphore = class {
   max;
@@ -66834,6 +66858,7 @@ var DeeplakeApi = class {
   tableName;
   _pendingRows = [];
   _sem = new Semaphore(MAX_CONCURRENCY);
+  _tablesCache = null;
   constructor(token, apiUrl, orgId, workspaceId, tableName) {
     this.token = token;
     this.apiUrl = apiUrl;
@@ -66864,6 +66889,7 @@ var DeeplakeApi = class {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       let resp;
       try {
+        const signal = AbortSignal.timeout(QUERY_TIMEOUT_MS);
         resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
           method: "POST",
           headers: {
@@ -66871,9 +66897,14 @@ var DeeplakeApi = class {
             "Content-Type": "application/json",
             "X-Activeloop-Org-Id": this.orgId
           },
+          signal,
           body: JSON.stringify({ query: sql })
         });
       } catch (e6) {
+        if (isTimeoutError(e6)) {
+          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
+          throw lastError;
+        }
         lastError = e6 instanceof Error ? e6 : new Error(String(e6));
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
@@ -66890,7 +66921,8 @@ var DeeplakeApi = class {
         return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i11) => [col, row[i11]])));
       }
       const text = await resp.text().catch(() => "");
-      if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
+      const retryable403 = isSessionInsertQuery(sql) && (resp.status === 401 || resp.status === 403 && (text.length === 0 || isTransientHtml403(text)));
+      if (attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
         log2(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
         await sleep(delay);
@@ -66955,8 +66987,61 @@ var DeeplakeApi = class {
   async createIndex(column) {
     await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
   }
+  buildLookupIndexName(table, suffix) {
+    return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
+  }
+  getLookupIndexMarkerPath(table, suffix) {
+    const markerKey = [
+      this.workspaceId,
+      this.orgId,
+      table,
+      suffix
+    ].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
+    return join6(getIndexMarkerDir(), `${markerKey}.json`);
+  }
+  hasFreshLookupIndexMarker(table, suffix) {
+    const markerPath = this.getLookupIndexMarkerPath(table, suffix);
+    if (!existsSync3(markerPath))
+      return false;
+    try {
+      const raw = JSON.parse(readFileSync2(markerPath, "utf-8"));
+      const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
+      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS)
+        return false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  markLookupIndexReady(table, suffix) {
+    mkdirSync(getIndexMarkerDir(), { recursive: true });
+    writeFileSync(this.getLookupIndexMarkerPath(table, suffix), JSON.stringify({ updatedAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf-8");
+  }
+  async ensureLookupIndex(table, suffix, columnsSql) {
+    if (this.hasFreshLookupIndexMarker(table, suffix))
+      return;
+    const indexName = this.buildLookupIndexName(table, suffix);
+    try {
+      await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
+      this.markLookupIndexReady(table, suffix);
+    } catch (e6) {
+      if (isDuplicateIndexError(e6)) {
+        this.markLookupIndexReady(table, suffix);
+        return;
+      }
+      log2(`index "${indexName}" skipped: ${e6.message}`);
+    }
+  }
   /** List all tables in the workspace (with retry). */
-  async listTables() {
+  async listTables(forceRefresh = false) {
+    if (!forceRefresh && this._tablesCache)
+      return [...this._tablesCache];
+    const { tables, cacheable } = await this._fetchTables();
+    if (cacheable)
+      this._tablesCache = [...tables];
+    return tables;
+  }
+  async _fetchTables() {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
@@ -66967,22 +67052,25 @@ var DeeplakeApi = class {
         });
         if (resp.ok) {
           const data = await resp.json();
-          return (data.tables ?? []).map((t6) => t6.table_name);
+          return {
+            tables: (data.tables ?? []).map((t6) => t6.table_name),
+            cacheable: true
+          };
         }
         if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
           await sleep(BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200);
           continue;
         }
-        return [];
+        return { tables: [], cacheable: false };
       } catch {
         if (attempt < MAX_RETRIES) {
           await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
           continue;
         }
-        return [];
+        return { tables: [], cacheable: false };
       }
     }
-    return [];
+    return { tables: [], cacheable: false };
   }
   /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
   async ensureTable(name) {
@@ -66992,6 +67080,8 @@ var DeeplakeApi = class {
       log2(`table "${tbl}" not found, creating`);
       await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${tbl}" created`);
+      if (!tables.includes(tbl))
+        this._tablesCache = [...tables, tbl];
     }
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
@@ -67001,14 +67091,403 @@ var DeeplakeApi = class {
       log2(`table "${name}" not found, creating`);
       await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${name}" created`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
     }
+    await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
 };
 
 // dist/src/shell/deeplake-fs.js
 import { basename as basename4, posix } from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
+
+// dist/src/shell/grep-core.js
+var TOOL_INPUT_FIELDS = [
+  "command",
+  "file_path",
+  "path",
+  "pattern",
+  "prompt",
+  "subagent_type",
+  "query",
+  "url",
+  "notebook_path",
+  "old_string",
+  "new_string",
+  "content",
+  "skill",
+  "args",
+  "taskId",
+  "status",
+  "subject",
+  "description",
+  "to",
+  "message",
+  "summary",
+  "max_results"
+];
+var TOOL_RESPONSE_DROP = /* @__PURE__ */ new Set([
+  // Note: `stderr` is intentionally NOT in this set. The `stdout` high-signal
+  // branch below already de-dupes it for the common case (appends as suffix
+  // when non-empty). If a tool response has ONLY `stderr` and no `stdout`
+  // (hard-failure on some tools), the generic cleanup preserves it so the
+  // error message reaches Claude instead of collapsing to `[ok]`.
+  "interrupted",
+  "isImage",
+  "noOutputExpected",
+  "type",
+  "structuredPatch",
+  "userModified",
+  "originalFile",
+  "replaceAll",
+  "totalDurationMs",
+  "totalTokens",
+  "totalToolUseCount",
+  "usage",
+  "toolStats",
+  "durationMs",
+  "durationSeconds",
+  "bytes",
+  "code",
+  "codeText",
+  "agentId",
+  "agentType",
+  "verificationNudgeNeeded",
+  "numLines",
+  "numFiles",
+  "truncated",
+  "statusChange",
+  "updatedFields",
+  "isAgent",
+  "success"
+]);
+function maybeParseJson(v27) {
+  if (typeof v27 !== "string")
+    return v27;
+  const s10 = v27.trim();
+  if (s10[0] !== "{" && s10[0] !== "[")
+    return v27;
+  try {
+    return JSON.parse(s10);
+  } catch {
+    return v27;
+  }
+}
+function snakeCase(k17) {
+  return k17.replace(/([A-Z])/g, "_$1").toLowerCase();
+}
+function camelCase(k17) {
+  return k17.replace(/_([a-z])/g, (_16, c15) => c15.toUpperCase());
+}
+function formatToolInput(raw) {
+  const p22 = maybeParseJson(raw);
+  if (typeof p22 !== "object" || p22 === null)
+    return String(p22 ?? "");
+  const parts = [];
+  for (const k17 of TOOL_INPUT_FIELDS) {
+    if (p22[k17] === void 0)
+      continue;
+    const v27 = p22[k17];
+    parts.push(`${k17}: ${typeof v27 === "string" ? v27 : JSON.stringify(v27)}`);
+  }
+  for (const k17 of ["glob", "output_mode", "limit", "offset"]) {
+    if (p22[k17] !== void 0)
+      parts.push(`${k17}: ${p22[k17]}`);
+  }
+  return parts.length ? parts.join("\n") : JSON.stringify(p22);
+}
+function formatToolResponse(raw, inp, toolName) {
+  const r10 = maybeParseJson(raw);
+  if (typeof r10 !== "object" || r10 === null)
+    return String(r10 ?? "");
+  if (toolName === "Edit" || toolName === "Write" || toolName === "MultiEdit") {
+    return r10.filePath ? `[wrote ${r10.filePath}]` : "[ok]";
+  }
+  if (typeof r10.stdout === "string") {
+    const stderr = r10.stderr;
+    return r10.stdout + (stderr ? `
+stderr: ${stderr}` : "");
+  }
+  if (typeof r10.content === "string")
+    return r10.content;
+  if (r10.file && typeof r10.file === "object") {
+    const f11 = r10.file;
+    if (typeof f11.content === "string")
+      return `[${f11.filePath ?? ""}]
+${f11.content}`;
+    if (typeof f11.base64 === "string")
+      return `[binary ${f11.filePath ?? ""}: ${f11.base64.length} base64 chars]`;
+  }
+  if (Array.isArray(r10.filenames))
+    return r10.filenames.join("\n");
+  if (Array.isArray(r10.matches)) {
+    return r10.matches.map((m26) => typeof m26 === "string" ? m26 : JSON.stringify(m26)).join("\n");
+  }
+  if (Array.isArray(r10.results)) {
+    return r10.results.map((x28) => typeof x28 === "string" ? x28 : x28?.title ?? x28?.url ?? JSON.stringify(x28)).join("\n");
+  }
+  const inpObj = maybeParseJson(inp);
+  const kept = {};
+  for (const [k17, v27] of Object.entries(r10)) {
+    if (TOOL_RESPONSE_DROP.has(k17))
+      continue;
+    if (v27 === "" || v27 === false || v27 == null)
+      continue;
+    if (typeof inpObj === "object" && inpObj) {
+      const inObj = inpObj;
+      if (k17 in inObj && JSON.stringify(inObj[k17]) === JSON.stringify(v27))
+        continue;
+      const snake = snakeCase(k17);
+      if (snake in inObj && JSON.stringify(inObj[snake]) === JSON.stringify(v27))
+        continue;
+      const camel = camelCase(k17);
+      if (camel in inObj && JSON.stringify(inObj[camel]) === JSON.stringify(v27))
+        continue;
+    }
+    kept[k17] = v27;
+  }
+  return Object.keys(kept).length ? JSON.stringify(kept) : "[ok]";
+}
+function formatToolCall(obj) {
+  return `[tool:${obj?.tool_name ?? "?"}]
+input: ${formatToolInput(obj?.tool_input)}
+response: ${formatToolResponse(obj?.tool_response, obj?.tool_input, obj?.tool_name)}`;
+}
+function normalizeContent(path2, raw) {
+  if (!path2.includes("/sessions/"))
+    return raw;
+  if (!raw || raw[0] !== "{")
+    return raw;
+  let obj;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+  if (Array.isArray(obj.turns)) {
+    const header = [];
+    if (obj.date_time)
+      header.push(`date: ${obj.date_time}`);
+    if (obj.speakers) {
+      const s10 = obj.speakers;
+      const names = [s10.speaker_a, s10.speaker_b].filter(Boolean).join(", ");
+      if (names)
+        header.push(`speakers: ${names}`);
+    }
+    const lines = obj.turns.map((t6) => {
+      const sp = String(t6?.speaker ?? t6?.name ?? "?").trim();
+      const tx = String(t6?.text ?? t6?.content ?? "").replace(/\s+/g, " ").trim();
+      const tag = t6?.dia_id ? `[${t6.dia_id}] ` : "";
+      return `${tag}${sp}: ${tx}`;
+    });
+    const out2 = [...header, ...lines].join("\n");
+    return out2.trim() ? out2 : raw;
+  }
+  const stripRecalled = (t6) => {
+    const i11 = t6.indexOf("<recalled-memories>");
+    if (i11 === -1)
+      return t6;
+    const j14 = t6.lastIndexOf("</recalled-memories>");
+    if (j14 === -1 || j14 < i11)
+      return t6;
+    const head = t6.slice(0, i11);
+    const tail = t6.slice(j14 + "</recalled-memories>".length);
+    return (head + tail).replace(/^\s+/, "").replace(/\n{3,}/g, "\n\n");
+  };
+  let out = null;
+  if (obj.type === "user_message") {
+    out = `[user] ${stripRecalled(String(obj.content ?? ""))}`;
+  } else if (obj.type === "assistant_message") {
+    const agent = obj.agent_type ? ` (agent=${obj.agent_type})` : "";
+    out = `[assistant${agent}] ${stripRecalled(String(obj.content ?? ""))}`;
+  } else if (obj.type === "tool_call") {
+    out = formatToolCall(obj);
+  }
+  if (out === null)
+    return raw;
+  const trimmed = out.trim();
+  if (!trimmed || trimmed === "[user]" || trimmed === "[assistant]" || /^\[tool:[^\]]*\]\s+input:\s+\{\}\s+response:\s+\{\}$/.test(trimmed))
+    return raw;
+  return out;
+}
+function buildPathCondition(targetPath) {
+  if (!targetPath || targetPath === "/")
+    return "";
+  const clean = targetPath.replace(/\/+$/, "");
+  if (/[*?]/.test(clean)) {
+    const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
+    return `path LIKE '${likePattern}' ESCAPE '\\'`;
+  }
+  const base = clean.split("/").pop() ?? "";
+  if (base.includes(".")) {
+    return `path = '${sqlStr(clean)}'`;
+  }
+  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%' ESCAPE '\\')`;
+}
+async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
+  const limit = opts.limit ?? 100;
+  const filterPatterns = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : [escapedPattern];
+  const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
+  const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
+  const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
+  const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
+  const rows = await api.query(`SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`);
+  return rows.map((row) => ({
+    path: String(row["path"]),
+    content: String(row["content"] ?? "")
+  }));
+}
+function buildPathFilter(targetPath) {
+  const condition = buildPathCondition(targetPath);
+  return condition ? ` AND ${condition}` : "";
+}
+function buildPathFilterForTargets(targetPaths) {
+  if (targetPaths.some((targetPath) => !targetPath || targetPath === "/"))
+    return "";
+  const conditions = [...new Set(targetPaths.map((targetPath) => buildPathCondition(targetPath)).filter((condition) => condition.length > 0))];
+  if (conditions.length === 0)
+    return "";
+  if (conditions.length === 1)
+    return ` AND ${conditions[0]}`;
+  return ` AND (${conditions.join(" OR ")})`;
+}
+function extractRegexLiteralPrefilter(pattern) {
+  if (!pattern)
+    return null;
+  const parts = [];
+  let current = "";
+  for (let i11 = 0; i11 < pattern.length; i11++) {
+    const ch = pattern[i11];
+    if (ch === "\\") {
+      const next = pattern[i11 + 1];
+      if (!next)
+        return null;
+      if (/[dDsSwWbBAZzGkKpP]/.test(next))
+        return null;
+      current += next;
+      i11++;
+      continue;
+    }
+    if (ch === ".") {
+      if (pattern[i11 + 1] === "*") {
+        if (current)
+          parts.push(current);
+        current = "";
+        i11++;
+        continue;
+      }
+      return null;
+    }
+    if ("|()[]{}+?^$".includes(ch) || ch === "*")
+      return null;
+    current += ch;
+  }
+  if (current)
+    parts.push(current);
+  const literal = parts.reduce((best, part) => part.length > best.length ? part : best, "");
+  return literal.length >= 2 ? literal : null;
+}
+function extractRegexAlternationPrefilters(pattern) {
+  if (!pattern.includes("|"))
+    return null;
+  const parts = [];
+  let current = "";
+  let escaped = false;
+  for (let i11 = 0; i11 < pattern.length; i11++) {
+    const ch = pattern[i11];
+    if (escaped) {
+      current += `\\${ch}`;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === "|") {
+      if (!current)
+        return null;
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    if ("()[]{}^$".includes(ch))
+      return null;
+    current += ch;
+  }
+  if (escaped || !current)
+    return null;
+  parts.push(current);
+  const literals = [...new Set(parts.map((part) => extractRegexLiteralPrefilter(part)).filter((part) => typeof part === "string" && part.length >= 2))];
+  return literals.length > 0 ? literals : null;
+}
+function buildGrepSearchOptions(params, targetPath) {
+  const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
+  const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
+  const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
+  return {
+    pathFilter: buildPathFilter(targetPath),
+    contentScanOnly: hasRegexMeta,
+    likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
+    escapedPattern: sqlLike(params.pattern),
+    prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0,
+    prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal))
+  };
+}
+function buildContentFilter(column, likeOp, patterns) {
+  if (patterns.length === 0)
+    return "";
+  if (patterns.length === 1)
+    return ` AND ${column} ${likeOp} '%${patterns[0]}%'`;
+  return ` AND (${patterns.map((pattern) => `${column} ${likeOp} '%${pattern}%'`).join(" OR ")})`;
+}
+function compileGrepRegex(params) {
+  let reStr = params.fixedString ? params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : params.pattern;
+  if (params.wordMatch)
+    reStr = `\\b${reStr}\\b`;
+  try {
+    return new RegExp(reStr, params.ignoreCase ? "i" : "");
+  } catch {
+    return new RegExp(params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), params.ignoreCase ? "i" : "");
+  }
+}
+function refineGrepMatches(rows, params, forceMultiFilePrefix) {
+  const re9 = compileGrepRegex(params);
+  const multi = forceMultiFilePrefix ?? rows.length > 1;
+  const output = [];
+  for (const row of rows) {
+    if (!row.content)
+      continue;
+    const lines = row.content.split("\n");
+    const matched = [];
+    for (let i11 = 0; i11 < lines.length; i11++) {
+      const hit = re9.test(lines[i11]);
+      if (hit !== !!params.invertMatch) {
+        if (params.filesOnly) {
+          output.push(row.path);
+          break;
+        }
+        const prefix = multi ? `${row.path}:` : "";
+        const ln3 = params.lineNumber ? `${i11 + 1}:` : "";
+        matched.push(`${prefix}${ln3}${lines[i11]}`);
+      }
+    }
+    if (!params.filesOnly) {
+      if (params.countOnly) {
+        output.push(`${multi ? `${row.path}:` : ""}${matched.length}`);
+      } else {
+        output.push(...matched);
+      }
+    }
+  }
+  return output;
+}
+
+// dist/src/shell/deeplake-fs.js
 var BATCH_SIZE = 10;
+var PREFETCH_BATCH_SIZE = 50;
 var FLUSH_DEBOUNCE_MS = 200;
 function normPath(p22) {
   const r10 = posix.normalize(p22.startsWith("/") ? p22 : "/" + p22);
@@ -67029,6 +67508,13 @@ function guessMime(filename) {
     html: "text/html",
     css: "text/css"
   }[ext2] ?? "text/plain";
+}
+function normalizeSessionMessage(path2, message) {
+  const raw = typeof message === "string" ? message : JSON.stringify(message);
+  return normalizeContent(path2, raw);
+}
+function joinSessionMessages(path2, messages) {
+  return messages.map((message) => normalizeSessionMessage(path2, message)).join("\n");
 }
 function fsErr(code, msg, path2) {
   return Object.assign(new Error(`${code}: ${msg}, '${path2}'`), { code });
@@ -67237,26 +67723,47 @@ var DeeplakeFs = class _DeeplakeFs {
    */
   async prefetch(paths) {
     const uncached = [];
+    const uncachedSessions = [];
     for (const raw of paths) {
       const p22 = normPath(raw);
       if (this.files.get(p22) !== null && this.files.get(p22) !== void 0)
         continue;
       if (this.pending.has(p22))
         continue;
-      if (this.sessionPaths.has(p22))
-        continue;
       if (!this.files.has(p22))
         continue;
-      uncached.push(p22);
+      if (this.sessionPaths.has(p22)) {
+        uncachedSessions.push(p22);
+      } else {
+        uncached.push(p22);
+      }
     }
-    if (uncached.length === 0)
+    for (let i11 = 0; i11 < uncached.length; i11 += PREFETCH_BATCH_SIZE) {
+      const chunk = uncached.slice(i11, i11 + PREFETCH_BATCH_SIZE);
+      const inList = chunk.map((p22) => `'${sqlStr(p22)}'`).join(", ");
+      const rows = await this.client.query(`SELECT path, summary FROM "${this.table}" WHERE path IN (${inList})`);
+      for (const row of rows) {
+        const p22 = row["path"];
+        const text = row["summary"] ?? "";
+        this.files.set(p22, Buffer.from(text, "utf-8"));
+      }
+    }
+    if (!this.sessionsTable)
       return;
-    const inList = uncached.map((p22) => `'${sqlStr(p22)}'`).join(", ");
-    const rows = await this.client.query(`SELECT path, summary FROM "${this.table}" WHERE path IN (${inList})`);
-    for (const row of rows) {
-      const p22 = row["path"];
-      const text = row["summary"] ?? "";
-      this.files.set(p22, Buffer.from(text, "utf-8"));
+    for (let i11 = 0; i11 < uncachedSessions.length; i11 += PREFETCH_BATCH_SIZE) {
+      const chunk = uncachedSessions.slice(i11, i11 + PREFETCH_BATCH_SIZE);
+      const inList = chunk.map((p22) => `'${sqlStr(p22)}'`).join(", ");
+      const rows = await this.client.query(`SELECT path, message, creation_date FROM "${this.sessionsTable}" WHERE path IN (${inList}) ORDER BY path, creation_date ASC`);
+      const grouped = /* @__PURE__ */ new Map();
+      for (const row of rows) {
+        const p22 = row["path"];
+        const current = grouped.get(p22) ?? [];
+        current.push(normalizeSessionMessage(p22, row["message"]));
+        grouped.set(p22, current);
+      }
+      for (const [p22, parts] of grouped) {
+        this.files.set(p22, Buffer.from(parts.join("\n"), "utf-8"));
+      }
     }
   }
   // ── IFileSystem: reads ────────────────────────────────────────────────────
@@ -67279,7 +67786,7 @@ var DeeplakeFs = class _DeeplakeFs {
       const rows2 = await this.client.query(`SELECT message FROM "${this.sessionsTable}" WHERE path = '${sqlStr(p22)}' ORDER BY creation_date ASC`);
       if (rows2.length === 0)
         throw fsErr("ENOENT", "no such file or directory", p22);
-      const text = rows2.map((r10) => typeof r10["message"] === "string" ? r10["message"] : JSON.stringify(r10["message"])).join("\n");
+      const text = joinSessionMessages(p22, rows2.map((row) => row["message"]));
       const buf2 = Buffer.from(text, "utf-8");
       this.files.set(p22, buf2);
       return buf2;
@@ -67317,7 +67824,7 @@ var DeeplakeFs = class _DeeplakeFs {
       const rows2 = await this.client.query(`SELECT message FROM "${this.sessionsTable}" WHERE path = '${sqlStr(p22)}' ORDER BY creation_date ASC`);
       if (rows2.length === 0)
         throw fsErr("ENOENT", "no such file or directory", p22);
-      const text2 = rows2.map((r10) => typeof r10["message"] === "string" ? r10["message"] : JSON.stringify(r10["message"])).join("\n");
+      const text2 = joinSessionMessages(p22, rows2.map((row) => row["message"]));
       const buf2 = Buffer.from(text2, "utf-8");
       this.files.set(p22, buf2);
       return text2;
@@ -67579,7 +68086,7 @@ import { format } from "util";
 import { normalize, resolve as resolve4 } from "path";
 
 // node_modules/yargs-parser/build/lib/string-utils.js
-function camelCase(str) {
+function camelCase2(str) {
   const isCamelCase = str !== str.toLowerCase() && str !== str.toUpperCase();
   if (!isCamelCase) {
     str = str.toLowerCase();
@@ -67983,7 +68490,7 @@ var YargsParser = class {
       ;
       [].concat(...Object.keys(aliases).map((k17) => aliases[k17])).forEach((alias) => {
         if (configuration["camel-case-expansion"] && alias.includes("-")) {
-          delete argv[alias.split(".").map((prop) => camelCase(prop)).join(".")];
+          delete argv[alias.split(".").map((prop) => camelCase2(prop)).join(".")];
         }
         delete argv[alias];
       });
@@ -68065,7 +68572,7 @@ var YargsParser = class {
     function setArg(key, val, shouldStripQuotes = inputIsString) {
       if (/-/.test(key) && configuration["camel-case-expansion"]) {
         const alias = key.split(".").map(function(prop) {
-          return camelCase(prop);
+          return camelCase2(prop);
         }).join(".");
         addNewAlias(key, alias);
       }
@@ -68213,7 +68720,7 @@ var YargsParser = class {
             if (i11 === 0) {
               key = key.substring(prefix.length);
             }
-            return camelCase(key);
+            return camelCase2(key);
           });
           if ((configOnly && flags.configs[keys.join(".")] || !configOnly) && !hasKey(argv2, keys)) {
             setArg(keys.join("."), env2[envVar]);
@@ -68333,7 +68840,7 @@ var YargsParser = class {
           flags.aliases[key] = [].concat(aliases[key] || []);
           flags.aliases[key].concat(key).forEach(function(x28) {
             if (/-/.test(x28) && configuration["camel-case-expansion"]) {
-              const c15 = camelCase(x28);
+              const c15 = camelCase2(x28);
               if (c15 !== key && flags.aliases[key].indexOf(c15) === -1) {
                 flags.aliases[key].push(c15);
                 newAliases[c15] = true;
@@ -68514,7 +69021,7 @@ function stripQuotes(val) {
 }
 
 // node_modules/yargs-parser/build/lib/index.js
-import { readFileSync as readFileSync2 } from "fs";
+import { readFileSync as readFileSync3 } from "fs";
 import { createRequire } from "node:module";
 var _a3;
 var _b;
@@ -68541,7 +69048,7 @@ var parser = new YargsParser({
     if (typeof require2 !== "undefined") {
       return require2(path2);
     } else if (path2.match(/\.json$/)) {
-      return JSON.parse(readFileSync2(path2, "utf8"));
+      return JSON.parse(readFileSync3(path2, "utf8"));
     } else {
       throw Error("only .json config files are supported in ESM");
     }
@@ -68554,285 +69061,10 @@ var yargsParser = function Parser(args, opts) {
 yargsParser.detailed = function(args, opts) {
   return parser.parse(args.slice(), opts);
 };
-yargsParser.camelCase = camelCase;
+yargsParser.camelCase = camelCase2;
 yargsParser.decamelize = decamelize;
 yargsParser.looksLikeNumber = looksLikeNumber;
 var lib_default = yargsParser;
-
-// dist/src/shell/grep-core.js
-var TOOL_INPUT_FIELDS = [
-  "command",
-  "file_path",
-  "path",
-  "pattern",
-  "prompt",
-  "subagent_type",
-  "query",
-  "url",
-  "notebook_path",
-  "old_string",
-  "new_string",
-  "content",
-  "skill",
-  "args",
-  "taskId",
-  "status",
-  "subject",
-  "description",
-  "to",
-  "message",
-  "summary",
-  "max_results"
-];
-var TOOL_RESPONSE_DROP = /* @__PURE__ */ new Set([
-  // Note: `stderr` is intentionally NOT in this set. The `stdout` high-signal
-  // branch below already de-dupes it for the common case (appends as suffix
-  // when non-empty). If a tool response has ONLY `stderr` and no `stdout`
-  // (hard-failure on some tools), the generic cleanup preserves it so the
-  // error message reaches Claude instead of collapsing to `[ok]`.
-  "interrupted",
-  "isImage",
-  "noOutputExpected",
-  "type",
-  "structuredPatch",
-  "userModified",
-  "originalFile",
-  "replaceAll",
-  "totalDurationMs",
-  "totalTokens",
-  "totalToolUseCount",
-  "usage",
-  "toolStats",
-  "durationMs",
-  "durationSeconds",
-  "bytes",
-  "code",
-  "codeText",
-  "agentId",
-  "agentType",
-  "verificationNudgeNeeded",
-  "numLines",
-  "numFiles",
-  "truncated",
-  "statusChange",
-  "updatedFields",
-  "isAgent",
-  "success"
-]);
-function maybeParseJson(v27) {
-  if (typeof v27 !== "string")
-    return v27;
-  const s10 = v27.trim();
-  if (s10[0] !== "{" && s10[0] !== "[")
-    return v27;
-  try {
-    return JSON.parse(s10);
-  } catch {
-    return v27;
-  }
-}
-function snakeCase(k17) {
-  return k17.replace(/([A-Z])/g, "_$1").toLowerCase();
-}
-function camelCase2(k17) {
-  return k17.replace(/_([a-z])/g, (_16, c15) => c15.toUpperCase());
-}
-function formatToolInput(raw) {
-  const p22 = maybeParseJson(raw);
-  if (typeof p22 !== "object" || p22 === null)
-    return String(p22 ?? "");
-  const parts = [];
-  for (const k17 of TOOL_INPUT_FIELDS) {
-    if (p22[k17] === void 0)
-      continue;
-    const v27 = p22[k17];
-    parts.push(`${k17}: ${typeof v27 === "string" ? v27 : JSON.stringify(v27)}`);
-  }
-  for (const k17 of ["glob", "output_mode", "limit", "offset"]) {
-    if (p22[k17] !== void 0)
-      parts.push(`${k17}: ${p22[k17]}`);
-  }
-  return parts.length ? parts.join("\n") : JSON.stringify(p22);
-}
-function formatToolResponse(raw, inp, toolName) {
-  const r10 = maybeParseJson(raw);
-  if (typeof r10 !== "object" || r10 === null)
-    return String(r10 ?? "");
-  if (toolName === "Edit" || toolName === "Write" || toolName === "MultiEdit") {
-    return r10.filePath ? `[wrote ${r10.filePath}]` : "[ok]";
-  }
-  if (typeof r10.stdout === "string") {
-    const stderr = r10.stderr;
-    return r10.stdout + (stderr ? `
-stderr: ${stderr}` : "");
-  }
-  if (typeof r10.content === "string")
-    return r10.content;
-  if (r10.file && typeof r10.file === "object") {
-    const f11 = r10.file;
-    if (typeof f11.content === "string")
-      return `[${f11.filePath ?? ""}]
-${f11.content}`;
-    if (typeof f11.base64 === "string")
-      return `[binary ${f11.filePath ?? ""}: ${f11.base64.length} base64 chars]`;
-  }
-  if (Array.isArray(r10.filenames))
-    return r10.filenames.join("\n");
-  if (Array.isArray(r10.matches)) {
-    return r10.matches.map((m26) => typeof m26 === "string" ? m26 : JSON.stringify(m26)).join("\n");
-  }
-  if (Array.isArray(r10.results)) {
-    return r10.results.map((x28) => typeof x28 === "string" ? x28 : x28?.title ?? x28?.url ?? JSON.stringify(x28)).join("\n");
-  }
-  const inpObj = maybeParseJson(inp);
-  const kept = {};
-  for (const [k17, v27] of Object.entries(r10)) {
-    if (TOOL_RESPONSE_DROP.has(k17))
-      continue;
-    if (v27 === "" || v27 === false || v27 == null)
-      continue;
-    if (typeof inpObj === "object" && inpObj) {
-      const inObj = inpObj;
-      if (k17 in inObj && JSON.stringify(inObj[k17]) === JSON.stringify(v27))
-        continue;
-      const snake = snakeCase(k17);
-      if (snake in inObj && JSON.stringify(inObj[snake]) === JSON.stringify(v27))
-        continue;
-      const camel = camelCase2(k17);
-      if (camel in inObj && JSON.stringify(inObj[camel]) === JSON.stringify(v27))
-        continue;
-    }
-    kept[k17] = v27;
-  }
-  return Object.keys(kept).length ? JSON.stringify(kept) : "[ok]";
-}
-function formatToolCall(obj) {
-  return `[tool:${obj?.tool_name ?? "?"}]
-input: ${formatToolInput(obj?.tool_input)}
-response: ${formatToolResponse(obj?.tool_response, obj?.tool_input, obj?.tool_name)}`;
-}
-function normalizeContent(path2, raw) {
-  if (!path2.includes("/sessions/"))
-    return raw;
-  if (!raw || raw[0] !== "{")
-    return raw;
-  let obj;
-  try {
-    obj = JSON.parse(raw);
-  } catch {
-    return raw;
-  }
-  if (Array.isArray(obj.turns)) {
-    const header = [];
-    if (obj.date_time)
-      header.push(`date: ${obj.date_time}`);
-    if (obj.speakers) {
-      const s10 = obj.speakers;
-      const names = [s10.speaker_a, s10.speaker_b].filter(Boolean).join(", ");
-      if (names)
-        header.push(`speakers: ${names}`);
-    }
-    const lines = obj.turns.map((t6) => {
-      const sp = String(t6?.speaker ?? t6?.name ?? "?").trim();
-      const tx = String(t6?.text ?? t6?.content ?? "").replace(/\s+/g, " ").trim();
-      const tag = t6?.dia_id ? `[${t6.dia_id}] ` : "";
-      return `${tag}${sp}: ${tx}`;
-    });
-    const out2 = [...header, ...lines].join("\n");
-    return out2.trim() ? out2 : raw;
-  }
-  const stripRecalled = (t6) => {
-    const i11 = t6.indexOf("<recalled-memories>");
-    if (i11 === -1)
-      return t6;
-    const j14 = t6.lastIndexOf("</recalled-memories>");
-    if (j14 === -1 || j14 < i11)
-      return t6;
-    const head = t6.slice(0, i11);
-    const tail = t6.slice(j14 + "</recalled-memories>".length);
-    return (head + tail).replace(/^\s+/, "").replace(/\n{3,}/g, "\n\n");
-  };
-  let out = null;
-  if (obj.type === "user_message") {
-    out = `[user] ${stripRecalled(String(obj.content ?? ""))}`;
-  } else if (obj.type === "assistant_message") {
-    const agent = obj.agent_type ? ` (agent=${obj.agent_type})` : "";
-    out = `[assistant${agent}] ${stripRecalled(String(obj.content ?? ""))}`;
-  } else if (obj.type === "tool_call") {
-    out = formatToolCall(obj);
-  }
-  if (out === null)
-    return raw;
-  const trimmed = out.trim();
-  if (!trimmed || trimmed === "[user]" || trimmed === "[assistant]" || /^\[tool:[^\]]*\]\s+input:\s+\{\}\s+response:\s+\{\}$/.test(trimmed))
-    return raw;
-  return out;
-}
-async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern } = opts;
-  const limit = opts.limit ?? 100;
-  const memFilter = contentScanOnly ? "" : ` AND summary::text ${likeOp} '%${escapedPattern}%'`;
-  const sessFilter = contentScanOnly ? "" : ` AND message::text ${likeOp} '%${escapedPattern}%'`;
-  const memQuery = `SELECT path, summary::text AS content FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
-  const sessQuery = `SELECT path, message::text AS content FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
-  const [memRows, sessRows] = await Promise.all([
-    api.query(memQuery).catch(() => []),
-    api.query(sessQuery).catch(() => [])
-  ]);
-  const rows = [];
-  for (const r10 of memRows)
-    rows.push({ path: String(r10.path), content: String(r10.content ?? "") });
-  for (const r10 of sessRows)
-    rows.push({ path: String(r10.path), content: String(r10.content ?? "") });
-  return rows;
-}
-function buildPathFilter(targetPath) {
-  if (!targetPath || targetPath === "/")
-    return "";
-  const clean = targetPath.replace(/\/+$/, "");
-  return ` AND (path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
-}
-function compileGrepRegex(params) {
-  let reStr = params.fixedString ? params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : params.pattern;
-  if (params.wordMatch)
-    reStr = `\\b${reStr}\\b`;
-  try {
-    return new RegExp(reStr, params.ignoreCase ? "i" : "");
-  } catch {
-    return new RegExp(params.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), params.ignoreCase ? "i" : "");
-  }
-}
-function refineGrepMatches(rows, params, forceMultiFilePrefix) {
-  const re9 = compileGrepRegex(params);
-  const multi = forceMultiFilePrefix ?? rows.length > 1;
-  const output = [];
-  for (const row of rows) {
-    if (!row.content)
-      continue;
-    const lines = row.content.split("\n");
-    const matched = [];
-    for (let i11 = 0; i11 < lines.length; i11++) {
-      const hit = re9.test(lines[i11]);
-      if (hit !== !!params.invertMatch) {
-        if (params.filesOnly) {
-          output.push(row.path);
-          break;
-        }
-        const prefix = multi ? `${row.path}:` : "";
-        const ln3 = params.lineNumber ? `${i11 + 1}:` : "";
-        matched.push(`${prefix}${ln3}${lines[i11]}`);
-      }
-    }
-    if (!params.filesOnly) {
-      if (params.countOnly) {
-        output.push(`${multi ? `${row.path}:` : ""}${matched.length}`);
-      } else {
-        output.push(...matched);
-      }
-    }
-  }
-  return output;
-}
 
 // dist/src/shell/grep-interceptor.js
 var MAX_FALLBACK_CANDIDATES = 500;
@@ -68876,23 +69108,18 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
       filesOnly: Boolean(parsed.l || parsed["files-with-matches"]),
       countOnly: Boolean(parsed.c || parsed["count"])
     };
-    const likeOp = matchParams.ignoreCase ? "ILIKE" : "LIKE";
-    const hasRegexMeta = !matchParams.fixedString && /[.*+?^${}()|[\]\\]/.test(pattern);
-    const escapedPattern = sqlLike(pattern);
     let rows = [];
     try {
-      const perTarget = await Promise.race([
-        Promise.all(targets.map((t6) => searchDeeplakeTables(client, table, sessionsTable ?? "sessions", {
-          pathFilter: buildPathFilter(t6),
-          contentScanOnly: hasRegexMeta,
-          likeOp,
-          escapedPattern,
-          limit: 100
-        }))),
+      const searchOptions = {
+        ...buildGrepSearchOptions(matchParams, targets[0] ?? ctx.cwd),
+        pathFilter: buildPathFilterForTargets(targets),
+        limit: 100
+      };
+      const queryRows = await Promise.race([
+        searchDeeplakeTables(client, table, sessionsTable ?? "sessions", searchOptions),
         new Promise((_16, reject) => setTimeout(() => reject(new Error("timeout")), 3e3))
       ]);
-      for (const batch of perTarget)
-        rows.push(...batch);
+      rows.push(...queryRows);
     } catch {
       rows = [];
     }
@@ -68920,6 +69147,13 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
 
 // dist/src/shell/deeplake-shell.js
 async function main() {
+  const isOneShot = process.argv.includes("-c");
+  if (isOneShot) {
+    delete process.env["HIVEMIND_TRACE_SQL"];
+    delete process.env["DEEPLAKE_TRACE_SQL"];
+    delete process.env["HIVEMIND_DEBUG"];
+    delete process.env["DEEPLAKE_DEBUG"];
+  }
   const config = loadConfig();
   if (!config) {
     process.stderr.write("Deeplake credentials not found.\nSet HIVEMIND_TOKEN + HIVEMIND_ORG_ID in environment, or create ~/.deeplake/credentials.json\n");
@@ -68928,7 +69162,6 @@ async function main() {
   const table = process.env["HIVEMIND_TABLE"] ?? "memory";
   const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
   const mount = process.env["HIVEMIND_MOUNT"] ?? "/";
-  const isOneShot = process.argv.includes("-c");
   const client = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
   if (!isOneShot) {
     process.stderr.write(`Connecting to deeplake://${config.workspaceId}/${table} ...

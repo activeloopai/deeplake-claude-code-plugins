@@ -7,6 +7,7 @@
 
 import type { DeeplakeApi } from "../deeplake-api.js";
 import { grepBothTables, type GrepMatchParams } from "../shell/grep-core.js";
+import { capOutputForClaude } from "../utils/output-cap.js";
 
 export interface GrepParams {
   pattern: string;
@@ -20,53 +21,142 @@ export interface GrepParams {
   fixedString: boolean;
 }
 
+function splitFirstPipelineStage(cmd: string): string | null {
+  const input = cmd.trim();
+  let quote: "'" | "\"" | null = null;
+  let escaped = false;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+        continue;
+      }
+      if (ch === "\\" && quote === "\"") {
+        escaped = true;
+      }
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" || ch === "\"") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "|") return input.slice(0, i).trim();
+  }
+
+  return quote ? null : input;
+}
+
+function tokenizeGrepStage(input: string): string[] | null {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+      } else if (ch === "\\" && quote === "\"" && i + 1 < input.length) {
+        current += input[++i];
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+
+    if (ch === "'" || ch === "\"") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < input.length) {
+      current += input[++i];
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += ch;
+  }
+
+  if (quote) return null;
+  if (current) tokens.push(current);
+  return tokens;
+}
+
 /** Parse a bash grep/egrep/fgrep command string into GrepParams. */
 export function parseBashGrep(cmd: string): GrepParams | null {
-  const first = cmd.trim().split(/\s*\|\s*/)[0];
+  const first = splitFirstPipelineStage(cmd);
+  if (!first) return null;
   if (!/^(grep|egrep|fgrep)\b/.test(first)) return null;
 
   const isFixed = first.startsWith("fgrep");
 
-  // Tokenize respecting single/double quotes
-  const tokens: string[] = [];
-  let pos = 0;
-  while (pos < first.length) {
-    if (first[pos] === " " || first[pos] === "\t") { pos++; continue; }
-    if (first[pos] === "'" || first[pos] === '"') {
-      const q = first[pos];
-      let end = pos + 1;
-      while (end < first.length && first[end] !== q) end++;
-      tokens.push(first.slice(pos + 1, end));
-      pos = end + 1;
-    } else {
-      let end = pos;
-      while (end < first.length && first[end] !== " " && first[end] !== "\t") end++;
-      tokens.push(first.slice(pos, end));
-      pos = end;
-    }
-  }
+  const tokens = tokenizeGrepStage(first);
+  if (!tokens || tokens.length === 0) return null;
 
   let ignoreCase = false, wordMatch = false, filesOnly = false, countOnly = false,
       lineNumber = false, invertMatch = false, fixedString = isFixed;
+  const explicitPatterns: string[] = [];
 
   let ti = 1;
-  while (ti < tokens.length && tokens[ti].startsWith("-") && tokens[ti] !== "--") {
-    const flag = tokens[ti];
-    if (flag.startsWith("--")) {
-      const handlers: Record<string, () => void> = {
-        "--ignore-case": () => { ignoreCase = true; },
-        "--word-regexp": () => { wordMatch = true; },
-        "--files-with-matches": () => { filesOnly = true; },
-        "--count": () => { countOnly = true; },
-        "--line-number": () => { lineNumber = true; },
-        "--invert-match": () => { invertMatch = true; },
-        "--fixed-strings": () => { fixedString = true; },
-      };
-      handlers[flag]?.();
-      ti++; continue;
+  while (ti < tokens.length) {
+    const token = tokens[ti];
+    if (token === "--") {
+      ti++;
+      break;
     }
-    for (const c of flag.slice(1)) {
-      switch (c) {
+    if (!token.startsWith("-") || token === "-") break;
+
+    if (token.startsWith("--")) {
+      const [flag, inlineValue] = token.split("=", 2);
+      const handlers: Record<string, () => boolean> = {
+        "--ignore-case": () => { ignoreCase = true; return false; },
+        "--word-regexp": () => { wordMatch = true; return false; },
+        "--files-with-matches": () => { filesOnly = true; return false; },
+        "--count": () => { countOnly = true; return false; },
+        "--line-number": () => { lineNumber = true; return false; },
+        "--invert-match": () => { invertMatch = true; return false; },
+        "--fixed-strings": () => { fixedString = true; return false; },
+        "--after-context": () => inlineValue === undefined,
+        "--before-context": () => inlineValue === undefined,
+        "--context": () => inlineValue === undefined,
+        "--max-count": () => inlineValue === undefined,
+        "--regexp": () => {
+          if (inlineValue !== undefined) {
+            explicitPatterns.push(inlineValue);
+            return false;
+          }
+          return true;
+        },
+      };
+      const consumeNext = handlers[flag]?.() ?? false;
+      if (consumeNext) {
+        ti++;
+        if (ti >= tokens.length) return null;
+        if (flag === "--regexp") explicitPatterns.push(tokens[ti]);
+      }
+      ti++;
+      continue;
+    }
+
+    const shortFlags = token.slice(1);
+    for (let i = 0; i < shortFlags.length; i++) {
+      const flag = shortFlags[i];
+      switch (flag) {
         case "i": ignoreCase = true; break;
         case "w": wordMatch = true; break;
         case "l": filesOnly = true; break;
@@ -74,19 +164,47 @@ export function parseBashGrep(cmd: string): GrepParams | null {
         case "n": lineNumber = true; break;
         case "v": invertMatch = true; break;
         case "F": fixedString = true; break;
-        // r/R/E: no-op (recursive implied, extended default)
+        case "r":
+        case "R":
+        case "E":
+          break;
+        case "A":
+        case "B":
+        case "C":
+        case "m":
+          if (i === shortFlags.length - 1) {
+            ti++;
+            if (ti >= tokens.length) return null;
+          }
+          i = shortFlags.length;
+          break;
+        case "e": {
+          const inlineValue = shortFlags.slice(i + 1);
+          if (inlineValue) {
+            explicitPatterns.push(inlineValue);
+          } else {
+            ti++;
+            if (ti >= tokens.length) return null;
+            explicitPatterns.push(tokens[ti]);
+          }
+          i = shortFlags.length;
+          break;
+        }
+        default:
+          break;
       }
     }
     ti++;
   }
-  if (ti < tokens.length && tokens[ti] === "--") ti++;
-  if (ti >= tokens.length) return null;
 
-  let target = tokens[ti + 1] ?? "/";
+  const pattern = explicitPatterns.length > 0 ? explicitPatterns[0] : tokens[ti];
+  if (!pattern) return null;
+
+  let target = explicitPatterns.length > 0 ? (tokens[ti] ?? "/") : (tokens[ti + 1] ?? "/");
   if (target === "." || target === "./") target = "/";
 
   return {
-    pattern: tokens[ti], targetPath: target,
+    pattern, targetPath: target,
     ignoreCase, wordMatch, filesOnly, countOnly, lineNumber, invertMatch, fixedString,
   };
 }
@@ -112,5 +230,6 @@ export async function handleGrepDirect(
   };
 
   const output = await grepBothTables(api, table, sessionsTable, matchParams, params.targetPath);
-  return output.join("\n") || "(no matches)";
+  const joined = output.join("\n") || "(no matches)";
+  return capOutputForClaude(joined, { kind: "grep" });
 }
