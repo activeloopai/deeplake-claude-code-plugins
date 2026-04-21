@@ -1951,6 +1951,17 @@ async function processPreToolUse(input, deps = {}) {
   const toolPath = getReadTargetPath(input.tool_input) ?? input.tool_input.path ?? "";
   if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
     const guidance = "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. This virtual filesystem only supports bash builtins: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. python, python3, node, and curl are NOT available. You MUST rewrite your command using only the bash tools listed above and try again. For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
+    const isReadLike = /^(?:python3?|node|deno|bun|ruby|perl)\b/.test(cmd.trim());
+    const hasShellMeta = /[$`;|&<>()\\]/.test(cmd);
+    if (isReadLike && !hasShellMeta) {
+      const pathMatch = cmd.match(/~\/\.deeplake\/memory\/[\w./_-]+/) || toolPath.match(/~\/\.deeplake\/memory\/[\w./_-]+/);
+      const memPath = pathMatch ? pathMatch[0] : "";
+      const cleanPath = memPath ? rewritePaths(memPath) : "";
+      if (cleanPath && !cleanPath.endsWith("/")) {
+        logFn(`unsupported command on file, converting to cat: ${cleanPath}`);
+        return buildAllowDecision(`cat '${cleanPath.replace(/'/g, "'\\''")}'`, "[DeepLake] converted unsupported interpreter read to cat");
+      }
+    }
     logFn(`unsupported command, returning guidance: ${cmd}`);
     return buildAllowDecision(`echo ${JSON.stringify(guidance)}`, "[DeepLake] unsupported command \u2014 rewrite using bash builtins");
   }
