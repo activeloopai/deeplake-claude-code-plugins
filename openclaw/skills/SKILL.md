@@ -22,7 +22,7 @@ The user types `/hivemind_login` in chat. The plugin returns an auth URL. The us
 - **Recalls** relevant memories before each agent turn via keyword search.
 - **Stores** a long-lived API token at `~/.deeplake/credentials.json` after login.
 - **Does NOT** modify OpenClaw configuration or replace the built-in memory plugin.
-- **Network destinations**: `api.deeplake.ai` (memory storage, capture, recall) and `raw.githubusercontent.com` (version check on session start and via `/hivemind_update`).
+- **Network destinations**: `api.deeplake.ai` (memory storage, capture, recall) and `raw.githubusercontent.com` (version check, cached for 1h).
 
 ## Commands
 

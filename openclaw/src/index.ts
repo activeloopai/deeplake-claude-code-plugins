@@ -4,6 +4,7 @@ import { loadConfig } from "../../src/config.js";
 import { loadCredentials, saveCredentials, requestDeviceCode, pollForToken, listOrgs, switchOrg, listWorkspaces, switchWorkspace } from "../../src/commands/auth.js";
 import { DeeplakeApi } from "../../src/deeplake-api.js";
 import { sqlStr, sqlLike } from "../../src/utils/sql.js";
+import { getLatestVersionCached, isNewer } from "../../src/hooks/version-check.js";
 
 interface PluginConfig {
   autoCapture?: boolean;
@@ -54,21 +55,11 @@ async function getInstalledVersion(): Promise<string | null> {
   return null;
 }
 
-function isNewer(latest: string, current: string): boolean {
-  const parse = (v: string) => v.replace(/-.*$/, "").split(".").map(Number);
-  const [la, lb, lc] = parse(latest);
-  const [ca, cb, cc] = parse(current);
-  return la > ca || (la === ca && lb > cb) || (la === ca && lb === cb && lc > cc);
-}
-
 async function checkForUpdate(logger: PluginLogger): Promise<void> {
   try {
     const current = await getInstalledVersion();
     if (!current) return;
-    const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(3000) });
-    if (!res.ok) return;
-    const manifest = await res.json() as { version?: string };
-    const latest = manifest.version ?? null;
+    const latest = await getLatestVersionCached({ url: VERSION_URL, timeoutMs: 3000 });
     if (latest && isNewer(latest, current)) {
       logger.info?.(`⬆️ Hivemind update available: ${current} → ${latest}. Run: openclaw plugins update hivemind`);
     }
@@ -279,19 +270,12 @@ export default definePluginEntry({
         handler: async () => {
           const current = await getInstalledVersion();
           if (!current) return { text: "Could not determine installed version." };
-          try {
-            const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(3000) });
-            if (!res.ok) return { text: `Current version: ${current}. Could not check for updates.` };
-            const pkg = await res.json();
-            const latest = typeof pkg.version === "string" ? pkg.version : null;
-            if (!latest) return { text: `Current version: ${current}. Could not parse latest version.` };
-            if (isNewer(latest, current)) {
-              return { text: `⬆️ Update available: ${current} → ${latest}\n\nRun in your terminal:\n\`openclaw plugins update hivemind\`` };
-            }
-            return { text: `✅ Hivemind v${current} is up to date.` };
-          } catch {
-            return { text: `Current version: ${current}. Could not check for updates.` };
+          const latest = await getLatestVersionCached({ url: VERSION_URL, timeoutMs: 3000 });
+          if (!latest) return { text: `Current version: ${current}. Could not check for updates.` };
+          if (isNewer(latest, current)) {
+            return { text: `⬆️ Update available: ${current} → ${latest}\n\nRun in your terminal:\n\`openclaw plugins update hivemind\`` };
           }
+          return { text: `✅ Hivemind v${current} is up to date.` };
         },
       });
     }
