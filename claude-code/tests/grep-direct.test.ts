@@ -8,16 +8,14 @@ describe("handleGrepDirect", () => {
     lineNumber: false, invertMatch: false, fixedString: false,
   };
 
-  function mockApi(mem: unknown[], sess: unknown[]) {
+  function mockApi(rows: unknown[]) {
     return {
-      query: vi.fn()
-        .mockImplementationOnce(async () => mem)
-        .mockImplementationOnce(async () => sess),
+      query: vi.fn().mockImplementationOnce(async () => rows),
     } as any;
   }
 
   it("returns null when pattern is empty", async () => {
-    const api = mockApi([], []);
+    const api = mockApi([]);
     const r = await handleGrepDirect(api, "memory", "sessions", { ...baseParams, pattern: "" });
     expect(r).toBeNull();
     expect(api.query).not.toHaveBeenCalled();
@@ -26,30 +24,29 @@ describe("handleGrepDirect", () => {
   it("delegates to grepBothTables and joins the match lines", async () => {
     const api = mockApi(
       [{ path: "/summaries/a.md", content: "foo line here\nbar line" }],
-      [],
     );
     const r = await handleGrepDirect(api, "memory", "sessions", baseParams);
     expect(r).toBe("foo line here");
   });
 
   it("emits '(no matches)' when both tables return nothing", async () => {
-    const api = mockApi([], []);
+    const api = mockApi([]);
     const r = await handleGrepDirect(api, "memory", "sessions", baseParams);
     expect(r).toBe("(no matches)");
   });
 
   it("merges results from both memory and sessions", async () => {
-    const api = mockApi(
-      [{ path: "/summaries/a.md", content: "foo in summary" }],
-      [{ path: "/sessions/b.jsonl", content: "foo in session" }],
-    );
+    const api = mockApi([
+      { path: "/summaries/a.md", content: "foo in summary" },
+      { path: "/sessions/b.jsonl", content: "foo in session" },
+    ]);
     const r = await handleGrepDirect(api, "memory", "sessions", baseParams);
     expect(r).toContain("/summaries/a.md:foo in summary");
     expect(r).toContain("/sessions/b.jsonl:foo in session");
   });
 
   it("applies ignoreCase flag at SQL level (ILIKE)", async () => {
-    const api = mockApi([{ path: "/a", content: "Foo" }], []);
+    const api = mockApi([{ path: "/a", content: "Foo" }]);
     await handleGrepDirect(api, "memory", "sessions", { ...baseParams, ignoreCase: true });
     const sql = api.query.mock.calls[0][0] as string;
     expect(sql).toContain("ILIKE");
@@ -92,6 +89,13 @@ describe("parseBashGrep: long options", () => {
     const r = parseBashGrep("grep --unknown-flag foo /x");
     expect(r).not.toBeNull();
     expect(r!.pattern).toBe("foo");
+  });
+
+  it("accepts grep no-op long options that take inline numeric values", () => {
+    const r = parseBashGrep("grep --after-context=2 --before-context=3 --context=4 --max-count=1 foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+    expect(r!.targetPath).toBe("/x");
   });
 });
 
@@ -138,6 +142,10 @@ describe("parseBashGrep", () => {
   it("returns null when no pattern given", () => {
     expect(parseBashGrep("grep")).toBeNull();
     expect(parseBashGrep("grep -r")).toBeNull();
+  });
+
+  it("returns null for unterminated quoted commands", () => {
+    expect(parseBashGrep('grep "unterminated /dir')).toBeNull();
   });
 
   // ── Flag parsing ──
@@ -225,6 +233,102 @@ describe("parseBashGrep", () => {
     const r = parseBashGrep("grep 'pattern' /dir | head -5");
     expect(r).not.toBeNull();
     expect(r!.pattern).toBe("pattern");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("does not split on alternation pipes inside quotes", () => {
+    const r = parseBashGrep("grep 'book|read' /dir | head -5");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("book|read");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("keeps escaped spaces inside unquoted patterns", () => {
+    const r = parseBashGrep("grep Melanie\\ sunrise /dir");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("Melanie sunrise");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("consumes -A numeric values without treating them as paths", () => {
+    const r = parseBashGrep("grep -A 5 'Caroline' /summaries/");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("Caroline");
+    expect(r!.targetPath).toBe("/summaries/");
+  });
+
+  it("consumes attached -B numeric values without shifting the target path", () => {
+    const r = parseBashGrep("grep -B5 'friends' /sessions/");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("friends");
+    expect(r!.targetPath).toBe("/sessions/");
+  });
+
+  it("consumes -m values without shifting the target path", () => {
+    const r = parseBashGrep("grep -m 1 'single' /dir");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("single");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("uses -e as the explicit pattern source", () => {
+    const r = parseBashGrep("grep -e 'book|read' /dir");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("book|read");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("uses inline -e values as the explicit pattern source", () => {
+    const r = parseBashGrep("grep -ebook /dir");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("book");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("uses --regexp= as the explicit pattern source", () => {
+    const r = parseBashGrep("grep --regexp=book\\|read /dir");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("book|read");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("defaults explicit -e searches to / when no target path is given", () => {
+    const r = parseBashGrep("grep -e 'book|read'");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("book|read");
+    expect(r!.targetPath).toBe("/");
+  });
+
+  it("returns null when a value-taking long option is missing its value", () => {
+    expect(parseBashGrep("grep --after-context")).toBeNull();
+  });
+
+  it("returns null when -A is missing its value", () => {
+    expect(parseBashGrep("grep -A")).toBeNull();
+  });
+
+  it("returns null when -e is missing its value", () => {
+    expect(parseBashGrep("grep -e")).toBeNull();
+  });
+
+  it("tolerates unknown short flags without crashing", () => {
+    const r = parseBashGrep("grep -Z foo /dir");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("preserves escaped pipes outside quotes as part of the pattern", () => {
+    const r = parseBashGrep("grep foo\\|bar /dir | head -5");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo|bar");
+    expect(r!.targetPath).toBe("/dir");
+  });
+
+  it("preserves escaped quotes inside double-quoted patterns", () => {
+    const r = parseBashGrep('grep "foo\\"bar" /dir');
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe('foo"bar');
     expect(r!.targetPath).toBe("/dir");
   });
 });

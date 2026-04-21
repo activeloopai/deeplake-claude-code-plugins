@@ -5,9 +5,6 @@
  * Only reads local credentials and injects context into Codex's developer prompt.
  * All server calls (table setup, placeholder, version check) are handled by
  * session-start-setup.js which runs as a separate async hook.
- *
- * Codex input:  { session_id, transcript_path, cwd, hook_event_name, model, source }
- * Codex output: plain text on stdout (added as developer context)
  */
 
 import { spawn } from "node:child_process";
@@ -16,20 +13,32 @@ import { dirname, join } from "node:path";
 import { loadCredentials } from "../../commands/auth.js";
 import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
-import { getInstalledVersion } from "../../utils/version-check.js";
+import { isDirectRun } from "../../utils/direct-run.js";
+import { getInstalledVersion } from "../version-check.js";
+
 const log = (msg: string) => _log("codex-session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
 const AUTH_CMD = join(__bundleDir, "commands", "auth-login.js");
 
-const context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
+export const CODEX_SESSION_START_CONTEXT = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
 
-Structure: index.md (start here) → summaries/*.md → sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
+Structure: index.md (start here) → summaries/*.md → sessions/{author}/* (last resort). Do NOT jump straight to raw session files.
+When index.md identifies a likely match, read that exact summary or session path directly before broader grep variants.
+If index.md already points to likely candidate files, open those exact files before broader synonym greps or wide exploratory scans.
+Do NOT probe unrelated local paths such as ~/.claude/projects/, arbitrary home directories, or guessed summary roots for Deeplake recall tasks.
+TEMPORAL GROUNDING: If a summary or transcript uses relative time like "last year", "last week", or "next month", resolve it against that session's own date/date_time metadata, not today's date.
+TEMPORAL FOLLOW-THROUGH: If a summary only gives a relative time, open the linked source session and use its date/date_time to convert the final answer into an absolute month/date/year or explicit range before responding.
+ANSWER SHAPE: Once you have enough evidence, answer with the smallest exact phrase supported by memory. For identity or relationship questions, use just the noun phrase. For education questions, answer with the likely field or credential directly, not the broader life story. For "when" questions, prefer absolute dates/months/years over relative phrases. Avoid extra biography, explanation, or hedging.
+NOT-FOUND BAR: Do NOT answer "not found" until you have checked index.md plus at least one likely summary or raw session file for the named person. If keyword grep is empty, grep the person's name alone and inspect the candidate files.
+NEGATIVE-EVIDENCE QUESTIONS: For identity, relationship status, and research-topic questions, summaries may omit the exact phrase. If likely summaries are ambiguous, read the candidate raw session transcript and look for positive clues before concluding the answer is absent.
+SELF-LABEL PRIORITY: For identity questions, prefer the person's own explicit self-label from the transcript over broader category descriptions or paraphrases.
+RELATIONSHIP STATUS INFERENCE: For relationship-status questions, treat explicit self-descriptions about partnership, dating, marriage, or parenting plans as status evidence. If the transcript strongly supports an unpartnered status, answer with the concise status phrase instead of "not found."
 Search: grep -r "keyword" ~/.deeplake/memory/
 IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem.
 Do NOT spawn subagents to read deeplake memory.`;
 
-interface CodexSessionStartInput {
+export interface CodexSessionStartInput {
   session_id: string;
   transcript_path?: string | null;
   cwd: string;
@@ -38,48 +47,70 @@ interface CodexSessionStartInput {
   source?: string;
 }
 
-async function main(): Promise<void> {
-  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
+export function buildCodexSessionStartContext(args: {
+  creds: ReturnType<typeof loadCredentials>;
+  currentVersion: string | null;
+  authCommand: string;
+}): string {
+  const versionNotice = args.currentVersion ? `\nHivemind v${args.currentVersion}` : "";
+  return args.creds?.token
+    ? `${CODEX_SESSION_START_CONTEXT}\nLogged in to Deeplake as org: ${args.creds.orgName ?? args.creds.orgId} (workspace: ${args.creds.workspaceId ?? "default"})${versionNotice}`
+    : `${CODEX_SESSION_START_CONTEXT}\nNot logged in to Deeplake. Run: node "${args.authCommand}" login${versionNotice}`;
+}
 
-  const input = await readStdin<CodexSessionStartInput>();
+interface CodexSessionStartDeps {
+  wikiWorker?: boolean;
+  creds?: ReturnType<typeof loadCredentials>;
+  spawnFn?: typeof spawn;
+  currentVersion?: string | null;
+  authCommand?: string;
+  setupScript?: string;
+  logFn?: (msg: string) => void;
+}
 
-  const creds = loadCredentials();
+export async function runCodexSessionStartHook(input: CodexSessionStartInput, deps: CodexSessionStartDeps = {}): Promise<string | null> {
+  const {
+    wikiWorker = (process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1",
+    creds = loadCredentials(),
+    spawnFn = spawn,
+    currentVersion = getInstalledVersion(__bundleDir, ".codex-plugin"),
+    authCommand = AUTH_CMD,
+    setupScript = join(__bundleDir, "session-start-setup.js"),
+    logFn = log,
+  } = deps;
 
-  if (!creds?.token) {
-    log("no credentials found — run auth login to authenticate");
-  } else {
-    log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
-  }
+  if (wikiWorker) return null;
 
-  // Spawn async setup (table creation, placeholder, version check) as detached process.
-  // Codex doesn't support async hooks, so we use the same pattern as the wiki worker.
+  if (!creds?.token) logFn("no credentials found — run auth login to authenticate");
+  else logFn(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
+
   if (creds?.token) {
-    const setupScript = join(__bundleDir, "session-start-setup.js");
-    const child = spawn("node", [setupScript], {
+    const child = spawnFn("node", [setupScript], {
       detached: true,
       stdio: ["pipe", "ignore", "ignore"],
       env: { ...process.env },
     });
-    // Feed the same stdin input to the setup process
     child.stdin?.write(JSON.stringify(input));
     child.stdin?.end();
     child.unref();
-    log("spawned async setup process");
+    logFn("spawned async setup process");
   }
 
-  let versionNotice = "";
-  const current = getInstalledVersion(__bundleDir, ".codex-plugin");
-  if (current) {
-    versionNotice = `\nHivemind v${current}`;
-  }
-
-  const additionalContext = creds?.token
-    ? `${context}\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${versionNotice}`
-    : `${context}\nNot logged in to Deeplake. Run: node "${AUTH_CMD}" login${versionNotice}`;
-
-  // Codex SessionStart: plain text on stdout is added as developer context.
-  // JSON { additionalContext } format is rejected by Codex 0.118.0.
-  console.log(additionalContext);
+  return buildCodexSessionStartContext({
+    creds,
+    currentVersion,
+    authCommand,
+  });
 }
 
-main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
+/* c8 ignore start */
+async function main(): Promise<void> {
+  const input = await readStdin<CodexSessionStartInput>();
+  const output = await runCodexSessionStartHook(input);
+  if (output) console.log(output);
+}
+
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
+}
+/* c8 ignore stop */

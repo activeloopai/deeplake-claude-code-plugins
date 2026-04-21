@@ -12,9 +12,6 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { finalizeSummary, releaseLock } from "../summary-state.js";
 import { uploadSummary } from "../upload-summary.js";
-import { log as _log } from "../../utils/debug.js";
-
-const dlog = (msg: string) => _log("codex-wiki-worker", msg);
 
 interface WorkerConfig {
   apiUrl: string;
@@ -91,11 +88,7 @@ async function query(sql: string, retries = 4): Promise<Record<string, unknown>[
 }
 
 function cleanup(): void {
-  try {
-    rmSync(tmpDir, { recursive: true, force: true });
-  } catch (cleanupErr: any) {
-    dlog(`cleanup failed to remove ${tmpDir}: ${cleanupErr.message}`);
-  }
+  try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 async function main(): Promise<void> {
@@ -203,11 +196,7 @@ async function main(): Promise<void> {
     wlog(`fatal: ${e.message}`);
   } finally {
     cleanup();
-    try {
-      releaseLock(cfg.sessionId);
-    } catch (releaseErr: any) {
-      dlog(`releaseLock failed in finally for ${cfg.sessionId}: ${releaseErr.message}`);
-    }
+    try { releaseLock(cfg.sessionId); } catch { /* ignore */ }
   }
 }
 

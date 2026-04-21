@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { DeeplakeApi, WriteRow } from "../../src/deeplake-api.js";
 
 // ��─ Mock fetch ──────────────────────────────────────────────────────────────
@@ -20,6 +23,11 @@ function makeApi(table = "test_table") {
 
 beforeEach(() => {
   mockFetch.mockReset();
+  process.env.HIVEMIND_INDEX_MARKER_DIR = mkdtempSync(join(tmpdir(), "hivemind-index-marker-"));
+});
+
+afterEach(() => {
+  delete process.env.HIVEMIND_INDEX_MARKER_DIR;
 });
 
 // ── query() ─────────────────────────────────────────────────────────────────
@@ -79,6 +87,23 @@ describe("DeeplakeApi.query", () => {
     expect(rows).toEqual([{ x: "ok" }]);
   });
 
+  it("retries transient HTML 403s for session inserts", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        json: async () => ({}),
+        text: async () => "<html><head><title>403 Forbidden</title></head><body>nginx</body></html>",
+      })
+      .mockResolvedValueOnce(jsonResponse({}));
+    const api = makeApi();
+    const rows = await api.query(
+      'INSERT INTO "sessions" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES (\'id\', \'/p\', \'f\', \'{}\'::jsonb, \'u\', 2, \'p\', \'Stop\', \'claude_code\', \'t\', \'t\')',
+    );
+    expect(rows).toEqual([]);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
   it("retries on 502/503/504", async () => {
     mockFetch
       .mockResolvedValueOnce(jsonResponse("", 502))
@@ -118,6 +143,25 @@ describe("DeeplakeApi.query", () => {
     mockFetch.mockRejectedValue(new Error("DNS_FAIL"));
     const api = makeApi();
     await expect(api.query("SELECT 1")).rejects.toThrow("DNS_FAIL");
+  });
+
+  it("fails fast on timeout-like fetch errors without retrying", async () => {
+    const timeoutError = new Error("request timed out");
+    timeoutError.name = "TimeoutError";
+    mockFetch.mockRejectedValueOnce(timeoutError);
+    const api = makeApi();
+
+    await expect(api.query("SELECT 1")).rejects.toThrow("Query timeout after 10000ms");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes an abort signal to query fetches", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["x"], rows: [["ok"]] }));
+    const api = makeApi();
+    await api.query("SELECT 1");
+
+    const opts = mockFetch.mock.calls[0][1];
+    expect(opts.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("wraps non-Error fetch exceptions", async () => {
@@ -328,6 +372,19 @@ describe("DeeplakeApi.listTables", () => {
     const api = makeApi();
     expect(await api.listTables()).toEqual([]);
   });
+
+  it("caches successful results per api instance", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ tables: [{ table_name: "memory" }, { table_name: "sessions" }] }),
+    });
+    const api = makeApi();
+
+    expect(await api.listTables()).toEqual(["memory", "sessions"]);
+    expect(await api.listTables()).toEqual(["memory", "sessions"]);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ── ensureTable ─────────────────────────────────────────────────────────────
@@ -371,6 +428,28 @@ describe("DeeplakeApi.ensureTable", () => {
     const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
     expect(createSql).toContain("custom_table");
   });
+
+  it("reuses cached listTables across ensureTable and ensureSessionsTable", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [{ table_name: "memory" }] }),
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    const api = makeApi("memory");
+
+    await api.ensureTable();
+    await api.ensureSessionsTable("sessions");
+
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    expect(createSql).toContain("CREATE TABLE IF NOT EXISTS");
+    expect(createSql).toContain("sessions");
+    const indexSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
+    expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
+    expect(indexSql).toContain("\"path\"");
+    expect(indexSql).toContain("\"creation_date\"");
+  });
 });
 
 // ── ensureSessionsTable ─────────────────────────────────────────────────────
@@ -382,6 +461,7 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
       json: async () => ({ tables: [] }),
     });
     mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
     const api = makeApi();
     await api.ensureSessionsTable("sessions");
     const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
@@ -389,15 +469,50 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
     expect(createSql).toContain("sessions");
     expect(createSql).toContain("JSONB");
     expect(createSql).toContain("USING deeplake");
+    const indexSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
+    expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
+    expect(indexSql).toContain("\"sessions\"");
+    expect(indexSql).toContain("(\"path\", \"creation_date\")");
   });
 
-  it("does nothing when sessions table already exists", async () => {
+  it("ensures the lookup index when sessions table already exists", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "sessions" }] }),
     });
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
     const api = makeApi();
     await api.ensureSessionsTable("sessions");
-    expect(mockFetch).toHaveBeenCalledOnce();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const indexSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
+  });
+
+  it("ignores lookup-index creation errors after ensuring the sessions table", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [{ table_name: "sessions" }] }),
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse("forbidden", 403));
+    const api = makeApi();
+
+    await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats duplicate concurrent index creation errors as success and records a local marker", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [{ table_name: "sessions" }] }),
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse("duplicate key value violates unique constraint \"pg_class_relname_nsp_index\"", 400));
+
+    const api = makeApi();
+    await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
+
+    mockFetch.mockReset();
+    await api.ensureSessionsTable("sessions");
+
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });

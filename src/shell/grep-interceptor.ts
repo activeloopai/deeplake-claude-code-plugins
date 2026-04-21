@@ -4,14 +4,14 @@ import yargsParser from "yargs-parser";
 import type { DeeplakeFs } from "./deeplake-fs.js";
 
 import {
+  buildGrepSearchOptions,
+  buildPathFilterForTargets,
   searchDeeplakeTables,
-  buildPathFilter,
   normalizeContent,
   refineGrepMatches,
   type GrepMatchParams,
   type ContentRow,
 } from "./grep-core.js";
-import { sqlLike } from "../utils/sql.js";
 
 const MAX_FALLBACK_CANDIDATES = 500;
 
@@ -71,28 +71,18 @@ export function createGrepCommand(
       countOnly: Boolean(parsed.c || parsed["count"]),
     };
 
-    const likeOp = matchParams.ignoreCase ? "ILIKE" : "LIKE";
-    const hasRegexMeta = !matchParams.fixedString && /[.*+?^${}()|[\]\\]/.test(pattern);
-    const escapedPattern = sqlLike(pattern);
-
-    // Targets can be multiple; we run one SQL round per distinct target so the
-    // per-table pathFilter can prune server-side. In practice targets is 1-2
-    // entries, so the cost is negligible and still faster than the old shell.
     let rows: ContentRow[] = [];
     try {
-      const perTarget = await Promise.race([
-        Promise.all(targets.map(t =>
-          searchDeeplakeTables(client, table, sessionsTable ?? "sessions", {
-            pathFilter: buildPathFilter(t),
-            contentScanOnly: hasRegexMeta,
-            likeOp,
-            escapedPattern,
-            limit: 100,
-          })
-        )),
+      const searchOptions = {
+        ...buildGrepSearchOptions(matchParams, targets[0] ?? ctx.cwd),
+        pathFilter: buildPathFilterForTargets(targets),
+        limit: 100,
+      };
+      const queryRows = await Promise.race([
+        searchDeeplakeTables(client, table, sessionsTable ?? "sessions", searchOptions),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 3000)),
       ]);
-      for (const batch of perTarget) rows.push(...batch);
+      rows.push(...queryRows);
     } catch {
       rows = []; // fall through to in-memory fallback
     }

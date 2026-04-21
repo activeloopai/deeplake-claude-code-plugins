@@ -137,6 +137,17 @@ describe("claude-code integration: session-start.js (sync hook)", () => {
     expect(ctx).toMatch(/Logged in to Deeplake|Not logged in to Deeplake/);
   });
 
+  it("steers recall tasks toward index-first exact file reads", () => {
+    const raw = runHook("session-start.js", baseInput);
+    const parsed = JSON.parse(raw);
+    const ctx = parsed.hookSpecificOutput.additionalContext;
+    expect(ctx).toContain("Always read index.md first");
+    expect(ctx).toContain("read that exact summary or session file directly");
+    expect(ctx).toContain("Do NOT probe unrelated local paths");
+    expect(ctx).toContain("answer with the smallest exact phrase supported by memory");
+    expect(ctx).toContain("convert the final answer into an absolute month/date/year");
+  });
+
   it("completes within 3s with no credentials (no server calls)", () => {
     const start = Date.now();
     runHook("session-start.js", baseInput);

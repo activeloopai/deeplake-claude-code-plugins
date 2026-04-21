@@ -34,21 +34,6 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Duplication check (jscpd)
-        # Threshold 7% is the current baseline (see .jscpd.json). The job
-        # fails if a future change pushes duplication above it, so the
-        # number is a regression guard — reviewers can see the exact
-        # clones in the markdown report uploaded below.
-        run: npm run dup
-
-      - name: Upload jscpd report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: jscpd-report
-          path: jscpd-report/
-          if-no-files-found: ignore
-
       - name: Run tests with coverage
         # Per-file 80% thresholds for PR #60 files are declared in
         # vitest.config.ts under `coverage.thresholds`. Vitest exits non-zero

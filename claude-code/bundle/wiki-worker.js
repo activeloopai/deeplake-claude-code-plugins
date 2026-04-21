@@ -14,18 +14,11 @@ var LOG = join(homedir(), ".deeplake", "hook-debug.log");
 function utcTimestamp(d = /* @__PURE__ */ new Date()) {
   return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
 }
-function log(tag, msg) {
-  if (!DEBUG)
-    return;
-  appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
-`);
-}
 
 // dist/src/hooks/summary-state.js
 import { readFileSync, writeFileSync, writeSync, mkdirSync, renameSync, existsSync, unlinkSync, openSync, closeSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join2 } from "node:path";
-var dlog = (msg) => log("summary-state", msg);
 var STATE_DIR = join2(homedir2(), ".claude", "hooks", "summary-state");
 var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
 function statePath(sessionId) {
@@ -63,11 +56,9 @@ function withRmwLock(sessionId, fn) {
       if (e.code !== "EEXIST")
         throw e;
       if (Date.now() > deadline) {
-        dlog(`rmw lock deadline exceeded for ${sessionId}, reclaiming stale lock`);
         try {
           unlinkSync(rmwLock);
-        } catch (unlinkErr) {
-          dlog(`stale rmw lock unlink failed for ${sessionId}: ${unlinkErr.message}`);
+        } catch {
         }
         continue;
       }
@@ -80,8 +71,7 @@ function withRmwLock(sessionId, fn) {
     closeSync(fd);
     try {
       unlinkSync(rmwLock);
-    } catch (unlinkErr) {
-      dlog(`rmw lock cleanup failed for ${sessionId}: ${unlinkErr.message}`);
+    } catch {
     }
   }
 }
@@ -98,10 +88,7 @@ function finalizeSummary(sessionId, jsonlLines) {
 function releaseLock(sessionId) {
   try {
     unlinkSync(lockPath(sessionId));
-  } catch (e) {
-    if (e?.code !== "ENOENT") {
-      dlog(`releaseLock unlink failed for ${sessionId}: ${e.message}`);
-    }
+  } catch {
   }
 }
 
@@ -131,7 +118,6 @@ async function uploadSummary(query2, params) {
 }
 
 // dist/src/hooks/wiki-worker.js
-var dlog2 = (msg) => log("wiki-worker", msg);
 var cfg = JSON.parse(readFileSync2(process.argv[2], "utf-8"));
 var tmpDir = cfg.tmpDir;
 var tmpJsonl = join3(tmpDir, "session.jsonl");
@@ -179,8 +165,7 @@ async function query(sql, retries = 4) {
 function cleanup() {
   try {
     rmSync(tmpDir, { recursive: true, force: true });
-  } catch (cleanupErr) {
-    dlog2(`cleanup failed to remove ${tmpDir}: ${cleanupErr.message}`);
+  } catch {
   }
 }
 async function main() {
@@ -263,8 +248,7 @@ async function main() {
     cleanup();
     try {
       releaseLock(cfg.sessionId);
-    } catch (releaseErr) {
-      dlog2(`releaseLock failed in finally for ${cfg.sessionId}: ${releaseErr.message}`);
+    } catch {
     }
   }
 }
