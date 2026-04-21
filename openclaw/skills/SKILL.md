@@ -1,10 +1,10 @@
 ---
 name: hivemind
 description: Cloud-backed shared memory for AI agents. Install once, memory persists across sessions, machines, and channels.
-allowed-tools: Read
+allowed-tools: Read, Bash
 ---
 
-# Hivemind Memory
+# Hivemind
 
 Cloud-backed shared memory powered by Deeplake.
 
@@ -14,24 +14,26 @@ Cloud-backed shared memory powered by Deeplake.
 
 ## Authentication
 
-The user types `/hivemind_login` in chat. The plugin returns an auth URL. The user clicks it, signs in, and memory activates on the next message.
+The user types `/hivemind_login` in chat. The plugin returns an auth URL. The user clicks it, signs in, and memory activates on the next message. A long-lived API token is stored at `~/.deeplake/credentials.json`.
 
-## How it works
+## What the plugin does
 
-The plugin automatically:
-- **Captures** every conversation (user + assistant messages) to Deeplake cloud
-- **Recalls** relevant memories before each agent turn via keyword search
-- All data stored as structured rows — searchable, persistent, shared
+- **Captures** every conversation (user + assistant messages) and sends them to `api.deeplake.ai`. Disable anytime with `/hivemind_capture`.
+- **Recalls** relevant memories before each agent turn via keyword search.
+- **Stores** a long-lived API token at `~/.deeplake/credentials.json` after login.
+- **Does NOT** modify OpenClaw configuration or replace the built-in memory plugin.
+- All network requests go to `api.deeplake.ai` only.
 
 ## Commands
 
-- `/hivemind_login` — sign in
-- `/hivemind_capture` — toggle capture on/off
+- `/hivemind_login` — sign in via device flow
+- `/hivemind_capture` — toggle capture on/off (off = no data sent)
 - `/hivemind_whoami` — show current org and workspace
 - `/hivemind_orgs` — list organizations
 - `/hivemind_switch_org <name-or-id>` — switch organization
 - `/hivemind_workspaces` — list workspaces
 - `/hivemind_switch_workspace <id>` — switch workspace
+- `/hivemind_update` — check for plugin updates
 
 ## Sharing memory
 
