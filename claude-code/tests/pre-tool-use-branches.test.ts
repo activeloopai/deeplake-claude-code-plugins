@@ -191,6 +191,67 @@ describe("processPreToolUse: non-memory / no-op paths", () => {
     expect(d?.command).toContain(`node "/SHELL" -c`);
     expect(d?.description).toContain("[DeepLake shell]");
   });
+
+  it("rewrites python3 on a tilde memory path to cat", async () => {
+    const d = await processPreToolUse(
+      { session_id: "s", tool_name: "Bash", tool_input: { command: "python3 ~/.deeplake/memory/data.json" }, tool_use_id: "t" },
+      { config: BASE_CONFIG as any, logFn: vi.fn() },
+    );
+    expect(d?.command).toMatch(/^cat '\/[^']+'/);
+    expect(d?.command).toContain("/data.json");
+    expect(d?.command).not.toContain("RETRY REQUIRED");
+    expect(d?.description).toContain("converted unsupported interpreter read to cat");
+  });
+
+  it("rewrites python3 on an absolute memory path to cat", async () => {
+    const d = await processPreToolUse(
+      { session_id: "s", tool_name: "Bash", tool_input: { command: `python3 ${MEM_ABS}/session.json` }, tool_use_id: "t" },
+      { config: BASE_CONFIG as any, logFn: vi.fn() },
+    );
+    expect(d?.command).toMatch(/^cat '\/[^']+'/);
+    expect(d?.command).toContain("/session.json");
+    expect(d?.command).not.toContain("RETRY REQUIRED");
+  });
+
+  it("rewrites node on memory path to cat", async () => {
+    const d = await processPreToolUse(
+      { session_id: "s", tool_name: "Bash", tool_input: { command: "node ~/.deeplake/memory/foo/bar.json" }, tool_use_id: "t" },
+      { config: BASE_CONFIG as any, logFn: vi.fn() },
+    );
+    expect(d?.command).toMatch(/^cat '\/[^']+'/);
+  });
+
+  it("rewrites ruby on memory path to cat", async () => {
+    const d = await processPreToolUse(
+      { session_id: "s", tool_name: "Bash", tool_input: { command: "ruby ~/.deeplake/memory/a.rb" }, tool_use_id: "t" },
+      { config: BASE_CONFIG as any, logFn: vi.fn() },
+    );
+    expect(d?.command).toMatch(/^cat '\/[^']+'/);
+  });
+
+  it("does not rewrite python3 on a memory directory (trailing slash)", async () => {
+    const d = await processPreToolUse(
+      { session_id: "s", tool_name: "Bash", tool_input: { command: "python3 ~/.deeplake/memory/" }, tool_use_id: "t" },
+      { config: BASE_CONFIG as any, logFn: vi.fn() },
+    );
+    expect(d?.command).toContain("RETRY REQUIRED");
+  });
+
+  it("does not rewrite when shell metacharacters are present", async () => {
+    const d = await processPreToolUse(
+      { session_id: "s", tool_name: "Bash", tool_input: { command: "python3 ~/.deeplake/memory/a.json | head" }, tool_use_id: "t" },
+      { config: BASE_CONFIG as any, logFn: vi.fn() },
+    );
+    expect(d?.command).toContain("RETRY REQUIRED");
+  });
+
+  it("does not rewrite when cmd starts with a non-interpreter", async () => {
+    const d = await processPreToolUse(
+      { session_id: "s", tool_name: "Bash", tool_input: { command: "curl ~/.deeplake/memory/a.json" }, tool_use_id: "t" },
+      { config: BASE_CONFIG as any, logFn: vi.fn() },
+    );
+    expect(d?.command).toContain("RETRY REQUIRED");
+  });
 });
 
 describe("processPreToolUse: Glob / ls branches", () => {
