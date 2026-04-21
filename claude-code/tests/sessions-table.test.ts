@@ -77,11 +77,11 @@ function makeClient(memoryRows: Row[] = [], sessionRows: Row[] = []) {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe("DeeplakeFs — sessions table multi-row read", () => {
-  it("reads session file by concatenating rows ordered by creation_date", async () => {
+  it("reads session file by normalizing rows ordered by creation_date", async () => {
     const sessionRows: Row[] = [
       { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"user_message","content":"hello"}', size_bytes: 40, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
-      { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"tool_call","tool_name":"Read"}', size_bytes: 38, mime_type: "application/json", creation_date: "2026-01-01T00:00:02Z" },
-      { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"assistant_message","content":"done"}', size_bytes: 44, mime_type: "application/json", creation_date: "2026-01-01T00:00:03Z" },
+      { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"assistant_message","content":"done"}', size_bytes: 44, mime_type: "application/json", creation_date: "2026-01-01T00:00:02Z" },
+      { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"user_message","content":"bye"}', size_bytes: 42, mime_type: "application/json", creation_date: "2026-01-01T00:00:03Z" },
     ];
 
     const client = makeClient([], sessionRows);
@@ -90,9 +90,9 @@ describe("DeeplakeFs — sessions table multi-row read", () => {
     const content = await fs.readFile("/sessions/alice/alice_org_default_s1.jsonl");
     const lines = content.split("\n");
     expect(lines).toHaveLength(3);
-    expect(JSON.parse(lines[0]).type).toBe("user_message");
-    expect(JSON.parse(lines[1]).type).toBe("tool_call");
-    expect(JSON.parse(lines[2]).type).toBe("assistant_message");
+    expect(lines[0]).toBe("[user] hello");
+    expect(lines[1]).toBe("[assistant] done");
+    expect(lines[2]).toBe("[user] bye");
   });
 
   it("preserves creation_date ordering even if inserted out of order", async () => {
@@ -121,9 +121,7 @@ describe("DeeplakeFs — sessions table multi-row read", () => {
     const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
 
     const content = await fs.readFile("/sessions/u/s1.jsonl");
-    const parsed = JSON.parse(content);
-    expect(parsed.type).toBe("user_message");
-    expect(parsed.content).toBe("hi");
+    expect(content).toBe("[user] hi");
   });
 
   it("lists session files in directory listing", async () => {

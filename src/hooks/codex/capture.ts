@@ -13,10 +13,19 @@
  */
 
 import { readStdin } from "../../utils/stdin.js";
-import { loadConfig } from "../../config.js";
+import { loadConfig, type Config } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { log as _log } from "../../utils/debug.js";
+import { buildSessionPath } from "../../utils/session-path.js";
+import {
+  bumpTotalCount,
+  loadTriggerConfig,
+  shouldTrigger,
+  tryAcquireLock,
+  releaseLock,
+} from "../summary-state.js";
+import { bundleDirFromImportMeta, spawnCodexWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 const log = (msg: string) => _log("codex-capture", msg);
 
 interface CodexHookInput {
@@ -35,11 +44,7 @@ interface CodexHookInput {
   tool_response?: Record<string, unknown>;
 }
 
-const CAPTURE = process.env.DEEPLAKE_CAPTURE !== "false";
-
-function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
-  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
-}
+const CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 
 async function main(): Promise<void> {
   if (!CAPTURE) return;
@@ -113,6 +118,44 @@ async function main(): Promise<void> {
   }
 
   log("capture ok");
+
+  maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
+}
+
+function maybeTriggerPeriodicSummary(sessionId: string, cwd: string, config: Config): void {
+  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
+
+  try {
+    const state = bumpTotalCount(sessionId);
+    const cfg = loadTriggerConfig();
+    if (!shouldTrigger(state, cfg)) return;
+
+    if (!tryAcquireLock(sessionId)) {
+      log(`periodic trigger suppressed (lock held) session=${sessionId}`);
+      return;
+    }
+
+    wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
+    try {
+      spawnCodexWikiWorker({
+        config,
+        sessionId,
+        cwd,
+        bundleDir: bundleDirFromImportMeta(import.meta.url),
+        reason: "Periodic",
+      });
+    } catch (e: any) {
+      log(`periodic spawn failed: ${e.message}`);
+      try {
+        releaseLock(sessionId);
+      } catch (releaseErr: any) {
+        log(`releaseLock after periodic spawn failure also failed: ${releaseErr.message}`);
+      }
+      throw e;
+    }
+  } catch (e: any) {
+    log(`periodic trigger error: ${e.message}`);
+  }
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });

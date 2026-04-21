@@ -64,5 +64,5 @@ After installing the plugin:
 
 ## Configuration
 
-- `DEEPLAKE_DEBUG=1 claude` — enable verbose logging to `~/.deeplake/hook-debug.log`
-- `DEEPLAKE_CAPTURE=false claude` — disable session capture
+- `HIVEMIND_DEBUG=1 claude` — enable verbose logging to `~/.deeplake/hook-debug.log`
+- `HIVEMIND_CAPTURE=false claude` — disable session capture

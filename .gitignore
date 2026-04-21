@@ -6,6 +6,9 @@ tmp/
 .env
 .env.*
 coverage/
+jscpd-report/
 bench/
 .claude/
 CLAUDE.md
+RESULTS-fast-path-all-commands.md
+PLAN-fast-path-all-commands.md

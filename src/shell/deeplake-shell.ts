@@ -11,11 +11,11 @@
  *   npm run shell -- -c "echo 'hello world' > /memory/hello.txt && cat /memory/hello.txt"
  *
  * Environment / credentials (any of):
- *   DEEPLAKE_TOKEN, DEEPLAKE_ORG_ID        — required
- *   DEEPLAKE_WORKSPACE_ID                  — default: "default"
- *   DEEPLAKE_API_URL                       — default: https://api.deeplake.ai
- *   DEEPLAKE_TABLE                         — default: "memory"
- *   DEEPLAKE_MOUNT                         — virtual root path, default: "/memory"
+ *   HIVEMIND_TOKEN, HIVEMIND_ORG_ID        — required
+ *   HIVEMIND_WORKSPACE_ID                  — default: "default"
+ *   HIVEMIND_API_URL                       — default: https://api.deeplake.ai
+ *   HIVEMIND_TABLE                         — default: "memory"
+ *   HIVEMIND_MOUNT                         — virtual root path, default: "/memory"
  *
  * Or create ~/.deeplake/credentials.json:
  *   { "token": "...", "orgId": "...", "workspaceId": "default" }
@@ -29,20 +29,32 @@ import { DeeplakeFs } from "./deeplake-fs.js";
 import { createGrepCommand } from "./grep-interceptor.js";
 
 async function main(): Promise<void> {
+  const isOneShot = process.argv.includes("-c");
+
+  // One-shot mode is what the pre-tool-use hook invokes via `node shell-bundle -c "..."`
+  // to execute compound bash commands. Claude Code's Bash tool merges the child's
+  // stderr into the tool_result string Claude sees, so any `[deeplake-sql]` trace
+  // written to stderr here pollutes the model's view of the command output.
+  // Silence trace env vars regardless of how the caller set them.
+  if (isOneShot) {
+    delete process.env["HIVEMIND_TRACE_SQL"];
+    delete process.env["DEEPLAKE_TRACE_SQL"];
+    delete process.env["HIVEMIND_DEBUG"];
+    delete process.env["DEEPLAKE_DEBUG"];
+  }
+
   const config = loadConfig();
   if (!config) {
     process.stderr.write(
       "Deeplake credentials not found.\n" +
-      "Set DEEPLAKE_TOKEN + DEEPLAKE_ORG_ID in environment, or create ~/.deeplake/credentials.json\n"
+      "Set HIVEMIND_TOKEN + HIVEMIND_ORG_ID in environment, or create ~/.deeplake/credentials.json\n"
     );
     process.exit(1);
   }
 
-  const table = process.env["DEEPLAKE_TABLE"] ?? "memory";
-  const sessionsTable = process.env["DEEPLAKE_SESSIONS_TABLE"] ?? "sessions";
-  const mount = process.env["DEEPLAKE_MOUNT"] ?? "/";
-
-  const isOneShot = process.argv.includes("-c");
+  const table = process.env["HIVEMIND_TABLE"] ?? "memory";
+  const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
+  const mount = process.env["HIVEMIND_MOUNT"] ?? "/";
 
   const client = new DeeplakeApi(
     config.token, config.apiUrl, config.orgId, config.workspaceId, table
@@ -62,11 +74,11 @@ async function main(): Promise<void> {
   const bash = new Bash({
     fs,
     cwd: mount,
-    customCommands: [createGrepCommand(client, fs, table)],
+    customCommands: [createGrepCommand(client, fs, table, sessionsTable)],
     env: {
       HOME: mount,
-      DEEPLAKE_TABLE: table,
-      DEEPLAKE_MOUNT: mount,
+      HIVEMIND_TABLE: table,
+      HIVEMIND_MOUNT: mount,
     },
   });
 

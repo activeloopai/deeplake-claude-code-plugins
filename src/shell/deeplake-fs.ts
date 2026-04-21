@@ -5,6 +5,7 @@ import type {
   IFileSystem, FsStat, MkdirOptions, RmOptions, CpOptions,
   FileContent, BufferEncoding,
 } from "just-bash";
+import { normalizeContent } from "./grep-core.js";
 
 interface ReadFileOptions { encoding?: BufferEncoding }
 interface WriteFileOptions { encoding?: BufferEncoding }
@@ -12,6 +13,7 @@ interface DirentEntry { name: string; isFile: boolean; isDirectory: boolean; isS
 
 // ── constants ─────────────────────────────────────────────────────────────────
 const BATCH_SIZE = 10;
+const PREFETCH_BATCH_SIZE = 50;
 const FLUSH_DEBOUNCE_MS = 200;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -36,6 +38,15 @@ export function guessMime(filename: string): string {
       css: "text/css",
     } as Record<string, string>)[ext] ?? "text/plain"
   );
+}
+
+function normalizeSessionMessage(path: string, message: unknown): string {
+  const raw = typeof message === "string" ? message : JSON.stringify(message);
+  return normalizeContent(path, raw);
+}
+
+function joinSessionMessages(path: string, messages: unknown[]): string {
+  return messages.map((message) => normalizeSessionMessage(path, message)).join("\n");
 }
 
 function fsErr(code: string, msg: string, path: string): Error {
@@ -94,22 +105,8 @@ export class DeeplakeFs implements IFileSystem {
     // Ensure the table exists before bootstrapping.
     await client.ensureTable();
 
-    // Sync both tables in parallel before bootstrap queries.
-    // Track whether session sync succeeded — skip session bootstrap if it failed.
-    let sessionSyncOk = false;
-    const syncPromises: Promise<unknown>[] = [
-      client.query(`SELECT deeplake_sync_table('${table}')`),
-    ];
-    if (sessionsTable) {
-      syncPromises.push(
-        client.query(`SELECT deeplake_sync_table('${sessionsTable}')`)
-          .then(() => { sessionSyncOk = true; })
-          .catch(() => { /* sessions table may not exist yet */ })
-      );
-    }
-    await Promise.all(syncPromises);
-
     // Bootstrap memory + sessions metadata in parallel.
+    let sessionSyncOk = true;
     const memoryBootstrap = (async () => {
       const sql = `SELECT path, size_bytes, mime_type FROM "${table}" ORDER BY path`;
       try {
@@ -210,8 +207,6 @@ export class DeeplakeFs implements IFileSystem {
         failures++;
       }
     }
-    // Sync so subsequent reads see the successfully written data.
-    await this.client.query(`SELECT deeplake_sync_table('${this.table}')`);
     if (failures > 0) {
       throw new Error(`flush: ${failures}/${rows.length} writes failed and were re-queued`);
     }
@@ -256,12 +251,21 @@ export class DeeplakeFs implements IFileSystem {
       `WHERE path LIKE '${esc("/summaries/")}%' ORDER BY last_update_date DESC`
     );
 
-    // Build a lookup: sessionId → JSONL path from sessionPaths
-    const sessionPathsByUser = new Map<string, string>();
+    // Build a lookup: key → session path from sessionPaths
+    // Supports two formats:
+    //   1. /sessions/<user>/<user>_<org>_<ws>_<sessionId>.jsonl  → key = sessionId
+    //   2. /sessions/<author>/<filename>.json or .jsonl         → key = filename stem
+    const sessionPathsByKey = new Map<string, string>();
     for (const sp of this.sessionPaths) {
-      // Session path format: /sessions/<user>/<user>_<org>_<ws>_<sessionId>.jsonl
-      const m = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
-      if (m) sessionPathsByUser.set(m[1], sp.slice(1)); // strip leading /
+      const hivemind = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
+      if (hivemind) {
+        sessionPathsByKey.set(hivemind[1], sp.slice(1));
+      } else {
+        // Generic: extract filename without extension
+        const fname = sp.split("/").pop() ?? "";
+        const stem = fname.replace(/\.[^.]+$/, "");
+        if (stem) sessionPathsByKey.set(stem, sp.slice(1));
+      }
     }
 
     const lines: string[] = [
@@ -280,7 +284,9 @@ export class DeeplakeFs implements IFileSystem {
       const summaryUser = match[1];
       const sessionId = match[2];
       const relPath = `summaries/${summaryUser}/${sessionId}.md`;
-      const convPath = sessionPathsByUser.get(sessionId);
+      // Try matching session: first exact sessionId, then strip _summary suffix
+      const baseName = sessionId.replace(/_summary$/, "");
+      const convPath = sessionPathsByKey.get(sessionId) ?? sessionPathsByKey.get(baseName);
       const convLink = convPath ? `[messages](${convPath})` : "";
       const project = (row["project"] as string) || "";
       const description = (row["description"] as string) || "";
@@ -301,24 +307,50 @@ export class DeeplakeFs implements IFileSystem {
    */
   async prefetch(paths: string[]): Promise<void> {
     const uncached: string[] = [];
+    const uncachedSessions: string[] = [];
     for (const raw of paths) {
       const p = normPath(raw);
       if (this.files.get(p) !== null && this.files.get(p) !== undefined) continue;
       if (this.pending.has(p)) continue;
-      if (this.sessionPaths.has(p)) continue;
       if (!this.files.has(p)) continue; // unknown path
-      uncached.push(p);
+      if (this.sessionPaths.has(p)) {
+        uncachedSessions.push(p);
+      } else {
+        uncached.push(p);
+      }
     }
-    if (uncached.length === 0) return;
 
-    const inList = uncached.map(p => `'${esc(p)}'`).join(", ");
-    const rows = await this.client.query(
-      `SELECT path, summary FROM "${this.table}" WHERE path IN (${inList})`
-    );
-    for (const row of rows) {
-      const p = row["path"] as string;
-      const text = (row["summary"] as string) ?? "";
-      this.files.set(p, Buffer.from(text, "utf-8"));
+    for (let i = 0; i < uncached.length; i += PREFETCH_BATCH_SIZE) {
+      const chunk = uncached.slice(i, i + PREFETCH_BATCH_SIZE);
+      const inList = chunk.map(p => `'${esc(p)}'`).join(", ");
+      const rows = await this.client.query(
+        `SELECT path, summary FROM "${this.table}" WHERE path IN (${inList})`
+      );
+      for (const row of rows) {
+        const p = row["path"] as string;
+        const text = (row["summary"] as string) ?? "";
+        this.files.set(p, Buffer.from(text, "utf-8"));
+      }
+    }
+
+    if (!this.sessionsTable) return;
+
+    for (let i = 0; i < uncachedSessions.length; i += PREFETCH_BATCH_SIZE) {
+      const chunk = uncachedSessions.slice(i, i + PREFETCH_BATCH_SIZE);
+      const inList = chunk.map(p => `'${esc(p)}'`).join(", ");
+      const rows = await this.client.query(
+        `SELECT path, message, creation_date FROM "${this.sessionsTable}" WHERE path IN (${inList}) ORDER BY path, creation_date ASC`
+      );
+      const grouped = new Map<string, string[]>();
+      for (const row of rows) {
+        const p = row["path"] as string;
+        const current = grouped.get(p) ?? [];
+        current.push(normalizeSessionMessage(p, row["message"]));
+        grouped.set(p, current);
+      }
+      for (const [p, parts] of grouped) {
+        this.files.set(p, Buffer.from(parts.join("\n"), "utf-8"));
+      }
     }
   }
 
@@ -343,7 +375,7 @@ export class DeeplakeFs implements IFileSystem {
         `SELECT message FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC`
       );
       if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
-      const text = rows.map(r => typeof r["message"] === "string" ? r["message"] : JSON.stringify(r["message"])).join("\n");
+      const text = joinSessionMessages(p, rows.map((row) => row["message"]));
       const buf = Buffer.from(text, "utf-8");
       this.files.set(p, buf);
       return buf;
@@ -395,7 +427,7 @@ export class DeeplakeFs implements IFileSystem {
         `SELECT message FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC`
       );
       if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
-      const text = rows.map(r => typeof r["message"] === "string" ? r["message"] : JSON.stringify(r["message"])).join("\n");
+      const text = joinSessionMessages(p, rows.map((row) => row["message"]));
       const buf = Buffer.from(text, "utf-8");
       this.files.set(p, buf);
       return text;
