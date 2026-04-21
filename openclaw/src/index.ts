@@ -38,6 +38,42 @@ interface PluginAPI {
 }
 
 const DEFAULT_API_URL = "https://api.deeplake.ai";
+const VERSION_URL = "https://raw.githubusercontent.com/activeloopai/hivemind/main/openclaw/openclaw.plugin.json";
+
+function getInstalledVersion(): string | null {
+  try {
+    const dir = new URL(".", import.meta.url).pathname;
+    const candidates = [join(dir, "..", "package.json"), join(dir, "package.json")];
+    for (const c of candidates) {
+      try {
+        const pkg = JSON.parse(readFileSync(c, "utf-8"));
+        if (pkg.name === "hivemind" && pkg.version) return pkg.version;
+      } catch {}
+    }
+  } catch {}
+  return null;
+}
+
+function isNewer(latest: string, current: string): boolean {
+  const parse = (v: string) => v.replace(/-.*$/, "").split(".").map(Number);
+  const [la, lb, lc] = parse(latest);
+  const [ca, cb, cc] = parse(current);
+  return la > ca || (la === ca && lb > cb) || (la === ca && lb === cb && lc > cc);
+}
+
+async function checkForUpdate(logger: PluginLogger): Promise<void> {
+  try {
+    const current = getInstalledVersion();
+    if (!current) return;
+    const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return;
+    const manifest = await res.json() as { version?: string };
+    const latest = manifest.version ?? null;
+    if (latest && isNewer(latest, current)) {
+      logger.info?.(`⬆️ Hivemind update available: ${current} → ${latest}. Run: openclaw plugins install clawhub:hivemind`);
+    }
+  } catch {}
+}
 
 // --- Auth state ---
 let authPending = false;
@@ -255,6 +291,28 @@ export default definePluginEntry({
           return { text: `Switched to workspace: ${match.name}` };
         },
       });
+
+      pluginApi.registerCommand({
+        name: "hivemind_update",
+        description: "Check for Hivemind updates and show how to upgrade",
+        handler: async () => {
+          const current = getInstalledVersion();
+          if (!current) return { text: "Could not determine installed version." };
+          try {
+            const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(3000) });
+            if (!res.ok) return { text: `Current version: ${current}. Could not check for updates.` };
+            const pkg = await res.json();
+            const latest = typeof pkg.version === "string" ? pkg.version : null;
+            if (!latest) return { text: `Current version: ${current}. Could not parse latest version.` };
+            if (isNewer(latest, current)) {
+              return { text: `⬆️ Update available: ${current} → ${latest}\n\nRun in your terminal:\n\`openclaw plugins update hivemind\`` };
+            }
+            return { text: `✅ Hivemind v${current} is up to date.` };
+          } catch {
+            return { text: `Current version: ${current}. Could not check for updates.` };
+          }
+        },
+      });
     }
 
     const config = (pluginApi.pluginConfig ?? {}) as PluginConfig;
@@ -388,13 +446,19 @@ export default definePluginEntry({
       });
     }
 
-    // Pre-fetch auth URL during registration
+    // Prompt login if not authenticated
     const creds = loadCredentials();
-    if (!creds?.token && !authPending) {
-      requestAuth().catch(err => {
-        logger.error(`Pre-auth failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
+    if (!creds?.token) {
+      logger.info?.("Hivemind installed. Run /hivemind_login to authenticate and activate shared memory.");
+      if (!authPending) {
+        requestAuth().catch(err => {
+          logger.error(`Pre-auth failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
     }
+
+    // Non-blocking version check
+    checkForUpdate(logger).catch(() => {});
 
     logger.info?.("Hivemind plugin registered");
     } catch (err) {
