@@ -9,6 +9,8 @@ import { dirname, join } from "node:path";
 import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import type { Config } from "../../config.js";
+import { GRAPH_PROMPT_TEMPLATE } from "../knowledge-graph.js";
+import { MEMORY_FACT_PROMPT_TEMPLATE } from "../memory-facts.js";
 
 const HOME = homedir();
 export const WIKI_LOG = join(HOME, ".codex", "hooks", "deeplake-wiki.log");
@@ -113,6 +115,11 @@ export function spawnCodexWikiWorker(opts: SpawnOptions): void {
     workspaceId: config.workspaceId,
     memoryTable: config.tableName,
     sessionsTable: config.sessionsTableName,
+    graphNodesTable: config.graphNodesTableName,
+    graphEdgesTable: config.graphEdgesTableName,
+    factsTable: config.factsTableName,
+    entitiesTable: config.entitiesTableName,
+    factEntityLinksTable: config.factEntityLinksTableName,
     sessionId,
     userName: config.userName,
     project: projectName,
@@ -121,6 +128,8 @@ export function spawnCodexWikiWorker(opts: SpawnOptions): void {
     wikiLog: WIKI_LOG,
     hooksDir: join(HOME, ".codex", "hooks"),
     promptTemplate: WIKI_PROMPT_TEMPLATE,
+    graphPromptTemplate: GRAPH_PROMPT_TEMPLATE,
+    factPromptTemplate: MEMORY_FACT_PROMPT_TEMPLATE,
   }));
 
   wikiLog(`${reason}: spawning summary worker for ${sessionId}`);

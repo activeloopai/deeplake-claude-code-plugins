@@ -95,12 +95,12 @@ export function buildUnsupportedGuidance(): string {
 
 export function buildPsqlOnlyGuidance(): string {
   return "Hivemind recall is SQL-only in this mode. " +
-    "Use psql with the memory and sessions tables only. " +
+    "Use psql with the memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links tables only. " +
     "Do NOT use grep, cat, ls, Read, Glob, or filesystem paths for memory lookups.";
 }
 
 export function buildPsqlSchemaGuidance(): string {
-  return "Only psql SELECT queries over memory and sessions are intercepted in SQL mode. " +
+  return "Only psql SELECT queries over memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links are intercepted in SQL mode. " +
     "Rewrite the query to reference only those tables with normal psql SELECT syntax.";
 }
 

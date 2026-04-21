@@ -317,6 +317,22 @@ describe("bash-command-compiler parsing", () => {
       fieldSeparator: "|",
     });
 
+    expect(parseCompiledSegment("psql -At -F '|' -c \"SELECT node_id, canonical_name, relation FROM graph_nodes JOIN graph_edges ON graph_edges.source_node_id = graph_nodes.node_id LIMIT 2\"")).toEqual({
+      kind: "psql",
+      query: "SELECT node_id, canonical_name, relation FROM graph_nodes JOIN graph_edges ON graph_edges.source_node_id = graph_nodes.node_id LIMIT 2",
+      lineLimit: 0,
+      tuplesOnly: true,
+      fieldSeparator: "|",
+    });
+
+    expect(parseCompiledSegment("psql -At -F '|' -c \"SELECT fact_id, subject_name, predicate, object_name FROM memory_facts LIMIT 2\"")).toEqual({
+      kind: "psql",
+      query: "SELECT fact_id, subject_name, predicate, object_name FROM memory_facts LIMIT 2",
+      lineLimit: 0,
+      tuplesOnly: true,
+      fieldSeparator: "|",
+    });
+
     restorePsqlMode();
   });
 
@@ -512,6 +528,9 @@ describe("bash-command-compiler execution", () => {
 
   it("executes psql queries against normalized memory and sessions table names", async () => {
     const query = vi.fn(async (sql: string) => {
+      if (sql.includes('FROM "graph_nodes"') || sql.includes('FROM "graph_edges"')) {
+        return [];
+      }
       expect(sql).toContain('FROM "memory_actual"');
       expect(sql).toContain('JOIN "sessions_actual"');
       return [
@@ -527,11 +546,15 @@ describe("bash-command-compiler execution", () => {
       "psql -At -F '|' -c \"SELECT m.path, m.summary FROM memory m JOIN sessions s ON s.path = m.path WHERE m.summary ILIKE '%Caroline%' LIMIT 1\"",
     );
     expect(output).toBe("/summaries/locomo/conv_0_session_6_summary.md|Caroline keeps classic kids books");
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('FROM "memory_actual"'))).toBe(true);
     restorePsqlMode();
   });
 
   it("executes direct sessions queries against physical per-message rows", async () => {
     const query = vi.fn(async (sql: string) => {
+      if (sql.includes('FROM "graph_nodes"') || sql.includes('FROM "graph_edges"')) {
+        return [];
+      }
       expect(sql).toContain('FROM "sessions_actual"');
       expect(sql).toContain("WHERE path = '/sessions/conv_0_session_8.json'");
       return [
@@ -553,7 +576,7 @@ describe("bash-command-compiler execution", () => {
       "psql -At -F '|' -c \"SELECT path, creation_date, turn_index, speaker, text FROM sessions WHERE path = '/sessions/conv_0_session_8.json' AND text ILIKE '%camp%' ORDER BY turn_index ASC LIMIT 1\"",
     );
     expect(output).toBe("/sessions/conv_0_session_8.json|2023-08-10|1|Melanie|We planned a camping trip");
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('FROM "sessions_actual"'))).toBe(true);
     restorePsqlMode();
   });
 

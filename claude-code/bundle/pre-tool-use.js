@@ -54,6 +54,11 @@ function loadConfig() {
     apiUrl: env.HIVEMIND_API_URL ?? env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: env.HIVEMIND_TABLE ?? env.DEEPLAKE_TABLE ?? "memory",
     sessionsTableName: env.HIVEMIND_SESSIONS_TABLE ?? env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
+    graphNodesTableName: env.HIVEMIND_GRAPH_NODES_TABLE ?? env.DEEPLAKE_GRAPH_NODES_TABLE ?? "graph_nodes",
+    graphEdgesTableName: env.HIVEMIND_GRAPH_EDGES_TABLE ?? env.DEEPLAKE_GRAPH_EDGES_TABLE ?? "graph_edges",
+    factsTableName: env.HIVEMIND_FACTS_TABLE ?? env.DEEPLAKE_FACTS_TABLE ?? "memory_facts",
+    entitiesTableName: env.HIVEMIND_ENTITIES_TABLE ?? env.DEEPLAKE_ENTITIES_TABLE ?? "memory_entities",
+    factEntityLinksTableName: env.HIVEMIND_FACT_ENTITY_LINKS_TABLE ?? env.DEEPLAKE_FACT_ENTITY_LINKS_TABLE ?? "fact_entity_links",
     memoryPath: env.HIVEMIND_MEMORY_PATH ?? env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory")
   };
 }
@@ -101,6 +106,22 @@ function traceSql(msg) {
   if (DEBUG_FILE_LOG)
     log2(msg);
 }
+var DeeplakeQueryError = class extends Error {
+  sqlSummary;
+  status;
+  responseBody;
+  sql;
+  cause;
+  constructor(message, args = {}) {
+    super(message);
+    this.name = "DeeplakeQueryError";
+    this.sql = args.sql;
+    this.sqlSummary = args.sql ? summarizeSql(args.sql) : "";
+    this.status = args.status;
+    this.responseBody = args.responseBody;
+    this.cause = args.cause;
+  }
+};
 var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
@@ -204,10 +225,10 @@ var DeeplakeApi = class {
         });
       } catch (e) {
         if (isTimeoutError(e)) {
-          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
+          lastError = new DeeplakeQueryError(`Query timeout after ${QUERY_TIMEOUT_MS}ms`, { sql, cause: e });
           throw lastError;
         }
-        lastError = e instanceof Error ? e : new Error(String(e));
+        lastError = e instanceof Error ? new DeeplakeQueryError(e.message, { sql, cause: e }) : new DeeplakeQueryError(String(e), { sql, cause: e });
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
           log2(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
@@ -230,9 +251,13 @@ var DeeplakeApi = class {
         await sleep(delay);
         continue;
       }
-      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
+      throw new DeeplakeQueryError(`Query failed: ${resp.status}: ${text.slice(0, 200)}`, {
+        sql,
+        status: resp.status,
+        responseBody: text.slice(0, 4e3)
+      });
     }
-    throw lastError ?? new Error("Query failed: max retries exceeded");
+    throw lastError ?? new DeeplakeQueryError("Query failed: max retries exceeded", { sql });
   }
   // ── Writes ──────────────────────────────────────────────────────────────────
   /** Queue rows for writing. Call commit() to flush. */
@@ -458,6 +483,193 @@ var DeeplakeApi = class {
       }
     }
     await this.ensureLookupIndex(name, "path_creation_date_turn_index", `("path", "creation_date", "turn_index")`);
+  }
+  async ensureGraphNodesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `node_id TEXT NOT NULL DEFAULT ''`,
+      `canonical_name TEXT NOT NULL DEFAULT ''`,
+      `node_type TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `aliases TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    for (const [column, ddl] of [
+      ["source_session_ids", `TEXT NOT NULL DEFAULT ''`],
+      ["source_paths", `TEXT NOT NULL DEFAULT ''`]
+    ]) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "source_session_id", `("source_session_id")`);
+    await this.ensureLookupIndex(name, "node_id", `("node_id")`);
+  }
+  async ensureGraphEdgesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `edge_id TEXT NOT NULL DEFAULT ''`,
+      `source_node_id TEXT NOT NULL DEFAULT ''`,
+      `target_node_id TEXT NOT NULL DEFAULT ''`,
+      `relation TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `evidence TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    for (const [column, ddl] of [
+      ["source_session_ids", `TEXT NOT NULL DEFAULT ''`],
+      ["source_paths", `TEXT NOT NULL DEFAULT ''`]
+    ]) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "source_session_id", `("source_session_id")`);
+    await this.ensureLookupIndex(name, "source_target_relation", `("source_node_id", "target_node_id", "relation")`);
+  }
+  async ensureFactsTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `fact_id TEXT NOT NULL DEFAULT ''`,
+      `subject_entity_id TEXT NOT NULL DEFAULT ''`,
+      `subject_name TEXT NOT NULL DEFAULT ''`,
+      `subject_type TEXT NOT NULL DEFAULT ''`,
+      `predicate TEXT NOT NULL DEFAULT ''`,
+      `object_entity_id TEXT NOT NULL DEFAULT ''`,
+      `object_name TEXT NOT NULL DEFAULT ''`,
+      `object_type TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `evidence TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `confidence TEXT NOT NULL DEFAULT ''`,
+      `valid_at TEXT NOT NULL DEFAULT ''`,
+      `valid_from TEXT NOT NULL DEFAULT ''`,
+      `valid_to TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "fact_id", `("fact_id")`);
+    await this.ensureLookupIndex(name, "session_predicate", `("source_session_id", "predicate")`);
+    await this.ensureLookupIndex(name, "subject_object", `("subject_entity_id", "object_entity_id")`);
+  }
+  async ensureEntitiesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `entity_id TEXT NOT NULL DEFAULT ''`,
+      `canonical_name TEXT NOT NULL DEFAULT ''`,
+      `entity_type TEXT NOT NULL DEFAULT ''`,
+      `aliases TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "entity_id", `("entity_id")`);
+    await this.ensureLookupIndex(name, "canonical_name", `("canonical_name")`);
+  }
+  async ensureFactEntityLinksTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `link_id TEXT NOT NULL DEFAULT ''`,
+      `fact_id TEXT NOT NULL DEFAULT ''`,
+      `entity_id TEXT NOT NULL DEFAULT ''`,
+      `entity_role TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "fact_id", `("fact_id")`);
+    await this.ensureLookupIndex(name, "entity_id", `("entity_id")`);
+    await this.ensureLookupIndex(name, "session_entity_role", `("source_session_id", "entity_id", "entity_role")`);
   }
 };
 
@@ -1870,6 +2082,22 @@ function extractPsqlQueryFromCommand(cmd) {
 function normalizeSqlRef(ref) {
   return ref.replace(/\s+/g, "").replace(/"/g, "").toLowerCase();
 }
+var INTERCEPTED_SQL_REFS = /* @__PURE__ */ new Set([
+  "memory",
+  "sessions",
+  "graph_nodes",
+  "graph_edges",
+  "memory_facts",
+  "memory_entities",
+  "fact_entity_links",
+  "hivemind.memory",
+  "hivemind.sessions",
+  "hivemind.graph_nodes",
+  "hivemind.graph_edges",
+  "hivemind.memory_facts",
+  "hivemind.memory_entities",
+  "hivemind.fact_entity_links"
+]);
 function extractSqlTableRefs(query) {
   const refs = [];
   const regex = /\b(?:from|join)\s+((?:"[^"]+"|[a-zA-Z_][a-zA-Z0-9_]*)(?:\s*\.\s*(?:"[^"]+"|[a-zA-Z_][a-zA-Z0-9_]*))?)/gi;
@@ -1880,11 +2108,11 @@ function extractSqlTableRefs(query) {
   return refs;
 }
 function queryReferencesInterceptedTables(query) {
-  return extractSqlTableRefs(query).some((ref) => ref === "memory" || ref === "sessions" || ref === "hivemind.memory" || ref === "hivemind.sessions");
+  return extractSqlTableRefs(query).some((ref) => INTERCEPTED_SQL_REFS.has(ref));
 }
 function queryUsesOnlyInterceptedTables(query) {
   const refs = extractSqlTableRefs(query);
-  return refs.length > 0 && refs.every((ref) => ref === "memory" || ref === "sessions" || ref === "hivemind.memory" || ref === "hivemind.sessions");
+  return refs.length > 0 && refs.every((ref) => INTERCEPTED_SQL_REFS.has(ref));
 }
 function parsePsqlSegment(pipeline, tokens) {
   if (tokens[0] !== "psql" || !isPsqlMode())
@@ -1930,24 +2158,32 @@ function parsePsqlSegment(pipeline, tokens) {
   }
   return { kind: "psql", query, lineLimit, tuplesOnly, fieldSeparator };
 }
-function normalizePsqlQuery(query, memoryTable, sessionsTable) {
+function normalizePsqlQuery(query, memoryTable, sessionsTable, graphNodesTable = process.env["HIVEMIND_GRAPH_NODES_TABLE"] ?? "graph_nodes", graphEdgesTable = process.env["HIVEMIND_GRAPH_EDGES_TABLE"] ?? "graph_edges", factsTable = process.env["HIVEMIND_FACTS_TABLE"] ?? "memory_facts", entitiesTable = process.env["HIVEMIND_ENTITIES_TABLE"] ?? "memory_entities", factEntityLinksTable = process.env["HIVEMIND_FACT_ENTITY_LINKS_TABLE"] ?? "fact_entity_links") {
   let sql = query.trim().replace(/;+\s*$/, "");
-  sql = sql.replace(/\bFROM\s+"?memory"?\b/gi, `FROM "${memoryTable}"`).replace(/\bJOIN\s+"?memory"?\b/gi, `JOIN "${memoryTable}"`).replace(/\bFROM\s+"?sessions"?\b/gi, `FROM "${sessionsTable}"`).replace(/\bJOIN\s+"?sessions"?\b/gi, `JOIN "${sessionsTable}"`).replace(/\bFROM\s+"?hivemind"?\."?memory"?\b/gi, `FROM "${memoryTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?memory"?\b/gi, `JOIN "${memoryTable}"`).replace(/\bFROM\s+"?hivemind"?\."?sessions"?\b/gi, `FROM "${sessionsTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?sessions"?\b/gi, `JOIN "${sessionsTable}"`);
+  sql = sql.replace(/\bFROM\s+"?memory"?\b/gi, `FROM "${memoryTable}"`).replace(/\bJOIN\s+"?memory"?\b/gi, `JOIN "${memoryTable}"`).replace(/\bFROM\s+"?sessions"?\b/gi, `FROM "${sessionsTable}"`).replace(/\bJOIN\s+"?sessions"?\b/gi, `JOIN "${sessionsTable}"`).replace(/\bFROM\s+"?graph_nodes"?\b/gi, `FROM "${graphNodesTable}"`).replace(/\bJOIN\s+"?graph_nodes"?\b/gi, `JOIN "${graphNodesTable}"`).replace(/\bFROM\s+"?graph_edges"?\b/gi, `FROM "${graphEdgesTable}"`).replace(/\bJOIN\s+"?graph_edges"?\b/gi, `JOIN "${graphEdgesTable}"`).replace(/\bFROM\s+"?memory_facts"?\b/gi, `FROM "${factsTable}"`).replace(/\bJOIN\s+"?memory_facts"?\b/gi, `JOIN "${factsTable}"`).replace(/\bFROM\s+"?memory_entities"?\b/gi, `FROM "${entitiesTable}"`).replace(/\bJOIN\s+"?memory_entities"?\b/gi, `JOIN "${entitiesTable}"`).replace(/\bFROM\s+"?fact_entity_links"?\b/gi, `FROM "${factEntityLinksTable}"`).replace(/\bJOIN\s+"?fact_entity_links"?\b/gi, `JOIN "${factEntityLinksTable}"`).replace(/\bFROM\s+"?hivemind"?\."?memory"?\b/gi, `FROM "${memoryTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?memory"?\b/gi, `JOIN "${memoryTable}"`).replace(/\bFROM\s+"?hivemind"?\."?sessions"?\b/gi, `FROM "${sessionsTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?sessions"?\b/gi, `JOIN "${sessionsTable}"`).replace(/\bFROM\s+"?hivemind"?\."?graph_nodes"?\b/gi, `FROM "${graphNodesTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?graph_nodes"?\b/gi, `JOIN "${graphNodesTable}"`).replace(/\bFROM\s+"?hivemind"?\."?graph_edges"?\b/gi, `FROM "${graphEdgesTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?graph_edges"?\b/gi, `JOIN "${graphEdgesTable}"`).replace(/\bFROM\s+"?hivemind"?\."?memory_facts"?\b/gi, `FROM "${factsTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?memory_facts"?\b/gi, `JOIN "${factsTable}"`).replace(/\bFROM\s+"?hivemind"?\."?memory_entities"?\b/gi, `FROM "${entitiesTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?memory_entities"?\b/gi, `JOIN "${entitiesTable}"`).replace(/\bFROM\s+"?hivemind"?\."?fact_entity_links"?\b/gi, `FROM "${factEntityLinksTable}"`).replace(/\bJOIN\s+"?hivemind"?\."?fact_entity_links"?\b/gi, `JOIN "${factEntityLinksTable}"`);
   return sql;
 }
-function validatePsqlQuery(query, memoryTable, sessionsTable) {
+function validatePsqlQuery(query, memoryTable, sessionsTable, graphNodesTable = process.env["HIVEMIND_GRAPH_NODES_TABLE"] ?? "graph_nodes", graphEdgesTable = process.env["HIVEMIND_GRAPH_EDGES_TABLE"] ?? "graph_edges", factsTable = process.env["HIVEMIND_FACTS_TABLE"] ?? "memory_facts", entitiesTable = process.env["HIVEMIND_ENTITIES_TABLE"] ?? "memory_entities", factEntityLinksTable = process.env["HIVEMIND_FACT_ENTITY_LINKS_TABLE"] ?? "fact_entity_links") {
   if (!queryUsesOnlyInterceptedTables(query)) {
-    throw new Error("psql queries must reference only memory, sessions, hivemind.memory, or hivemind.sessions");
+    throw new Error("psql queries must reference only memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, fact_entity_links, or their hivemind.* aliases");
   }
-  const sql = normalizePsqlQuery(query, memoryTable, sessionsTable);
+  const sql = normalizePsqlQuery(query, memoryTable, sessionsTable, graphNodesTable, graphEdgesTable, factsTable, entitiesTable, factEntityLinksTable);
   const compact = sql.replace(/\s+/g, " ").trim();
   if (!/^(select|with)\b/i.test(compact)) {
     throw new Error("psql mode only supports SELECT queries");
   }
-  const allowedTables = /* @__PURE__ */ new Set([memoryTable, sessionsTable]);
+  const allowedTables = /* @__PURE__ */ new Set([
+    memoryTable,
+    sessionsTable,
+    graphNodesTable,
+    graphEdgesTable,
+    factsTable,
+    entitiesTable,
+    factEntityLinksTable
+  ]);
   const tableMatches = [...compact.matchAll(/\b(?:from|join)\s+"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi)];
   if (tableMatches.length === 0) {
-    throw new Error("psql query must reference memory or sessions");
+    throw new Error("psql query must reference an intercepted hivemind memory table");
   }
   for (const match of tableMatches) {
     if (!allowedTables.has(match[1])) {
@@ -1955,6 +2191,135 @@ function validatePsqlQuery(query, memoryTable, sessionsTable) {
     }
   }
   return sql;
+}
+function decodeSqlLiteral(value) {
+  return value.replace(/''/g, "'").trim();
+}
+function cleanSearchTerm(value) {
+  return decodeSqlLiteral(value).replace(/^%+|%+$/g, "").replace(/^_+|_+$/g, "").trim();
+}
+function extractSqlSearchTerms(query) {
+  const terms = [];
+  const push = (value) => {
+    const cleaned = cleanSearchTerm(value);
+    if (!cleaned)
+      return;
+    if (cleaned.startsWith("/"))
+      return;
+    if (/^\/summaries\/|^\/sessions\//.test(cleaned))
+      return;
+    if (!terms.includes(cleaned))
+      terms.push(cleaned);
+  };
+  for (const match of query.matchAll(/\b(?:i?like|=)\s+E?'((?:[^']|'')*)'/gi)) {
+    push(match[1] ?? "");
+  }
+  for (const match of query.matchAll(/<\#>\s+E?'((?:[^']|'')*)'/gi)) {
+    push(match[1] ?? "");
+  }
+  return terms;
+}
+function chooseEntityTerms(terms) {
+  const entityLike = terms.filter((term) => /[A-Z]/.test(term) && !/^\d+$/.test(term) && term.split(/\s+/).length <= 4);
+  return (entityLike.length > 0 ? entityLike : terms).slice(0, 2);
+}
+function escapeRegex2(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+async function fetchGraphCandidates(api, graphNodesTable, graphEdgesTable, terms) {
+  const filteredTerms = [...new Set(terms.map((term) => term.trim()).filter(Boolean))].slice(0, 4);
+  if (filteredTerms.length === 0)
+    return [];
+  const entityTerms = chooseEntityTerms(filteredTerms);
+  const topicTerms = filteredTerms.filter((term) => !entityTerms.includes(term));
+  const phrase = sqlStr(filteredTerms.join(" "));
+  const nodeEntityClauses = entityTerms.map((term) => `(canonical_name ILIKE '%${sqlLike(term)}%' OR aliases ILIKE '%${sqlLike(term)}%')`);
+  const nodeTextClauses = topicTerms.map((term) => `search_text ILIKE '%${sqlLike(term)}%'`);
+  const edgeEntityClauses = entityTerms.map((term) => `search_text ILIKE '%${sqlLike(term)}%'`);
+  const edgeTopicClauses = topicTerms.map((term) => `(relation ILIKE '%${sqlLike(term)}%' OR summary ILIKE '%${sqlLike(term)}%' OR evidence ILIKE '%${sqlLike(term)}%' OR search_text ILIKE '%${sqlLike(term)}%')`);
+  const nodeWhere = entityTerms.length > 0 && topicTerms.length > 0 ? `(${nodeEntityClauses.join(" OR ")}) AND (${nodeTextClauses.join(" OR ")})` : entityTerms.length > 0 ? `(${nodeEntityClauses.join(" OR ")})` : topicTerms.length > 0 ? `(${nodeTextClauses.join(" OR ")})` : "FALSE";
+  const edgeWhere = entityTerms.length > 0 && topicTerms.length > 0 ? `(${edgeEntityClauses.join(" OR ")}) AND (${edgeTopicClauses.join(" OR ")})` : topicTerms.length > 0 ? `(${edgeTopicClauses.join(" OR ")})` : entityTerms.length > 0 ? `(${edgeEntityClauses.join(" OR ")})` : "FALSE";
+  const sql = `WITH node_candidates AS ( SELECT source_session_id, source_path, search_text, search_text <#> '${phrase}' AS score FROM "${graphNodesTable}" WHERE ${nodeWhere} ORDER BY score DESC LIMIT 8), edge_candidates AS ( SELECT source_session_id, source_path, search_text, search_text <#> '${phrase}' AS score FROM "${graphEdgesTable}" WHERE ${edgeWhere} ORDER BY score DESC LIMIT 8) SELECT source_session_id, source_path, search_text, score FROM (   SELECT source_session_id, source_path, search_text, score FROM node_candidates   UNION ALL   SELECT source_session_id, source_path, search_text, score FROM edge_candidates ) AS graph_candidates ORDER BY score ASC LIMIT 12`;
+  const rows = await api.query(sql);
+  const expanded = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const row of rows) {
+    const searchText = typeof row["search_text"] === "string" ? row["search_text"] : "";
+    const sessionIds = [
+      ...searchText.match(/conv_\d+_session_\d+/g) ?? [],
+      typeof row["source_session_id"] === "string" ? row["source_session_id"] : ""
+    ].map((value) => value.trim()).filter(Boolean);
+    const sourcePaths = [
+      ...searchText.match(/\/sessions\/conv_\d+_session_\d+\.json/g) ?? [],
+      typeof row["source_path"] === "string" ? row["source_path"] : "",
+      ...sessionIds.map((sessionId) => `/sessions/${sessionId}.json`)
+    ].map((value) => value.trim()).filter(Boolean);
+    for (let i = 0; i < sourcePaths.length; i++) {
+      const sourcePath = sourcePaths[i];
+      const sessionId = sessionIds[i] || sessionIds[0] || sourcePath.match(/(conv_\d+_session_\d+)\.json$/)?.[1] || "";
+      if (!sourcePath)
+        continue;
+      const key = `${sessionId}@@${sourcePath}`;
+      if (seen.has(key))
+        continue;
+      seen.add(key);
+      expanded.push({ sessionId, sourcePath });
+      if (expanded.length >= 12)
+        return expanded;
+    }
+  }
+  return expanded;
+}
+function prependCtes(sql, ctes) {
+  if (ctes.length === 0)
+    return sql;
+  if (/^with\b/i.test(sql)) {
+    return sql.replace(/^with\b/i, `WITH ${ctes.join(", ")},`);
+  }
+  return `WITH ${ctes.join(", ")} ${sql}`;
+}
+function rewriteQueryWithRestrictedTables(sql, memoryTable, sessionsTable, restrictedMemoryAlias, restrictedSessionsAlias) {
+  let rewritten = sql;
+  if (restrictedMemoryAlias) {
+    const memoryPattern = escapeRegex2(memoryTable);
+    rewritten = rewritten.replace(new RegExp(`\\bFROM\\s+"?${memoryPattern}"?`, "gi"), `FROM "${restrictedMemoryAlias}"`).replace(new RegExp(`\\bJOIN\\s+"?${memoryPattern}"?`, "gi"), `JOIN "${restrictedMemoryAlias}"`);
+  }
+  if (restrictedSessionsAlias) {
+    const sessionsPattern = escapeRegex2(sessionsTable);
+    rewritten = rewritten.replace(new RegExp(`\\bFROM\\s+"?${sessionsPattern}"?`, "gi"), `FROM "${restrictedSessionsAlias}"`).replace(new RegExp(`\\bJOIN\\s+"?${sessionsPattern}"?`, "gi"), `JOIN "${restrictedSessionsAlias}"`);
+  }
+  return rewritten;
+}
+async function applyGraphRestrictionsToPsqlQuery(api, sql, memoryTable, sessionsTable, graphNodesTable, graphEdgesTable) {
+  if (extractSqlTableRefs(sql).some((ref) => ref === normalizeSqlRef(graphNodesTable) || ref === normalizeSqlRef(graphEdgesTable))) {
+    return sql;
+  }
+  const refs = extractSqlTableRefs(sql);
+  const touchesMemory2 = refs.some((ref) => ref === normalizeSqlRef(memoryTable));
+  const touchesSessions = refs.some((ref) => ref === normalizeSqlRef(sessionsTable));
+  if (!touchesMemory2 && !touchesSessions)
+    return sql;
+  const terms = extractSqlSearchTerms(sql);
+  if (terms.length === 0)
+    return sql;
+  const candidates = await fetchGraphCandidates(api, graphNodesTable, graphEdgesTable, terms);
+  if (candidates.length === 0 || candidates.length > 16)
+    return sql;
+  const values = candidates.map((candidate) => `('${sqlStr(candidate.sessionId)}', '${sqlStr(candidate.sourcePath)}')`);
+  const ctes = [
+    `__hm_graph_candidates(source_session_id, source_path) AS (VALUES ${values.join(", ")})`
+  ];
+  let restrictedMemoryAlias = null;
+  let restrictedSessionsAlias = null;
+  if (touchesMemory2) {
+    restrictedMemoryAlias = "__hm_memory";
+    ctes.push(`"${restrictedMemoryAlias}" AS ( SELECT * FROM "${memoryTable}" m WHERE EXISTS (   SELECT 1 FROM __hm_graph_candidates gc   WHERE (gc.source_path <> '' AND m.summary ILIKE '%' || gc.source_path || '%')      OR (gc.source_session_id <> '' AND m.path ILIKE '%' || gc.source_session_id || '%') ))`);
+  }
+  if (touchesSessions) {
+    restrictedSessionsAlias = "__hm_sessions";
+    ctes.push(`"${restrictedSessionsAlias}" AS ( SELECT * FROM "${sessionsTable}" s WHERE s.path IN (SELECT source_path FROM __hm_graph_candidates WHERE source_path <> ''))`);
+  }
+  return prependCtes(rewriteQueryWithRestrictedTables(sql, memoryTable, sessionsTable, restrictedMemoryAlias, restrictedSessionsAlias), ctes);
 }
 function formatPsqlValue(value) {
   if (value === null || value === void 0)
@@ -2258,7 +2623,11 @@ async function executeCompiledBashCommand(api, memoryTable, sessionsTable, cmd, 
       continue;
     }
     if (segment.kind === "psql") {
-      const rows = await api.query(validatePsqlQuery(segment.query, memoryTable, sessionsTable));
+      const graphNodesTable = process.env["HIVEMIND_GRAPH_NODES_TABLE"] ?? "graph_nodes";
+      const graphEdgesTable = process.env["HIVEMIND_GRAPH_EDGES_TABLE"] ?? "graph_edges";
+      const validated = validatePsqlQuery(segment.query, memoryTable, sessionsTable, graphNodesTable, graphEdgesTable);
+      const prepared = await applyGraphRestrictionsToPsqlQuery(api, validated, memoryTable, sessionsTable, graphNodesTable, graphEdgesTable);
+      const rows = await api.query(prepared);
       const formatted = formatPsqlRows(rows, segment.tuplesOnly, segment.fieldSeparator);
       const limited = segment.lineLimit > 0 ? formatted.split("\n").slice(0, segment.lineLimit).join("\n") : formatted;
       outputs.push(limited);
@@ -2518,10 +2887,10 @@ function needsHivemindPsqlRewrite(cmd) {
   return !!query && queryReferencesInterceptedTables(query) && !queryUsesOnlyInterceptedTables(query);
 }
 function buildPsqlOnlyGuidance() {
-  return "[RETRY REQUIRED] Hivemind recall is SQL-only in this mode. Use psql with the memory and sessions tables only. Do NOT use grep, cat, ls, Read, Glob, or filesystem paths for memory lookups.";
+  return "[RETRY REQUIRED] Hivemind recall is SQL-only in this mode. Use psql with the memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links tables only. Do NOT use grep, cat, ls, Read, Glob, or filesystem paths for memory lookups.";
 }
 function buildPsqlSchemaGuidance() {
-  return "[RETRY REQUIRED] Only psql SELECT queries over memory and sessions are intercepted in SQL mode. Rewrite the query to reference only those tables with normal psql SELECT syntax.";
+  return "[RETRY REQUIRED] Only psql SELECT queries over memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links are intercepted in SQL mode. Rewrite the query to reference only those tables with normal psql SELECT syntax.";
 }
 var log4 = (msg) => log("pre", msg);
 var __bundleDir = dirname(fileURLToPath2(import.meta.url));

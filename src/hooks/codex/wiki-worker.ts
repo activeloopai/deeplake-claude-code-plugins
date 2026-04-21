@@ -12,6 +12,16 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { finalizeSummary, releaseLock } from "../summary-state.js";
 import { uploadSummary } from "../upload-summary.js";
+import {
+  buildKnowledgeGraphPrompt,
+  parseGraphExtraction,
+  replaceSessionGraph,
+} from "../knowledge-graph.js";
+import {
+  buildMemoryFactPrompt,
+  parseMemoryFactExtraction,
+  replaceSessionFacts,
+} from "../memory-facts.js";
 
 interface WorkerConfig {
   apiUrl: string;
@@ -20,6 +30,11 @@ interface WorkerConfig {
   workspaceId: string;
   memoryTable: string;
   sessionsTable: string;
+  graphNodesTable: string;
+  graphEdgesTable: string;
+  factsTable: string;
+  entitiesTable: string;
+  factEntityLinksTable: string;
   sessionId: string;
   userName: string;
   project: string;
@@ -28,6 +43,8 @@ interface WorkerConfig {
   wikiLog: string;
   hooksDir: string;
   promptTemplate: string;
+  graphPromptTemplate: string;
+  factPromptTemplate: string;
 }
 
 const cfg: WorkerConfig = JSON.parse(readFileSync(process.argv[2], "utf-8"));
@@ -179,6 +196,75 @@ async function main(): Promise<void> {
           text,
         });
         wlog(`uploaded ${vpath} (summary=${result.summaryLength}, desc=${result.descLength})`);
+
+        try {
+          const graphPrompt = buildKnowledgeGraphPrompt({
+            summaryText: text,
+            sessionId: cfg.sessionId,
+            sourcePath: jsonlServerPath,
+            project: cfg.project,
+            template: cfg.graphPromptTemplate,
+          });
+          const graphRaw = execFileSync(cfg.codexBin, [
+            "exec",
+            "--dangerously-bypass-approvals-and-sandbox",
+            graphPrompt,
+          ], {
+            stdio: ["ignore", "pipe", "pipe"],
+            timeout: 120_000,
+            env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" },
+          }).toString("utf-8");
+          const graph = parseGraphExtraction(graphRaw);
+          const graphResult = await replaceSessionGraph({
+            query,
+            nodesTable: cfg.graphNodesTable,
+            edgesTable: cfg.graphEdgesTable,
+            sessionId: cfg.sessionId,
+            userName: cfg.userName,
+            project: cfg.project,
+            agent: "codex",
+            sourcePath: jsonlServerPath,
+            graph,
+          });
+          wlog(`graph updated nodes=${graphResult.nodes} edges=${graphResult.edges}`);
+        } catch (e: any) {
+          wlog(`graph update failed: ${e.message}`);
+        }
+
+        try {
+          const factPrompt = buildMemoryFactPrompt({
+            summaryText: text,
+            sessionId: cfg.sessionId,
+            sourcePath: jsonlServerPath,
+            project: cfg.project,
+            template: cfg.factPromptTemplate,
+          });
+          const factsRaw = execFileSync(cfg.codexBin, [
+            "exec",
+            "--dangerously-bypass-approvals-and-sandbox",
+            factPrompt,
+          ], {
+            stdio: ["ignore", "pipe", "pipe"],
+            timeout: 120_000,
+            env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" },
+          }).toString("utf-8");
+          const extraction = parseMemoryFactExtraction(factsRaw);
+          const factResult = await replaceSessionFacts({
+            query,
+            factsTable: cfg.factsTable,
+            entitiesTable: cfg.entitiesTable,
+            linksTable: cfg.factEntityLinksTable,
+            sessionId: cfg.sessionId,
+            userName: cfg.userName,
+            project: cfg.project,
+            agent: "codex",
+            sourcePath: jsonlServerPath,
+            extraction,
+          });
+          wlog(`facts updated facts=${factResult.facts} entities=${factResult.entities} links=${factResult.links}`);
+        } catch (e: any) {
+          wlog(`fact update failed: ${e.message}`);
+        }
 
         try {
           finalizeSummary(cfg.sessionId, jsonlLines);

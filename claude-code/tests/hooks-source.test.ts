@@ -34,6 +34,11 @@ const baseConfig: Config = {
   apiUrl: "https://api.example.com",
   tableName: "memory",
   sessionsTableName: "sessions",
+  graphNodesTableName: "graph_nodes",
+  graphEdgesTableName: "graph_edges",
+  factsTableName: "memory_facts",
+  entitiesTableName: "memory_entities",
+  factEntityLinksTableName: "fact_entity_links",
   memoryPath: "/tmp/.deeplake/memory",
 };
 
@@ -756,7 +761,12 @@ describe("claude session start source", () => {
       expect(context).toContain("DEEPLAKE MEMORY SQL MODE");
       expect(context).toContain("memory(path, summary");
       expect(context).toContain("sessions(path, creation_date, turn_index, event_type, dia_id, speaker, text, turn_summary, source_date_time, message)");
+      expect(context).toContain("memory_facts(path, fact_id, subject_entity_id");
+      expect(context).toContain("memory_entities(path, entity_id, canonical_name");
+      expect(context).toContain("fact_entity_links(path, link_id, fact_id");
       expect(context).toContain("psql -At -F '|'");
+      expect(context).toContain("For stable person/project/place facts, use memory_facts first.");
+      expect(context).toContain("Graph-backed entity and relation resolution is applied automatically");
       expect(context).toContain("Use sessions.text, sessions.speaker, sessions.turn_index, and sessions.source_date_time");
       expect(context).toContain("Use sessions.message only when you need the raw JSON payload");
       expect(context).toContain("Do not use filesystem commands");
@@ -813,6 +823,11 @@ describe("claude session start setup source", () => {
     const createApi = vi.fn(() => ({
       ensureTable: vi.fn(async () => undefined),
       ensureSessionsTable: vi.fn(async () => undefined),
+      ensureGraphNodesTable: vi.fn(async () => undefined),
+      ensureGraphEdgesTable: vi.fn(async () => undefined),
+      ensureFactsTable: vi.fn(async () => undefined),
+      ensureEntitiesTable: vi.fn(async () => undefined),
+      ensureFactEntityLinksTable: vi.fn(async () => undefined),
       query: vi.fn(async () => []),
     }) as any);
     const placeholder = vi.fn(async () => undefined);
@@ -838,6 +853,11 @@ describe("claude session start setup source", () => {
       createApi: vi.fn(() => ({
         ensureTable: vi.fn(async () => undefined),
         ensureSessionsTable: vi.fn(async () => { throw new Error("403 Forbidden"); }),
+        ensureGraphNodesTable: vi.fn(async () => undefined),
+        ensureGraphEdgesTable: vi.fn(async () => undefined),
+        ensureFactsTable: vi.fn(async () => undefined),
+        ensureEntitiesTable: vi.fn(async () => undefined),
+        ensureFactEntityLinksTable: vi.fn(async () => undefined),
         query: vi.fn(async () => []),
       }) as any),
       isSessionWriteDisabledFn: vi.fn(() => false) as any,
@@ -863,6 +883,11 @@ describe("claude session start setup source", () => {
       createApi: vi.fn(() => ({
         ensureTable: vi.fn(async () => undefined),
         ensureSessionsTable: vi.fn(async () => undefined),
+        ensureGraphNodesTable: vi.fn(async () => undefined),
+        ensureGraphEdgesTable: vi.fn(async () => undefined),
+        ensureFactsTable: vi.fn(async () => undefined),
+        ensureEntitiesTable: vi.fn(async () => undefined),
+        ensureFactEntityLinksTable: vi.fn(async () => undefined),
         query: vi.fn(async () => []),
       }) as any),
       drainSessionQueuesFn: vi.fn(async () => ({
@@ -917,6 +942,11 @@ describe("claude session start setup source", () => {
       createApi: vi.fn(() => ({
         ensureTable: vi.fn(async () => undefined),
         ensureSessionsTable,
+        ensureGraphNodesTable: vi.fn(async () => undefined),
+        ensureGraphEdgesTable: vi.fn(async () => undefined),
+        ensureFactsTable: vi.fn(async () => undefined),
+        ensureEntitiesTable: vi.fn(async () => undefined),
+        ensureFactEntityLinksTable: vi.fn(async () => undefined),
         query: vi.fn(async () => []),
       }) as any),
       isSessionWriteDisabledFn: vi.fn(() => false) as any,
@@ -969,6 +999,11 @@ describe("claude session start setup source", () => {
       createApi: vi.fn(() => ({
         ensureTable: vi.fn(async () => undefined),
         ensureSessionsTable: vi.fn(async () => { throw new Error("boom"); }),
+        ensureGraphNodesTable: vi.fn(async () => undefined),
+        ensureGraphEdgesTable: vi.fn(async () => undefined),
+        ensureFactsTable: vi.fn(async () => undefined),
+        ensureEntitiesTable: vi.fn(async () => undefined),
+        ensureFactEntityLinksTable: vi.fn(async () => undefined),
       }) as any),
       isSessionWriteDisabledFn: vi.fn(() => false) as any,
       isSessionWriteAuthErrorFn: vi.fn(() => false) as any,
@@ -993,6 +1028,11 @@ describe("claude session start setup source", () => {
       createApi: vi.fn(() => ({
         ensureTable: vi.fn(async () => undefined),
         ensureSessionsTable: vi.fn(async () => undefined),
+        ensureGraphNodesTable: vi.fn(async () => undefined),
+        ensureGraphEdgesTable: vi.fn(async () => undefined),
+        ensureFactsTable: vi.fn(async () => undefined),
+        ensureEntitiesTable: vi.fn(async () => undefined),
+        ensureFactEntityLinksTable: vi.fn(async () => undefined),
       }) as any),
       drainSessionQueuesFn: vi.fn(async () => ({
         queuedSessions: 0,

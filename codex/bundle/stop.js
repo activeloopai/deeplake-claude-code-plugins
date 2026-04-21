@@ -52,6 +52,11 @@ function loadConfig() {
     apiUrl: env.HIVEMIND_API_URL ?? env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: env.HIVEMIND_TABLE ?? env.DEEPLAKE_TABLE ?? "memory",
     sessionsTableName: env.HIVEMIND_SESSIONS_TABLE ?? env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
+    graphNodesTableName: env.HIVEMIND_GRAPH_NODES_TABLE ?? env.DEEPLAKE_GRAPH_NODES_TABLE ?? "graph_nodes",
+    graphEdgesTableName: env.HIVEMIND_GRAPH_EDGES_TABLE ?? env.DEEPLAKE_GRAPH_EDGES_TABLE ?? "graph_edges",
+    factsTableName: env.HIVEMIND_FACTS_TABLE ?? env.DEEPLAKE_FACTS_TABLE ?? "memory_facts",
+    entitiesTableName: env.HIVEMIND_ENTITIES_TABLE ?? env.DEEPLAKE_ENTITIES_TABLE ?? "memory_entities",
+    factEntityLinksTableName: env.HIVEMIND_FACT_ENTITY_LINKS_TABLE ?? env.DEEPLAKE_FACT_ENTITY_LINKS_TABLE ?? "fact_entity_links",
     memoryPath: env.HIVEMIND_MEMORY_PATH ?? env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory")
   };
 }
@@ -102,6 +107,22 @@ function traceSql(msg) {
   if (DEBUG_FILE_LOG)
     log2(msg);
 }
+var DeeplakeQueryError = class extends Error {
+  sqlSummary;
+  status;
+  responseBody;
+  sql;
+  cause;
+  constructor(message, args = {}) {
+    super(message);
+    this.name = "DeeplakeQueryError";
+    this.sql = args.sql;
+    this.sqlSummary = args.sql ? summarizeSql(args.sql) : "";
+    this.status = args.status;
+    this.responseBody = args.responseBody;
+    this.cause = args.cause;
+  }
+};
 var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
@@ -205,10 +226,10 @@ var DeeplakeApi = class {
         });
       } catch (e) {
         if (isTimeoutError(e)) {
-          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
+          lastError = new DeeplakeQueryError(`Query timeout after ${QUERY_TIMEOUT_MS}ms`, { sql, cause: e });
           throw lastError;
         }
-        lastError = e instanceof Error ? e : new Error(String(e));
+        lastError = e instanceof Error ? new DeeplakeQueryError(e.message, { sql, cause: e }) : new DeeplakeQueryError(String(e), { sql, cause: e });
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
           log2(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
@@ -231,9 +252,13 @@ var DeeplakeApi = class {
         await sleep(delay);
         continue;
       }
-      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
+      throw new DeeplakeQueryError(`Query failed: ${resp.status}: ${text.slice(0, 200)}`, {
+        sql,
+        status: resp.status,
+        responseBody: text.slice(0, 4e3)
+      });
     }
-    throw lastError ?? new Error("Query failed: max retries exceeded");
+    throw lastError ?? new DeeplakeQueryError("Query failed: max retries exceeded", { sql });
   }
   // ── Writes ──────────────────────────────────────────────────────────────────
   /** Queue rows for writing. Call commit() to flush. */
@@ -460,6 +485,193 @@ var DeeplakeApi = class {
     }
     await this.ensureLookupIndex(name, "path_creation_date_turn_index", `("path", "creation_date", "turn_index")`);
   }
+  async ensureGraphNodesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `node_id TEXT NOT NULL DEFAULT ''`,
+      `canonical_name TEXT NOT NULL DEFAULT ''`,
+      `node_type TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `aliases TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    for (const [column, ddl] of [
+      ["source_session_ids", `TEXT NOT NULL DEFAULT ''`],
+      ["source_paths", `TEXT NOT NULL DEFAULT ''`]
+    ]) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "source_session_id", `("source_session_id")`);
+    await this.ensureLookupIndex(name, "node_id", `("node_id")`);
+  }
+  async ensureGraphEdgesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `edge_id TEXT NOT NULL DEFAULT ''`,
+      `source_node_id TEXT NOT NULL DEFAULT ''`,
+      `target_node_id TEXT NOT NULL DEFAULT ''`,
+      `relation TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `evidence TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    for (const [column, ddl] of [
+      ["source_session_ids", `TEXT NOT NULL DEFAULT ''`],
+      ["source_paths", `TEXT NOT NULL DEFAULT ''`]
+    ]) {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
+      } catch {
+      }
+    }
+    await this.ensureLookupIndex(name, "source_session_id", `("source_session_id")`);
+    await this.ensureLookupIndex(name, "source_target_relation", `("source_node_id", "target_node_id", "relation")`);
+  }
+  async ensureFactsTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `fact_id TEXT NOT NULL DEFAULT ''`,
+      `subject_entity_id TEXT NOT NULL DEFAULT ''`,
+      `subject_name TEXT NOT NULL DEFAULT ''`,
+      `subject_type TEXT NOT NULL DEFAULT ''`,
+      `predicate TEXT NOT NULL DEFAULT ''`,
+      `object_entity_id TEXT NOT NULL DEFAULT ''`,
+      `object_name TEXT NOT NULL DEFAULT ''`,
+      `object_type TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `evidence TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `confidence TEXT NOT NULL DEFAULT ''`,
+      `valid_at TEXT NOT NULL DEFAULT ''`,
+      `valid_from TEXT NOT NULL DEFAULT ''`,
+      `valid_to TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "fact_id", `("fact_id")`);
+    await this.ensureLookupIndex(name, "session_predicate", `("source_session_id", "predicate")`);
+    await this.ensureLookupIndex(name, "subject_object", `("subject_entity_id", "object_entity_id")`);
+  }
+  async ensureEntitiesTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `entity_id TEXT NOT NULL DEFAULT ''`,
+      `canonical_name TEXT NOT NULL DEFAULT ''`,
+      `entity_type TEXT NOT NULL DEFAULT ''`,
+      `aliases TEXT NOT NULL DEFAULT ''`,
+      `summary TEXT NOT NULL DEFAULT ''`,
+      `search_text TEXT NOT NULL DEFAULT ''`,
+      `source_session_ids TEXT NOT NULL DEFAULT ''`,
+      `source_paths TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "entity_id", `("entity_id")`);
+    await this.ensureLookupIndex(name, "canonical_name", `("canonical_name")`);
+  }
+  async ensureFactEntityLinksTable(name) {
+    const columns = [
+      `id TEXT NOT NULL DEFAULT ''`,
+      `path TEXT NOT NULL DEFAULT ''`,
+      `filename TEXT NOT NULL DEFAULT ''`,
+      `link_id TEXT NOT NULL DEFAULT ''`,
+      `fact_id TEXT NOT NULL DEFAULT ''`,
+      `entity_id TEXT NOT NULL DEFAULT ''`,
+      `entity_role TEXT NOT NULL DEFAULT ''`,
+      `source_session_id TEXT NOT NULL DEFAULT ''`,
+      `source_path TEXT NOT NULL DEFAULT ''`,
+      `author TEXT NOT NULL DEFAULT ''`,
+      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
+      `size_bytes BIGINT NOT NULL DEFAULT 0`,
+      `project TEXT NOT NULL DEFAULT ''`,
+      `description TEXT NOT NULL DEFAULT ''`,
+      `agent TEXT NOT NULL DEFAULT ''`,
+      `creation_date TEXT NOT NULL DEFAULT ''`,
+      `last_update_date TEXT NOT NULL DEFAULT ''`
+    ];
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
+      if (!tables.includes(name))
+        this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "fact_id", `("fact_id")`);
+    await this.ensureLookupIndex(name, "entity_id", `("entity_id")`);
+    await this.ensureLookupIndex(name, "session_entity_role", `("source_session_id", "entity_id", "entity_role")`);
+  }
 };
 
 // dist/src/utils/direct-run.js
@@ -482,6 +694,60 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { dirname, join as join4 } from "node:path";
 import { writeFileSync as writeFileSync2, mkdirSync as mkdirSync2, appendFileSync as appendFileSync2 } from "node:fs";
 import { homedir as homedir3, tmpdir as tmpdir2 } from "node:os";
+
+// dist/src/hooks/knowledge-graph.js
+import { randomUUID as randomUUID3 } from "node:crypto";
+
+// dist/src/hooks/upload-summary.js
+import { randomUUID as randomUUID2 } from "node:crypto";
+
+// dist/src/hooks/knowledge-graph.js
+var GRAPH_PROMPT_TEMPLATE = `You are extracting a compact knowledge graph delta from a session summary.
+
+SESSION ID: __SESSION_ID__
+SOURCE PATH: __SOURCE_PATH__
+PROJECT: __PROJECT__
+
+SUMMARY MARKDOWN:
+__SUMMARY_TEXT__
+
+Return ONLY valid JSON with this exact shape:
+{"nodes":[{"name":"canonical entity name","type":"person|organization|place|artifact|project|tool|file|event|goal|status|preference|concept|other","summary":"short factual description","aliases":["optional alias"]}],"edges":[{"source":"canonical source entity","target":"canonical target entity","relation":"snake_case_relation","summary":"short factual relation summary","evidence":"short supporting phrase"}]}
+
+Rules:
+- Use canonical names for repeated entities.
+- Include people, places, organizations, books/media, tools, files, goals, status labels, preferences, and notable events when they matter for future recall.
+- Convert relationship/status/origin/preferences into edges when possible. Example relation shapes: home_country, relationship_status, enjoys, decided_to_pursue, works_on, uses_tool, located_in, recommended, plans, supports.
+- Keep summaries short and factual. Do not invent facts beyond the summary.
+- If a source or target appears in an edge but not in nodes, also include it in nodes.
+- Prefer stable canonical names over pronouns.
+- Return no markdown, no prose, no code fences, only JSON.`;
+
+// dist/src/hooks/memory-facts.js
+import { randomUUID as randomUUID4 } from "node:crypto";
+var MEMORY_FACT_PROMPT_TEMPLATE = `You are extracting durable long-term memory facts from a session summary.
+
+SESSION ID: __SESSION_ID__
+SOURCE PATH: __SOURCE_PATH__
+PROJECT: __PROJECT__
+
+SUMMARY MARKDOWN:
+__SUMMARY_TEXT__
+
+Return ONLY valid JSON with this exact shape:
+{"facts":[{"subject":"canonical entity","subject_type":"person|organization|place|artifact|project|tool|file|event|goal|status|preference|concept|other","subject_aliases":["optional alias"],"predicate":"snake_case_relation","object":"canonical object text","object_type":"person|organization|place|artifact|project|tool|file|event|goal|status|preference|concept|other","object_aliases":["optional alias"],"summary":"short factual claim","evidence":"short supporting phrase","confidence":0.0,"valid_at":"optional date/time text","valid_from":"optional date/time text","valid_to":"optional date/time text"}]}
+
+Rules:
+- Extract atomic facts that are useful for later recall. One durable claim per fact.
+- Prefer canonical names for repeated people, organizations, places, projects, tools, and artifacts.
+- Use relation-style predicates such as works_on, home_country, relationship_status, prefers, plans, decided_to_pursue, located_in, uses_tool, recommended, supports, owns, read, attends, moved_from, moved_to.
+- Facts should preserve temporal history instead of overwriting it. If the summary says something changed, emit the new fact and include timing in valid_at / valid_from / valid_to when the summary supports it.
+- Include assistant-confirmed or tool-confirmed actions when they are stated as completed facts in the summary.
+- Do not invent facts that are not supported by the summary.
+- Avoid duplicates or near-duplicates. If two facts say the same thing, keep the more specific one.
+- Return no markdown, no prose, no code fences, only JSON.`;
+
+// dist/src/hooks/codex/spawn-wiki-worker.js
 var HOME = homedir3();
 var WIKI_LOG = join4(HOME, ".codex", "hooks", "deeplake-wiki.log");
 var WIKI_PROMPT_TEMPLATE = `You are maintaining a persistent wiki from a session transcript. This page will become part of a long-lived knowledge base that future agents will search through index.md before opening the source session. Write for retrieval, not storytelling.
@@ -573,6 +839,11 @@ function spawnCodexWikiWorker(opts) {
     workspaceId: config.workspaceId,
     memoryTable: config.tableName,
     sessionsTable: config.sessionsTableName,
+    graphNodesTable: config.graphNodesTableName,
+    graphEdgesTable: config.graphEdgesTableName,
+    factsTable: config.factsTableName,
+    entitiesTable: config.entitiesTableName,
+    factEntityLinksTable: config.factEntityLinksTableName,
     sessionId,
     userName: config.userName,
     project: projectName,
@@ -580,7 +851,9 @@ function spawnCodexWikiWorker(opts) {
     codexBin: findCodexBin(),
     wikiLog: WIKI_LOG,
     hooksDir: join4(HOME, ".codex", "hooks"),
-    promptTemplate: WIKI_PROMPT_TEMPLATE
+    promptTemplate: WIKI_PROMPT_TEMPLATE,
+    graphPromptTemplate: GRAPH_PROMPT_TEMPLATE,
+    factPromptTemplate: MEMORY_FACT_PROMPT_TEMPLATE
   }));
   wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
   const workerPath = join4(bundleDir, "wiki-worker.js");

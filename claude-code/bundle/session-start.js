@@ -266,25 +266,41 @@ var CLAUDE_SESSION_START_CONTEXT_PSQL = `DEEPLAKE MEMORY SQL MODE: For this run,
 Available Deeplake tables:
 - memory(path, summary, project, description, creation_date, last_update_date)
 - sessions(path, creation_date, turn_index, event_type, dia_id, speaker, text, turn_summary, source_date_time, message)
+- memory_facts(path, fact_id, subject_entity_id, subject_name, subject_type, predicate, object_entity_id, object_name, object_type, summary, evidence, search_text, confidence, valid_at, valid_from, valid_to, source_session_id, source_path)
+- memory_entities(path, entity_id, canonical_name, entity_type, aliases, summary, search_text, source_session_ids, source_paths)
+- fact_entity_links(path, link_id, fact_id, entity_id, entity_role, source_session_id, source_path)
 
 Use this command shape:
 - psql -At -F '|' -c "SELECT ..."
 
 SQL strategy:
-1. Start with targeted SELECTs against memory to find likely summaries.
+1. Start with targeted SELECTs against memory to find likely sessions or summaries.
 2. In the first pass, combine the named person/entity term with one or more topic terms. Prefer narrow AND filters over broad OR filters.
-3. After finding candidate summary rows, re-query memory by exact path to inspect only those summaries.
-4. If the answer needs exact wording, exact dates, or transcript grounding, query sessions by exact path for those candidate sessions.
-5. Prefer precise WHERE filters, ORDER BY creation_date/last_update_date, and LIMIT 5-10.
-6. Do not use filesystem commands, grep, cat, ls, Read, or Glob for recall in this mode.
-7. If the first summary query returns 0-3 weak rows or the answer still seems semantically off, retry with BM25 ranking on memory before concluding the data is absent.
-8. Use sessions.text, sessions.speaker, sessions.turn_index, and sessions.source_date_time for transcript retrieval. Use sessions.message only when you need the raw JSON payload.
-9. If a summary answer is vague or relative (for example "home country", "next month", "last week"), immediately open the linked sessions rows and convert it to the most concrete answer supported there.
-10. For identity, origin, relationship, and "what did they decide" questions, prefer the exact self-description or named entity from sessions over a paraphrased summary label.
+3. Graph-backed entity and relation resolution is applied automatically behind the scenes to narrow likely sessions before memory/sessions queries run. You do not need to query graph tables manually for normal recall.
+3a. For stable person/project/place facts, use memory_facts first. Use memory_entities to resolve aliases or canonical names, then join through fact_entity_links when you need all facts connected to an entity.
+4. After finding candidate summary rows, re-query memory by exact path.
+5. If the answer needs exact wording, exact dates, or transcript grounding, query sessions by exact path for those candidate sessions.
+6. Prefer precise WHERE filters, ORDER BY creation_date/last_update_date, and LIMIT 5-10.
+7. Do not use filesystem commands, grep, cat, ls, Read, or Glob for recall in this mode.
+8. If the first literal query returns 0-3 weak rows or the answer still seems semantically off, retry with BM25 ranking on memory.summary before concluding the data is absent.
+9. Use sessions.text, sessions.speaker, sessions.turn_index, and sessions.source_date_time for transcript retrieval. Use sessions.message only when you need the raw JSON payload.
+10. If a summary, node, or edge answer is vague or relative (for example "home country", "next month", "last week"), immediately open the linked sessions rows and convert it to the most concrete answer supported there.
+11. For identity, origin, relationship, preference, and "what did they decide" questions, prefer transcript grounding over a paraphrased summary label.
+12. When memory_entities resolves a canonical entity, use fact_entity_links to expand the connected facts before deciding the fact layer is sparse.
+13. For identity or relationship questions, prefer the narrowest explicit self-label or status label over broader biography or community descriptions.
+14. For "when" questions, if the best evidence is already phrased relative to another dated event, return that relative phrase instead of inventing a different absolute date.
+15. For list/profile questions, return a minimal comma-separated set of directly supported items. Do not pad the answer with adjacent hobbies, events, or explanations.
+16. For artifact/title questions such as books, talks, projects, or artworks, prefer exact titled objects from facts or transcript over generic phrases like "a book" or "a speech".
 
 Good query patterns:
 - Candidate summaries:
   psql -At -F '|' -c "SELECT path, summary, creation_date FROM memory WHERE summary ILIKE '%<person>%' AND (summary ILIKE '%<topic1>%' OR summary ILIKE '%<topic2>%') ORDER BY creation_date DESC LIMIT 5"
+- Canonical entity lookup:
+  psql -At -F '|' -c "SELECT entity_id, canonical_name, entity_type, aliases, summary FROM memory_entities WHERE canonical_name ILIKE '%<name>%' OR aliases ILIKE '%<name>%' LIMIT 5"
+- Fact lookup by entity:
+  psql -At -F '|' -c "SELECT fact_id, subject_name, predicate, object_name, summary, valid_at, valid_from, valid_to, source_session_id FROM memory_facts WHERE subject_name ILIKE '%<name>%' AND (predicate ILIKE '%<topic>%' OR object_name ILIKE '%<topic>%') ORDER BY creation_date DESC LIMIT 10"
+- Entity-linked fact expansion:
+  psql -At -F '|' -c "SELECT f.fact_id, f.subject_name, f.predicate, f.object_name, f.summary FROM fact_entity_links l JOIN memory_facts f ON f.fact_id = l.fact_id WHERE l.entity_id = '<entity_id>' ORDER BY f.creation_date DESC LIMIT 10"
 - Exact summary reread:
   psql -At -F '|' -c "SELECT path, summary FROM memory WHERE path IN ('/summaries/...', '/summaries/...')"
 - Transcript grounding by exact path:
@@ -297,7 +313,12 @@ Good query patterns:
 Avoid these mistakes:
 - Do NOT search person names via path ILIKE. Person names live in summary text, not session paths.
 - Do NOT filter sessions.message directly when sessions.text / sessions.speaker already contain the needed transcript fields.
+- Do NOT use fact tables for exact quoted wording when a transcript row is available; use them to narrow and aggregate, then ground on sessions.
+- Do NOT stop at graph rows alone when the question asks for exact wording or time grounding. Use graph rows to narrow the search, then open the linked sessions.
 - Do NOT blend multiple different events when the question asks about one specific event. Prefer the most direct supporting row.
+- Do NOT replace an exact status or self-label with a broader biography.
+- Do NOT recalculate a relative-time answer against today's date when the stored phrase already answers the question.
+- Do NOT turn a short list question into a narrative list of loosely related activities.
 
 Answer rules:
 - Return the smallest exact answer supported by the data.
@@ -305,11 +326,12 @@ Answer rules:
 - Do not answer "not found" until you have checked both memory and a likely sessions row for the named person.
 - For duration or age-style answers, preserve the stored relative phrase when it directly answers the question instead of over-converting it.
 - If the transcript already directly answers with a relative duration like "10 years ago", return that phrase instead of recalculating to today's date.
+- If the transcript or fact row says something like "the week before June 9, 2023", return that phrase instead of converting it to June 9, 2023.
 - If a summary says something vague like "home country", search sessions for the exact named place before answering.
 - For list or profile questions, aggregate across the small set of candidate sessions before answering.
 - For "likely", "would", or profile questions, a concise inference from strong summary evidence is allowed even if the exact final phrase is not quoted verbatim.
 
-IMPORTANT: Only psql SELECT queries over memory and sessions are intercepted in this mode. Do NOT use python, python3, node, curl, or filesystem paths for recall in this mode.
+IMPORTANT: Only psql SELECT queries over memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links are intercepted in this mode. For normal recall, query memory_facts for distilled claims, memory_entities for canonical names, and sessions for exact grounding; graph-based restriction is applied automatically where relevant. Do NOT use python, python3, node, curl, or filesystem paths for recall in this mode.
 
 Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
 var GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";

@@ -173,6 +173,11 @@ export async function runSessionStartSetup(input: SessionStartInput, deps: Sessi
           } else {
             try {
               await api.ensureSessionsTable(config.sessionsTableName);
+              await api.ensureGraphNodesTable(config.graphNodesTableName);
+              await api.ensureGraphEdgesTable(config.graphEdgesTableName);
+              await api.ensureFactsTable(config.factsTableName);
+              await api.ensureEntitiesTable(config.entitiesTableName);
+              await api.ensureFactEntityLinksTable(config.factEntityLinksTableName);
               const drain = await drainSessionQueuesFn(api, {
                 sessionsTable: config.sessionsTableName,
               });

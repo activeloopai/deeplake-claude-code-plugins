@@ -7,6 +7,9 @@ tmp/
 .env.*
 coverage/
 bench/
+.uv-cache/
+.venv/
+.venv-harrier/
 .claude/
 CLAUDE.md
 RESULTS-fast-path-all-commands.md

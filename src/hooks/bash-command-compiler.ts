@@ -1,5 +1,5 @@
 import type { DeeplakeApi } from "../deeplake-api.js";
-import { sqlLike } from "../utils/sql.js";
+import { sqlLike, sqlStr } from "../utils/sql.js";
 import { type GrepParams, handleGrepDirect, parseBashGrep } from "./grep-direct.js";
 import { normalizeContent, refineGrepMatches } from "../shell/grep-core.js";
 import {
@@ -270,6 +270,23 @@ function normalizeSqlRef(ref: string): string {
   return ref.replace(/\s+/g, "").replace(/"/g, "").toLowerCase();
 }
 
+const INTERCEPTED_SQL_REFS = new Set([
+  "memory",
+  "sessions",
+  "graph_nodes",
+  "graph_edges",
+  "memory_facts",
+  "memory_entities",
+  "fact_entity_links",
+  "hivemind.memory",
+  "hivemind.sessions",
+  "hivemind.graph_nodes",
+  "hivemind.graph_edges",
+  "hivemind.memory_facts",
+  "hivemind.memory_entities",
+  "hivemind.fact_entity_links",
+]);
+
 function extractSqlTableRefs(query: string): string[] {
   const refs: string[] = [];
   const regex = /\b(?:from|join)\s+((?:"[^"]+"|[a-zA-Z_][a-zA-Z0-9_]*)(?:\s*\.\s*(?:"[^"]+"|[a-zA-Z_][a-zA-Z0-9_]*))?)/gi;
@@ -280,24 +297,23 @@ function extractSqlTableRefs(query: string): string[] {
 }
 
 export function queryReferencesInterceptedTables(query: string): boolean {
-  return extractSqlTableRefs(query).some((ref) =>
-    ref === "memory" ||
-    ref === "sessions" ||
-    ref === "hivemind.memory" ||
-    ref === "hivemind.sessions");
+  return extractSqlTableRefs(query).some((ref) => INTERCEPTED_SQL_REFS.has(ref));
 }
 
 export function queryUsesOnlyInterceptedTables(query: string): boolean {
   const refs = extractSqlTableRefs(query);
-  return refs.length > 0 && refs.every((ref) =>
-    ref === "memory" ||
-    ref === "sessions" ||
-    ref === "hivemind.memory" ||
-    ref === "hivemind.sessions");
+  return refs.length > 0 && refs.every((ref) => INTERCEPTED_SQL_REFS.has(ref));
 }
 
 export function queryUsesBareMemoryTables(query: string): boolean {
-  return extractSqlTableRefs(query).some((ref) => ref === "memory" || ref === "sessions");
+  return extractSqlTableRefs(query).some((ref) =>
+    ref === "memory" ||
+    ref === "sessions" ||
+    ref === "graph_nodes" ||
+    ref === "graph_edges" ||
+    ref === "memory_facts" ||
+    ref === "memory_entities" ||
+    ref === "fact_entity_links");
 }
 
 function parsePsqlSegment(pipeline: string[], tokens: string[]): CompiledSegment | null {
@@ -343,33 +359,88 @@ function parsePsqlSegment(pipeline: string[], tokens: string[]): CompiledSegment
   return { kind: "psql", query, lineLimit, tuplesOnly, fieldSeparator };
 }
 
-function normalizePsqlQuery(query: string, memoryTable: string, sessionsTable: string): string {
+function normalizePsqlQuery(
+  query: string,
+  memoryTable: string,
+  sessionsTable: string,
+  graphNodesTable = process.env["HIVEMIND_GRAPH_NODES_TABLE"] ?? "graph_nodes",
+  graphEdgesTable = process.env["HIVEMIND_GRAPH_EDGES_TABLE"] ?? "graph_edges",
+  factsTable = process.env["HIVEMIND_FACTS_TABLE"] ?? "memory_facts",
+  entitiesTable = process.env["HIVEMIND_ENTITIES_TABLE"] ?? "memory_entities",
+  factEntityLinksTable = process.env["HIVEMIND_FACT_ENTITY_LINKS_TABLE"] ?? "fact_entity_links",
+): string {
   let sql = query.trim().replace(/;+\s*$/, "");
   sql = sql
     .replace(/\bFROM\s+"?memory"?\b/gi, `FROM "${memoryTable}"`)
     .replace(/\bJOIN\s+"?memory"?\b/gi, `JOIN "${memoryTable}"`)
     .replace(/\bFROM\s+"?sessions"?\b/gi, `FROM "${sessionsTable}"`)
     .replace(/\bJOIN\s+"?sessions"?\b/gi, `JOIN "${sessionsTable}"`)
+    .replace(/\bFROM\s+"?graph_nodes"?\b/gi, `FROM "${graphNodesTable}"`)
+    .replace(/\bJOIN\s+"?graph_nodes"?\b/gi, `JOIN "${graphNodesTable}"`)
+    .replace(/\bFROM\s+"?graph_edges"?\b/gi, `FROM "${graphEdgesTable}"`)
+    .replace(/\bJOIN\s+"?graph_edges"?\b/gi, `JOIN "${graphEdgesTable}"`)
+    .replace(/\bFROM\s+"?memory_facts"?\b/gi, `FROM "${factsTable}"`)
+    .replace(/\bJOIN\s+"?memory_facts"?\b/gi, `JOIN "${factsTable}"`)
+    .replace(/\bFROM\s+"?memory_entities"?\b/gi, `FROM "${entitiesTable}"`)
+    .replace(/\bJOIN\s+"?memory_entities"?\b/gi, `JOIN "${entitiesTable}"`)
+    .replace(/\bFROM\s+"?fact_entity_links"?\b/gi, `FROM "${factEntityLinksTable}"`)
+    .replace(/\bJOIN\s+"?fact_entity_links"?\b/gi, `JOIN "${factEntityLinksTable}"`)
     .replace(/\bFROM\s+"?hivemind"?\."?memory"?\b/gi, `FROM "${memoryTable}"`)
     .replace(/\bJOIN\s+"?hivemind"?\."?memory"?\b/gi, `JOIN "${memoryTable}"`)
     .replace(/\bFROM\s+"?hivemind"?\."?sessions"?\b/gi, `FROM "${sessionsTable}"`)
-    .replace(/\bJOIN\s+"?hivemind"?\."?sessions"?\b/gi, `JOIN "${sessionsTable}"`);
+    .replace(/\bJOIN\s+"?hivemind"?\."?sessions"?\b/gi, `JOIN "${sessionsTable}"`)
+    .replace(/\bFROM\s+"?hivemind"?\."?graph_nodes"?\b/gi, `FROM "${graphNodesTable}"`)
+    .replace(/\bJOIN\s+"?hivemind"?\."?graph_nodes"?\b/gi, `JOIN "${graphNodesTable}"`)
+    .replace(/\bFROM\s+"?hivemind"?\."?graph_edges"?\b/gi, `FROM "${graphEdgesTable}"`)
+    .replace(/\bJOIN\s+"?hivemind"?\."?graph_edges"?\b/gi, `JOIN "${graphEdgesTable}"`)
+    .replace(/\bFROM\s+"?hivemind"?\."?memory_facts"?\b/gi, `FROM "${factsTable}"`)
+    .replace(/\bJOIN\s+"?hivemind"?\."?memory_facts"?\b/gi, `JOIN "${factsTable}"`)
+    .replace(/\bFROM\s+"?hivemind"?\."?memory_entities"?\b/gi, `FROM "${entitiesTable}"`)
+    .replace(/\bJOIN\s+"?hivemind"?\."?memory_entities"?\b/gi, `JOIN "${entitiesTable}"`)
+    .replace(/\bFROM\s+"?hivemind"?\."?fact_entity_links"?\b/gi, `FROM "${factEntityLinksTable}"`)
+    .replace(/\bJOIN\s+"?hivemind"?\."?fact_entity_links"?\b/gi, `JOIN "${factEntityLinksTable}"`);
   return sql;
 }
 
-function validatePsqlQuery(query: string, memoryTable: string, sessionsTable: string): string {
+function validatePsqlQuery(
+  query: string,
+  memoryTable: string,
+  sessionsTable: string,
+  graphNodesTable = process.env["HIVEMIND_GRAPH_NODES_TABLE"] ?? "graph_nodes",
+  graphEdgesTable = process.env["HIVEMIND_GRAPH_EDGES_TABLE"] ?? "graph_edges",
+  factsTable = process.env["HIVEMIND_FACTS_TABLE"] ?? "memory_facts",
+  entitiesTable = process.env["HIVEMIND_ENTITIES_TABLE"] ?? "memory_entities",
+  factEntityLinksTable = process.env["HIVEMIND_FACT_ENTITY_LINKS_TABLE"] ?? "fact_entity_links",
+): string {
   if (!queryUsesOnlyInterceptedTables(query)) {
-    throw new Error("psql queries must reference only memory, sessions, hivemind.memory, or hivemind.sessions");
+    throw new Error("psql queries must reference only memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, fact_entity_links, or their hivemind.* aliases");
   }
-  const sql = normalizePsqlQuery(query, memoryTable, sessionsTable);
+  const sql = normalizePsqlQuery(
+    query,
+    memoryTable,
+    sessionsTable,
+    graphNodesTable,
+    graphEdgesTable,
+    factsTable,
+    entitiesTable,
+    factEntityLinksTable,
+  );
   const compact = sql.replace(/\s+/g, " ").trim();
   if (!/^(select|with)\b/i.test(compact)) {
     throw new Error("psql mode only supports SELECT queries");
   }
-  const allowedTables = new Set([memoryTable, sessionsTable]);
+  const allowedTables = new Set([
+    memoryTable,
+    sessionsTable,
+    graphNodesTable,
+    graphEdgesTable,
+    factsTable,
+    entitiesTable,
+    factEntityLinksTable,
+  ]);
   const tableMatches = [...compact.matchAll(/\b(?:from|join)\s+"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi)];
   if (tableMatches.length === 0) {
-    throw new Error("psql query must reference memory or sessions");
+    throw new Error("psql query must reference an intercepted hivemind memory table");
   }
   for (const match of tableMatches) {
     if (!allowedTables.has(match[1])) {
@@ -377,6 +448,234 @@ function validatePsqlQuery(query: string, memoryTable: string, sessionsTable: st
     }
   }
   return sql;
+}
+
+function decodeSqlLiteral(value: string): string {
+  return value.replace(/''/g, "'").trim();
+}
+
+function cleanSearchTerm(value: string): string {
+  return decodeSqlLiteral(value)
+    .replace(/^%+|%+$/g, "")
+    .replace(/^_+|_+$/g, "")
+    .trim();
+}
+
+function extractSqlSearchTerms(query: string): string[] {
+  const terms: string[] = [];
+  const push = (value: string) => {
+    const cleaned = cleanSearchTerm(value);
+    if (!cleaned) return;
+    if (cleaned.startsWith("/")) return;
+    if (/^\/summaries\/|^\/sessions\//.test(cleaned)) return;
+    if (!terms.includes(cleaned)) terms.push(cleaned);
+  };
+
+  for (const match of query.matchAll(/\b(?:i?like|=)\s+E?'((?:[^']|'')*)'/gi)) {
+    push(match[1] ?? "");
+  }
+  for (const match of query.matchAll(/<\#>\s+E?'((?:[^']|'')*)'/gi)) {
+    push(match[1] ?? "");
+  }
+  return terms;
+}
+
+function chooseEntityTerms(terms: string[]): string[] {
+  const entityLike = terms.filter((term) =>
+    /[A-Z]/.test(term) &&
+    !/^\d+$/.test(term) &&
+    term.split(/\s+/).length <= 4
+  );
+  return (entityLike.length > 0 ? entityLike : terms).slice(0, 2);
+}
+
+interface GraphCandidateRow extends VirtualRow {
+  source_session_id?: string;
+  source_path?: string;
+  search_text?: string;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function fetchGraphCandidates(
+  api: DeeplakeApi,
+  graphNodesTable: string,
+  graphEdgesTable: string,
+  terms: string[],
+): Promise<{ sessionId: string; sourcePath: string }[]> {
+  const filteredTerms = [...new Set(terms.map((term) => term.trim()).filter(Boolean))].slice(0, 4);
+  if (filteredTerms.length === 0) return [];
+
+  const entityTerms = chooseEntityTerms(filteredTerms);
+  const topicTerms = filteredTerms.filter((term) => !entityTerms.includes(term));
+  const phrase = sqlStr(filteredTerms.join(" "));
+  const nodeEntityClauses = entityTerms.map((term) =>
+    `(canonical_name ILIKE '%${sqlLike(term)}%' OR aliases ILIKE '%${sqlLike(term)}%')`
+  );
+  const nodeTextClauses = topicTerms.map((term) =>
+    `search_text ILIKE '%${sqlLike(term)}%'`
+  );
+  const edgeEntityClauses = entityTerms.map((term) =>
+    `search_text ILIKE '%${sqlLike(term)}%'`
+  );
+  const edgeTopicClauses = topicTerms.map((term) =>
+    `(relation ILIKE '%${sqlLike(term)}%' OR summary ILIKE '%${sqlLike(term)}%' OR evidence ILIKE '%${sqlLike(term)}%' OR search_text ILIKE '%${sqlLike(term)}%')`
+  );
+  const nodeWhere = entityTerms.length > 0 && topicTerms.length > 0
+    ? `(${nodeEntityClauses.join(" OR ")}) AND (${nodeTextClauses.join(" OR ")})`
+    : entityTerms.length > 0
+      ? `(${nodeEntityClauses.join(" OR ")})`
+      : topicTerms.length > 0
+        ? `(${nodeTextClauses.join(" OR ")})`
+        : "FALSE";
+  const edgeWhere = entityTerms.length > 0 && topicTerms.length > 0
+    ? `(${edgeEntityClauses.join(" OR ")}) AND (${edgeTopicClauses.join(" OR ")})`
+    : topicTerms.length > 0
+      ? `(${edgeTopicClauses.join(" OR ")})`
+      : entityTerms.length > 0
+        ? `(${edgeEntityClauses.join(" OR ")})`
+        : "FALSE";
+
+  const sql =
+    `WITH node_candidates AS (` +
+    ` SELECT source_session_id, source_path, search_text, search_text <#> '${phrase}' AS score` +
+    ` FROM "${graphNodesTable}"` +
+    ` WHERE ${nodeWhere}` +
+    ` ORDER BY score DESC LIMIT 8` +
+    `), edge_candidates AS (` +
+    ` SELECT source_session_id, source_path, search_text, search_text <#> '${phrase}' AS score` +
+    ` FROM "${graphEdgesTable}"` +
+    ` WHERE ${edgeWhere}` +
+    ` ORDER BY score DESC LIMIT 8` +
+    `)` +
+    ` SELECT source_session_id, source_path, search_text, score` +
+    ` FROM (` +
+    `   SELECT source_session_id, source_path, search_text, score FROM node_candidates` +
+    `   UNION ALL` +
+    `   SELECT source_session_id, source_path, search_text, score FROM edge_candidates` +
+    ` ) AS graph_candidates` +
+    ` ORDER BY score ASC` +
+    ` LIMIT 12`;
+
+  const rows = await api.query(sql) as GraphCandidateRow[];
+  const expanded: Array<{ sessionId: string; sourcePath: string }> = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const searchText = typeof row["search_text"] === "string" ? row["search_text"] : "";
+    const sessionIds = [
+      ...(searchText.match(/conv_\d+_session_\d+/g) ?? []),
+      typeof row["source_session_id"] === "string" ? row["source_session_id"] : "",
+    ].map((value) => value.trim()).filter(Boolean);
+    const sourcePaths = [
+      ...(searchText.match(/\/sessions\/conv_\d+_session_\d+\.json/g) ?? []),
+      typeof row["source_path"] === "string" ? row["source_path"] : "",
+      ...sessionIds.map((sessionId) => `/sessions/${sessionId}.json`),
+    ].map((value) => value.trim()).filter(Boolean);
+    for (let i = 0; i < sourcePaths.length; i++) {
+      const sourcePath = sourcePaths[i];
+      const sessionId = sessionIds[i] || sessionIds[0] || sourcePath.match(/(conv_\d+_session_\d+)\.json$/)?.[1] || "";
+      if (!sourcePath) continue;
+      const key = `${sessionId}@@${sourcePath}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      expanded.push({ sessionId, sourcePath });
+      if (expanded.length >= 12) return expanded;
+    }
+  }
+  return expanded;
+}
+
+function prependCtes(sql: string, ctes: string[]): string {
+  if (ctes.length === 0) return sql;
+  if (/^with\b/i.test(sql)) {
+    return sql.replace(/^with\b/i, `WITH ${ctes.join(", ")},`);
+  }
+  return `WITH ${ctes.join(", ")} ${sql}`;
+}
+
+function rewriteQueryWithRestrictedTables(
+  sql: string,
+  memoryTable: string,
+  sessionsTable: string,
+  restrictedMemoryAlias: string | null,
+  restrictedSessionsAlias: string | null,
+): string {
+  let rewritten = sql;
+  if (restrictedMemoryAlias) {
+    const memoryPattern = escapeRegex(memoryTable);
+    rewritten = rewritten
+      .replace(new RegExp(`\\bFROM\\s+"?${memoryPattern}"?`, "gi"), `FROM "${restrictedMemoryAlias}"`)
+      .replace(new RegExp(`\\bJOIN\\s+"?${memoryPattern}"?`, "gi"), `JOIN "${restrictedMemoryAlias}"`);
+  }
+  if (restrictedSessionsAlias) {
+    const sessionsPattern = escapeRegex(sessionsTable);
+    rewritten = rewritten
+      .replace(new RegExp(`\\bFROM\\s+"?${sessionsPattern}"?`, "gi"), `FROM "${restrictedSessionsAlias}"`)
+      .replace(new RegExp(`\\bJOIN\\s+"?${sessionsPattern}"?`, "gi"), `JOIN "${restrictedSessionsAlias}"`);
+  }
+  return rewritten;
+}
+
+async function applyGraphRestrictionsToPsqlQuery(
+  api: DeeplakeApi,
+  sql: string,
+  memoryTable: string,
+  sessionsTable: string,
+  graphNodesTable: string,
+  graphEdgesTable: string,
+): Promise<string> {
+  if (extractSqlTableRefs(sql).some((ref) => ref === normalizeSqlRef(graphNodesTable) || ref === normalizeSqlRef(graphEdgesTable))) {
+    return sql;
+  }
+  const refs = extractSqlTableRefs(sql);
+  const touchesMemory = refs.some((ref) => ref === normalizeSqlRef(memoryTable));
+  const touchesSessions = refs.some((ref) => ref === normalizeSqlRef(sessionsTable));
+  if (!touchesMemory && !touchesSessions) return sql;
+
+  const terms = extractSqlSearchTerms(sql);
+  if (terms.length === 0) return sql;
+
+  const candidates = await fetchGraphCandidates(api, graphNodesTable, graphEdgesTable, terms);
+  if (candidates.length === 0 || candidates.length > 16) return sql;
+
+  const values = candidates.map((candidate) =>
+    `('${sqlStr(candidate.sessionId)}', '${sqlStr(candidate.sourcePath)}')`
+  );
+  const ctes = [
+    `__hm_graph_candidates(source_session_id, source_path) AS (VALUES ${values.join(", ")})`,
+  ];
+  let restrictedMemoryAlias: string | null = null;
+  let restrictedSessionsAlias: string | null = null;
+
+  if (touchesMemory) {
+    restrictedMemoryAlias = "__hm_memory";
+    ctes.push(
+      `"${restrictedMemoryAlias}" AS (` +
+      ` SELECT * FROM "${memoryTable}" m` +
+      ` WHERE EXISTS (` +
+      `   SELECT 1 FROM __hm_graph_candidates gc` +
+      `   WHERE (gc.source_path <> '' AND m.summary ILIKE '%' || gc.source_path || '%')` +
+      `      OR (gc.source_session_id <> '' AND m.path ILIKE '%' || gc.source_session_id || '%')` +
+      ` )` +
+      `)`
+    );
+  }
+  if (touchesSessions) {
+    restrictedSessionsAlias = "__hm_sessions";
+    ctes.push(
+      `"${restrictedSessionsAlias}" AS (` +
+      ` SELECT * FROM "${sessionsTable}" s` +
+      ` WHERE s.path IN (SELECT source_path FROM __hm_graph_candidates WHERE source_path <> '')` +
+      `)`
+    );
+  }
+
+  return prependCtes(
+    rewriteQueryWithRestrictedTables(sql, memoryTable, sessionsTable, restrictedMemoryAlias, restrictedSessionsAlias),
+    ctes,
+  );
 }
 
 function formatPsqlValue(value: unknown): string {
@@ -712,7 +1011,18 @@ export async function executeCompiledBashCommand(
     }
 
     if (segment.kind === "psql") {
-      const rows = await api.query(validatePsqlQuery(segment.query, memoryTable, sessionsTable));
+      const graphNodesTable = process.env["HIVEMIND_GRAPH_NODES_TABLE"] ?? "graph_nodes";
+      const graphEdgesTable = process.env["HIVEMIND_GRAPH_EDGES_TABLE"] ?? "graph_edges";
+      const validated = validatePsqlQuery(segment.query, memoryTable, sessionsTable, graphNodesTable, graphEdgesTable);
+      const prepared = await applyGraphRestrictionsToPsqlQuery(
+        api,
+        validated,
+        memoryTable,
+        sessionsTable,
+        graphNodesTable,
+        graphEdgesTable,
+      );
+      const rows = await api.query(prepared);
       const formatted = formatPsqlRows(rows, segment.tuplesOnly, segment.fieldSeparator);
       const limited = segment.lineLimit > 0 ? formatted.split("\n").slice(0, segment.lineLimit).join("\n") : formatted;
       outputs.push(limited);
