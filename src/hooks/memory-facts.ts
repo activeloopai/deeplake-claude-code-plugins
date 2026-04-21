@@ -43,25 +43,38 @@ export interface ReplaceSessionFactsResult {
   links: number;
 }
 
-export const MEMORY_FACT_PROMPT_TEMPLATE = `You are extracting durable long-term memory facts from a session summary.
+export interface SessionFactTranscriptRow {
+  turnIndex: number;
+  eventType?: string;
+  speaker?: string;
+  text?: string;
+  turnSummary?: string;
+  sourceDateTime?: string;
+  creationDate?: string;
+}
+
+export const MEMORY_FACT_PROMPT_TEMPLATE = `You are extracting durable long-term memory facts from raw session transcript rows.
 
 SESSION ID: __SESSION_ID__
 SOURCE PATH: __SOURCE_PATH__
 PROJECT: __PROJECT__
 
-SUMMARY MARKDOWN:
-__SUMMARY_TEXT__
+TRANSCRIPT ROWS:
+__TRANSCRIPT_TEXT__
 
 Return ONLY valid JSON with this exact shape:
 {"facts":[{"subject":"canonical entity","subject_type":"person|organization|place|artifact|project|tool|file|event|goal|status|preference|concept|other","subject_aliases":["optional alias"],"predicate":"snake_case_relation","object":"canonical object text","object_type":"person|organization|place|artifact|project|tool|file|event|goal|status|preference|concept|other","object_aliases":["optional alias"],"summary":"short factual claim","evidence":"short supporting phrase","confidence":0.0,"valid_at":"optional date/time text","valid_from":"optional date/time text","valid_to":"optional date/time text"}]}
 
 Rules:
+- The transcript rows are the only source of truth for this extraction. Do not rely on summaries or inferred rewrites.
 - Extract atomic facts that are useful for later recall. One durable claim per fact.
 - Prefer canonical names for repeated people, organizations, places, projects, tools, and artifacts.
 - Use relation-style predicates such as works_on, home_country, relationship_status, prefers, plans, decided_to_pursue, located_in, uses_tool, recommended, supports, owns, read, attends, moved_from, moved_to.
-- Facts should preserve temporal history instead of overwriting it. If the summary says something changed, emit the new fact and include timing in valid_at / valid_from / valid_to when the summary supports it.
-- Include assistant-confirmed or tool-confirmed actions when they are stated as completed facts in the summary.
-- Do not invent facts that are not supported by the summary.
+- Facts should preserve temporal history instead of overwriting it. If the transcript says something changed, emit the new fact and include timing in valid_at / valid_from / valid_to when the transcript supports it.
+- Include assistant-confirmed or tool-confirmed actions when they are stated as completed facts in the transcript.
+- If a speaker explicitly self-identifies or states a status, preserve that exact label instead of broadening it.
+- Preserve exact named places, titles, organizations, and relative time phrases when they are the stated fact.
+- Do not invent facts that are not supported by the transcript.
 - Avoid duplicates or near-duplicates. If two facts say the same thing, keep the more specific one.
 - Return no markdown, no prose, no code fences, only JSON.`;
 
@@ -330,15 +343,43 @@ export function parseMemoryFactExtraction(raw: string): MemoryFactExtraction {
   };
 }
 
+export function buildMemoryFactTranscript(rows: SessionFactTranscriptRow[]): string {
+  const normalized = rows
+    .map((row) => ({
+      turnIndex: Number.isFinite(row.turnIndex) ? row.turnIndex : 0,
+      speaker: normalizeString(row.speaker),
+      text: normalizeString(row.text),
+      eventType: normalizeString(row.eventType) || "message",
+      turnSummary: normalizeString(row.turnSummary),
+      sourceDateTime: normalizeString(row.sourceDateTime) || normalizeString(row.creationDate),
+    }))
+    .filter((row) => row.text || row.turnSummary);
+
+  if (normalized.length === 0) return "(no transcript rows)";
+
+  return normalized.map((row) => {
+    const prefix = [
+      `turn=${row.turnIndex}`,
+      row.sourceDateTime ? `time=${row.sourceDateTime}` : "",
+      row.speaker ? `speaker=${row.speaker}` : `event=${row.eventType}`,
+    ].filter(Boolean).join(" | ");
+    const lines = [`[${prefix}] ${row.text || row.turnSummary}`];
+    if (row.turnSummary && row.turnSummary !== row.text) {
+      lines.push(`summary: ${row.turnSummary}`);
+    }
+    return lines.join("\n");
+  }).join("\n");
+}
+
 export function buildMemoryFactPrompt(args: {
-  summaryText: string;
+  transcriptText: string;
   sessionId: string;
   sourcePath: string;
   project: string;
   template?: string;
 }): string {
   return (args.template ?? MEMORY_FACT_PROMPT_TEMPLATE)
-    .replace(/__SUMMARY_TEXT__/g, args.summaryText)
+    .replace(/__TRANSCRIPT_TEXT__/g, args.transcriptText)
     .replace(/__SESSION_ID__/g, args.sessionId)
     .replace(/__SOURCE_PATH__/g, args.sourcePath)
     .replace(/__PROJECT__/g, args.project);

@@ -778,6 +778,33 @@ describe("claude session start source", () => {
     }
   });
 
+  it("switches to facts-and-sessions-only sql guidance when that env flag is set", () => {
+    const prevPsql = process.env.HIVEMIND_PSQL_MODE;
+    const prevFactsSessions = process.env.HIVEMIND_PSQL_FACTS_SESSIONS_ONLY;
+    process.env.HIVEMIND_PSQL_MODE = "1";
+    process.env.HIVEMIND_PSQL_FACTS_SESSIONS_ONLY = "1";
+    try {
+      const context = buildSessionStartAdditionalContext({
+        authCommand: "/tmp/auth-login.js",
+        creds: baseCreds,
+        currentVersion: null,
+        latestVersion: null,
+      });
+      expect(context).toContain("The summary and graph tables are intentionally unavailable in this mode.");
+      expect(context).toContain("sessions(path, creation_date, turn_index, event_type, dia_id, speaker, text, turn_summary, source_date_time, message)");
+      expect(context).toContain("memory_facts(path, fact_id, subject_entity_id");
+      expect(context).toContain("memory_entities(path, entity_id, canonical_name");
+      expect(context).toContain("fact_entity_links(path, link_id, fact_id");
+      expect(context).not.toContain("memory(path, summary");
+      expect(context).not.toContain("Graph-backed entity and relation resolution is applied automatically");
+    } finally {
+      if (prevPsql === undefined) delete process.env.HIVEMIND_PSQL_MODE;
+      else process.env.HIVEMIND_PSQL_MODE = prevPsql;
+      if (prevFactsSessions === undefined) delete process.env.HIVEMIND_PSQL_FACTS_SESSIONS_ONLY;
+      else process.env.HIVEMIND_PSQL_FACTS_SESSIONS_ONLY = prevFactsSessions;
+    }
+  });
+
   it("logs authenticated startup without backfilling when the username is already present", async () => {
     const logFn = vi.fn();
     const save = vi.fn();

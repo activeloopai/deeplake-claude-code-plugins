@@ -3,6 +3,14 @@ export function isSessionsOnlyMode(): boolean {
   return /^(1|true|yes|on)$/i.test(raw.trim());
 }
 
+export type GrepRetrievalMode = "classic" | "embedding" | "hybrid";
+
+export function getGrepRetrievalMode(): GrepRetrievalMode {
+  const raw = (process.env["HIVEMIND_GREP_RETRIEVAL_MODE"] ?? process.env["DEEPLAKE_GREP_RETRIEVAL_MODE"] ?? "").trim().toLowerCase();
+  if (raw === "embedding" || raw === "hybrid") return raw;
+  return "classic";
+}
+
 export function isIndexDisabled(): boolean {
   const raw = process.env["HIVEMIND_DISABLE_INDEX"] ?? process.env["DEEPLAKE_DISABLE_INDEX"] ?? "";
   return /^(1|true|yes|on)$/i.test(raw.trim());
@@ -15,5 +23,10 @@ export function isSummaryBm25Disabled(): boolean {
 
 export function isPsqlMode(): boolean {
   const raw = process.env["HIVEMIND_PSQL_MODE"] ?? process.env["DEEPLAKE_PSQL_MODE"] ?? "";
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
+
+export function isFactsSessionsOnlyPsqlMode(): boolean {
+  const raw = process.env["HIVEMIND_PSQL_FACTS_SESSIONS_ONLY"] ?? process.env["DEEPLAKE_PSQL_FACTS_SESSIONS_ONLY"] ?? "";
   return /^(1|true|yes|on)$/i.test(raw.trim());
 }

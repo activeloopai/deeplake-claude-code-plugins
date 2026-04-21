@@ -14,3 +14,10 @@ bench/
 CLAUDE.md
 RESULTS-fast-path-all-commands.md
 PLAN-fast-path-all-commands.md
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/

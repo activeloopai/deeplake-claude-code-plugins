@@ -66735,12 +66735,12 @@ function loadConfig() {
       return null;
     }
   }
-  const env2 = process.env;
-  if (!env2.HIVEMIND_TOKEN && env2.DEEPLAKE_TOKEN) {
+  const env3 = process.env;
+  if (!env3.HIVEMIND_TOKEN && env3.DEEPLAKE_TOKEN) {
     process.stderr.write("[hivemind] DEEPLAKE_* env vars are deprecated; use HIVEMIND_* instead\n");
   }
-  const token = env2.HIVEMIND_TOKEN ?? env2.DEEPLAKE_TOKEN ?? creds?.token;
-  const orgId = env2.HIVEMIND_ORG_ID ?? env2.DEEPLAKE_ORG_ID ?? creds?.orgId;
+  const token = env3.HIVEMIND_TOKEN ?? env3.DEEPLAKE_TOKEN ?? creds?.token;
+  const orgId = env3.HIVEMIND_ORG_ID ?? env3.DEEPLAKE_ORG_ID ?? creds?.orgId;
   if (!token || !orgId)
     return null;
   return {
@@ -66748,16 +66748,16 @@ function loadConfig() {
     orgId,
     orgName: creds?.orgName ?? orgId,
     userName: creds?.userName || userInfo().username || "unknown",
-    workspaceId: env2.HIVEMIND_WORKSPACE_ID ?? env2.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
-    apiUrl: env2.HIVEMIND_API_URL ?? env2.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: env2.HIVEMIND_TABLE ?? env2.DEEPLAKE_TABLE ?? "memory",
-    sessionsTableName: env2.HIVEMIND_SESSIONS_TABLE ?? env2.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
-    graphNodesTableName: env2.HIVEMIND_GRAPH_NODES_TABLE ?? env2.DEEPLAKE_GRAPH_NODES_TABLE ?? "graph_nodes",
-    graphEdgesTableName: env2.HIVEMIND_GRAPH_EDGES_TABLE ?? env2.DEEPLAKE_GRAPH_EDGES_TABLE ?? "graph_edges",
-    factsTableName: env2.HIVEMIND_FACTS_TABLE ?? env2.DEEPLAKE_FACTS_TABLE ?? "memory_facts",
-    entitiesTableName: env2.HIVEMIND_ENTITIES_TABLE ?? env2.DEEPLAKE_ENTITIES_TABLE ?? "memory_entities",
-    factEntityLinksTableName: env2.HIVEMIND_FACT_ENTITY_LINKS_TABLE ?? env2.DEEPLAKE_FACT_ENTITY_LINKS_TABLE ?? "fact_entity_links",
-    memoryPath: env2.HIVEMIND_MEMORY_PATH ?? env2.DEEPLAKE_MEMORY_PATH ?? join4(home, ".deeplake", "memory")
+    workspaceId: env3.HIVEMIND_WORKSPACE_ID ?? env3.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
+    apiUrl: env3.HIVEMIND_API_URL ?? env3.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
+    tableName: env3.HIVEMIND_TABLE ?? env3.DEEPLAKE_TABLE ?? "memory",
+    sessionsTableName: env3.HIVEMIND_SESSIONS_TABLE ?? env3.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
+    graphNodesTableName: env3.HIVEMIND_GRAPH_NODES_TABLE ?? env3.DEEPLAKE_GRAPH_NODES_TABLE ?? "graph_nodes",
+    graphEdgesTableName: env3.HIVEMIND_GRAPH_EDGES_TABLE ?? env3.DEEPLAKE_GRAPH_EDGES_TABLE ?? "graph_edges",
+    factsTableName: env3.HIVEMIND_FACTS_TABLE ?? env3.DEEPLAKE_FACTS_TABLE ?? "memory_facts",
+    entitiesTableName: env3.HIVEMIND_ENTITIES_TABLE ?? env3.DEEPLAKE_ENTITIES_TABLE ?? "memory_entities",
+    factEntityLinksTableName: env3.HIVEMIND_FACT_ENTITY_LINKS_TABLE ?? env3.DEEPLAKE_FACT_ENTITY_LINKS_TABLE ?? "fact_entity_links",
+    memoryPath: env3.HIVEMIND_MEMORY_PATH ?? env3.DEEPLAKE_MEMORY_PATH ?? join4(home, ".deeplake", "memory")
   };
 }
 
@@ -67375,10 +67375,143 @@ var DeeplakeApi = class {
 import { basename as basename5, posix } from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
 
+// dist/src/embeddings/harrier.js
+import { AutoModel, AutoTokenizer, LogLevel, env } from "@huggingface/transformers";
+var DEFAULT_MODEL_ID = "onnx-community/harrier-oss-v1-0.6b-ONNX";
+var DEFAULT_DOCUMENT_BATCH_SIZE = 8;
+var DEFAULT_MAX_LENGTH = 32768;
+function toNumber(value) {
+  return typeof value === "bigint" ? Number(value) : Number(value ?? 0);
+}
+function tensorToRows(tensor) {
+  const [batchSize, width] = tensor.dims;
+  const rows = [];
+  for (let batchIndex = 0; batchIndex < batchSize; batchIndex++) {
+    const offset = batchIndex * width;
+    const row = [];
+    for (let hiddenIndex = 0; hiddenIndex < width; hiddenIndex++) {
+      row.push(Number(tensor.data[offset + hiddenIndex] ?? 0));
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+function l2Normalize(rows) {
+  return rows.map((row) => {
+    let sumSquares = 0;
+    for (const value of row)
+      sumSquares += value * value;
+    const norm = Math.sqrt(sumSquares) || 1;
+    return row.map((value) => value / norm);
+  });
+}
+function lastTokenPool(outputs, attentionMask) {
+  const [batchSize, sequenceLength, hiddenSize] = outputs.dims;
+  const rows = [];
+  const maskData = attentionMask.data;
+  const hiddenData = outputs.data;
+  for (let batchIndex = 0; batchIndex < batchSize; batchIndex++) {
+    let lastTokenIndex = sequenceLength - 1;
+    for (let tokenIndex = sequenceLength - 1; tokenIndex >= 0; tokenIndex--) {
+      const maskOffset = batchIndex * sequenceLength + tokenIndex;
+      if (toNumber(maskData[maskOffset]) > 0) {
+        lastTokenIndex = tokenIndex;
+        break;
+      }
+    }
+    const row = [];
+    const hiddenOffset = (batchIndex * sequenceLength + lastTokenIndex) * hiddenSize;
+    for (let hiddenIndex = 0; hiddenIndex < hiddenSize; hiddenIndex++) {
+      row.push(Number(hiddenData[hiddenOffset + hiddenIndex] ?? 0));
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+function formatQuery(task, query) {
+  return `Instruct: ${task}
+Query: ${query}`;
+}
+var HarrierEmbedder = class {
+  modelId;
+  tokenizerPromise = null;
+  modelPromise = null;
+  options;
+  constructor(options = {}) {
+    this.modelId = options.modelId ?? DEFAULT_MODEL_ID;
+    this.options = {
+      ...options,
+      maxLength: options.maxLength ?? DEFAULT_MAX_LENGTH,
+      batchSize: options.batchSize ?? DEFAULT_DOCUMENT_BATCH_SIZE
+    };
+    if (options.cacheDir)
+      env.cacheDir = options.cacheDir;
+    if (options.localModelPath)
+      env.localModelPath = options.localModelPath;
+    env.logLevel = LogLevel.ERROR;
+  }
+  async embedDocuments(texts) {
+    return this.embedInternal(texts);
+  }
+  async embedQueries(texts, options = {}) {
+    const task = options.task ?? "Given a user query, retrieve relevant memory rows and session events";
+    return this.embedInternal(texts.map((text) => formatQuery(task, text)));
+  }
+  async load() {
+    if (!this.tokenizerPromise) {
+      this.tokenizerPromise = AutoTokenizer.from_pretrained(this.modelId, {
+        local_files_only: this.options.localFilesOnly
+      });
+    }
+    if (!this.modelPromise) {
+      this.modelPromise = AutoModel.from_pretrained(this.modelId, {
+        local_files_only: this.options.localFilesOnly,
+        device: this.options.device ?? "cpu",
+        dtype: this.options.dtype
+      });
+    }
+    const [tokenizer, model] = await Promise.all([this.tokenizerPromise, this.modelPromise]);
+    return { tokenizer, model };
+  }
+  async embedInternal(texts) {
+    if (texts.length === 0)
+      return [];
+    const { tokenizer, model } = await this.load();
+    const rows = [];
+    for (let start = 0; start < texts.length; start += this.options.batchSize) {
+      const batch = texts.slice(start, start + this.options.batchSize);
+      const inputs = tokenizer(batch, {
+        padding: true,
+        truncation: true,
+        max_length: this.options.maxLength
+      });
+      const outputs = await model(inputs);
+      const sentenceEmbedding = outputs["sentence_embedding"];
+      if (sentenceEmbedding && typeof sentenceEmbedding === "object" && sentenceEmbedding !== null) {
+        rows.push(...l2Normalize(tensorToRows(sentenceEmbedding)));
+        continue;
+      }
+      const lastHiddenState = outputs["last_hidden_state"];
+      const attentionMask = inputs["attention_mask"];
+      if (!lastHiddenState || typeof lastHiddenState !== "object" || !attentionMask || typeof attentionMask !== "object") {
+        throw new Error(`Harrier model "${this.modelId}" did not return a usable embedding tensor`);
+      }
+      rows.push(...l2Normalize(lastTokenPool(lastHiddenState, attentionMask)));
+    }
+    return rows;
+  }
+};
+
 // dist/src/utils/retrieval-mode.js
 function isSessionsOnlyMode() {
   const raw = process.env["HIVEMIND_SESSIONS_ONLY"] ?? process.env["DEEPLAKE_SESSIONS_ONLY"] ?? "";
   return /^(1|true|yes|on)$/i.test(raw.trim());
+}
+function getGrepRetrievalMode() {
+  const raw = (process.env["HIVEMIND_GREP_RETRIEVAL_MODE"] ?? process.env["DEEPLAKE_GREP_RETRIEVAL_MODE"] ?? "").trim().toLowerCase();
+  if (raw === "embedding" || raw === "hybrid")
+    return raw;
+  return "classic";
 }
 function isIndexDisabled() {
   const raw = process.env["HIVEMIND_DISABLE_INDEX"] ?? process.env["DEEPLAKE_DISABLE_INDEX"] ?? "";
@@ -67391,6 +67524,49 @@ function isSummaryBm25Disabled() {
 
 // dist/src/shell/grep-core.js
 var DEFAULT_GREP_CANDIDATE_LIMIT = Number(process.env["HIVEMIND_GREP_LIMIT"] ?? process.env["DEEPLAKE_GREP_LIMIT"] ?? 500);
+var DEFAULT_EMBED_RETRIEVAL_MODEL_ID = "onnx-community/harrier-oss-v1-270m-ONNX";
+var DEFAULT_HYBRID_VECTOR_WEIGHT = 0.7;
+var DEFAULT_HYBRID_TEXT_WEIGHT = 0.3;
+var retrievalEmbedder = null;
+function envString(...names) {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value)
+      return value;
+  }
+  return void 0;
+}
+function envFlag(...names) {
+  const raw = envString(...names) ?? "";
+  return /^(1|true|yes|on)$/i.test(raw);
+}
+function envNumber(fallback, ...names) {
+  const raw = envString(...names);
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+function getRetrievalEmbedder() {
+  if (!retrievalEmbedder) {
+    retrievalEmbedder = new HarrierEmbedder({
+      modelId: envString("HIVEMIND_EMBED_RETRIEVAL_MODEL_ID", "DEEPLAKE_EMBED_RETRIEVAL_MODEL_ID", "HIVEMIND_HARRIER_MODEL_ID", "DEEPLAKE_HARRIER_MODEL_ID") ?? DEFAULT_EMBED_RETRIEVAL_MODEL_ID,
+      device: envString("HIVEMIND_EMBED_RETRIEVAL_DEVICE", "DEEPLAKE_EMBED_RETRIEVAL_DEVICE") ?? "cpu",
+      dtype: envString("HIVEMIND_EMBED_RETRIEVAL_DTYPE", "DEEPLAKE_EMBED_RETRIEVAL_DTYPE"),
+      cacheDir: envString("HIVEMIND_EMBED_RETRIEVAL_CACHE_DIR", "DEEPLAKE_EMBED_RETRIEVAL_CACHE_DIR"),
+      localModelPath: envString("HIVEMIND_EMBED_RETRIEVAL_LOCAL_MODEL_PATH", "DEEPLAKE_EMBED_RETRIEVAL_LOCAL_MODEL_PATH"),
+      localFilesOnly: envFlag("HIVEMIND_EMBED_RETRIEVAL_LOCAL_FILES_ONLY", "DEEPLAKE_EMBED_RETRIEVAL_LOCAL_FILES_ONLY")
+    });
+  }
+  return retrievalEmbedder;
+}
+function sqlFloat4Array(values) {
+  if (values.length === 0)
+    throw new Error("Query embedding is empty");
+  return `ARRAY[${values.map((value) => {
+    if (!Number.isFinite(value))
+      throw new Error("Query embedding contains non-finite values");
+    return Math.fround(value).toString();
+  }).join(", ")}]::float4[]`;
+}
 function escapeRegexLiteral(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -67605,7 +67781,7 @@ function buildPathCondition(targetPath) {
   return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, regexPattern, prefilterPattern, prefilterPatterns, bm25QueryText } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, regexPattern, prefilterPattern, prefilterPatterns, queryText, bm25QueryText } = opts;
   const limit = opts.limit ?? DEFAULT_GREP_CANDIDATE_LIMIT;
   const filterPatterns = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : [escapedPattern];
   const ignoreCase = likeOp === "ILIKE";
@@ -67617,7 +67793,11 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const fallbackSessFilter = likeSessFilter;
   const hasSqlRegexFilter = Boolean(regexMemFilter || regexSessFilter);
   const sessionsOnly = isSessionsOnlyMode();
-  const useSummaryBm25 = !sessionsOnly && !isSummaryBm25Disabled() && Boolean(bm25QueryText);
+  const retrievalMode = getGrepRetrievalMode();
+  const semanticQueryText = (queryText ?? bm25QueryText ?? "").trim();
+  const useEmbeddingRetrieval = retrievalMode === "embedding" && semanticQueryText.length > 0;
+  const useHybridRetrieval = retrievalMode === "hybrid" && semanticQueryText.length > 0;
+  const useSummaryBm25 = retrievalMode === "classic" && !sessionsOnly && !isSummaryBm25Disabled() && Boolean(bm25QueryText);
   const shouldUseFallbackCapablePrimary = useSummaryBm25 || hasSqlRegexFilter;
   const ensureSummaryBm25Index = api.ensureSummaryBm25Index;
   if (useSummaryBm25 && typeof ensureSummaryBm25Index === "function") {
@@ -67629,6 +67809,25 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
     const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
     return sessionsOnly ? `SELECT path, content, source_order, creation_date FROM (${sessQuery}) AS combined ORDER BY path, source_order, creation_date` : `SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`;
   };
+  if (useEmbeddingRetrieval || useHybridRetrieval) {
+    const embedder = getRetrievalEmbedder();
+    const [queryEmbedding] = await embedder.embedQueries([semanticQueryText]);
+    if (!queryEmbedding)
+      throw new Error("Failed to build query embedding");
+    const queryVectorSql = sqlFloat4Array(queryEmbedding);
+    const vectorWeight = envNumber(DEFAULT_HYBRID_VECTOR_WEIGHT, "HIVEMIND_HYBRID_VECTOR_WEIGHT", "DEEPLAKE_HYBRID_VECTOR_WEIGHT");
+    const textWeight = envNumber(DEFAULT_HYBRID_TEXT_WEIGHT, "HIVEMIND_HYBRID_TEXT_WEIGHT", "DEEPLAKE_HYBRID_TEXT_WEIGHT");
+    const buildSemanticCombinedQuery = () => {
+      const memQuery = useHybridRetrieval ? buildHybridSimilarityQuery(memoryTable, pathFilter, "summary::text", 0, "''", queryVectorSql, semanticQueryText, vectorWeight, textWeight, limit) : buildEmbeddingSimilarityQuery(memoryTable, pathFilter, "summary::text", 0, "''", queryVectorSql, limit);
+      const sessQuery = useHybridRetrieval ? buildHybridSimilarityQuery(sessionsTable, pathFilter, "message::text", 1, "COALESCE(creation_date::text, '')", queryVectorSql, semanticQueryText, vectorWeight, textWeight, limit) : buildEmbeddingSimilarityQuery(sessionsTable, pathFilter, "message::text", 1, "COALESCE(creation_date::text, '')", queryVectorSql, limit);
+      return sessionsOnly ? `SELECT path, content, source_order, creation_date FROM (${sessQuery}) AS combined ORDER BY path, source_order, creation_date` : `SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`;
+    };
+    const rows2 = await api.query(buildSemanticCombinedQuery());
+    return rows2.map((row) => ({
+      path: String(row["path"]),
+      content: String(row["content"] ?? "")
+    }));
+  }
   const primaryMemFilter = useSummaryBm25 ? "" : `${likeMemFilter}${regexMemFilter}`;
   const primaryQuery = buildCombinedQuery(primaryMemFilter, primarySessFilter, useSummaryBm25);
   const fallbackQuery = buildCombinedQuery(likeMemFilter, fallbackSessFilter, false);
@@ -67733,6 +67932,7 @@ function buildGrepSearchOptions(params, targetPath) {
   const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(normalizedPattern) : null;
   const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(normalizedPattern) : null;
   const bm25QueryText = buildSummaryBm25QueryText(normalizedPattern, params.fixedString, literalPrefilter, alternationPrefilters);
+  const queryText = (bm25QueryText ?? normalizedPattern.trim()) || void 0;
   const regexBase = params.fixedString ? escapeRegexLiteral(normalizedPattern) : normalizedPattern;
   const sqlRegexPattern = params.wordMatch ? `\\b(?:${regexBase})\\b` : hasRegexMeta ? regexBase : void 0;
   return {
@@ -67743,6 +67943,7 @@ function buildGrepSearchOptions(params, targetPath) {
     regexPattern: sqlRegexPattern,
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0,
     prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
+    queryText,
     bm25QueryText: bm25QueryText ?? void 0,
     limit: DEFAULT_GREP_CANDIDATE_LIMIT
   };
@@ -67765,6 +67966,12 @@ function buildRegexFilter(column, pattern, ignoreCase) {
 }
 function buildSummaryBm25Query(memoryTable, pathFilter, queryText, limit) {
   return `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter} ORDER BY (summary <#> '${sqlStr(queryText)}') DESC LIMIT ${limit}`;
+}
+function buildEmbeddingSimilarityQuery(tableName, pathFilter, contentExpr, sourceOrder, creationDateExpr, queryVectorSql, limit) {
+  return `SELECT path, ${contentExpr} AS content, ${sourceOrder} AS source_order, ${creationDateExpr} AS creation_date FROM "${tableName}" WHERE 1=1${pathFilter} AND embedding IS NOT NULL ORDER BY (embedding <#> ${queryVectorSql}) DESC LIMIT ${limit}`;
+}
+function buildHybridSimilarityQuery(tableName, pathFilter, contentExpr, sourceOrder, creationDateExpr, queryVectorSql, queryText, vectorWeight, textWeight, limit) {
+  return `SELECT path, ${contentExpr} AS content, ${sourceOrder} AS source_order, ${creationDateExpr} AS creation_date FROM "${tableName}" WHERE 1=1${pathFilter} AND embedding IS NOT NULL ORDER BY (((embedding, ${contentExpr})::deeplake_hybrid_record) <#> deeplake_hybrid_record(${queryVectorSql}, '${sqlStr(queryText)}', ${vectorWeight}, ${textWeight})) DESC LIMIT ${limit}`;
 }
 function toSqlRegexPattern(pattern, ignoreCase) {
   if (!pattern)
@@ -69355,8 +69562,8 @@ var YargsParser = class {
       if (typeof envPrefix === "undefined")
         return;
       const prefix = typeof envPrefix === "string" ? envPrefix : "";
-      const env2 = mixin.env();
-      Object.keys(env2).forEach(function(envVar) {
+      const env3 = mixin.env();
+      Object.keys(env3).forEach(function(envVar) {
         if (prefix === "" || envVar.lastIndexOf(prefix, 0) === 0) {
           const keys = envVar.split("__").map(function(key, i11) {
             if (i11 === 0) {
@@ -69365,7 +69572,7 @@ var YargsParser = class {
             return camelCase2(key);
           });
           if ((configOnly && flags.configs[keys.join(".")] || !configOnly) && !hasKey(argv2, keys)) {
-            setArg(keys.join("."), env2[envVar]);
+            setArg(keys.join("."), env3[envVar]);
           }
         }
       });
@@ -69676,12 +69883,12 @@ if (nodeVersion) {
     throw Error(`yargs parser supports a minimum Node.js version of ${minNodeVersion}. Read our version support policy: https://github.com/yargs/yargs-parser#supported-nodejs-versions`);
   }
 }
-var env = process ? process.env : {};
+var env2 = process ? process.env : {};
 var require2 = createRequire ? createRequire(import.meta.url) : void 0;
 var parser = new YargsParser({
   cwd: process.cwd,
   env: () => {
-    return env;
+    return env2;
   },
   format,
   normalize,

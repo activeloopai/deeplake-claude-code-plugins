@@ -18,6 +18,7 @@ import {
   replaceSessionGraph,
 } from "../knowledge-graph.js";
 import {
+  buildMemoryFactTranscript,
   buildMemoryFactPrompt,
   parseMemoryFactExtraction,
   replaceSessionFacts,
@@ -113,7 +114,7 @@ async function main(): Promise<void> {
     // 1. Fetch session events from sessions table
     wlog("fetching session events");
     const rows = await query(
-      `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
+      `SELECT path, message, creation_date, turn_index, event_type, speaker, text, turn_summary, source_date_time FROM "${cfg.sessionsTable}" ` +
       `WHERE path LIKE E'${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC, turn_index ASC`
     );
 
@@ -232,8 +233,17 @@ async function main(): Promise<void> {
         }
 
         try {
+          const transcriptText = buildMemoryFactTranscript(rows.map((row) => ({
+            turnIndex: Number(row["turn_index"] ?? 0),
+            eventType: typeof row["event_type"] === "string" ? row["event_type"] : "",
+            speaker: typeof row["speaker"] === "string" ? row["speaker"] : "",
+            text: typeof row["text"] === "string" ? row["text"] : "",
+            turnSummary: typeof row["turn_summary"] === "string" ? row["turn_summary"] : "",
+            sourceDateTime: typeof row["source_date_time"] === "string" ? row["source_date_time"] : "",
+            creationDate: typeof row["creation_date"] === "string" ? row["creation_date"] : "",
+          })));
           const factPrompt = buildMemoryFactPrompt({
-            summaryText: text,
+            transcriptText,
             sessionId: cfg.sessionId,
             sourcePath: jsonlServerPath,
             project: cfg.project,

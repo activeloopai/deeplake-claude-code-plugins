@@ -11,10 +11,13 @@ import {
 } from "../../src/hooks/bash-command-compiler.js";
 
 const originalPsqlMode = process.env.HIVEMIND_PSQL_MODE;
+const originalFactsSessionsOnlyPsqlMode = process.env.HIVEMIND_PSQL_FACTS_SESSIONS_ONLY;
 
 function restorePsqlMode(): void {
   if (originalPsqlMode === undefined) delete process.env.HIVEMIND_PSQL_MODE;
   else process.env.HIVEMIND_PSQL_MODE = originalPsqlMode;
+  if (originalFactsSessionsOnlyPsqlMode === undefined) delete process.env.HIVEMIND_PSQL_FACTS_SESSIONS_ONLY;
+  else process.env.HIVEMIND_PSQL_FACTS_SESSIONS_ONLY = originalFactsSessionsOnlyPsqlMode;
 }
 
 describe("bash-command-compiler parsing", () => {
@@ -336,6 +339,32 @@ describe("bash-command-compiler parsing", () => {
     restorePsqlMode();
   });
 
+  it("parses only facts-and-sessions psql segments when the mode is enabled", () => {
+    process.env.HIVEMIND_PSQL_MODE = "1";
+    process.env.HIVEMIND_PSQL_FACTS_SESSIONS_ONLY = "1";
+
+    expect(parseCompiledSegment("psql -At -F '|' -c \"SELECT path, summary FROM memory LIMIT 2\"")).toBeNull();
+    expect(parseCompiledSegment("psql -At -F '|' -c \"SELECT node_id, canonical_name FROM graph_nodes LIMIT 2\"")).toBeNull();
+
+    expect(parseCompiledSegment("psql -At -F '|' -c \"SELECT path, creation_date, turn_index, speaker, text FROM sessions WHERE text ILIKE '%camp%' LIMIT 2\"")).toEqual({
+      kind: "psql",
+      query: "SELECT path, creation_date, turn_index, speaker, text FROM sessions WHERE text ILIKE '%camp%' LIMIT 2",
+      lineLimit: 0,
+      tuplesOnly: true,
+      fieldSeparator: "|",
+    });
+
+    expect(parseCompiledSegment("psql -At -F '|' -c \"SELECT fact_id, subject_name, predicate, object_name FROM memory_facts LIMIT 2\"")).toEqual({
+      kind: "psql",
+      query: "SELECT fact_id, subject_name, predicate, object_name FROM memory_facts LIMIT 2",
+      lineLimit: 0,
+      tuplesOnly: true,
+      fieldSeparator: "|",
+    });
+
+    restorePsqlMode();
+  });
+
   it("rejects unsupported segments and command shapes", () => {
     process.env.HIVEMIND_PSQL_MODE = "1";
     expect(parseCompiledSegment("cat")).toBeNull();
@@ -528,7 +557,13 @@ describe("bash-command-compiler execution", () => {
 
   it("executes psql queries against normalized memory and sessions table names", async () => {
     const query = vi.fn(async (sql: string) => {
-      if (sql.includes('FROM "graph_nodes"') || sql.includes('FROM "graph_edges"')) {
+      if (
+        sql.includes('FROM "graph_nodes') ||
+        sql.includes('FROM "graph_edges') ||
+        sql.includes('FROM "memory_entities') ||
+        sql.includes('FROM "memory_facts') ||
+        (sql.includes('FROM "memory_actual"') && !sql.includes('JOIN "sessions_actual"'))
+      ) {
         return [];
       }
       expect(sql).toContain('FROM "memory_actual"');
@@ -552,7 +587,13 @@ describe("bash-command-compiler execution", () => {
 
   it("executes direct sessions queries against physical per-message rows", async () => {
     const query = vi.fn(async (sql: string) => {
-      if (sql.includes('FROM "graph_nodes"') || sql.includes('FROM "graph_edges"')) {
+      if (
+        sql.includes('FROM "graph_nodes') ||
+        sql.includes('FROM "graph_edges') ||
+        sql.includes('FROM "memory_entities') ||
+        sql.includes('FROM "memory_facts') ||
+        sql.includes('FROM "memory_actual"')
+      ) {
         return [];
       }
       expect(sql).toContain('FROM "sessions_actual"');
@@ -616,6 +657,43 @@ describe("bash-command-compiler execution", () => {
       "psql -At -F '|' -c \"SELECT * FROM users\"",
     );
     expect(unrelated).toBeNull();
+
+    process.env.HIVEMIND_PSQL_FACTS_SESSIONS_ONLY = "1";
+    const summaryQuery = await executeCompiledBashCommand(
+      { query: vi.fn() } as any,
+      "memory",
+      "sessions",
+      "psql -At -F '|' -c \"SELECT * FROM memory\"",
+    );
+    expect(summaryQuery).toBeNull();
+
+    restorePsqlMode();
+  });
+
+  it("executes facts-and-sessions-only psql queries without summary or graph helper queries", async () => {
+    process.env.HIVEMIND_PSQL_MODE = "1";
+    process.env.HIVEMIND_PSQL_FACTS_SESSIONS_ONLY = "1";
+
+    const query = vi.fn(async (sql: string) => {
+      expect(sql).not.toContain('FROM "memory_actual"');
+      expect(sql).not.toContain('FROM "graph_nodes');
+      expect(sql).not.toContain('FROM "graph_edges');
+      expect(sql).not.toContain("__hm_graph_candidates");
+      expect(sql).toContain('FROM "memory_facts_actual"');
+      return [
+        { fact_id: "f1", subject_name: "Caroline", predicate: "home_country", object_name: "Sweden" },
+      ];
+    });
+
+    const output = await executeCompiledBashCommand(
+      { query } as any,
+      "memory_actual",
+      "sessions_actual",
+      "psql -At -F '|' -c \"SELECT fact_id, subject_name, predicate, object_name FROM memory_facts WHERE subject_name ILIKE '%Caroline%' LIMIT 1\"",
+    );
+
+    expect(output).toBe("f1|Caroline|home_country|Sweden");
+    expect(query).toHaveBeenCalledTimes(1);
     restorePsqlMode();
   });
 

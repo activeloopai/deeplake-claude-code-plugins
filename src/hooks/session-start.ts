@@ -15,7 +15,7 @@ import { loadCredentials, saveCredentials } from "../commands/auth.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
 import { isDirectRun } from "../utils/direct-run.js";
-import { isIndexDisabled, isPsqlMode, isSessionsOnlyMode } from "../utils/retrieval-mode.js";
+import { isFactsSessionsOnlyPsqlMode, isIndexDisabled, isPsqlMode, isSessionsOnlyMode } from "../utils/retrieval-mode.js";
 import {
   DEFAULT_VERSION_CACHE_TTL_MS,
   getInstalledVersion,
@@ -221,6 +221,61 @@ IMPORTANT: Only psql SELECT queries over memory, sessions, graph_nodes, graph_ed
 
 Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
 
+export const CLAUDE_SESSION_START_CONTEXT_PSQL_FACTS_SESSIONS_ONLY = `DEEPLAKE MEMORY SQL MODE: For this run, use SQL only when answering recall questions.
+
+Available Deeplake tables:
+- sessions(path, creation_date, turn_index, event_type, dia_id, speaker, text, turn_summary, source_date_time, message)
+- memory_facts(path, fact_id, subject_entity_id, subject_name, subject_type, predicate, object_entity_id, object_name, object_type, summary, evidence, search_text, confidence, valid_at, valid_from, valid_to, source_session_id, source_path)
+- memory_entities(path, entity_id, canonical_name, entity_type, aliases, summary, search_text, source_session_ids, source_paths)
+- fact_entity_links(path, link_id, fact_id, entity_id, entity_role, source_session_id, source_path)
+
+The summary and graph tables are intentionally unavailable in this mode. Treat them as if they do not exist.
+
+Use this command shape:
+- psql -At -F '|' -c "SELECT ..."
+
+SQL strategy:
+1. Start with memory_entities to resolve the named person, project, place, or organization into a canonical entity.
+2. Expand connected facts through fact_entity_links and memory_facts.
+3. Use memory_facts to identify the small set of likely source sessions.
+4. Ground every exact answer on sessions rows from those source sessions.
+5. Prefer small targeted SELECTs with ORDER BY and LIMIT 5-10.
+6. Do not use filesystem commands, grep, cat, ls, Read, or Glob for recall in this mode.
+7. Use sessions.text, sessions.speaker, sessions.turn_index, and sessions.source_date_time for transcript retrieval. Use sessions.message only when you need the raw JSON payload.
+8. For identity, origin, relationship, preference, and "what did they decide" questions, prefer transcript grounding over paraphrased fact labels.
+9. For list/profile questions, facts are for narrowing and aggregation; sessions are for final verification.
+
+Good query patterns:
+- Canonical entity lookup:
+  psql -At -F '|' -c "SELECT entity_id, canonical_name, entity_type, aliases, summary FROM memory_entities WHERE canonical_name ILIKE '%<name>%' OR aliases ILIKE '%<name>%' LIMIT 5"
+- Fact lookup by name/topic:
+  psql -At -F '|' -c "SELECT fact_id, subject_name, predicate, object_name, summary, valid_at, valid_from, valid_to, source_session_id, source_path FROM memory_facts WHERE subject_name ILIKE '%<name>%' AND (predicate ILIKE '%<topic>%' OR object_name ILIKE '%<topic>%') ORDER BY creation_date DESC LIMIT 10"
+- Entity-linked fact expansion:
+  psql -At -F '|' -c "SELECT f.fact_id, f.subject_name, f.predicate, f.object_name, f.summary, f.source_session_id, f.source_path FROM fact_entity_links l JOIN memory_facts f ON f.fact_id = l.fact_id WHERE l.entity_id = '<entity_id>' ORDER BY f.creation_date DESC LIMIT 10"
+- Transcript grounding by exact path:
+  psql -At -F '|' -c "SELECT path, creation_date, turn_index, speaker, text, source_date_time FROM sessions WHERE path IN ('/sessions/...', '/sessions/...') ORDER BY path ASC, turn_index ASC"
+- Transcript search inside known sessions:
+  psql -At -F '|' -c "SELECT path, creation_date, turn_index, speaker, text, source_date_time FROM sessions WHERE path IN ('/sessions/...', '/sessions/...') AND (speaker ILIKE '%<person>%' OR text ILIKE '%<keyword>%') ORDER BY path ASC, turn_index ASC"
+
+Avoid these mistakes:
+- Do NOT query memory, graph_nodes, or graph_edges in this mode.
+- Do NOT use fact tables for exact quoted wording when a transcript row is available; use them to narrow and aggregate, then ground on sessions.
+- Do NOT filter sessions.message directly when sessions.text / sessions.speaker already contain the needed transcript fields.
+- Do NOT blend multiple different events when the question asks about one specific event. Prefer the most direct supporting row.
+- Do NOT replace an exact status or self-label with a broader biography.
+- Do NOT recalculate a relative-time answer against today's date when the stored phrase already answers the question.
+
+Answer rules:
+- Return the smallest exact answer supported by the data.
+- Resolve relative dates against the session's own creation_date or transcript date metadata, not today's date.
+- Do not answer "not found" until you have checked both the fact layer and a likely sessions row for the named person.
+- For duration or age-style answers, preserve the stored relative phrase when it directly answers the question instead of over-converting it.
+- For list or profile questions, aggregate across the small set of candidate sessions before answering.
+
+IMPORTANT: Only psql SELECT queries over sessions, memory_facts, memory_entities, and fact_entity_links are intercepted in this mode. Do NOT use python, python3, node, curl, filesystem paths, memory, or graph tables for recall in this mode.
+
+Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
+
 const GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 
 export function buildSessionStartAdditionalContext(args: {
@@ -230,7 +285,9 @@ export function buildSessionStartAdditionalContext(args: {
   latestVersion: string | null;
 }): string {
   const template = isPsqlMode()
-    ? CLAUDE_SESSION_START_CONTEXT_PSQL
+    ? isFactsSessionsOnlyPsqlMode()
+      ? CLAUDE_SESSION_START_CONTEXT_PSQL_FACTS_SESSIONS_ONLY
+      : CLAUDE_SESSION_START_CONTEXT_PSQL
     : isSessionsOnlyMode()
       ? CLAUDE_SESSION_START_CONTEXT_SESSIONS_ONLY
       : isIndexDisabled()

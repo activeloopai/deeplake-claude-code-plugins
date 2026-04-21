@@ -79,6 +79,10 @@ function isPsqlMode() {
   const raw = process.env["HIVEMIND_PSQL_MODE"] ?? process.env["DEEPLAKE_PSQL_MODE"] ?? "";
   return /^(1|true|yes|on)$/i.test(raw.trim());
 }
+function isFactsSessionsOnlyPsqlMode() {
+  const raw = process.env["HIVEMIND_PSQL_FACTS_SESSIONS_ONLY"] ?? process.env["DEEPLAKE_PSQL_FACTS_SESSIONS_ONLY"] ?? "";
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
 
 // dist/src/hooks/version-check.js
 import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
@@ -236,10 +240,58 @@ Answer rules:
 - For "likely", "would", or profile questions, a concise inference from strong summary evidence is allowed even if the exact final phrase is not quoted verbatim.
 
 Only psql SELECT queries over memory, sessions, graph_nodes, graph_edges, memory_facts, memory_entities, and fact_entity_links are intercepted in this mode. For normal recall, query memory_facts for distilled claims, memory_entities for canonical names, and sessions for exact grounding; graph-based restriction is applied automatically where relevant. Do NOT use python, python3, node, curl, or filesystem paths for recall in this mode.`;
+var CODEX_SESSION_START_CONTEXT_PSQL_FACTS_SESSIONS_ONLY = `DEEPLAKE MEMORY SQL MODE: Use SQL only for Deeplake recall tasks.
+
+Available tables:
+- sessions(path, creation_date, turn_index, event_type, dia_id, speaker, text, turn_summary, source_date_time, message)
+- memory_facts(path, fact_id, subject_entity_id, subject_name, subject_type, predicate, object_entity_id, object_name, object_type, summary, evidence, search_text, confidence, valid_at, valid_from, valid_to, source_session_id, source_path)
+- memory_entities(path, entity_id, canonical_name, entity_type, aliases, summary, search_text, source_session_ids, source_paths)
+- fact_entity_links(path, link_id, fact_id, entity_id, entity_role, source_session_id, source_path)
+
+The summary and graph tables are intentionally unavailable in this mode. Treat them as if they do not exist.
+
+Use this command shape:
+- psql -At -F '|' -c "SELECT ..."
+
+Workflow:
+1. Resolve the named person, project, place, or organization with memory_entities.
+2. Expand connected facts through fact_entity_links and memory_facts.
+3. Use memory_facts to identify the small set of likely source sessions.
+4. Use sessions for transcript grounding and final answer verification.
+5. Prefer small targeted SELECTs with ORDER BY and LIMIT 5-10.
+6. Do not use filesystem commands, grep, cat, ls, Read, or Glob for recall in this mode.
+7. Use sessions.text, sessions.speaker, sessions.turn_index, and sessions.source_date_time for transcript retrieval. Use sessions.message only when you need the raw JSON payload.
+8. Facts are for narrowing and aggregation; sessions are for the final exact answer.
+
+Good query patterns:
+- Canonical entity lookup:
+  psql -At -F '|' -c "SELECT entity_id, canonical_name, entity_type, aliases, summary FROM memory_entities WHERE canonical_name ILIKE '%<name>%' OR aliases ILIKE '%<name>%' LIMIT 5"
+- Fact lookup by entity:
+  psql -At -F '|' -c "SELECT fact_id, subject_name, predicate, object_name, summary, valid_at, valid_from, valid_to, source_session_id, source_path FROM memory_facts WHERE subject_name ILIKE '%<name>%' AND (predicate ILIKE '%<topic>%' OR object_name ILIKE '%<topic>%') ORDER BY creation_date DESC LIMIT 10"
+- Entity-linked fact expansion:
+  psql -At -F '|' -c "SELECT f.fact_id, f.subject_name, f.predicate, f.object_name, f.summary, f.source_session_id, f.source_path FROM fact_entity_links l JOIN memory_facts f ON f.fact_id = l.fact_id WHERE l.entity_id = '<entity_id>' ORDER BY f.creation_date DESC LIMIT 10"
+- Transcript grounding by exact path:
+  psql -At -F '|' -c "SELECT path, creation_date, turn_index, speaker, text, source_date_time FROM sessions WHERE path IN ('/sessions/...', '/sessions/...') ORDER BY path ASC, turn_index ASC"
+- Transcript search inside known sessions:
+  psql -At -F '|' -c "SELECT path, creation_date, turn_index, speaker, text, source_date_time FROM sessions WHERE path IN ('/sessions/...', '/sessions/...') AND (speaker ILIKE '%<person>%' OR text ILIKE '%<keyword>%') ORDER BY path ASC, turn_index ASC"
+
+Avoid these mistakes:
+- Do NOT query memory, graph_nodes, or graph_edges in this mode.
+- Do NOT use fact tables for exact quoted wording when a transcript row is available; use them to narrow and aggregate, then ground on sessions.
+- Do NOT filter sessions.message directly when sessions.text / sessions.speaker already contain the needed transcript fields.
+- Do NOT replace an exact status or self-label with a broader biography.
+- Do NOT recalculate a relative-time answer against today's date when the stored phrase already answers the question.
+
+Answer rules:
+- Return the smallest exact answer supported by the data.
+- Resolve relative dates against the session's own creation_date or transcript date metadata, not today's date.
+- Do not answer "not found" until you have checked both the fact layer and a likely sessions row.
+
+Only psql SELECT queries over sessions, memory_facts, memory_entities, and fact_entity_links are intercepted in this mode. Do NOT use python, python3, node, curl, filesystem paths, memory, or graph tables for recall in this mode.`;
 function buildCodexSessionStartContext(args) {
   const versionNotice = args.currentVersion ? `
 Hivemind v${args.currentVersion}` : "";
-  const template = isPsqlMode() ? CODEX_SESSION_START_CONTEXT_PSQL : isSessionsOnlyMode() ? CODEX_SESSION_START_CONTEXT_SESSIONS_ONLY : isIndexDisabled() ? CODEX_SESSION_START_CONTEXT_NO_INDEX : CODEX_SESSION_START_CONTEXT;
+  const template = isPsqlMode() ? isFactsSessionsOnlyPsqlMode() ? CODEX_SESSION_START_CONTEXT_PSQL_FACTS_SESSIONS_ONLY : CODEX_SESSION_START_CONTEXT_PSQL : isSessionsOnlyMode() ? CODEX_SESSION_START_CONTEXT_SESSIONS_ONLY : isIndexDisabled() ? CODEX_SESSION_START_CONTEXT_NO_INDEX : CODEX_SESSION_START_CONTEXT;
   return args.creds?.token ? `${template}
 Logged in to Deeplake as org: ${args.creds.orgName ?? args.creds.orgId} (workspace: ${args.creds.workspaceId ?? "default"})${versionNotice}` : `${template}
 Not logged in to Deeplake. Run: node "${args.authCommand}" login${versionNotice}`;
@@ -285,6 +337,7 @@ export {
   CODEX_SESSION_START_CONTEXT,
   CODEX_SESSION_START_CONTEXT_NO_INDEX,
   CODEX_SESSION_START_CONTEXT_PSQL,
+  CODEX_SESSION_START_CONTEXT_PSQL_FACTS_SESSIONS_ONLY,
   CODEX_SESSION_START_CONTEXT_SESSIONS_ONLY,
   buildCodexSessionStartContext,
   runCodexSessionStartHook

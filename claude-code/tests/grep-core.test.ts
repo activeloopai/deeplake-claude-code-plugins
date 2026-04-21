@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { HarrierEmbedder } from "../../src/embeddings/harrier.js";
 import {
   buildGrepSearchOptions,
   buildSummaryBm25QueryText,
@@ -653,6 +654,68 @@ describe("searchDeeplakeTables", () => {
     const sql = api.query.mock.calls[0][0] as string;
     expect(sql).toContain("ORDER BY (summary <#> 'book novel literature') DESC");
     expect(sql).toContain('FROM "sessions"');
+  });
+
+  it("uses vector similarity on embedding columns when retrieval mode is embedding", async () => {
+    const prev = process.env.HIVEMIND_GREP_RETRIEVAL_MODE;
+    process.env.HIVEMIND_GREP_RETRIEVAL_MODE = "embedding";
+    const embedSpy = vi.spyOn(HarrierEmbedder.prototype, "embedQueries").mockResolvedValue([[0.25, -0.5]]);
+    try {
+      const api = mockApi([]);
+      await searchDeeplakeTables(api, "memory", "sessions", {
+        pathFilter: "",
+        contentScanOnly: false,
+        likeOp: "ILIKE",
+        escapedPattern: "book",
+        queryText: "book novel literature",
+        bm25QueryText: "book novel literature",
+        limit: 50,
+      });
+      const sql = api.query.mock.calls[0][0] as string;
+      expect(embedSpy).toHaveBeenCalledWith(["book novel literature"]);
+      expect(sql).toContain("embedding <#> ARRAY[0.25, -0.5]::float4[]");
+      expect(sql).not.toContain("summary::text ILIKE");
+      expect(sql).not.toContain("message::text ILIKE");
+    } finally {
+      embedSpy.mockRestore();
+      if (prev === undefined) delete process.env.HIVEMIND_GREP_RETRIEVAL_MODE;
+      else process.env.HIVEMIND_GREP_RETRIEVAL_MODE = prev;
+    }
+  });
+
+  it("uses deeplake hybrid record scoring when retrieval mode is hybrid", async () => {
+    const prevMode = process.env.HIVEMIND_GREP_RETRIEVAL_MODE;
+    const prevVector = process.env.HIVEMIND_HYBRID_VECTOR_WEIGHT;
+    const prevText = process.env.HIVEMIND_HYBRID_TEXT_WEIGHT;
+    process.env.HIVEMIND_GREP_RETRIEVAL_MODE = "hybrid";
+    process.env.HIVEMIND_HYBRID_VECTOR_WEIGHT = "0.6";
+    process.env.HIVEMIND_HYBRID_TEXT_WEIGHT = "0.4";
+    const embedSpy = vi.spyOn(HarrierEmbedder.prototype, "embedQueries").mockResolvedValue([[0.1, 0.2, 0.3]]);
+    try {
+      const api = mockApi([]);
+      await searchDeeplakeTables(api, "memory", "sessions", {
+        pathFilter: "",
+        contentScanOnly: false,
+        likeOp: "ILIKE",
+        escapedPattern: "book",
+        queryText: "book novel literature",
+        bm25QueryText: "book novel literature",
+        limit: 50,
+      });
+      const sql = api.query.mock.calls[0][0] as string;
+      expect(embedSpy).toHaveBeenCalledWith(["book novel literature"]);
+      expect(sql).toContain("deeplake_hybrid_record");
+      expect(sql).toContain("0.6, 0.4");
+      expect(sql).toContain("ARRAY[0.10000000149011612");
+    } finally {
+      embedSpy.mockRestore();
+      if (prevMode === undefined) delete process.env.HIVEMIND_GREP_RETRIEVAL_MODE;
+      else process.env.HIVEMIND_GREP_RETRIEVAL_MODE = prevMode;
+      if (prevVector === undefined) delete process.env.HIVEMIND_HYBRID_VECTOR_WEIGHT;
+      else process.env.HIVEMIND_HYBRID_VECTOR_WEIGHT = prevVector;
+      if (prevText === undefined) delete process.env.HIVEMIND_HYBRID_TEXT_WEIGHT;
+      else process.env.HIVEMIND_HYBRID_TEXT_WEIGHT = prevText;
+    }
   });
 
   it("skips LIKE filter when contentScanOnly is true (regex-in-memory mode)", async () => {

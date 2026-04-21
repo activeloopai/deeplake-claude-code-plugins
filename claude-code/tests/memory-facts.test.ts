@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildMemoryFactTranscript,
   buildMemoryFactPrompt,
   parseMemoryFactExtraction,
   replaceSessionFacts,
@@ -15,16 +16,36 @@ describe("memory-facts", () => {
     expect(extraction.facts[0].confidence).toBe(0.92);
   });
 
-  it("builds a fact prompt with summary and source metadata", () => {
+  it("builds a transcript-backed fact prompt with source metadata", () => {
     const prompt = buildMemoryFactPrompt({
-      summaryText: "# Session\n- **Source**: /sessions/x.json",
+      transcriptText: "[turn=1 | time=2023-05-07 | speaker=Caroline] I moved from Sweden.",
       sessionId: "sess-1",
       sourcePath: "/sessions/x.json",
       project: "proj",
     });
     expect(prompt).toContain("SESSION ID: sess-1");
     expect(prompt).toContain("SOURCE PATH: /sessions/x.json");
-    expect(prompt).toContain("SUMMARY MARKDOWN:");
+    expect(prompt).toContain("TRANSCRIPT ROWS:");
+    expect(prompt).toContain("speaker=Caroline");
+  });
+
+  it("formats transcript rows for fact extraction", () => {
+    const transcript = buildMemoryFactTranscript([
+      {
+        turnIndex: 1,
+        speaker: "Caroline",
+        text: "I moved from Sweden four years ago.",
+        sourceDateTime: "2023-05-07",
+      },
+      {
+        turnIndex: 2,
+        speaker: "Caroline",
+        text: "I'm a transgender woman.",
+        turnSummary: "Caroline shares her identity.",
+      },
+    ]);
+    expect(transcript).toContain("[turn=1 | time=2023-05-07 | speaker=Caroline] I moved from Sweden four years ago.");
+    expect(transcript).toContain("summary: Caroline shares her identity.");
   });
 
   it("replaces per-session fact rows and upserts canonical entities", async () => {

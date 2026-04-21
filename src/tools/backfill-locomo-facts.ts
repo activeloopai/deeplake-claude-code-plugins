@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { loadCredentials } from "../commands/auth.js";
 import { DeeplakeApi, DeeplakeQueryError, summarizeSql } from "../deeplake-api.js";
 import {
+  buildMemoryFactTranscript,
   buildMemoryFactPrompt,
   parseMemoryFactExtraction,
   replaceSessionFacts,
@@ -17,6 +18,7 @@ const execFileAsync = promisify(execFile);
 
 interface Args {
   memoryTable: string;
+  sessionsTable: string;
   factsTable: string;
   entitiesTable: string;
   linksTable: string;
@@ -30,7 +32,6 @@ interface Args {
 
 interface SummaryRow {
   path: string;
-  summary: string;
   project?: string;
 }
 
@@ -38,6 +39,7 @@ function parseArgs(): Args {
   const args = process.argv.slice(2);
   const opts: Args = {
     memoryTable: "memory",
+    sessionsTable: "sessions",
     factsTable: "memory_facts",
     entitiesTable: "memory_entities",
     linksTable: "fact_entity_links",
@@ -55,6 +57,9 @@ function parseArgs(): Args {
         break;
       case "--facts-table":
         opts.factsTable = args[++i] ?? opts.factsTable;
+        break;
+      case "--sessions-table":
+        opts.sessionsTable = args[++i] ?? opts.sessionsTable;
         break;
       case "--entities-table":
         opts.entitiesTable = args[++i] ?? opts.entitiesTable;
@@ -85,14 +90,9 @@ function parseArgs(): Args {
   return opts;
 }
 
-function extractSummarySourcePath(summary: string): string {
-  const match = summary.match(/^- \*\*Source\*\*: (.+)$/m);
-  return match?.[1]?.trim() || "";
-}
-
-function sessionIdFromSummaryPath(path: string): string {
-  const base = basename(path).replace(/\.md$/, "");
-  return base.endsWith("_summary") ? base.slice(0, -"_summary".length) : base;
+function sessionIdFromSessionPath(path: string): string {
+  const base = basename(path).replace(/\.jsonl?$/, "");
+  return base;
 }
 
 function serializeError(error: unknown): Record<string, unknown> {
@@ -140,7 +140,7 @@ function appendErrorLog(logPath: string | undefined, payload: Record<string, unk
 }
 
 async function generateFacts(
-  summary: string,
+  transcriptText: string,
   sourcePath: string,
   sessionId: string,
   project: string,
@@ -148,7 +148,7 @@ async function generateFacts(
   model: string,
 ) {
   const prompt = buildMemoryFactPrompt({
-    summaryText: summary,
+    transcriptText,
     sessionId,
     sourcePath,
     project,
@@ -195,15 +195,14 @@ async function main(): Promise<void> {
     await api.query(`DELETE FROM "${opts.entitiesTable}"`);
   }
 
-  const summaryRows = await api.query(
-    `SELECT path, summary, project FROM "${opts.memoryTable}" WHERE path LIKE '/summaries/locomo/%' ORDER BY path ASC`,
+  const sessionRows = await api.query(
+    `SELECT DISTINCT path, project FROM "${opts.sessionsTable}" WHERE path LIKE '/sessions/conv_%_session_%.json%' ORDER BY path ASC`,
   );
-  const summaries: SummaryRow[] = summaryRows.map((row) => ({
+  const summaries: SummaryRow[] = sessionRows.map((row) => ({
     path: String(row["path"] ?? ""),
-    summary: String(row["summary"] ?? ""),
     project: row["project"] == null ? undefined : String(row["project"]),
   }))
-    .filter((row) => row.path && row.summary)
+    .filter((row) => row.path)
     .filter((row) => !opts.pathContains || row.path.includes(opts.pathContains));
 
   const claudeBin = findClaudeBin();
@@ -217,11 +216,24 @@ async function main(): Promise<void> {
       const index = nextIndex++;
       if (index >= summaries.length) return;
       const row = summaries[index];
-      const sessionId = sessionIdFromSummaryPath(row.path);
-      const sourcePath = extractSummarySourcePath(row.summary) || `/sessions/${sessionId}.json`;
+      const sessionId = sessionIdFromSessionPath(row.path);
+      const sourcePath = row.path;
       try {
+        const transcriptRows = await api.query(
+          `SELECT creation_date, turn_index, event_type, speaker, text, turn_summary, source_date_time FROM "${opts.sessionsTable}" ` +
+          `WHERE path = '${row.path.replace(/'/g, "''")}' ORDER BY creation_date ASC, turn_index ASC`,
+        );
+        const transcriptText = buildMemoryFactTranscript(transcriptRows.map((transcriptRow) => ({
+          turnIndex: Number(transcriptRow["turn_index"] ?? 0),
+          eventType: typeof transcriptRow["event_type"] === "string" ? transcriptRow["event_type"] : "",
+          speaker: typeof transcriptRow["speaker"] === "string" ? transcriptRow["speaker"] : "",
+          text: typeof transcriptRow["text"] === "string" ? transcriptRow["text"] : "",
+          turnSummary: typeof transcriptRow["turn_summary"] === "string" ? transcriptRow["turn_summary"] : "",
+          sourceDateTime: typeof transcriptRow["source_date_time"] === "string" ? transcriptRow["source_date_time"] : "",
+          creationDate: typeof transcriptRow["creation_date"] === "string" ? transcriptRow["creation_date"] : "",
+        })));
         const extraction = await generateFacts(
-          row.summary,
+          transcriptText,
           sourcePath,
           sessionId,
           row.project || "locomo",
@@ -259,7 +271,7 @@ async function main(): Promise<void> {
   }
 
   await Promise.all(Array.from({ length: opts.concurrency }, () => worker()));
-  process.stdout.write(`Done. facts_summaries=${completed} failed=${failures} total_facts=${totalFacts}\n`);
+  process.stdout.write(`Done. facts_sessions=${completed} failed=${failures} total_facts=${totalFacts}\n`);
 }
 
 main().catch((error) => {

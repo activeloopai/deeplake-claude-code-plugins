@@ -16,14 +16,66 @@
  */
 
 import type { DeeplakeApi } from "../deeplake-api.js";
+import { HarrierEmbedder } from "../embeddings/harrier.js";
 import { sqlStr, sqlLike } from "../utils/sql.js";
-import { isSessionsOnlyMode, isSummaryBm25Disabled } from "../utils/retrieval-mode.js";
+import { getGrepRetrievalMode, isSessionsOnlyMode, isSummaryBm25Disabled } from "../utils/retrieval-mode.js";
 
 const DEFAULT_GREP_CANDIDATE_LIMIT = Number(
   process.env["HIVEMIND_GREP_LIMIT"]
   ?? process.env["DEEPLAKE_GREP_LIMIT"]
   ?? 500,
 );
+const DEFAULT_EMBED_RETRIEVAL_MODEL_ID = "onnx-community/harrier-oss-v1-270m-ONNX";
+const DEFAULT_HYBRID_VECTOR_WEIGHT = 0.7;
+const DEFAULT_HYBRID_TEXT_WEIGHT = 0.3;
+
+let retrievalEmbedder: HarrierEmbedder | null = null;
+
+function envString(...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function envFlag(...names: string[]): boolean {
+  const raw = envString(...names) ?? "";
+  return /^(1|true|yes|on)$/i.test(raw);
+}
+
+function envNumber(fallback: number, ...names: string[]): number {
+  const raw = envString(...names);
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function getRetrievalEmbedder(): HarrierEmbedder {
+  if (!retrievalEmbedder) {
+    retrievalEmbedder = new HarrierEmbedder({
+      modelId: envString(
+        "HIVEMIND_EMBED_RETRIEVAL_MODEL_ID",
+        "DEEPLAKE_EMBED_RETRIEVAL_MODEL_ID",
+        "HIVEMIND_HARRIER_MODEL_ID",
+        "DEEPLAKE_HARRIER_MODEL_ID",
+      ) ?? DEFAULT_EMBED_RETRIEVAL_MODEL_ID,
+      device: envString("HIVEMIND_EMBED_RETRIEVAL_DEVICE", "DEEPLAKE_EMBED_RETRIEVAL_DEVICE") ?? "cpu",
+      dtype: envString("HIVEMIND_EMBED_RETRIEVAL_DTYPE", "DEEPLAKE_EMBED_RETRIEVAL_DTYPE"),
+      cacheDir: envString("HIVEMIND_EMBED_RETRIEVAL_CACHE_DIR", "DEEPLAKE_EMBED_RETRIEVAL_CACHE_DIR"),
+      localModelPath: envString("HIVEMIND_EMBED_RETRIEVAL_LOCAL_MODEL_PATH", "DEEPLAKE_EMBED_RETRIEVAL_LOCAL_MODEL_PATH"),
+      localFilesOnly: envFlag("HIVEMIND_EMBED_RETRIEVAL_LOCAL_FILES_ONLY", "DEEPLAKE_EMBED_RETRIEVAL_LOCAL_FILES_ONLY"),
+    });
+  }
+  return retrievalEmbedder;
+}
+
+function sqlFloat4Array(values: number[]): string {
+  if (values.length === 0) throw new Error("Query embedding is empty");
+  return `ARRAY[${values.map((value) => {
+    if (!Number.isFinite(value)) throw new Error("Query embedding contains non-finite values");
+    return Math.fround(value).toString();
+  }).join(", ")}]::float4[]`;
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -58,6 +110,8 @@ export interface SearchOptions {
   prefilterPattern?: string;
   /** Optional safe literal alternation anchors for regex searches (e.g. foo|bar). */
   prefilterPatterns?: string[];
+  /** Optional semantic query text used for vector and hybrid retrieval. */
+  queryText?: string;
   /** Optional lexical query text for BM25 summary retrieval. */
   bm25QueryText?: string;
   /** Per-table row cap. */
@@ -270,7 +324,7 @@ export async function searchDeeplakeTables(
   sessionsTable: string,
   opts: SearchOptions,
 ): Promise<ContentRow[]> {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, regexPattern, prefilterPattern, prefilterPatterns, bm25QueryText } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, regexPattern, prefilterPattern, prefilterPatterns, queryText, bm25QueryText } = opts;
   const limit = opts.limit ?? DEFAULT_GREP_CANDIDATE_LIMIT;
   const filterPatterns = contentScanOnly
     ? (prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : (prefilterPattern ? [prefilterPattern] : []))
@@ -288,7 +342,11 @@ export async function searchDeeplakeTables(
   const fallbackSessFilter = likeSessFilter;
   const hasSqlRegexFilter = Boolean(regexMemFilter || regexSessFilter);
   const sessionsOnly = isSessionsOnlyMode();
-  const useSummaryBm25 = !sessionsOnly && !isSummaryBm25Disabled() && Boolean(bm25QueryText);
+  const retrievalMode = getGrepRetrievalMode();
+  const semanticQueryText = (queryText ?? bm25QueryText ?? "").trim();
+  const useEmbeddingRetrieval = retrievalMode === "embedding" && semanticQueryText.length > 0;
+  const useHybridRetrieval = retrievalMode === "hybrid" && semanticQueryText.length > 0;
+  const useSummaryBm25 = retrievalMode === "classic" && !sessionsOnly && !isSummaryBm25Disabled() && Boolean(bm25QueryText);
   const shouldUseFallbackCapablePrimary = useSummaryBm25
     || hasSqlRegexFilter;
   const ensureSummaryBm25Index = (api as DeeplakeApi & {
@@ -308,6 +366,69 @@ export async function searchDeeplakeTables(
       ? `SELECT path, content, source_order, creation_date FROM (${sessQuery}) AS combined ORDER BY path, source_order, creation_date`
       : `SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`;
   };
+
+  if (useEmbeddingRetrieval || useHybridRetrieval) {
+    const embedder = getRetrievalEmbedder();
+    const [queryEmbedding] = await embedder.embedQueries([semanticQueryText]);
+    if (!queryEmbedding) throw new Error("Failed to build query embedding");
+    const queryVectorSql = sqlFloat4Array(queryEmbedding);
+    const vectorWeight = envNumber(DEFAULT_HYBRID_VECTOR_WEIGHT, "HIVEMIND_HYBRID_VECTOR_WEIGHT", "DEEPLAKE_HYBRID_VECTOR_WEIGHT");
+    const textWeight = envNumber(DEFAULT_HYBRID_TEXT_WEIGHT, "HIVEMIND_HYBRID_TEXT_WEIGHT", "DEEPLAKE_HYBRID_TEXT_WEIGHT");
+    const buildSemanticCombinedQuery = (): string => {
+      const memQuery = useHybridRetrieval
+        ? buildHybridSimilarityQuery(
+            memoryTable,
+            pathFilter,
+            "summary::text",
+            0,
+            "''",
+            queryVectorSql,
+            semanticQueryText,
+            vectorWeight,
+            textWeight,
+            limit,
+          )
+        : buildEmbeddingSimilarityQuery(
+            memoryTable,
+            pathFilter,
+            "summary::text",
+            0,
+            "''",
+            queryVectorSql,
+            limit,
+          );
+      const sessQuery = useHybridRetrieval
+        ? buildHybridSimilarityQuery(
+            sessionsTable,
+            pathFilter,
+            "message::text",
+            1,
+            "COALESCE(creation_date::text, '')",
+            queryVectorSql,
+            semanticQueryText,
+            vectorWeight,
+            textWeight,
+            limit,
+          )
+        : buildEmbeddingSimilarityQuery(
+            sessionsTable,
+            pathFilter,
+            "message::text",
+            1,
+            "COALESCE(creation_date::text, '')",
+            queryVectorSql,
+            limit,
+          );
+      return sessionsOnly
+        ? `SELECT path, content, source_order, creation_date FROM (${sessQuery}) AS combined ORDER BY path, source_order, creation_date`
+        : `SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`;
+    };
+    const rows = await api.query(buildSemanticCombinedQuery());
+    return rows.map(row => ({
+      path: String(row["path"]),
+      content: String(row["content"] ?? ""),
+    }));
+  }
 
   const primaryMemFilter = useSummaryBm25 ? "" : `${likeMemFilter}${regexMemFilter}`;
   const primaryQuery = buildCombinedQuery(primaryMemFilter, primarySessFilter, useSummaryBm25);
@@ -430,6 +551,7 @@ export function buildGrepSearchOptions(params: GrepMatchParams, targetPath: stri
   const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(normalizedPattern) : null;
   const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(normalizedPattern) : null;
   const bm25QueryText = buildSummaryBm25QueryText(normalizedPattern, params.fixedString, literalPrefilter, alternationPrefilters);
+  const queryText = (bm25QueryText ?? normalizedPattern.trim()) || undefined;
   const regexBase = params.fixedString ? escapeRegexLiteral(normalizedPattern) : normalizedPattern;
   const sqlRegexPattern = params.wordMatch
     ? `\\b(?:${regexBase})\\b`
@@ -444,6 +566,7 @@ export function buildGrepSearchOptions(params: GrepMatchParams, targetPath: stri
     regexPattern: sqlRegexPattern,
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : undefined,
     prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
+    queryText,
     bm25QueryText: bm25QueryText ?? undefined,
     limit: DEFAULT_GREP_CANDIDATE_LIMIT,
   };
@@ -502,6 +625,33 @@ function buildSummaryBm25Query(
   limit: number,
 ): string {
   return `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter} ORDER BY (summary <#> '${sqlStr(queryText)}') DESC LIMIT ${limit}`;
+}
+
+function buildEmbeddingSimilarityQuery(
+  tableName: string,
+  pathFilter: string,
+  contentExpr: string,
+  sourceOrder: number,
+  creationDateExpr: string,
+  queryVectorSql: string,
+  limit: number,
+): string {
+  return `SELECT path, ${contentExpr} AS content, ${sourceOrder} AS source_order, ${creationDateExpr} AS creation_date FROM "${tableName}" WHERE 1=1${pathFilter} AND embedding IS NOT NULL ORDER BY (embedding <#> ${queryVectorSql}) DESC LIMIT ${limit}`;
+}
+
+function buildHybridSimilarityQuery(
+  tableName: string,
+  pathFilter: string,
+  contentExpr: string,
+  sourceOrder: number,
+  creationDateExpr: string,
+  queryVectorSql: string,
+  queryText: string,
+  vectorWeight: number,
+  textWeight: number,
+  limit: number,
+): string {
+  return `SELECT path, ${contentExpr} AS content, ${sourceOrder} AS source_order, ${creationDateExpr} AS creation_date FROM "${tableName}" WHERE 1=1${pathFilter} AND embedding IS NOT NULL ORDER BY (((embedding, ${contentExpr})::deeplake_hybrid_record) <#> deeplake_hybrid_record(${queryVectorSql}, '${sqlStr(queryText)}', ${vectorWeight}, ${textWeight})) DESC LIMIT ${limit}`;
 }
 
 export function toSqlRegexPattern(
