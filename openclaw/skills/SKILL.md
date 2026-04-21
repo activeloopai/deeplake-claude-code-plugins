@@ -33,16 +33,7 @@ The user types `/hivemind_login` in chat. The plugin returns an auth URL. The us
 - `/hivemind_switch_org <name-or-id>` — switch organization
 - `/hivemind_workspaces` — list workspaces
 - `/hivemind_switch_workspace <id>` — switch workspace
-
-## Commands
-
-- `/hivemind_login` — sign in
-- `/hivemind_capture` — toggle capture on/off
-- `/hivemind_whoami` — show current org and workspace
-- `/hivemind_orgs` — list organizations
-- `/hivemind_switch_org <name-or-id>` — switch organization
-- `/hivemind_workspaces` — list workspaces
-- `/hivemind_switch_workspace <id>` — switch workspace
+- `/hivemind_update` — check for plugin updates
 
 ## Sharing memory
 

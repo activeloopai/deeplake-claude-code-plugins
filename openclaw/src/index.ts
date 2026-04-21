@@ -70,7 +70,7 @@ async function checkForUpdate(logger: PluginLogger): Promise<void> {
     const manifest = await res.json() as { version?: string };
     const latest = manifest.version ?? null;
     if (latest && isNewer(latest, current)) {
-      logger.info?.(`⬆️ Hivemind update available: ${current} → ${latest}. Run: openclaw plugins install clawhub:hivemind`);
+      logger.info?.(`⬆️ Hivemind update available: ${current} → ${latest}. Run: openclaw plugins update hivemind`);
     }
   } catch {}
 }
