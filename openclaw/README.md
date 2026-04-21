@@ -36,6 +36,7 @@ Click the auth link, sign in, send another message. That's it.
 | `/hivemind_switch_org <name>` | Switch organization |
 | `/hivemind_workspaces` | List workspaces |
 | `/hivemind_switch_workspace <id>` | Switch workspace |
+| `/hivemind_update` | Check for plugin updates |
 
 You can also just ask the agent naturally — "switch org to activeloop", "list my orgs", "invite alice@example.com as admin", etc.
 

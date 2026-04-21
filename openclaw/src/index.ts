@@ -36,8 +36,12 @@ interface PluginAPI {
 const DEFAULT_API_URL = "https://api.deeplake.ai";
 const VERSION_URL = "https://raw.githubusercontent.com/activeloopai/hivemind/main/openclaw/openclaw.plugin.json";
 
-function getInstalledVersion(): string | null {
+async function getInstalledVersion(): Promise<string | null> {
   try {
+    const [{ readFileSync }, { join }] = await Promise.all([
+      import("node:fs"),
+      import("node:path"),
+    ]);
     const dir = new URL(".", import.meta.url).pathname;
     const candidates = [join(dir, "..", "package.json"), join(dir, "package.json")];
     for (const c of candidates) {
@@ -59,7 +63,7 @@ function isNewer(latest: string, current: string): boolean {
 
 async function checkForUpdate(logger: PluginLogger): Promise<void> {
   try {
-    const current = getInstalledVersion();
+    const current = await getInstalledVersion();
     if (!current) return;
     const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(3000) });
     if (!res.ok) return;
@@ -273,7 +277,7 @@ export default definePluginEntry({
         name: "hivemind_update",
         description: "Check for Hivemind updates and show how to upgrade",
         handler: async () => {
-          const current = getInstalledVersion();
+          const current = await getInstalledVersion();
           if (!current) return { text: "Could not determine installed version." };
           try {
             const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(3000) });
