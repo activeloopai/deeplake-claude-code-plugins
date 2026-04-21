@@ -44,7 +44,7 @@ You can also just ask the agent naturally — "switch org to activeloop", "list 
 
 - **What's captured**: every user message and assistant reply, sent to `api.deeplake.ai`.
 - **Where credentials live**: a long-lived API token at `~/.deeplake/credentials.json` (file permissions 0600).
-- **Where it sends data**: only `api.deeplake.ai`. Nothing else.
+- **Where it sends data**: `api.deeplake.ai` (memory storage) and `raw.githubusercontent.com` (version check on session start and via `/hivemind_update`).
 - **How to pause**: run `/hivemind_capture` to stop capture; run it again to resume.
 - **How to fully sign out**: delete `~/.deeplake/credentials.json` and revoke the token in the Deeplake dashboard.
 
