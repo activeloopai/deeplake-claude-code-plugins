@@ -59,7 +59,15 @@ export function capOutputForClaude(output: string, options: CapOutputOptions = {
 
   if (keptLines.length === 0) {
     // A single line is already over budget — take a prefix and mark it.
-    const slice = Buffer.from(output, "utf8").slice(0, budget).toString("utf8");
+    // `Buffer.subarray` (non-deprecated replacement for `.slice`) cuts at a
+    // byte boundary, which can split a multi-byte UTF-8 sequence and leak
+    // U+FFFD into the output. Back up to the last valid UTF-8 start byte
+    // (any byte whose top two bits aren't `10xxxxxx` — i.e. not a
+    // continuation byte) so `toString("utf8")` decodes cleanly.
+    const buf = Buffer.from(output, "utf8");
+    let cutByte = Math.min(budget, buf.length);
+    while (cutByte > 0 && (buf[cutByte] & 0xc0) === 0x80) cutByte--;
+    const slice = buf.subarray(0, cutByte).toString("utf8");
     const footer = `\n... [${kind} truncated: ${(byteLen(output) / 1024).toFixed(1)} KB total; refine with '| head -N' or a tighter pattern]`;
     return slice + footer;
   }

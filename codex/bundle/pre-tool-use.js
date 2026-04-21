@@ -804,7 +804,11 @@ function capOutputForClaude(output, options = {}) {
     running += lineBytes;
   }
   if (keptLines.length === 0) {
-    const slice = Buffer.from(output, "utf8").slice(0, budget).toString("utf8");
+    const buf = Buffer.from(output, "utf8");
+    let cutByte = Math.min(budget, buf.length);
+    while (cutByte > 0 && (buf[cutByte] & 192) === 128)
+      cutByte--;
+    const slice = buf.subarray(0, cutByte).toString("utf8");
     const footer2 = `
 ... [${kind} truncated: ${(byteLen(output) / 1024).toFixed(1)} KB total; refine with '| head -N' or a tighter pattern]`;
     return slice + footer2;
