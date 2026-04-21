@@ -71,6 +71,35 @@ export default defineConfig({
           functions: 80,
           lines: 80,
         },
+        // fix/index-md-include-sessions — 5-fix PR stacked on PR #61.
+        // output-cap.ts is new in this PR (fix #5); virtual-table-query.ts was
+        // heavily modified by fix #1 (index.md builder / fallback) and fix #4
+        // (ESCAPE '\' on LIKE clauses). Held at 90 to match the rest of the
+        // plugin-hot-path files already at that bar.
+        "src/utils/output-cap.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/virtual-table-query.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/pre-tool-use.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/memory-path-utils.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
       },
     },
   },

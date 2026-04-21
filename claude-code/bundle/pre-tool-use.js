@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/pre-tool-use.js
-import { existsSync as existsSync3 } from "node:fs";
-import { join as join6, dirname } from "node:path";
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join6, dirname, sep } from "node:path";
+import { homedir as homedir5 } from "node:os";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // dist/src/utils/stdin.js
@@ -92,18 +93,18 @@ function sqlLike(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
-var TRACE_SQL = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-var DEBUG_FILE_LOG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 function summarizeSql(sql, maxLen = 220) {
   const compact = sql.replace(/\s+/g, " ").trim();
   return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
 }
 function traceSql(msg) {
-  if (!TRACE_SQL)
+  const traceEnabled = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+  if (!traceEnabled)
     return;
   process.stderr.write(`[deeplake-sql] ${msg}
 `);
-  if (DEBUG_FILE_LOG)
+  const debugFileLog = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+  if (debugFileLog)
     log2(msg);
 }
 var DeeplakeQueryError = class extends Error {
@@ -1189,13 +1190,13 @@ function buildPathCondition(targetPath) {
   const clean = targetPath.replace(/\/+$/, "");
   if (/[*?]/.test(clean)) {
     const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
-    return `path LIKE '${likePattern}'`;
+    return `path LIKE '${likePattern}' ESCAPE '\\'`;
   }
   const base = clean.split("/").pop() ?? "";
   if (base.includes(".")) {
     return `path = '${sqlStr(clean)}'`;
   }
-  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%' ESCAPE '\\')`;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, regexPattern, prefilterPattern, prefilterPatterns, queryText, bm25QueryText } = opts;
@@ -1583,6 +1584,46 @@ async function grepBothTables(api, memoryTable, sessionsTable, params, targetPat
   return refineGrepMatches(normalized, params, forceMultiFilePrefix);
 }
 
+// dist/src/utils/output-cap.js
+var CLAUDE_OUTPUT_CAP_BYTES = 8 * 1024;
+function byteLen(str) {
+  return Buffer.byteLength(str, "utf8");
+}
+function capOutputForClaude(output, options = {}) {
+  const maxBytes = options.maxBytes ?? CLAUDE_OUTPUT_CAP_BYTES;
+  if (byteLen(output) <= maxBytes)
+    return output;
+  const kind = options.kind ?? "output";
+  const footerReserve = 220;
+  const budget = Math.max(1, maxBytes - footerReserve);
+  let running = 0;
+  const lines = output.split("\n");
+  const keptLines = [];
+  for (const line of lines) {
+    const lineBytes = byteLen(line) + 1;
+    if (running + lineBytes > budget)
+      break;
+    keptLines.push(line);
+    running += lineBytes;
+  }
+  if (keptLines.length === 0) {
+    const buf = Buffer.from(output, "utf8");
+    let cutByte = Math.min(budget, buf.length);
+    while (cutByte > 0 && (buf[cutByte] & 192) === 128)
+      cutByte--;
+    const slice = buf.subarray(0, cutByte).toString("utf8");
+    const footer2 = `
+... [${kind} truncated: ${(byteLen(output) / 1024).toFixed(1)} KB total; refine with '| head -N' or a tighter pattern]`;
+    return slice + footer2;
+  }
+  const totalLines = lines.length - (lines[lines.length - 1] === "" ? 1 : 0);
+  const elidedLines = Math.max(0, totalLines - keptLines.length);
+  const elidedBytes = byteLen(output) - byteLen(keptLines.join("\n"));
+  const footer = `
+... [${kind} truncated: ${elidedLines} more lines (${(elidedBytes / 1024).toFixed(1)} KB) elided \u2014 refine with '| head -N' or a tighter pattern]`;
+  return keptLines.join("\n") + footer;
+}
+
 // dist/src/hooks/grep-direct.js
 function splitFirstPipelineStage(cmd) {
   const input = cmd.trim();
@@ -1825,7 +1866,8 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
     fixedString: params.fixedString
   };
   const output = await grepBothTables(api, table, sessionsTable, matchParams, params.targetPath, params.recursive ? true : void 0);
-  return output.join("\n") || "(no matches)";
+  const joined = output.join("\n") || "(no matches)";
+  return capOutputForClaude(joined, { kind: "grep" });
 }
 
 // dist/src/utils/summary-format.js
@@ -3327,7 +3369,7 @@ async function executeCompiledBashCommand(api, memoryTable, sessionsTable, cmd, 
       continue;
     }
   }
-  return outputs.join("\n");
+  return capOutputForClaude(outputs.join("\n"), { kind: "bash" });
 }
 
 // dist/src/hooks/query-cache.js
@@ -3553,6 +3595,7 @@ function rewritePaths(cmd) {
 }
 
 // dist/src/hooks/pre-tool-use.js
+var READ_CACHE_ROOT = join6(homedir5(), ".deeplake", "query-cache");
 function touchesVirtualMemoryPath(value) {
   const rewritten = rewritePaths(value).trim();
   return rewritten === "/index.md" || rewritten === "/summaries" || rewritten.startsWith("/summaries/") || rewritten === "/sessions" || rewritten.startsWith("/sessions/") || /(^|[\s"'`])\/(?:index\.md|summaries(?:\/|\b)|sessions(?:\/|\b))/.test(rewritten);
@@ -3590,6 +3633,22 @@ function buildPsqlSchemaGuidance() {
 var log4 = (msg) => log("pre", msg);
 var __bundleDir = dirname(fileURLToPath2(import.meta.url));
 var SHELL_BUNDLE = existsSync3(join6(__bundleDir, "shell", "deeplake-shell.js")) ? join6(__bundleDir, "shell", "deeplake-shell.js") : join6(__bundleDir, "..", "shell", "deeplake-shell.js");
+function writeReadCacheFile(sessionId, virtualPath, content, deps = {}) {
+  const { cacheRoot = READ_CACHE_ROOT } = deps;
+  const safeSessionId = sessionId.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown";
+  const rel = virtualPath.replace(/^\/+/, "") || "content";
+  const expectedRoot = join6(cacheRoot, safeSessionId, "read");
+  const absPath = join6(expectedRoot, rel);
+  if (absPath !== expectedRoot && !absPath.startsWith(expectedRoot + sep)) {
+    throw new Error(`writeReadCacheFile: path escapes cache root: ${absPath}`);
+  }
+  mkdirSync3(dirname(absPath), { recursive: true });
+  writeFileSync3(absPath, content, "utf-8");
+  return absPath;
+}
+function buildReadDecision(file_path, description) {
+  return { command: "", description, file_path };
+}
 function getReadTargetPath(toolInput) {
   const rawPath = toolInput.file_path ?? toolInput.path;
   return rawPath ? rawPath : null;
@@ -3683,7 +3742,7 @@ function buildFallbackDecision(shellCmd, shellBundle = SHELL_BUNDLE) {
   return buildAllowDecision(`node "${shellBundle}" -c "${shellCmd.replace(/"/g, '\\"')}"`, `[DeepLake shell] ${shellCmd}`);
 }
 async function processPreToolUse(input, deps = {}) {
-  const { config = loadConfig(), createApi = (table2, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table2), executeCompiledBashCommandFn = executeCompiledBashCommand, handleGrepDirectFn = handleGrepDirect, readVirtualPathContentsFn = readVirtualPathContents, readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, readCachedIndexContentFn = readCachedIndexContent, writeCachedIndexContentFn = writeCachedIndexContent, shellBundle = SHELL_BUNDLE, logFn = log4 } = deps;
+  const { config = loadConfig(), createApi = (table2, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table2), executeCompiledBashCommandFn = executeCompiledBashCommand, handleGrepDirectFn = handleGrepDirect, readVirtualPathContentsFn = readVirtualPathContents, readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, readCachedIndexContentFn = readCachedIndexContent, writeCachedIndexContentFn = writeCachedIndexContent, writeReadCacheFileFn = writeReadCacheFile, shellBundle = SHELL_BUNDLE, logFn = log4 } = deps;
   const cmd = input.tool_input.command ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
   const toolPath = getReadTargetPath(input.tool_input) ?? input.tool_input.path ?? "";
@@ -3816,7 +3875,12 @@ async function processPreToolUse(input, deps = {}) {
           content = fromEnd ? lines.slice(-lineLimit).join("\n") : lines.slice(0, lineLimit).join("\n");
         }
         const label = lineLimit > 0 ? fromEnd ? `tail -${lineLimit}` : `head -${lineLimit}` : "cat";
-        return buildAllowDecision(`echo ${JSON.stringify(content)}`, `[DeepLake direct] ${label} ${virtualPath}`);
+        if (input.tool_name === "Read") {
+          const file_path = writeReadCacheFileFn(input.session_id, virtualPath, content);
+          return buildReadDecision(file_path, `[DeepLake direct] ${label} ${virtualPath}`);
+        }
+        const capped = capOutputForClaude(content, { kind: label });
+        return buildAllowDecision(`echo ${JSON.stringify(capped)}`, `[DeepLake direct] ${label} ${virtualPath}`);
       }
     }
     if (!lsDir && input.tool_name === "Glob") {
@@ -3861,7 +3925,8 @@ async function processPreToolUse(input, deps = {}) {
           lines.push(name + (info.isDir ? "/" : ""));
         }
       }
-      return buildAllowDecision(`echo ${JSON.stringify(lines.join("\n") || "(empty directory)")}`, `[DeepLake direct] ls ${dir}`);
+      const lsOutput = capOutputForClaude(lines.join("\n") || "(empty directory)", { kind: "ls" });
+      return buildAllowDecision(`echo ${JSON.stringify(lsOutput)}`, `[DeepLake direct] ls ${dir}`);
     }
     if (input.tool_name === "Bash") {
       const findMatch = shellCmd.match(/^find\s+(\S+)\s+(?:-type\s+\S+\s+)?-name\s+'([^']+)'/);
@@ -3873,7 +3938,8 @@ async function processPreToolUse(input, deps = {}) {
         let result = paths.join("\n") || "";
         if (/\|\s*wc\s+-l\s*$/.test(shellCmd))
           result = String(paths.length);
-        return buildAllowDecision(`echo ${JSON.stringify(result || "(no matches)")}`, `[DeepLake direct] find ${dir}`);
+        const capped = capOutputForClaude(result || "(no matches)", { kind: "find" });
+        return buildAllowDecision(`echo ${JSON.stringify(capped)}`, `[DeepLake direct] find ${dir}`);
       }
     }
   } catch (e) {
@@ -3889,11 +3955,12 @@ async function main() {
   const decision = await processPreToolUse(input);
   if (!decision)
     return;
+  const updatedInput = decision.file_path !== void 0 ? { file_path: decision.file_path } : { command: decision.command, description: decision.description };
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "allow",
-      updatedInput: decision
+      updatedInput
     }
   }));
 }
@@ -3905,10 +3972,12 @@ if (isDirectRun(import.meta.url)) {
 }
 export {
   buildAllowDecision,
+  buildReadDecision,
   extractGrepParams,
   getShellCommand,
   isSafe,
   processPreToolUse,
   rewritePaths,
-  touchesMemory
+  touchesMemory,
+  writeReadCacheFile
 };

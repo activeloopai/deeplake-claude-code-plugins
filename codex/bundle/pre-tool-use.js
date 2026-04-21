@@ -93,18 +93,18 @@ function sqlLike(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
-var TRACE_SQL = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-var DEBUG_FILE_LOG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 function summarizeSql(sql, maxLen = 220) {
   const compact = sql.replace(/\s+/g, " ").trim();
   return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
 }
 function traceSql(msg) {
-  if (!TRACE_SQL)
+  const traceEnabled = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+  if (!traceEnabled)
     return;
   process.stderr.write(`[deeplake-sql] ${msg}
 `);
-  if (DEBUG_FILE_LOG)
+  const debugFileLog = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+  if (debugFileLog)
     log2(msg);
 }
 var DeeplakeQueryError = class extends Error {
@@ -1176,13 +1176,13 @@ function buildPathCondition(targetPath) {
   const clean = targetPath.replace(/\/+$/, "");
   if (/[*?]/.test(clean)) {
     const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
-    return `path LIKE '${likePattern}'`;
+    return `path LIKE '${likePattern}' ESCAPE '\\'`;
   }
   const base = clean.split("/").pop() ?? "";
   if (base.includes(".")) {
     return `path = '${sqlStr(clean)}'`;
   }
-  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
+  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%' ESCAPE '\\')`;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, regexPattern, prefilterPattern, prefilterPatterns, queryText, bm25QueryText } = opts;
@@ -1570,6 +1570,46 @@ async function grepBothTables(api, memoryTable, sessionsTable, params, targetPat
   return refineGrepMatches(normalized, params, forceMultiFilePrefix);
 }
 
+// dist/src/utils/output-cap.js
+var CLAUDE_OUTPUT_CAP_BYTES = 8 * 1024;
+function byteLen(str) {
+  return Buffer.byteLength(str, "utf8");
+}
+function capOutputForClaude(output, options = {}) {
+  const maxBytes = options.maxBytes ?? CLAUDE_OUTPUT_CAP_BYTES;
+  if (byteLen(output) <= maxBytes)
+    return output;
+  const kind = options.kind ?? "output";
+  const footerReserve = 220;
+  const budget = Math.max(1, maxBytes - footerReserve);
+  let running = 0;
+  const lines = output.split("\n");
+  const keptLines = [];
+  for (const line of lines) {
+    const lineBytes = byteLen(line) + 1;
+    if (running + lineBytes > budget)
+      break;
+    keptLines.push(line);
+    running += lineBytes;
+  }
+  if (keptLines.length === 0) {
+    const buf = Buffer.from(output, "utf8");
+    let cutByte = Math.min(budget, buf.length);
+    while (cutByte > 0 && (buf[cutByte] & 192) === 128)
+      cutByte--;
+    const slice = buf.subarray(0, cutByte).toString("utf8");
+    const footer2 = `
+... [${kind} truncated: ${(byteLen(output) / 1024).toFixed(1)} KB total; refine with '| head -N' or a tighter pattern]`;
+    return slice + footer2;
+  }
+  const totalLines = lines.length - (lines[lines.length - 1] === "" ? 1 : 0);
+  const elidedLines = Math.max(0, totalLines - keptLines.length);
+  const elidedBytes = byteLen(output) - byteLen(keptLines.join("\n"));
+  const footer = `
+... [${kind} truncated: ${elidedLines} more lines (${(elidedBytes / 1024).toFixed(1)} KB) elided \u2014 refine with '| head -N' or a tighter pattern]`;
+  return keptLines.join("\n") + footer;
+}
+
 // dist/src/hooks/grep-direct.js
 function splitFirstPipelineStage(cmd) {
   const input = cmd.trim();
@@ -1812,7 +1852,8 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
     fixedString: params.fixedString
   };
   const output = await grepBothTables(api, table, sessionsTable, matchParams, params.targetPath, params.recursive ? true : void 0);
-  return output.join("\n") || "(no matches)";
+  const joined = output.join("\n") || "(no matches)";
+  return capOutputForClaude(joined, { kind: "grep" });
 }
 
 // dist/src/utils/summary-format.js
@@ -3314,7 +3355,7 @@ async function executeCompiledBashCommand(api, memoryTable, sessionsTable, cmd, 
       continue;
     }
   }
-  return outputs.join("\n");
+  return capOutputForClaude(outputs.join("\n"), { kind: "bash" });
 }
 
 // dist/src/hooks/query-cache.js

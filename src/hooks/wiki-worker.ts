@@ -10,7 +10,9 @@
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { utcTimestamp } from "../utils/debug.js";
+import { utcTimestamp, log as _log } from "../utils/debug.js";
+
+const dlog = (msg: string) => _log("wiki-worker", msg);
 import { finalizeSummary, releaseLock } from "./summary-state.js";
 import { uploadSummary } from "./upload-summary.js";
 import {
@@ -109,7 +111,11 @@ async function query(sql: string, retries = 4): Promise<Record<string, unknown>[
 }
 
 function cleanup(): void {
-  try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    rmSync(tmpDir, { recursive: true, force: true });
+  } catch (cleanupErr: any) {
+    dlog(`cleanup failed to remove ${tmpDir}: ${cleanupErr.message}`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -300,7 +306,13 @@ async function main(): Promise<void> {
     wlog(`fatal: ${e.message}`);
   } finally {
     cleanup();
-    try { releaseLock(cfg.sessionId); } catch { /* ignore */ }
+    try {
+      releaseLock(cfg.sessionId);
+    } catch (releaseErr: any) {
+      // Gated on HIVEMIND_DEBUG — we don't want a release failure at
+      // worker shutdown to pollute the wiki log every run.
+      dlog(`releaseLock failed in finally for ${cfg.sessionId}: ${releaseErr.message}`);
+    }
   }
 }
 

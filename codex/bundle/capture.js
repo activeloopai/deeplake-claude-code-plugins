@@ -89,6 +89,7 @@ function isDirectRun(metaUrl) {
 import { readFileSync as readFileSync2, writeFileSync, writeSync, mkdirSync, renameSync, existsSync as existsSync2, unlinkSync, openSync, closeSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { join as join3 } from "node:path";
+var dlog = (msg) => log("summary-state", msg);
 var STATE_DIR = join3(homedir3(), ".claude", "hooks", "summary-state");
 var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
 function statePath(sessionId) {
@@ -126,9 +127,11 @@ function withRmwLock(sessionId, fn) {
       if (e.code !== "EEXIST")
         throw e;
       if (Date.now() > deadline) {
+        dlog(`rmw lock deadline exceeded for ${sessionId}, reclaiming stale lock`);
         try {
           unlinkSync(rmwLock);
-        } catch {
+        } catch (unlinkErr) {
+          dlog(`stale rmw lock unlink failed for ${sessionId}: ${unlinkErr.message}`);
         }
         continue;
       }
@@ -141,7 +144,8 @@ function withRmwLock(sessionId, fn) {
     closeSync(fd);
     try {
       unlinkSync(rmwLock);
-    } catch {
+    } catch (unlinkErr) {
+      dlog(`rmw lock cleanup failed for ${sessionId}: ${unlinkErr.message}`);
     }
   }
 }
@@ -181,11 +185,13 @@ function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
       const ageMs = Date.now() - parseInt(readFileSync2(p, "utf-8"), 10);
       if (Number.isFinite(ageMs) && ageMs < maxAgeMs)
         return false;
-    } catch {
+    } catch (readErr) {
+      dlog(`lock file unreadable for ${sessionId}, treating as stale: ${readErr.message}`);
     }
     try {
       unlinkSync(p);
-    } catch {
+    } catch (unlinkErr) {
+      dlog(`could not unlink stale lock for ${sessionId}: ${unlinkErr.message}`);
       return false;
     }
   }

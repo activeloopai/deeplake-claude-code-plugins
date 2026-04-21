@@ -29,6 +29,20 @@ import { DeeplakeFs } from "./deeplake-fs.js";
 import { createGrepCommand } from "./grep-interceptor.js";
 
 async function main(): Promise<void> {
+  const isOneShot = process.argv.includes("-c");
+
+  // One-shot mode is what the pre-tool-use hook invokes via `node shell-bundle -c "..."`
+  // to execute compound bash commands. Claude Code's Bash tool merges the child's
+  // stderr into the tool_result string Claude sees, so any `[deeplake-sql]` trace
+  // written to stderr here pollutes the model's view of the command output.
+  // Silence trace env vars regardless of how the caller set them.
+  if (isOneShot) {
+    delete process.env["HIVEMIND_TRACE_SQL"];
+    delete process.env["DEEPLAKE_TRACE_SQL"];
+    delete process.env["HIVEMIND_DEBUG"];
+    delete process.env["DEEPLAKE_DEBUG"];
+  }
+
   const config = loadConfig();
   if (!config) {
     process.stderr.write(
@@ -41,8 +55,6 @@ async function main(): Promise<void> {
   const table = process.env["HIVEMIND_TABLE"] ?? "memory";
   const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
   const mount = process.env["HIVEMIND_MOUNT"] ?? "/";
-
-  const isOneShot = process.argv.includes("-c");
 
   const client = new DeeplakeApi(
     config.token, config.apiUrl, config.orgId, config.workspaceId, table

@@ -2,13 +2,13 @@
 
 // dist/src/utils/stdin.js
 function readStdin() {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve, reject) => {
     let data = "";
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => data += chunk);
     process.stdin.on("end", () => {
       try {
-        resolve2(JSON.parse(data));
+        resolve(JSON.parse(data));
       } catch (err) {
         reject(new Error(`Failed to parse hook input: ${err}`));
       }
@@ -58,12 +58,6 @@ function loadConfig() {
   };
 }
 
-// dist/src/deeplake-api.js
-import { randomUUID } from "node:crypto";
-import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "node:fs";
-import { join as join3 } from "node:path";
-import { tmpdir } from "node:os";
-
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
 import { join as join2 } from "node:path";
@@ -80,626 +74,18 @@ function log(tag, msg) {
 `);
 }
 
-// dist/src/utils/sql.js
-function sqlStr(value) {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
-}
-function sqlIdent(name) {
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
-    throw new Error(`Invalid SQL identifier: ${JSON.stringify(name)}`);
-  }
-  return name;
-}
-
-// dist/src/deeplake-api.js
-var log2 = (msg) => log("sdk", msg);
-var TRACE_SQL = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-var DEBUG_FILE_LOG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-function summarizeSql(sql, maxLen = 220) {
-  const compact = sql.replace(/\s+/g, " ").trim();
-  return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
-}
-function traceSql(msg) {
-  if (!TRACE_SQL)
-    return;
-  process.stderr.write(`[deeplake-sql] ${msg}
-`);
-  if (DEBUG_FILE_LOG)
-    log2(msg);
-}
-var DeeplakeQueryError = class extends Error {
-  sqlSummary;
-  status;
-  responseBody;
-  sql;
-  cause;
-  constructor(message, args = {}) {
-    super(message);
-    this.name = "DeeplakeQueryError";
-    this.sql = args.sql;
-    this.sqlSummary = args.sql ? summarizeSql(args.sql) : "";
-    this.status = args.status;
-    this.responseBody = args.responseBody;
-    this.cause = args.cause;
-  }
-};
-var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
-var MAX_RETRIES = 3;
-var BASE_DELAY_MS = 500;
-var MAX_CONCURRENCY = 5;
-var QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 1e4);
-var INDEX_MARKER_TTL_MS = Number(process.env["HIVEMIND_INDEX_MARKER_TTL_MS"] ?? 6 * 60 * 6e4);
-function sleep(ms) {
-  return new Promise((resolve2) => setTimeout(resolve2, ms));
-}
-function isTimeoutError(error) {
-  const name = error instanceof Error ? error.name.toLowerCase() : "";
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return name.includes("timeout") || name === "aborterror" || message.includes("timeout") || message.includes("timed out");
-}
-function isDuplicateIndexError(error) {
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return message.includes("duplicate key value violates unique constraint") || message.includes("pg_class_relname_nsp_index") || message.includes("already exists");
-}
-function isSessionInsertQuery(sql) {
-  return /^\s*insert\s+into\s+"[^"]+"\s*\(\s*id\s*,\s*path\s*,\s*filename\s*,\s*message\s*,/i.test(sql);
-}
-function isTransientHtml403(text) {
-  const body = text.toLowerCase();
-  return body.includes("<html") || body.includes("403 forbidden") || body.includes("cloudflare") || body.includes("nginx");
-}
-function getIndexMarkerDir() {
-  return process.env["HIVEMIND_INDEX_MARKER_DIR"] ?? join3(tmpdir(), "hivemind-deeplake-indexes");
-}
-var Semaphore = class {
-  max;
-  waiting = [];
-  active = 0;
-  constructor(max) {
-    this.max = max;
-  }
-  async acquire() {
-    if (this.active < this.max) {
-      this.active++;
-      return;
-    }
-    await new Promise((resolve2) => this.waiting.push(resolve2));
-  }
-  release() {
-    this.active--;
-    const next = this.waiting.shift();
-    if (next) {
-      this.active++;
-      next();
-    }
-  }
-};
-var DeeplakeApi = class {
-  token;
-  apiUrl;
-  orgId;
-  workspaceId;
-  tableName;
-  _pendingRows = [];
-  _sem = new Semaphore(MAX_CONCURRENCY);
-  _tablesCache = null;
-  constructor(token, apiUrl, orgId, workspaceId, tableName) {
-    this.token = token;
-    this.apiUrl = apiUrl;
-    this.orgId = orgId;
-    this.workspaceId = workspaceId;
-    this.tableName = tableName;
-  }
-  /** Execute SQL with retry on transient errors and bounded concurrency. */
-  async query(sql) {
-    const startedAt = Date.now();
-    const summary = summarizeSql(sql);
-    traceSql(`query start: ${summary}`);
-    await this._sem.acquire();
-    try {
-      const rows = await this._queryWithRetry(sql);
-      traceSql(`query ok (${Date.now() - startedAt}ms, rows=${rows.length}): ${summary}`);
-      return rows;
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      traceSql(`query fail (${Date.now() - startedAt}ms): ${summary} :: ${message}`);
-      throw e;
-    } finally {
-      this._sem.release();
-    }
-  }
-  async _queryWithRetry(sql) {
-    let lastError;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      let resp;
-      try {
-        const signal = AbortSignal.timeout(QUERY_TIMEOUT_MS);
-        resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.token}`,
-            "Content-Type": "application/json",
-            "X-Activeloop-Org-Id": this.orgId
-          },
-          signal,
-          body: JSON.stringify({ query: sql })
-        });
-      } catch (e) {
-        if (isTimeoutError(e)) {
-          lastError = new DeeplakeQueryError(`Query timeout after ${QUERY_TIMEOUT_MS}ms`, { sql, cause: e });
-          throw lastError;
-        }
-        lastError = e instanceof Error ? new DeeplakeQueryError(e.message, { sql, cause: e }) : new DeeplakeQueryError(String(e), { sql, cause: e });
-        if (attempt < MAX_RETRIES) {
-          const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
-          log2(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
-          await sleep(delay);
-          continue;
-        }
-        throw lastError;
-      }
-      if (resp.ok) {
-        const raw = await resp.json();
-        if (!raw?.rows || !raw?.columns)
-          return [];
-        return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i) => [col, row[i]])));
-      }
-      const text = await resp.text().catch(() => "");
-      const retryable403 = isSessionInsertQuery(sql) && (resp.status === 401 || resp.status === 403 && (text.length === 0 || isTransientHtml403(text)));
-      if (attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
-        const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
-        log2(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
-        await sleep(delay);
-        continue;
-      }
-      throw new DeeplakeQueryError(`Query failed: ${resp.status}: ${text.slice(0, 200)}`, {
-        sql,
-        status: resp.status,
-        responseBody: text.slice(0, 4e3)
-      });
-    }
-    throw lastError ?? new DeeplakeQueryError("Query failed: max retries exceeded", { sql });
-  }
-  // ── Writes ──────────────────────────────────────────────────────────────────
-  /** Queue rows for writing. Call commit() to flush. */
-  appendRows(rows) {
-    this._pendingRows.push(...rows);
-  }
-  /** Flush pending rows via SQL. */
-  async commit() {
-    if (this._pendingRows.length === 0)
-      return;
-    const rows = this._pendingRows;
-    this._pendingRows = [];
-    const CONCURRENCY = 10;
-    for (let i = 0; i < rows.length; i += CONCURRENCY) {
-      const chunk = rows.slice(i, i + CONCURRENCY);
-      await Promise.allSettled(chunk.map((r) => this.upsertRowSql(r)));
-    }
-    log2(`commit: ${rows.length} rows`);
-  }
-  async upsertRowSql(row) {
-    const ts = (/* @__PURE__ */ new Date()).toISOString();
-    const cd = row.creationDate ?? ts;
-    const lud = row.lastUpdateDate ?? ts;
-    const exists = await this.query(`SELECT path FROM "${this.tableName}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`);
-    if (exists.length > 0) {
-      let setClauses = `summary = E'${sqlStr(row.contentText)}', mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
-      if (row.project !== void 0)
-        setClauses += `, project = '${sqlStr(row.project)}'`;
-      if (row.description !== void 0)
-        setClauses += `, description = '${sqlStr(row.description)}'`;
-      await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(row.path)}'`);
-    } else {
-      const id = randomUUID();
-      let cols = "id, path, filename, summary, mime_type, size_bytes, creation_date, last_update_date";
-      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
-      if (row.project !== void 0) {
-        cols += ", project";
-        vals += `, '${sqlStr(row.project)}'`;
-      }
-      if (row.description !== void 0) {
-        cols += ", description";
-        vals += `, '${sqlStr(row.description)}'`;
-      }
-      await this.query(`INSERT INTO "${this.tableName}" (${cols}) VALUES (${vals})`);
-    }
-  }
-  /** Update specific columns on a row by path. */
-  async updateColumns(path, columns) {
-    const setClauses = Object.entries(columns).map(([col, val]) => typeof val === "number" ? `${col} = ${val}` : `${col} = '${sqlStr(String(val))}'`).join(", ");
-    await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(path)}'`);
-  }
-  // ── Convenience ─────────────────────────────────────────────────────────────
-  /** Create a BM25 search index on a column. */
-  async createIndex(column) {
-    await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
-  }
-  /** Create the standard BM25 summary index for a memory table. */
-  async createSummaryBm25Index(tableName) {
-    const table = tableName ?? this.tableName;
-    const indexName = this.buildLookupIndexName(table, "summary_bm25");
-    await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" USING deeplake_index ("summary")`);
-  }
-  /** Ensure the standard BM25 summary index exists, using a local freshness marker to avoid repeated CREATEs. */
-  async ensureSummaryBm25Index(tableName) {
-    const table = tableName ?? this.tableName;
-    const suffix = "summary_bm25";
-    if (this.hasFreshLookupIndexMarker(table, suffix))
-      return;
-    try {
-      await this.createSummaryBm25Index(table);
-      this.markLookupIndexReady(table, suffix);
-    } catch (e) {
-      if (isDuplicateIndexError(e)) {
-        this.markLookupIndexReady(table, suffix);
-        return;
-      }
-      throw e;
-    }
-  }
-  buildLookupIndexName(table, suffix) {
-    return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
-  }
-  getLookupIndexMarkerPath(table, suffix) {
-    const markerKey = [
-      this.workspaceId,
-      this.orgId,
-      table,
-      suffix
-    ].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
-    return join3(getIndexMarkerDir(), `${markerKey}.json`);
-  }
-  hasFreshLookupIndexMarker(table, suffix) {
-    const markerPath = this.getLookupIndexMarkerPath(table, suffix);
-    if (!existsSync2(markerPath))
-      return false;
-    try {
-      const raw = JSON.parse(readFileSync2(markerPath, "utf-8"));
-      const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
-      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS)
-        return false;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  markLookupIndexReady(table, suffix) {
-    mkdirSync(getIndexMarkerDir(), { recursive: true });
-    writeFileSync(this.getLookupIndexMarkerPath(table, suffix), JSON.stringify({ updatedAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf-8");
-  }
-  async ensureLookupIndex(table, suffix, columnsSql) {
-    if (this.hasFreshLookupIndexMarker(table, suffix))
-      return;
-    const indexName = this.buildLookupIndexName(table, suffix);
-    try {
-      await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
-      this.markLookupIndexReady(table, suffix);
-    } catch (e) {
-      if (isDuplicateIndexError(e)) {
-        this.markLookupIndexReady(table, suffix);
-        return;
-      }
-      log2(`index "${indexName}" skipped: ${e.message}`);
-    }
-  }
-  /** List all tables in the workspace (with retry). */
-  async listTables(forceRefresh = false) {
-    if (!forceRefresh && this._tablesCache)
-      return [...this._tablesCache];
-    const { tables, cacheable } = await this._fetchTables();
-    if (cacheable)
-      this._tablesCache = [...tables];
-    return tables;
-  }
-  async _fetchTables() {
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
-          headers: {
-            Authorization: `Bearer ${this.token}`,
-            "X-Activeloop-Org-Id": this.orgId
-          }
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          return {
-            tables: (data.tables ?? []).map((t) => t.table_name),
-            cacheable: true
-          };
-        }
-        if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
-          await sleep(BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200);
-          continue;
-        }
-        return { tables: [], cacheable: false };
-      } catch {
-        if (attempt < MAX_RETRIES) {
-          await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
-          continue;
-        }
-        return { tables: [], cacheable: false };
-      }
-    }
-    return { tables: [], cacheable: false };
-  }
-  /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
-  async ensureTable(name) {
-    const tbl = name ?? this.tableName;
-    const tables = await this.listTables();
-    if (!tables.includes(tbl)) {
-      log2(`table "${tbl}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
-      log2(`table "${tbl}" created`);
-      if (!tables.includes(tbl))
-        this._tablesCache = [...tables, tbl];
-    }
-  }
-  /** Create the sessions table (one physical row per message/event, with direct search columns). */
-  async ensureSessionsTable(name) {
-    const sessionColumns = [
-      `id TEXT NOT NULL DEFAULT ''`,
-      `path TEXT NOT NULL DEFAULT ''`,
-      `filename TEXT NOT NULL DEFAULT ''`,
-      `message JSONB`,
-      `session_id TEXT NOT NULL DEFAULT ''`,
-      `event_type TEXT NOT NULL DEFAULT ''`,
-      `turn_index BIGINT NOT NULL DEFAULT 0`,
-      `dia_id TEXT NOT NULL DEFAULT ''`,
-      `speaker TEXT NOT NULL DEFAULT ''`,
-      `text TEXT NOT NULL DEFAULT ''`,
-      `turn_summary TEXT NOT NULL DEFAULT ''`,
-      `source_date_time TEXT NOT NULL DEFAULT ''`,
-      `author TEXT NOT NULL DEFAULT ''`,
-      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
-      `size_bytes BIGINT NOT NULL DEFAULT 0`,
-      `project TEXT NOT NULL DEFAULT ''`,
-      `description TEXT NOT NULL DEFAULT ''`,
-      `agent TEXT NOT NULL DEFAULT ''`,
-      `creation_date TEXT NOT NULL DEFAULT ''`,
-      `last_update_date TEXT NOT NULL DEFAULT ''`
-    ];
-    const tables = await this.listTables();
-    if (!tables.includes(name)) {
-      log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (` + sessionColumns.join(", ") + `) USING deeplake`);
-      log2(`table "${name}" created`);
-      if (!tables.includes(name))
-        this._tablesCache = [...tables, name];
-    }
-    const alterColumns = [
-      ["session_id", `TEXT NOT NULL DEFAULT ''`],
-      ["event_type", `TEXT NOT NULL DEFAULT ''`],
-      ["turn_index", `BIGINT NOT NULL DEFAULT 0`],
-      ["dia_id", `TEXT NOT NULL DEFAULT ''`],
-      ["speaker", `TEXT NOT NULL DEFAULT ''`],
-      ["text", `TEXT NOT NULL DEFAULT ''`],
-      ["turn_summary", `TEXT NOT NULL DEFAULT ''`],
-      ["source_date_time", `TEXT NOT NULL DEFAULT ''`]
-    ];
-    for (const [column, ddl] of alterColumns) {
-      try {
-        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
-      } catch {
-      }
-    }
-    await this.ensureLookupIndex(name, "path_creation_date_turn_index", `("path", "creation_date", "turn_index")`);
-  }
-  async ensureGraphNodesTable(name) {
-    const columns = [
-      `id TEXT NOT NULL DEFAULT ''`,
-      `path TEXT NOT NULL DEFAULT ''`,
-      `filename TEXT NOT NULL DEFAULT ''`,
-      `node_id TEXT NOT NULL DEFAULT ''`,
-      `canonical_name TEXT NOT NULL DEFAULT ''`,
-      `node_type TEXT NOT NULL DEFAULT ''`,
-      `summary TEXT NOT NULL DEFAULT ''`,
-      `search_text TEXT NOT NULL DEFAULT ''`,
-      `aliases TEXT NOT NULL DEFAULT ''`,
-      `source_session_id TEXT NOT NULL DEFAULT ''`,
-      `source_session_ids TEXT NOT NULL DEFAULT ''`,
-      `source_path TEXT NOT NULL DEFAULT ''`,
-      `source_paths TEXT NOT NULL DEFAULT ''`,
-      `author TEXT NOT NULL DEFAULT ''`,
-      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
-      `size_bytes BIGINT NOT NULL DEFAULT 0`,
-      `project TEXT NOT NULL DEFAULT ''`,
-      `description TEXT NOT NULL DEFAULT ''`,
-      `agent TEXT NOT NULL DEFAULT ''`,
-      `creation_date TEXT NOT NULL DEFAULT ''`,
-      `last_update_date TEXT NOT NULL DEFAULT ''`
-    ];
-    const tables = await this.listTables();
-    if (!tables.includes(name)) {
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
-      if (!tables.includes(name))
-        this._tablesCache = [...tables, name];
-    }
-    for (const [column, ddl] of [
-      ["source_session_ids", `TEXT NOT NULL DEFAULT ''`],
-      ["source_paths", `TEXT NOT NULL DEFAULT ''`]
-    ]) {
-      try {
-        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
-      } catch {
-      }
-    }
-    await this.ensureLookupIndex(name, "source_session_id", `("source_session_id")`);
-    await this.ensureLookupIndex(name, "node_id", `("node_id")`);
-  }
-  async ensureGraphEdgesTable(name) {
-    const columns = [
-      `id TEXT NOT NULL DEFAULT ''`,
-      `path TEXT NOT NULL DEFAULT ''`,
-      `filename TEXT NOT NULL DEFAULT ''`,
-      `edge_id TEXT NOT NULL DEFAULT ''`,
-      `source_node_id TEXT NOT NULL DEFAULT ''`,
-      `target_node_id TEXT NOT NULL DEFAULT ''`,
-      `relation TEXT NOT NULL DEFAULT ''`,
-      `summary TEXT NOT NULL DEFAULT ''`,
-      `evidence TEXT NOT NULL DEFAULT ''`,
-      `search_text TEXT NOT NULL DEFAULT ''`,
-      `source_session_id TEXT NOT NULL DEFAULT ''`,
-      `source_session_ids TEXT NOT NULL DEFAULT ''`,
-      `source_path TEXT NOT NULL DEFAULT ''`,
-      `source_paths TEXT NOT NULL DEFAULT ''`,
-      `author TEXT NOT NULL DEFAULT ''`,
-      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
-      `size_bytes BIGINT NOT NULL DEFAULT 0`,
-      `project TEXT NOT NULL DEFAULT ''`,
-      `description TEXT NOT NULL DEFAULT ''`,
-      `agent TEXT NOT NULL DEFAULT ''`,
-      `creation_date TEXT NOT NULL DEFAULT ''`,
-      `last_update_date TEXT NOT NULL DEFAULT ''`
-    ];
-    const tables = await this.listTables();
-    if (!tables.includes(name)) {
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
-      if (!tables.includes(name))
-        this._tablesCache = [...tables, name];
-    }
-    for (const [column, ddl] of [
-      ["source_session_ids", `TEXT NOT NULL DEFAULT ''`],
-      ["source_paths", `TEXT NOT NULL DEFAULT ''`]
-    ]) {
-      try {
-        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS "${column}" ${ddl}`);
-      } catch {
-      }
-    }
-    await this.ensureLookupIndex(name, "source_session_id", `("source_session_id")`);
-    await this.ensureLookupIndex(name, "source_target_relation", `("source_node_id", "target_node_id", "relation")`);
-  }
-  async ensureFactsTable(name) {
-    const columns = [
-      `id TEXT NOT NULL DEFAULT ''`,
-      `path TEXT NOT NULL DEFAULT ''`,
-      `filename TEXT NOT NULL DEFAULT ''`,
-      `fact_id TEXT NOT NULL DEFAULT ''`,
-      `subject_entity_id TEXT NOT NULL DEFAULT ''`,
-      `subject_name TEXT NOT NULL DEFAULT ''`,
-      `subject_type TEXT NOT NULL DEFAULT ''`,
-      `predicate TEXT NOT NULL DEFAULT ''`,
-      `object_entity_id TEXT NOT NULL DEFAULT ''`,
-      `object_name TEXT NOT NULL DEFAULT ''`,
-      `object_type TEXT NOT NULL DEFAULT ''`,
-      `summary TEXT NOT NULL DEFAULT ''`,
-      `evidence TEXT NOT NULL DEFAULT ''`,
-      `search_text TEXT NOT NULL DEFAULT ''`,
-      `confidence TEXT NOT NULL DEFAULT ''`,
-      `valid_at TEXT NOT NULL DEFAULT ''`,
-      `valid_from TEXT NOT NULL DEFAULT ''`,
-      `valid_to TEXT NOT NULL DEFAULT ''`,
-      `source_session_id TEXT NOT NULL DEFAULT ''`,
-      `source_path TEXT NOT NULL DEFAULT ''`,
-      `author TEXT NOT NULL DEFAULT ''`,
-      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
-      `size_bytes BIGINT NOT NULL DEFAULT 0`,
-      `project TEXT NOT NULL DEFAULT ''`,
-      `description TEXT NOT NULL DEFAULT ''`,
-      `agent TEXT NOT NULL DEFAULT ''`,
-      `creation_date TEXT NOT NULL DEFAULT ''`,
-      `last_update_date TEXT NOT NULL DEFAULT ''`
-    ];
-    const tables = await this.listTables();
-    if (!tables.includes(name)) {
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
-      if (!tables.includes(name))
-        this._tablesCache = [...tables, name];
-    }
-    await this.ensureLookupIndex(name, "fact_id", `("fact_id")`);
-    await this.ensureLookupIndex(name, "session_predicate", `("source_session_id", "predicate")`);
-    await this.ensureLookupIndex(name, "subject_object", `("subject_entity_id", "object_entity_id")`);
-  }
-  async ensureEntitiesTable(name) {
-    const columns = [
-      `id TEXT NOT NULL DEFAULT ''`,
-      `path TEXT NOT NULL DEFAULT ''`,
-      `filename TEXT NOT NULL DEFAULT ''`,
-      `entity_id TEXT NOT NULL DEFAULT ''`,
-      `canonical_name TEXT NOT NULL DEFAULT ''`,
-      `entity_type TEXT NOT NULL DEFAULT ''`,
-      `aliases TEXT NOT NULL DEFAULT ''`,
-      `summary TEXT NOT NULL DEFAULT ''`,
-      `search_text TEXT NOT NULL DEFAULT ''`,
-      `source_session_ids TEXT NOT NULL DEFAULT ''`,
-      `source_paths TEXT NOT NULL DEFAULT ''`,
-      `author TEXT NOT NULL DEFAULT ''`,
-      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
-      `size_bytes BIGINT NOT NULL DEFAULT 0`,
-      `project TEXT NOT NULL DEFAULT ''`,
-      `description TEXT NOT NULL DEFAULT ''`,
-      `agent TEXT NOT NULL DEFAULT ''`,
-      `creation_date TEXT NOT NULL DEFAULT ''`,
-      `last_update_date TEXT NOT NULL DEFAULT ''`
-    ];
-    const tables = await this.listTables();
-    if (!tables.includes(name)) {
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
-      if (!tables.includes(name))
-        this._tablesCache = [...tables, name];
-    }
-    await this.ensureLookupIndex(name, "entity_id", `("entity_id")`);
-    await this.ensureLookupIndex(name, "canonical_name", `("canonical_name")`);
-  }
-  async ensureFactEntityLinksTable(name) {
-    const columns = [
-      `id TEXT NOT NULL DEFAULT ''`,
-      `path TEXT NOT NULL DEFAULT ''`,
-      `filename TEXT NOT NULL DEFAULT ''`,
-      `link_id TEXT NOT NULL DEFAULT ''`,
-      `fact_id TEXT NOT NULL DEFAULT ''`,
-      `entity_id TEXT NOT NULL DEFAULT ''`,
-      `entity_role TEXT NOT NULL DEFAULT ''`,
-      `source_session_id TEXT NOT NULL DEFAULT ''`,
-      `source_path TEXT NOT NULL DEFAULT ''`,
-      `author TEXT NOT NULL DEFAULT ''`,
-      `mime_type TEXT NOT NULL DEFAULT 'application/json'`,
-      `size_bytes BIGINT NOT NULL DEFAULT 0`,
-      `project TEXT NOT NULL DEFAULT ''`,
-      `description TEXT NOT NULL DEFAULT ''`,
-      `agent TEXT NOT NULL DEFAULT ''`,
-      `creation_date TEXT NOT NULL DEFAULT ''`,
-      `last_update_date TEXT NOT NULL DEFAULT ''`
-    ];
-    const tables = await this.listTables();
-    if (!tables.includes(name)) {
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (${columns.join(", ")}) USING deeplake`);
-      if (!tables.includes(name))
-        this._tablesCache = [...tables, name];
-    }
-    await this.ensureLookupIndex(name, "fact_id", `("fact_id")`);
-    await this.ensureLookupIndex(name, "entity_id", `("entity_id")`);
-    await this.ensureLookupIndex(name, "session_entity_role", `("source_session_id", "entity_id", "entity_role")`);
-  }
-};
-
-// dist/src/utils/direct-run.js
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-function isDirectRun(metaUrl) {
-  const entry = process.argv[1];
-  if (!entry)
-    return false;
-  try {
-    return resolve(fileURLToPath(metaUrl)) === resolve(entry);
-  } catch {
-    return false;
-  }
-}
-
 // dist/src/hooks/spawn-wiki-worker.js
 import { spawn, execSync } from "node:child_process";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-import { dirname, join as join4 } from "node:path";
-import { writeFileSync as writeFileSync2, mkdirSync as mkdirSync2, appendFileSync as appendFileSync2 } from "node:fs";
-import { homedir as homedir3, tmpdir as tmpdir2 } from "node:os";
+import { fileURLToPath } from "node:url";
+import { dirname, join as join3 } from "node:path";
+import { writeFileSync, mkdirSync, appendFileSync as appendFileSync2 } from "node:fs";
+import { homedir as homedir3, tmpdir } from "node:os";
 
 // dist/src/hooks/knowledge-graph.js
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 
 // dist/src/hooks/upload-summary.js
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 // dist/src/hooks/knowledge-graph.js
 var GRAPH_PROMPT_TEMPLATE = `You are extracting a compact knowledge graph delta from a session summary.
@@ -724,7 +110,7 @@ Rules:
 - Return no markdown, no prose, no code fences, only JSON.`;
 
 // dist/src/hooks/memory-facts.js
-import { randomUUID as randomUUID4 } from "node:crypto";
+import { randomUUID as randomUUID3 } from "node:crypto";
 var MEMORY_FACT_PROMPT_TEMPLATE = `You are extracting durable long-term memory facts from raw session transcript rows.
 
 SESSION ID: __SESSION_ID__
@@ -752,7 +138,7 @@ Rules:
 
 // dist/src/hooks/spawn-wiki-worker.js
 var HOME = homedir3();
-var WIKI_LOG = join4(HOME, ".claude", "hooks", "deeplake-wiki.log");
+var WIKI_LOG = join3(HOME, ".claude", "hooks", "deeplake-wiki.log");
 var WIKI_PROMPT_TEMPLATE = `You are maintaining a persistent wiki from a session transcript. This page will become part of a long-lived knowledge base that future agents will search through index.md before opening the source session. Write for retrieval, not storytelling.
 
 The session may be a coding session, a meeting, or a personal conversation. Your job is to turn the raw transcript into a dense, factual wiki page that preserves names, dates, relationships, preferences, plans, titles, and exact status changes.
@@ -819,7 +205,7 @@ PRIVACY: Never include absolute filesystem paths (e.g. /home/user/..., /Users/..
 LENGTH LIMIT: Keep the total summary under 4000 characters. Be dense and concise \u2014 prioritize facts over prose. If a session is short, the summary should be short too.`;
 function wikiLog(msg) {
   try {
-    mkdirSync2(join4(HOME, ".claude", "hooks"), { recursive: true });
+    mkdirSync(join3(HOME, ".claude", "hooks"), { recursive: true });
     appendFileSync2(WIKI_LOG, `[${utcTimestamp()}] ${msg}
 `);
   } catch {
@@ -829,16 +215,16 @@ function findClaudeBin() {
   try {
     return execSync("which claude 2>/dev/null", { encoding: "utf-8" }).trim();
   } catch {
-    return join4(HOME, ".claude", "local", "claude");
+    return join3(HOME, ".claude", "local", "claude");
   }
 }
 function spawnWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
   const projectName = cwd.split("/").pop() || "unknown";
-  const tmpDir = join4(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
-  mkdirSync2(tmpDir, { recursive: true });
-  const configFile = join4(tmpDir, "config.json");
-  writeFileSync2(configFile, JSON.stringify({
+  const tmpDir = join3(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  mkdirSync(tmpDir, { recursive: true });
+  const configFile = join3(tmpDir, "config.json");
+  writeFileSync(configFile, JSON.stringify({
     apiUrl: config.apiUrl,
     token: config.token,
     orgId: config.orgId,
@@ -856,13 +242,13 @@ function spawnWikiWorker(opts) {
     tmpDir,
     claudeBin: findClaudeBin(),
     wikiLog: WIKI_LOG,
-    hooksDir: join4(HOME, ".claude", "hooks"),
+    hooksDir: join3(HOME, ".claude", "hooks"),
     promptTemplate: WIKI_PROMPT_TEMPLATE,
     graphPromptTemplate: GRAPH_PROMPT_TEMPLATE,
     factPromptTemplate: MEMORY_FACT_PROMPT_TEMPLATE
   }));
   wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
-  const workerPath = join4(bundleDir, "wiki-worker.js");
+  const workerPath = join3(bundleDir, "wiki-worker.js");
   spawn("nohup", ["node", workerPath, configFile], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"]
@@ -870,267 +256,102 @@ function spawnWikiWorker(opts) {
   wikiLog(`${reason}: spawned summary worker for ${sessionId}`);
 }
 function bundleDirFromImportMeta(importMetaUrl) {
-  return dirname(fileURLToPath2(importMetaUrl));
+  return dirname(fileURLToPath(importMetaUrl));
 }
 
-// dist/src/hooks/session-queue.js
-import { appendFileSync as appendFileSync3, closeSync, existsSync as existsSync3, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync3, readdirSync, renameSync, rmSync, statSync, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname2, join as join5 } from "node:path";
+// dist/src/hooks/summary-state.js
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, writeSync, mkdirSync as mkdirSync2, renameSync, existsSync as existsSync2, unlinkSync, openSync, closeSync } from "node:fs";
 import { homedir as homedir4 } from "node:os";
-var DEFAULT_QUEUE_DIR = join5(homedir4(), ".deeplake", "queue");
-var DEFAULT_MAX_BATCH_ROWS = 50;
-var DEFAULT_STALE_INFLIGHT_MS = 6e4;
-var DEFAULT_AUTH_FAILURE_TTL_MS = 5 * 6e4;
-var BUSY_WAIT_STEP_MS = 100;
-var SessionWriteDisabledError = class extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "SessionWriteDisabledError";
-  }
-};
-function buildSessionInsertSql(sessionsTable, rows) {
-  if (rows.length === 0)
-    throw new Error("buildSessionInsertSql: rows must not be empty");
-  const table = sqlIdent(sessionsTable);
-  const values = rows.map((row) => {
-    const jsonForSql = escapeJsonbLiteral(coerceJsonbPayload(row.message));
-    return `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, '${sqlStr(row.sessionId)}', '${sqlStr(row.eventType)}', ${row.turnIndex}, '${sqlStr(row.diaId)}', '${sqlStr(row.speaker)}', '${sqlStr(row.text)}', '${sqlStr(row.turnSummary)}', '${sqlStr(row.sourceDateTime)}', '${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', '${sqlStr(row.agent)}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`;
-  }).join(", ");
-  return `INSERT INTO "${table}" (id, path, filename, message, session_id, event_type, turn_index, dia_id, speaker, text, turn_summary, source_date_time, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ${values}`;
+import { join as join4 } from "node:path";
+var dlog = (msg) => log("summary-state", msg);
+var STATE_DIR = join4(homedir4(), ".claude", "hooks", "summary-state");
+var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
+function lockPath(sessionId) {
+  return join4(STATE_DIR, `${sessionId}.lock`);
 }
-function coerceJsonbPayload(message) {
-  try {
-    return JSON.stringify(JSON.parse(message));
-  } catch {
-    return JSON.stringify({
-      type: "raw_message",
-      content: message
-    });
-  }
-}
-function escapeJsonbLiteral(value) {
-  return value.replace(/'/g, "''").replace(/\0/g, "");
-}
-async function flushSessionQueue(api, opts) {
-  const queueDir = opts.queueDir ?? DEFAULT_QUEUE_DIR;
-  const maxBatchRows = opts.maxBatchRows ?? DEFAULT_MAX_BATCH_ROWS;
-  const staleInflightMs = opts.staleInflightMs ?? DEFAULT_STALE_INFLIGHT_MS;
-  const waitIfBusyMs = opts.waitIfBusyMs ?? 0;
-  const drainAll = opts.drainAll ?? false;
-  mkdirSync3(queueDir, { recursive: true });
-  const queuePath = getQueuePath(queueDir, opts.sessionId);
-  const inflightPath = getInflightPath(queueDir, opts.sessionId);
-  if (isSessionWriteDisabled(opts.sessionsTable, queueDir)) {
-    return existsSync3(queuePath) || existsSync3(inflightPath) ? { status: "disabled", rows: 0, batches: 0 } : { status: "empty", rows: 0, batches: 0 };
-  }
-  let totalRows = 0;
-  let totalBatches = 0;
-  let flushedAny = false;
-  while (true) {
-    if (opts.allowStaleInflight)
-      recoverStaleInflight(queuePath, inflightPath, staleInflightMs);
-    if (existsSync3(inflightPath)) {
-      if (waitIfBusyMs > 0) {
-        await waitForInflightToClear(inflightPath, waitIfBusyMs);
-        if (opts.allowStaleInflight)
-          recoverStaleInflight(queuePath, inflightPath, staleInflightMs);
-      }
-      if (existsSync3(inflightPath)) {
-        return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "busy", rows: 0, batches: 0 };
-      }
-    }
-    if (!existsSync3(queuePath)) {
-      return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "empty", rows: 0, batches: 0 };
+function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
+  mkdirSync2(STATE_DIR, { recursive: true });
+  const p = lockPath(sessionId);
+  if (existsSync2(p)) {
+    try {
+      const ageMs = Date.now() - parseInt(readFileSync2(p, "utf-8"), 10);
+      if (Number.isFinite(ageMs) && ageMs < maxAgeMs)
+        return false;
+    } catch (readErr) {
+      dlog(`lock file unreadable for ${sessionId}, treating as stale: ${readErr.message}`);
     }
     try {
-      renameSync(queuePath, inflightPath);
-    } catch (e) {
-      if (e?.code === "ENOENT") {
-        return flushedAny ? { status: "flushed", rows: totalRows, batches: totalBatches } : { status: "empty", rows: 0, batches: 0 };
-      }
-      throw e;
-    }
-    try {
-      const { rows, batches } = await flushInflightFile(api, opts.sessionsTable, inflightPath, maxBatchRows);
-      totalRows += rows;
-      totalBatches += batches;
-      flushedAny = flushedAny || rows > 0;
-    } catch (e) {
-      requeueInflight(queuePath, inflightPath);
-      if (e instanceof SessionWriteDisabledError) {
-        return { status: "disabled", rows: totalRows, batches: totalBatches };
-      }
-      throw e;
-    }
-    if (!drainAll) {
-      return { status: "flushed", rows: totalRows, batches: totalBatches };
-    }
-  }
-}
-function getQueuePath(queueDir, sessionId) {
-  return join5(queueDir, `${sessionId}.jsonl`);
-}
-function getInflightPath(queueDir, sessionId) {
-  return join5(queueDir, `${sessionId}.inflight`);
-}
-async function flushInflightFile(api, sessionsTable, inflightPath, maxBatchRows) {
-  const rows = readQueuedRows(inflightPath);
-  if (rows.length === 0) {
-    rmSync(inflightPath, { force: true });
-    return { rows: 0, batches: 0 };
-  }
-  let ensured = false;
-  let batches = 0;
-  const queueDir = dirname2(inflightPath);
-  for (let i = 0; i < rows.length; i += maxBatchRows) {
-    const chunk = rows.slice(i, i + maxBatchRows);
-    const sql = buildSessionInsertSql(sessionsTable, chunk);
-    try {
-      await api.query(sql);
-    } catch (e) {
-      if (isSessionWriteAuthError(e)) {
-        markSessionWriteDisabled(sessionsTable, errorMessage(e), queueDir);
-        throw new SessionWriteDisabledError(errorMessage(e));
-      }
-      if (!ensured && isEnsureSessionsTableRetryable(e)) {
-        try {
-          await api.ensureSessionsTable(sessionsTable);
-        } catch (ensureError) {
-          if (isSessionWriteAuthError(ensureError)) {
-            markSessionWriteDisabled(sessionsTable, errorMessage(ensureError), queueDir);
-            throw new SessionWriteDisabledError(errorMessage(ensureError));
-          }
-          throw ensureError;
-        }
-        ensured = true;
-        try {
-          await api.query(sql);
-        } catch (retryError) {
-          if (isSessionWriteAuthError(retryError)) {
-            markSessionWriteDisabled(sessionsTable, errorMessage(retryError), queueDir);
-            throw new SessionWriteDisabledError(errorMessage(retryError));
-          }
-          throw retryError;
-        }
-      } else {
-        throw e;
-      }
-    }
-    batches += 1;
-  }
-  clearSessionWriteDisabled(sessionsTable, queueDir);
-  rmSync(inflightPath, { force: true });
-  return { rows: rows.length, batches };
-}
-function readQueuedRows(path) {
-  const raw = readFileSync3(path, "utf-8");
-  return raw.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
-}
-function requeueInflight(queuePath, inflightPath) {
-  if (!existsSync3(inflightPath))
-    return;
-  const inflight = readFileSync3(inflightPath, "utf-8");
-  appendFileSync3(queuePath, inflight);
-  rmSync(inflightPath, { force: true });
-}
-function recoverStaleInflight(queuePath, inflightPath, staleInflightMs) {
-  if (!existsSync3(inflightPath) || !isStale(inflightPath, staleInflightMs))
-    return;
-  requeueInflight(queuePath, inflightPath);
-}
-function isStale(path, staleInflightMs) {
-  return Date.now() - statSync(path).mtimeMs >= staleInflightMs;
-}
-function isEnsureSessionsTableRetryable(error) {
-  const message = errorMessage(error).toLowerCase();
-  return message.includes("does not exist") || message.includes("doesn't exist") || message.includes("relation") || message.includes("not found");
-}
-function isSessionWriteAuthError(error) {
-  const message = errorMessage(error).toLowerCase();
-  return message.includes("403") || message.includes("401") || message.includes("forbidden") || message.includes("unauthorized");
-}
-function markSessionWriteDisabled(sessionsTable, reason, queueDir = DEFAULT_QUEUE_DIR) {
-  mkdirSync3(queueDir, { recursive: true });
-  writeFileSync3(getSessionWriteDisabledPath(queueDir, sessionsTable), JSON.stringify({
-    disabledAt: (/* @__PURE__ */ new Date()).toISOString(),
-    reason,
-    sessionsTable
-  }));
-}
-function clearSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR) {
-  rmSync(getSessionWriteDisabledPath(queueDir, sessionsTable), { force: true });
-}
-function isSessionWriteDisabled(sessionsTable, queueDir = DEFAULT_QUEUE_DIR, ttlMs = DEFAULT_AUTH_FAILURE_TTL_MS) {
-  const path = getSessionWriteDisabledPath(queueDir, sessionsTable);
-  if (!existsSync3(path))
-    return false;
-  try {
-    const raw = readFileSync3(path, "utf-8");
-    const state = JSON.parse(raw);
-    const ageMs = Date.now() - new Date(state.disabledAt).getTime();
-    if (Number.isNaN(ageMs) || ageMs >= ttlMs) {
-      rmSync(path, { force: true });
+      unlinkSync(p);
+    } catch (unlinkErr) {
+      dlog(`could not unlink stale lock for ${sessionId}: ${unlinkErr.message}`);
       return false;
     }
+  }
+  try {
+    const fd = openSync(p, "wx");
+    try {
+      writeSync(fd, String(Date.now()));
+    } finally {
+      closeSync(fd);
+    }
     return true;
-  } catch {
-    rmSync(path, { force: true });
-    return false;
+  } catch (e) {
+    if (e.code === "EEXIST")
+      return false;
+    throw e;
   }
 }
-function getSessionWriteDisabledPath(queueDir, sessionsTable) {
-  return join5(queueDir, `.${sessionsTable}.disabled.json`);
-}
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-async function waitForInflightToClear(inflightPath, waitIfBusyMs) {
-  const startedAt = Date.now();
-  while (existsSync3(inflightPath) && Date.now() - startedAt < waitIfBusyMs) {
-    await sleep2(BUSY_WAIT_STEP_MS);
+function releaseLock(sessionId) {
+  try {
+    unlinkSync(lockPath(sessionId));
+  } catch (e) {
+    if (e?.code !== "ENOENT") {
+      dlog(`releaseLock unlink failed for ${sessionId}: ${e.message}`);
+    }
   }
-}
-function sleep2(ms) {
-  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 
 // dist/src/hooks/session-end.js
-var log3 = (msg) => log("session-end", msg);
-async function runSessionEndHook(input, deps = {}) {
-  const { wikiWorker = (process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1", captureEnabled = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false", config = loadConfig(), createApi = (activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, activeConfig.sessionsTableName), flushSessionQueueFn = flushSessionQueue, spawnWikiWorkerFn = spawnWikiWorker, wikiLogFn = wikiLog, bundleDir = bundleDirFromImportMeta(import.meta.url), logFn = log3 } = deps;
-  if (wikiWorker || !captureEnabled || !input.session_id)
-    return { status: "skipped" };
-  if (!config) {
-    logFn("no config");
-    return { status: "no_config" };
-  }
-  const flush = await flushSessionQueueFn(createApi(config), {
-    sessionId: input.session_id,
-    sessionsTable: config.sessionsTableName,
-    waitIfBusyMs: 5e3,
-    drainAll: true
-  });
-  logFn(`flush ${flush.status}: rows=${flush.rows} batches=${flush.batches}`);
-  wikiLogFn(`SessionEnd: triggering summary for ${input.session_id}`);
-  spawnWikiWorkerFn({
-    config,
-    sessionId: input.session_id,
-    cwd: input.cwd ?? "",
-    bundleDir,
-    reason: "SessionEnd"
-  });
-  return { status: "flushed", flushStatus: flush.status };
-}
+var log2 = (msg) => log("session-end", msg);
 async function main() {
+  if (process.env.HIVEMIND_WIKI_WORKER === "1")
+    return;
+  if (process.env.HIVEMIND_CAPTURE === "false")
+    return;
   const input = await readStdin();
-  await runSessionEndHook(input);
+  const sessionId = input.session_id;
+  const cwd = input.cwd ?? "";
+  if (!sessionId)
+    return;
+  const config = loadConfig();
+  if (!config) {
+    log2("no config");
+    return;
+  }
+  if (!tryAcquireLock(sessionId)) {
+    wikiLog(`SessionEnd: periodic worker already running for ${sessionId}, skipping`);
+    return;
+  }
+  wikiLog(`SessionEnd: triggering summary for ${sessionId}`);
+  try {
+    spawnWikiWorker({
+      config,
+      sessionId,
+      cwd,
+      bundleDir: bundleDirFromImportMeta(import.meta.url),
+      reason: "SessionEnd"
+    });
+  } catch (e) {
+    log2(`spawn failed: ${e.message}`);
+    try {
+      releaseLock(sessionId);
+    } catch (releaseErr) {
+      log2(`releaseLock after spawn failure also failed: ${releaseErr.message}`);
+    }
+    throw e;
+  }
 }
-if (isDirectRun(import.meta.url)) {
-  main().catch((e) => {
-    log3(`fatal: ${e.message}`);
-    process.exit(0);
-  });
-}
-export {
-  runSessionEndHook
-};
+main().catch((e) => {
+  log2(`fatal: ${e.message}`);
+  process.exit(0);
+});

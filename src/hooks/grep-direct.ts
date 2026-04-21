@@ -7,6 +7,7 @@
 
 import type { DeeplakeApi } from "../deeplake-api.js";
 import { grepBothTables, type GrepMatchParams } from "../shell/grep-core.js";
+import { capOutputForClaude } from "../utils/output-cap.js";
 
 export interface GrepParams {
   pattern: string;
@@ -240,5 +241,6 @@ export async function handleGrepDirect(
     params.targetPath,
     params.recursive ? true : undefined,
   );
-  return output.join("\n") || "(no matches)";
+  const joined = output.join("\n") || "(no matches)";
+  return capOutputForClaude(joined, { kind: "grep" });
 }

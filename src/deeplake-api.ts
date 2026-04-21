@@ -6,18 +6,25 @@ import { log as _log } from "./utils/debug.js";
 import { sqlStr } from "./utils/sql.js";
 
 const log = (msg: string) => _log("sdk", msg);
-const TRACE_SQL = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-const DEBUG_FILE_LOG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 
 export function summarizeSql(sql: string, maxLen = 220): string {
   const compact = sql.replace(/\s+/g, " ").trim();
   return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
 }
 
+/**
+ * SQL tracing is opt-in and evaluated on every call so callers can flip the
+ * env vars after module load (e.g. the one-shot shell bundle silences
+ * `[deeplake-sql]` stderr writes so they don't land in Claude Code's
+ * Bash-tool result — Claude Code merges child stderr into tool_result).
+ */
 function traceSql(msg: string): void {
-  if (!TRACE_SQL) return;
+  const traceEnabled = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1"
+    || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+  if (!traceEnabled) return;
   process.stderr.write(`[deeplake-sql] ${msg}\n`);
-  if (DEBUG_FILE_LOG) log(msg);
+  const debugFileLog = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+  if (debugFileLog) log(msg);
 }
 
 export class DeeplakeQueryError extends Error {

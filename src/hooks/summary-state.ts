@@ -14,6 +14,9 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { log as _log } from "../utils/debug.js";
+
+const dlog = (msg: string) => _log("summary-state", msg);
 
 export interface SummaryState {
   lastSummaryAt: number;
@@ -61,7 +64,12 @@ export function withRmwLock<T>(sessionId: string, fn: () => T): T {
     } catch (e: any) {
       if (e.code !== "EEXIST") throw e;
       if (Date.now() > deadline) {
-        try { unlinkSync(rmwLock); } catch { /* ignore */ }
+        dlog(`rmw lock deadline exceeded for ${sessionId}, reclaiming stale lock`);
+        try {
+          unlinkSync(rmwLock);
+        } catch (unlinkErr: any) {
+          dlog(`stale rmw lock unlink failed for ${sessionId}: ${unlinkErr.message}`);
+        }
         continue;
       }
       Atomics.wait(YIELD_BUF, 0, 0, 10);
@@ -71,7 +79,11 @@ export function withRmwLock<T>(sessionId: string, fn: () => T): T {
     return fn();
   } finally {
     closeSync(fd);
-    try { unlinkSync(rmwLock); } catch { /* ignore */ }
+    try {
+      unlinkSync(rmwLock);
+    } catch (unlinkErr: any) {
+      dlog(`rmw lock cleanup failed for ${sessionId}: ${unlinkErr.message}`);
+    }
   }
 }
 
@@ -129,8 +141,17 @@ export function tryAcquireLock(sessionId: string, maxAgeMs = 10 * 60 * 1000): bo
     try {
       const ageMs = Date.now() - parseInt(readFileSync(p, "utf-8"), 10);
       if (Number.isFinite(ageMs) && ageMs < maxAgeMs) return false;
-    } catch { /* treat unreadable as stale */ }
-    try { unlinkSync(p); } catch { return false; }
+    } catch (readErr: any) {
+      // Unreadable lock content: treat as stale and log for visibility
+      // (HIVEMIND_DEBUG-gated) so we know why stale reclaim fired.
+      dlog(`lock file unreadable for ${sessionId}, treating as stale: ${readErr.message}`);
+    }
+    try {
+      unlinkSync(p);
+    } catch (unlinkErr: any) {
+      dlog(`could not unlink stale lock for ${sessionId}: ${unlinkErr.message}`);
+      return false;
+    }
   }
   try {
     const fd = openSync(p, "wx");
@@ -145,5 +166,11 @@ export function tryAcquireLock(sessionId: string, maxAgeMs = 10 * 60 * 1000): bo
 export function releaseLock(sessionId: string): void {
   try {
     unlinkSync(lockPath(sessionId));
-  } catch { /* ignore */ }
+  } catch (e: any) {
+    // ENOENT is normal (lock wasn't held); everything else is worth
+    // seeing in debug mode.
+    if (e?.code !== "ENOENT") {
+      dlog(`releaseLock unlink failed for ${sessionId}: ${e.message}`);
+    }
+  }
 }

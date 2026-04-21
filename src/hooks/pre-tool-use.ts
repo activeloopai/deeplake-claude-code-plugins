@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-import { existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, dirname, sep } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
@@ -29,8 +30,11 @@ import {
 } from "./query-cache.js";
 import { isSafe, touchesMemory, rewritePaths } from "./memory-path-utils.js";
 import { isFactsSessionsOnlyPsqlMode, isIndexDisabled, isPsqlMode, isSessionsOnlyMode } from "../utils/retrieval-mode.js";
+import { capOutputForClaude } from "../utils/output-cap.js";
 
 export { isSafe, touchesMemory, rewritePaths };
+
+const READ_CACHE_ROOT = join(homedir(), ".deeplake", "query-cache");
 
 function touchesVirtualMemoryPath(value: string): boolean {
   const rewritten = rewritePaths(value).trim();
@@ -101,6 +105,30 @@ export interface PreToolUseInput {
 export interface ClaudePreToolDecision {
   command: string;
   description: string;
+  file_path?: string;
+}
+
+export function writeReadCacheFile(
+  sessionId: string,
+  virtualPath: string,
+  content: string,
+  deps: { cacheRoot?: string } = {},
+): string {
+  const { cacheRoot = READ_CACHE_ROOT } = deps;
+  const safeSessionId = sessionId.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown";
+  const rel = virtualPath.replace(/^\/+/, "") || "content";
+  const expectedRoot = join(cacheRoot, safeSessionId, "read");
+  const absPath = join(expectedRoot, rel);
+  if (absPath !== expectedRoot && !absPath.startsWith(expectedRoot + sep)) {
+    throw new Error(`writeReadCacheFile: path escapes cache root: ${absPath}`);
+  }
+  mkdirSync(dirname(absPath), { recursive: true });
+  writeFileSync(absPath, content, "utf-8");
+  return absPath;
+}
+
+export function buildReadDecision(file_path: string, description: string): ClaudePreToolDecision {
+  return { command: "", description, file_path };
 }
 
 function getReadTargetPath(toolInput: Record<string, unknown>): string | null {
@@ -207,6 +235,7 @@ interface ClaudePreToolDeps {
   findVirtualPathsFn?: typeof findVirtualPaths;
   readCachedIndexContentFn?: typeof readCachedIndexContent;
   writeCachedIndexContentFn?: typeof writeCachedIndexContent;
+  writeReadCacheFileFn?: typeof writeReadCacheFile;
   shellBundle?: string;
   logFn?: (msg: string) => void;
 }
@@ -229,6 +258,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
     findVirtualPathsFn = findVirtualPaths,
     readCachedIndexContentFn = readCachedIndexContent,
     writeCachedIndexContentFn = writeCachedIndexContent,
+    writeReadCacheFileFn = writeReadCacheFile,
     shellBundle = SHELL_BUNDLE,
     logFn = log,
   } = deps;
@@ -385,7 +415,12 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
           content = fromEnd ? lines.slice(-lineLimit).join("\n") : lines.slice(0, lineLimit).join("\n");
         }
         const label = lineLimit > 0 ? (fromEnd ? `tail -${lineLimit}` : `head -${lineLimit}`) : "cat";
-        return buildAllowDecision(`echo ${JSON.stringify(content)}`, `[DeepLake direct] ${label} ${virtualPath}`);
+        if (input.tool_name === "Read") {
+          const file_path = writeReadCacheFileFn(input.session_id, virtualPath, content);
+          return buildReadDecision(file_path, `[DeepLake direct] ${label} ${virtualPath}`);
+        }
+        const capped = capOutputForClaude(content, { kind: label });
+        return buildAllowDecision(`echo ${JSON.stringify(capped)}`, `[DeepLake direct] ${label} ${virtualPath}`);
       }
     }
 
@@ -429,7 +464,8 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
           lines.push(name + (info.isDir ? "/" : ""));
         }
       }
-      return buildAllowDecision(`echo ${JSON.stringify(lines.join("\n") || "(empty directory)")}`, `[DeepLake direct] ls ${dir}`);
+      const lsOutput = capOutputForClaude(lines.join("\n") || "(empty directory)", { kind: "ls" });
+      return buildAllowDecision(`echo ${JSON.stringify(lsOutput)}`, `[DeepLake direct] ls ${dir}`);
     }
 
     if (input.tool_name === "Bash") {
@@ -441,7 +477,8 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
         const paths = await findVirtualPathsFn(api, table, sessionsTable, dir, namePattern);
         let result = paths.join("\n") || "";
         if (/\|\s*wc\s+-l\s*$/.test(shellCmd)) result = String(paths.length);
-        return buildAllowDecision(`echo ${JSON.stringify(result || "(no matches)")}`, `[DeepLake direct] find ${dir}`);
+        const capped = capOutputForClaude(result || "(no matches)", { kind: "find" });
+        return buildAllowDecision(`echo ${JSON.stringify(capped)}`, `[DeepLake direct] find ${dir}`);
       }
     }
   } catch (e: any) {
@@ -462,11 +499,14 @@ async function main(): Promise<void> {
   const input = await readStdin<PreToolUseInput>();
   const decision = await processPreToolUse(input);
   if (!decision) return;
+  const updatedInput: Record<string, unknown> = decision.file_path !== undefined
+    ? { file_path: decision.file_path }
+    : { command: decision.command, description: decision.description };
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "allow",
-      updatedInput: decision,
+      updatedInput,
     },
   }));
 }

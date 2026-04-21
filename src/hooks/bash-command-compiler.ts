@@ -4,6 +4,7 @@ import { type ScoredRetrievalRow, fuseRetrievalRows } from "../utils/hybrid-fusi
 import { sqlLike, sqlStr } from "../utils/sql.js";
 import { type GrepParams, handleGrepDirect, parseBashGrep } from "./grep-direct.js";
 import { normalizeContent, refineGrepMatches } from "../shell/grep-core.js";
+import { capOutputForClaude } from "../utils/output-cap.js";
 import {
   listVirtualPathRowsForDirs,
   readVirtualPathContents,
@@ -1526,5 +1527,5 @@ export async function executeCompiledBashCommand(
     }
   }
 
-  return outputs.join("\n");
+  return capOutputForClaude(outputs.join("\n"), { kind: "bash" });
 }

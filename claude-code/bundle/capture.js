@@ -93,18 +93,18 @@ function sqlIdent(name) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
-var TRACE_SQL = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-var DEBUG_FILE_LOG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 function summarizeSql(sql, maxLen = 220) {
   const compact = sql.replace(/\s+/g, " ").trim();
   return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
 }
 function traceSql(msg) {
-  if (!TRACE_SQL)
+  const traceEnabled = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+  if (!traceEnabled)
     return;
   process.stderr.write(`[deeplake-sql] ${msg}
 `);
-  if (DEBUG_FILE_LOG)
+  const debugFileLog = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+  if (debugFileLog)
     log2(msg);
 }
 var DeeplakeQueryError = class extends Error {
@@ -692,6 +692,7 @@ function isDirectRun(metaUrl) {
 import { readFileSync as readFileSync3, writeFileSync as writeFileSync2, writeSync, mkdirSync as mkdirSync2, renameSync, existsSync as existsSync3, unlinkSync, openSync, closeSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { join as join4 } from "node:path";
+var dlog = (msg) => log("summary-state", msg);
 var STATE_DIR = join4(homedir3(), ".claude", "hooks", "summary-state");
 var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
 function statePath(sessionId) {
@@ -729,9 +730,11 @@ function withRmwLock(sessionId, fn) {
       if (e.code !== "EEXIST")
         throw e;
       if (Date.now() > deadline) {
+        dlog(`rmw lock deadline exceeded for ${sessionId}, reclaiming stale lock`);
         try {
           unlinkSync(rmwLock);
-        } catch {
+        } catch (unlinkErr) {
+          dlog(`stale rmw lock unlink failed for ${sessionId}: ${unlinkErr.message}`);
         }
         continue;
       }
@@ -744,7 +747,8 @@ function withRmwLock(sessionId, fn) {
     closeSync(fd);
     try {
       unlinkSync(rmwLock);
-    } catch {
+    } catch (unlinkErr) {
+      dlog(`rmw lock cleanup failed for ${sessionId}: ${unlinkErr.message}`);
     }
   }
 }
@@ -784,11 +788,13 @@ function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
       const ageMs = Date.now() - parseInt(readFileSync3(p, "utf-8"), 10);
       if (Number.isFinite(ageMs) && ageMs < maxAgeMs)
         return false;
-    } catch {
+    } catch (readErr) {
+      dlog(`lock file unreadable for ${sessionId}, treating as stale: ${readErr.message}`);
     }
     try {
       unlinkSync(p);
-    } catch {
+    } catch (unlinkErr) {
+      dlog(`could not unlink stale lock for ${sessionId}: ${unlinkErr.message}`);
       return false;
     }
   }
