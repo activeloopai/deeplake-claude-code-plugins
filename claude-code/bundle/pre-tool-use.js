@@ -1956,9 +1956,9 @@ async function processPreToolUse(input, deps = {}) {
     const isReadLike = /^(?:python3?|node|deno|bun|ruby|perl)\b/.test(cmd.trim());
     const hasShellMeta = /[$`;|&<>()\\]/.test(cmd);
     if (isReadLike && !hasShellMeta) {
-      const pathMatch = cmd.match(/~\/\.deeplake\/memory\/[\w./_-]+/) || toolPath.match(/~\/\.deeplake\/memory\/[\w./_-]+/);
-      const memPath = pathMatch ? pathMatch[0] : "";
-      const cleanPath = memPath ? rewritePaths(memPath) : "";
+      const normalized = rewritePaths(cmd) + " " + rewritePaths(toolPath);
+      const pathMatch = normalized.match(/\s(\/[\w./_-]+)/);
+      const cleanPath = pathMatch ? pathMatch[1] : "";
       if (cleanPath && !cleanPath.endsWith("/")) {
         logFn(`unsupported command on file, converting to cat: ${cleanPath}`);
         return buildAllowDecision(`cat '${cleanPath.replace(/'/g, "'\\''")}'`, "[DeepLake] converted unsupported interpreter read to cat");

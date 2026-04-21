@@ -873,6 +873,85 @@ describe("regex literal prefilter", () => {
     expect(opts.prefilterPatterns).toEqual(["relationship", "partner", "married"]);
   });
 
+  it("multi-word non-regex pattern populates multiWordPatterns", () => {
+    const opts = buildGrepSearchOptions({
+      pattern: "pottery Melanie Caroline",
+      ignoreCase: false,
+      wordMatch: false,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: false,
+    }, "/");
+
+    expect(opts.contentScanOnly).toBe(false);
+    expect(opts.multiWordPatterns).toEqual(["pottery", "Melanie", "Caroline"]);
+  });
+
+  it("single-word non-regex pattern leaves multiWordPatterns undefined", () => {
+    const opts = buildGrepSearchOptions({
+      pattern: "Caroline",
+      ignoreCase: false,
+      wordMatch: false,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: false,
+    }, "/");
+
+    expect(opts.contentScanOnly).toBe(false);
+    expect(opts.multiWordPatterns).toBeUndefined();
+  });
+
+  it("very short tokens (<= 2 chars) are filtered out of multiWordPatterns", () => {
+    const opts = buildGrepSearchOptions({
+      pattern: "a by the pottery",
+      ignoreCase: false,
+      wordMatch: false,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: false,
+    }, "/");
+
+    // "a", "by" filtered; "the", "pottery" kept
+    expect(opts.multiWordPatterns).toEqual(["the", "pottery"]);
+  });
+
+  it("regex pattern does not populate multiWordPatterns", () => {
+    const opts = buildGrepSearchOptions({
+      pattern: "foo|bar baz",
+      ignoreCase: false,
+      wordMatch: false,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: false,
+    }, "/");
+
+    expect(opts.contentScanOnly).toBe(true);
+    expect(opts.multiWordPatterns).toBeUndefined();
+  });
+
+  it("more than 4 words: only first 4 survive", () => {
+    const opts = buildGrepSearchOptions({
+      pattern: "one two three four five six",
+      ignoreCase: false,
+      wordMatch: false,
+      filesOnly: false,
+      countOnly: false,
+      lineNumber: false,
+      invertMatch: false,
+      fixedString: false,
+    }, "/");
+
+    expect(opts.multiWordPatterns).toEqual(["one", "two", "three", "four"]);
+  });
+
   it("rejects alternation prefilters when grouping makes them unsafe", () => {
     expect(extractRegexAlternationPrefilters("(foo|bar)")).toBeNull();
     expect(extractRegexAlternationPrefilters("foo|bar.*baz")).toEqual(["foo", "bar"]);

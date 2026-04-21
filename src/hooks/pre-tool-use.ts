@@ -234,10 +234,12 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
     const isReadLike = /^(?:python3?|node|deno|bun|ruby|perl)\b/.test(cmd.trim());
     const hasShellMeta = /[$`;|&<>()\\]/.test(cmd);
     if (isReadLike && !hasShellMeta) {
-      const pathMatch = cmd.match(/~\/\.deeplake\/memory\/[\w./_-]+/)
-        || toolPath.match(/~\/\.deeplake\/memory\/[\w./_-]+/);
-      const memPath = pathMatch ? pathMatch[0] : "";
-      const cleanPath = memPath ? rewritePaths(memPath) : "";
+      // Normalize path prefix (~/, $HOME/, or absolute /home/user/) to / via
+      // rewritePaths, then extract the leading memory-relative path.
+      // This catches all three forms that touchesMemory() accepts.
+      const normalized = rewritePaths(cmd) + " " + rewritePaths(toolPath);
+      const pathMatch = normalized.match(/\s(\/[\w./_-]+)/);
+      const cleanPath = pathMatch ? pathMatch[1] : "";
       if (cleanPath && !cleanPath.endsWith("/")) {
         logFn(`unsupported command on file, converting to cat: ${cleanPath}`);
         return buildAllowDecision(
