@@ -3,49 +3,14 @@ name: CI
 on:
   push:
     branches: [main, dev]
-  # Run on every PR regardless of base branch. The `branches` filter on
-  # pull_request only matches base, so stacked / long-lived branches
-  # (e.g. `optimizations`) would otherwise skip the whole CI job.
   pull_request:
+    branches: [main, dev]
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
-  duplication:
-    # Code-duplication regression guard. Pulled out of the `test` job so
-    # the PR checks table shows a dedicated pass/fail row — reviewers see
-    # at a glance whether the change introduced duplicated code without
-    # having to open the combined "Typecheck and Test" log.
-    name: Duplication check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run jscpd
-        # Threshold 7% is the current baseline (see .jscpd.json). The job
-        # fails if a future change pushes duplication above it, so the
-        # number is a regression guard — reviewers can see the exact
-        # clones in the markdown report uploaded below.
-        run: npm run dup
-
-      - name: Upload jscpd report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: jscpd-report
-          path: jscpd-report/
-          if-no-files-found: ignore
-
   test:
     name: Typecheck and Test
     runs-on: ubuntu-latest

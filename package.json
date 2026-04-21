@@ -1,6 +1,6 @@
 {
   "name": "hivemind",
-  "version": "0.6.38",
+  "version": "0.6.37",
   "description": "Cloud-backed persistent shared memory for AI agents powered by Deeplake",
   "type": "module",
   "bin": {
@@ -13,8 +13,7 @@
     "shell": "tsx src/shell/deeplake-shell.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "dup": "jscpd src",
-    "ci": "npm run typecheck && npm run dup && npm test",
+    "ci": "npm run typecheck && npm test",
     "prepare": "husky"
   },
   "lint-staged": {
@@ -34,7 +33,6 @@
     "@vitest/coverage-v8": "^4.1.3",
     "esbuild": "^0.28.0",
     "husky": "^9.1.7",
-    "jscpd": "^4.0.9",
     "lint-staged": "^16.4.0",
     "tsx": "^4.7.0",
     "typescript": "^6.0.0",

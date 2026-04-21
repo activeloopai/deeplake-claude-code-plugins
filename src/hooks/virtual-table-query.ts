@@ -8,32 +8,14 @@ function normalizeSessionPart(path: string, content: string): string {
   return normalizeContent(path, content);
 }
 
-export function buildVirtualIndexContent(summaryRows: Row[], sessionRows: Row[] = []): string {
-  const total = summaryRows.length + sessionRows.length;
-  const lines = [
-    "# Memory Index",
-    "",
-    `${total} entries (${summaryRows.length} summaries, ${sessionRows.length} sessions):`,
-    "",
-  ];
-  if (summaryRows.length > 0) {
-    lines.push("## Summaries", "");
-    for (const row of summaryRows) {
-      const path = row["path"] as string;
-      const project = row["project"] as string || "";
-      const description = (row["description"] as string || "").slice(0, 120);
-      const date = (row["creation_date"] as string || "").slice(0, 10);
-      lines.push(`- [${path}](${path}) ${date} ${project ? `[${project}]` : ""} ${description}`);
-    }
-    lines.push("");
-  }
-  if (sessionRows.length > 0) {
-    lines.push("## Sessions", "");
-    for (const row of sessionRows) {
-      const path = row["path"] as string;
-      const description = (row["description"] as string || "").slice(0, 120);
-      lines.push(`- [${path}](${path}) ${description}`);
-    }
+export function buildVirtualIndexContent(rows: Row[]): string {
+  const lines = ["# Memory Index", "", `${rows.length} sessions:`, ""];
+  for (const row of rows) {
+    const path = row["path"] as string;
+    const project = row["project"] as string || "";
+    const description = (row["description"] as string || "").slice(0, 120);
+    const date = (row["creation_date"] as string || "").slice(0, 10);
+    lines.push(`- [${path}](${path}) ${date} ${project ? `[${project}]` : ""} ${description}`);
   }
   return lines.join("\n");
 }
@@ -53,7 +35,7 @@ function buildInList(paths: string[]): string {
 function buildDirFilter(dirs: string[]): string {
   const cleaned = [...new Set(dirs.map(dir => dir.replace(/\/+$/, "") || "/"))];
   if (cleaned.length === 0 || cleaned.includes("/")) return "";
-  const clauses = cleaned.map((dir) => `path LIKE '${sqlLike(dir)}/%' ESCAPE '\\'`);
+  const clauses = cleaned.map((dir) => `path LIKE '${sqlLike(dir)}/%'`);
   return ` WHERE ${clauses.join(" OR ")}`;
 }
 
@@ -119,15 +101,10 @@ export async function readVirtualPathContents(
   }
 
   if (result.get("/index.md") === null && uniquePaths.includes("/index.md")) {
-    const [summaryRows, sessionRows] = await Promise.all([
-      api.query(
-        `SELECT path, project, description, creation_date FROM "${memoryTable}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
-      ).catch(() => [] as Row[]),
-      api.query(
-        `SELECT path, description FROM "${sessionsTable}" WHERE path LIKE '/sessions/%' ORDER BY path`
-      ).catch(() => [] as Row[]),
-    ]);
-    result.set("/index.md", buildVirtualIndexContent(summaryRows, sessionRows));
+    const rows = await api.query(
+      `SELECT path, project, description, creation_date FROM "${memoryTable}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
+    ).catch(() => []);
+    result.set("/index.md", buildVirtualIndexContent(rows));
   }
 
   return result;
@@ -196,8 +173,8 @@ export async function findVirtualPaths(
   const likePath = `${sqlLike(normalizedDir === "/" ? "" : normalizedDir)}/%`;
   const rows = await queryUnionRows(
     api,
-    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`,
-    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`,
+    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`,
+    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`,
   );
 
   return [...new Set(

@@ -66785,18 +66785,18 @@ function sqlLike(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
+var TRACE_SQL = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+var DEBUG_FILE_LOG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 function summarizeSql(sql, maxLen = 220) {
   const compact = sql.replace(/\s+/g, " ").trim();
   return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
 }
 function traceSql(msg) {
-  const traceEnabled = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-  if (!traceEnabled)
+  if (!TRACE_SQL)
     return;
   process.stderr.write(`[deeplake-sql] ${msg}
 `);
-  const debugFileLog = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-  if (debugFileLog)
+  if (DEBUG_FILE_LOG)
     log2(msg);
 }
 var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
@@ -67317,13 +67317,13 @@ function buildPathCondition(targetPath) {
   const clean = targetPath.replace(/\/+$/, "");
   if (/[*?]/.test(clean)) {
     const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
-    return `path LIKE '${likePattern}' ESCAPE '\\'`;
+    return `path LIKE '${likePattern}'`;
   }
   const base = clean.split("/").pop() ?? "";
   if (base.includes(".")) {
     return `path = '${sqlStr(clean)}'`;
   }
-  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%' ESCAPE '\\')`;
+  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
@@ -69147,13 +69147,6 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
 
 // dist/src/shell/deeplake-shell.js
 async function main() {
-  const isOneShot = process.argv.includes("-c");
-  if (isOneShot) {
-    delete process.env["HIVEMIND_TRACE_SQL"];
-    delete process.env["DEEPLAKE_TRACE_SQL"];
-    delete process.env["HIVEMIND_DEBUG"];
-    delete process.env["DEEPLAKE_DEBUG"];
-  }
   const config = loadConfig();
   if (!config) {
     process.stderr.write("Deeplake credentials not found.\nSet HIVEMIND_TOKEN + HIVEMIND_ORG_ID in environment, or create ~/.deeplake/credentials.json\n");
@@ -69162,6 +69155,7 @@ async function main() {
   const table = process.env["HIVEMIND_TABLE"] ?? "memory";
   const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
   const mount = process.env["HIVEMIND_MOUNT"] ?? "/";
+  const isOneShot = process.argv.includes("-c");
   const client = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
   if (!isOneShot) {
     process.stderr.write(`Connecting to deeplake://${config.workspaceId}/${table} ...

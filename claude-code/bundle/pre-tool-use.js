@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/pre-tool-use.js
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "node:fs";
-import { homedir as homedir5 } from "node:os";
-import { join as join6, dirname, sep } from "node:path";
+import { existsSync as existsSync3 } from "node:fs";
+import { join as join6, dirname } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // dist/src/utils/stdin.js
@@ -88,18 +87,18 @@ function sqlLike(value) {
 
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
+var TRACE_SQL = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+var DEBUG_FILE_LOG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 function summarizeSql(sql, maxLen = 220) {
   const compact = sql.replace(/\s+/g, " ").trim();
   return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
 }
 function traceSql(msg) {
-  const traceEnabled = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-  if (!traceEnabled)
+  if (!TRACE_SQL)
     return;
   process.stderr.write(`[deeplake-sql] ${msg}
 `);
-  const debugFileLog = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-  if (debugFileLog)
+  if (DEBUG_FILE_LOG)
     log2(msg);
 }
 var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
@@ -630,13 +629,13 @@ function buildPathCondition(targetPath) {
   const clean = targetPath.replace(/\/+$/, "");
   if (/[*?]/.test(clean)) {
     const likePattern = sqlLike(clean).replace(/\*/g, "%").replace(/\?/g, "_");
-    return `path LIKE '${likePattern}' ESCAPE '\\'`;
+    return `path LIKE '${likePattern}'`;
   }
   const base = clean.split("/").pop() ?? "";
   if (base.includes(".")) {
     return `path = '${sqlStr(clean)}'`;
   }
-  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%' ESCAPE '\\')`;
+  return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%')`;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
@@ -793,42 +792,6 @@ async function grepBothTables(api, memoryTable, sessionsTable, params, targetPat
   const unique = rows.filter((r) => seen.has(r.path) ? false : (seen.add(r.path), true));
   const normalized = unique.map((r) => ({ path: r.path, content: normalizeContent(r.path, r.content) }));
   return refineGrepMatches(normalized, params);
-}
-
-// dist/src/utils/output-cap.js
-var CLAUDE_OUTPUT_CAP_BYTES = 8 * 1024;
-function byteLen(str) {
-  return Buffer.byteLength(str, "utf8");
-}
-function capOutputForClaude(output, options = {}) {
-  const maxBytes = options.maxBytes ?? CLAUDE_OUTPUT_CAP_BYTES;
-  if (byteLen(output) <= maxBytes)
-    return output;
-  const kind = options.kind ?? "output";
-  const footerReserve = 220;
-  const budget = Math.max(1, maxBytes - footerReserve);
-  let running = 0;
-  const lines = output.split("\n");
-  const keptLines = [];
-  for (const line of lines) {
-    const lineBytes = byteLen(line) + 1;
-    if (running + lineBytes > budget)
-      break;
-    keptLines.push(line);
-    running += lineBytes;
-  }
-  if (keptLines.length === 0) {
-    const slice = Buffer.from(output, "utf8").slice(0, budget).toString("utf8");
-    const footer2 = `
-... [${kind} truncated: ${(byteLen(output) / 1024).toFixed(1)} KB total; refine with '| head -N' or a tighter pattern]`;
-    return slice + footer2;
-  }
-  const totalLines = lines.length - (lines[lines.length - 1] === "" ? 1 : 0);
-  const elidedLines = Math.max(0, totalLines - keptLines.length);
-  const elidedBytes = byteLen(output) - byteLen(keptLines.join("\n"));
-  const footer = `
-... [${kind} truncated: ${elidedLines} more lines (${(elidedBytes / 1024).toFixed(1)} KB) elided \u2014 refine with '| head -N' or a tighter pattern]`;
-  return keptLines.join("\n") + footer;
 }
 
 // dist/src/hooks/grep-direct.js
@@ -1070,40 +1033,21 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
     fixedString: params.fixedString
   };
   const output = await grepBothTables(api, table, sessionsTable, matchParams, params.targetPath);
-  const joined = output.join("\n") || "(no matches)";
-  return capOutputForClaude(joined, { kind: "grep" });
+  return output.join("\n") || "(no matches)";
 }
 
 // dist/src/hooks/virtual-table-query.js
 function normalizeSessionPart(path, content) {
   return normalizeContent(path, content);
 }
-function buildVirtualIndexContent(summaryRows, sessionRows = []) {
-  const total = summaryRows.length + sessionRows.length;
-  const lines = [
-    "# Memory Index",
-    "",
-    `${total} entries (${summaryRows.length} summaries, ${sessionRows.length} sessions):`,
-    ""
-  ];
-  if (summaryRows.length > 0) {
-    lines.push("## Summaries", "");
-    for (const row of summaryRows) {
-      const path = row["path"];
-      const project = row["project"] || "";
-      const description = (row["description"] || "").slice(0, 120);
-      const date = (row["creation_date"] || "").slice(0, 10);
-      lines.push(`- [${path}](${path}) ${date} ${project ? `[${project}]` : ""} ${description}`);
-    }
-    lines.push("");
-  }
-  if (sessionRows.length > 0) {
-    lines.push("## Sessions", "");
-    for (const row of sessionRows) {
-      const path = row["path"];
-      const description = (row["description"] || "").slice(0, 120);
-      lines.push(`- [${path}](${path}) ${description}`);
-    }
+function buildVirtualIndexContent(rows) {
+  const lines = ["# Memory Index", "", `${rows.length} sessions:`, ""];
+  for (const row of rows) {
+    const path = row["path"];
+    const project = row["project"] || "";
+    const description = (row["description"] || "").slice(0, 120);
+    const date = (row["creation_date"] || "").slice(0, 10);
+    lines.push(`- [${path}](${path}) ${date} ${project ? `[${project}]` : ""} ${description}`);
   }
   return lines.join("\n");
 }
@@ -1117,7 +1061,7 @@ function buildDirFilter(dirs) {
   const cleaned = [...new Set(dirs.map((dir) => dir.replace(/\/+$/, "") || "/"))];
   if (cleaned.length === 0 || cleaned.includes("/"))
     return "";
-  const clauses = cleaned.map((dir) => `path LIKE '${sqlLike(dir)}/%' ESCAPE '\\'`);
+  const clauses = cleaned.map((dir) => `path LIKE '${sqlLike(dir)}/%'`);
   return ` WHERE ${clauses.join(" OR ")}`;
 }
 async function queryUnionRows(api, memoryQuery, sessionsQuery) {
@@ -1166,11 +1110,8 @@ async function readVirtualPathContents(api, memoryTable, sessionsTable, virtualP
     }
   }
   if (result.get("/index.md") === null && uniquePaths.includes("/index.md")) {
-    const [summaryRows, sessionRows] = await Promise.all([
-      api.query(`SELECT path, project, description, creation_date FROM "${memoryTable}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`).catch(() => []),
-      api.query(`SELECT path, description FROM "${sessionsTable}" WHERE path LIKE '/sessions/%' ORDER BY path`).catch(() => [])
-    ]);
-    result.set("/index.md", buildVirtualIndexContent(summaryRows, sessionRows));
+    const rows2 = await api.query(`SELECT path, project, description, creation_date FROM "${memoryTable}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`).catch(() => []);
+    result.set("/index.md", buildVirtualIndexContent(rows2));
   }
   return result;
 }
@@ -1207,7 +1148,7 @@ async function listVirtualPathRows(api, memoryTable, sessionsTable, dir) {
 async function findVirtualPaths(api, memoryTable, sessionsTable, dir, filenamePattern) {
   const normalizedDir = dir.replace(/\/+$/, "") || "/";
   const likePath = `${sqlLike(normalizedDir === "/" ? "" : normalizedDir)}/%`;
-  const rows = await queryUnionRows(api, `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`, `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`);
+  const rows = await queryUnionRows(api, `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`, `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' AND filename LIKE '${filenamePattern}'`);
   return [...new Set(rows.map((row) => row["path"]).filter((value) => typeof value === "string" && value.length > 0))];
 }
 function dedupeRowsByPath(rows) {
@@ -1686,7 +1627,7 @@ async function executeCompiledBashCommand(api, memoryTable, sessionsTable, cmd, 
       continue;
     }
   }
-  return capOutputForClaude(outputs.join("\n"), { kind: "bash" });
+  return outputs.join("\n");
 }
 
 // dist/src/hooks/query-cache.js
@@ -1844,23 +1785,6 @@ function rewritePaths(cmd) {
 var log4 = (msg) => log("pre", msg);
 var __bundleDir = dirname(fileURLToPath2(import.meta.url));
 var SHELL_BUNDLE = existsSync3(join6(__bundleDir, "shell", "deeplake-shell.js")) ? join6(__bundleDir, "shell", "deeplake-shell.js") : join6(__bundleDir, "..", "shell", "deeplake-shell.js");
-var READ_CACHE_ROOT = join6(homedir5(), ".deeplake", "query-cache");
-function writeReadCacheFile(sessionId, virtualPath, content, deps = {}) {
-  const { cacheRoot = READ_CACHE_ROOT } = deps;
-  const safeSessionId = sessionId.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown";
-  const rel = virtualPath.replace(/^\/+/, "") || "content";
-  const expectedRoot = join6(cacheRoot, safeSessionId, "read");
-  const absPath = join6(expectedRoot, rel);
-  if (absPath !== expectedRoot && !absPath.startsWith(expectedRoot + sep)) {
-    throw new Error(`writeReadCacheFile: path escapes cache root: ${absPath}`);
-  }
-  mkdirSync3(dirname(absPath), { recursive: true });
-  writeFileSync3(absPath, content, "utf-8");
-  return absPath;
-}
-function buildReadDecision(file_path, description) {
-  return { command: "", description, file_path };
-}
 function getReadTargetPath(toolInput) {
   const rawPath = toolInput.file_path ?? toolInput.path;
   return rawPath ? rawPath : null;
@@ -1941,7 +1865,7 @@ function buildFallbackDecision(shellCmd, shellBundle = SHELL_BUNDLE) {
   return buildAllowDecision(`node "${shellBundle}" -c "${shellCmd.replace(/"/g, '\\"')}"`, `[DeepLake shell] ${shellCmd}`);
 }
 async function processPreToolUse(input, deps = {}) {
-  const { config = loadConfig(), createApi = (table2, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table2), executeCompiledBashCommandFn = executeCompiledBashCommand, handleGrepDirectFn = handleGrepDirect, readVirtualPathContentsFn = readVirtualPathContents, readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, readCachedIndexContentFn = readCachedIndexContent, writeCachedIndexContentFn = writeCachedIndexContent, writeReadCacheFileFn = writeReadCacheFile, shellBundle = SHELL_BUNDLE, logFn = log4 } = deps;
+  const { config = loadConfig(), createApi = (table2, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table2), executeCompiledBashCommandFn = executeCompiledBashCommand, handleGrepDirectFn = handleGrepDirect, readVirtualPathContentsFn = readVirtualPathContents, readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, readCachedIndexContentFn = readCachedIndexContent, writeCachedIndexContentFn = writeCachedIndexContent, shellBundle = SHELL_BUNDLE, logFn = log4 } = deps;
   const cmd = input.tool_input.command ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
   const toolPath = getReadTargetPath(input.tool_input) ?? input.tool_input.path ?? "";
@@ -2054,6 +1978,18 @@ async function processPreToolUse(input, deps = {}) {
       if (content === null) {
         content = await readVirtualPathContentFn(api, table, sessionsTable, virtualPath);
       }
+      if (content === null && virtualPath === "/index.md") {
+        const idxRows = await api.query(`SELECT path, project, description, creation_date FROM "${table}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`);
+        const lines = ["# Memory Index", "", `${idxRows.length} sessions:`, ""];
+        for (const r of idxRows) {
+          const p = r["path"];
+          const proj = r["project"] || "";
+          const desc = (r["description"] || "").slice(0, 120);
+          const date = (r["creation_date"] || "").slice(0, 10);
+          lines.push(`- [${p}](${p}) ${date} ${proj ? `[${proj}]` : ""} ${desc}`);
+        }
+        content = lines.join("\n");
+      }
       if (content !== null) {
         if (virtualPath === "/index.md") {
           writeCachedIndexContentFn(input.session_id, content);
@@ -2065,12 +2001,7 @@ async function processPreToolUse(input, deps = {}) {
           content = fromEnd ? lines.slice(-lineLimit).join("\n") : lines.slice(0, lineLimit).join("\n");
         }
         const label = lineLimit > 0 ? fromEnd ? `tail -${lineLimit}` : `head -${lineLimit}` : "cat";
-        if (input.tool_name === "Read") {
-          const file_path = writeReadCacheFileFn(input.session_id, virtualPath, content);
-          return buildReadDecision(file_path, `[DeepLake direct] ${label} ${virtualPath}`);
-        }
-        const capped = capOutputForClaude(content, { kind: label });
-        return buildAllowDecision(`echo ${JSON.stringify(capped)}`, `[DeepLake direct] ${label} ${virtualPath}`);
+        return buildAllowDecision(`echo ${JSON.stringify(content)}`, `[DeepLake direct] ${label} ${virtualPath}`);
       }
     }
     if (!lsDir && input.tool_name === "Glob") {
@@ -2115,8 +2046,7 @@ async function processPreToolUse(input, deps = {}) {
           lines.push(name + (info.isDir ? "/" : ""));
         }
       }
-      const lsOutput = capOutputForClaude(lines.join("\n") || "(empty directory)", { kind: "ls" });
-      return buildAllowDecision(`echo ${JSON.stringify(lsOutput)}`, `[DeepLake direct] ls ${dir}`);
+      return buildAllowDecision(`echo ${JSON.stringify(lines.join("\n") || "(empty directory)")}`, `[DeepLake direct] ls ${dir}`);
     }
     if (input.tool_name === "Bash") {
       const findMatch = shellCmd.match(/^find\s+(\S+)\s+(?:-type\s+\S+\s+)?-name\s+'([^']+)'/);
@@ -2128,8 +2058,7 @@ async function processPreToolUse(input, deps = {}) {
         let result = paths.join("\n") || "";
         if (/\|\s*wc\s+-l\s*$/.test(shellCmd))
           result = String(paths.length);
-        const capped = capOutputForClaude(result || "(no matches)", { kind: "find" });
-        return buildAllowDecision(`echo ${JSON.stringify(capped)}`, `[DeepLake direct] find ${dir}`);
+        return buildAllowDecision(`echo ${JSON.stringify(result || "(no matches)")}`, `[DeepLake direct] find ${dir}`);
       }
     }
   } catch (e) {
@@ -2142,12 +2071,11 @@ async function main() {
   const decision = await processPreToolUse(input);
   if (!decision)
     return;
-  const updatedInput = decision.file_path !== void 0 ? { file_path: decision.file_path } : { command: decision.command, description: decision.description };
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "allow",
-      updatedInput
+      updatedInput: decision
     }
   }));
 }
@@ -2159,12 +2087,10 @@ if (isDirectRun(import.meta.url)) {
 }
 export {
   buildAllowDecision,
-  buildReadDecision,
   extractGrepParams,
   getShellCommand,
   isSafe,
   processPreToolUse,
   rewritePaths,
-  touchesMemory,
-  writeReadCacheFile
+  touchesMemory
 };

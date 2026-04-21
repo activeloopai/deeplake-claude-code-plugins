@@ -1,37 +1,21 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/codex/wiki-worker.js
-import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, existsSync as existsSync2, appendFileSync as appendFileSync2, mkdirSync as mkdirSync2, rmSync } from "node:fs";
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, existsSync as existsSync2, appendFileSync, mkdirSync as mkdirSync2, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join as join3 } from "node:path";
+import { join as join2 } from "node:path";
 
 // dist/src/hooks/summary-state.js
 import { readFileSync, writeFileSync, writeSync, mkdirSync, renameSync, existsSync, unlinkSync, openSync, closeSync } from "node:fs";
-import { homedir as homedir2 } from "node:os";
-import { join as join2 } from "node:path";
-
-// dist/src/utils/debug.js
-import { appendFileSync } from "node:fs";
-import { join } from "node:path";
 import { homedir } from "node:os";
-var DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-var LOG = join(homedir(), ".deeplake", "hook-debug.log");
-function log(tag, msg) {
-  if (!DEBUG)
-    return;
-  appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
-`);
-}
-
-// dist/src/hooks/summary-state.js
-var dlog = (msg) => log("summary-state", msg);
-var STATE_DIR = join2(homedir2(), ".claude", "hooks", "summary-state");
+import { join } from "node:path";
+var STATE_DIR = join(homedir(), ".claude", "hooks", "summary-state");
 var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
 function statePath(sessionId) {
-  return join2(STATE_DIR, `${sessionId}.json`);
+  return join(STATE_DIR, `${sessionId}.json`);
 }
 function lockPath(sessionId) {
-  return join2(STATE_DIR, `${sessionId}.lock`);
+  return join(STATE_DIR, `${sessionId}.lock`);
 }
 function readState(sessionId) {
   const p = statePath(sessionId);
@@ -62,11 +46,9 @@ function withRmwLock(sessionId, fn) {
       if (e.code !== "EEXIST")
         throw e;
       if (Date.now() > deadline) {
-        dlog(`rmw lock deadline exceeded for ${sessionId}, reclaiming stale lock`);
         try {
           unlinkSync(rmwLock);
-        } catch (unlinkErr) {
-          dlog(`stale rmw lock unlink failed for ${sessionId}: ${unlinkErr.message}`);
+        } catch {
         }
         continue;
       }
@@ -79,8 +61,7 @@ function withRmwLock(sessionId, fn) {
     closeSync(fd);
     try {
       unlinkSync(rmwLock);
-    } catch (unlinkErr) {
-      dlog(`rmw lock cleanup failed for ${sessionId}: ${unlinkErr.message}`);
+    } catch {
     }
   }
 }
@@ -97,10 +78,7 @@ function finalizeSummary(sessionId, jsonlLines) {
 function releaseLock(sessionId) {
   try {
     unlinkSync(lockPath(sessionId));
-  } catch (e) {
-    if (e?.code !== "ENOENT") {
-      dlog(`releaseLock unlink failed for ${sessionId}: ${e.message}`);
-    }
+  } catch {
   }
 }
 
@@ -130,15 +108,14 @@ async function uploadSummary(query2, params) {
 }
 
 // dist/src/hooks/codex/wiki-worker.js
-var dlog2 = (msg) => log("codex-wiki-worker", msg);
 var cfg = JSON.parse(readFileSync2(process.argv[2], "utf-8"));
 var tmpDir = cfg.tmpDir;
-var tmpJsonl = join3(tmpDir, "session.jsonl");
-var tmpSummary = join3(tmpDir, "summary.md");
+var tmpJsonl = join2(tmpDir, "session.jsonl");
+var tmpSummary = join2(tmpDir, "summary.md");
 function wlog(msg) {
   try {
     mkdirSync2(cfg.hooksDir, { recursive: true });
-    appendFileSync2(cfg.wikiLog, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] wiki-worker(${cfg.sessionId}): ${msg}
+    appendFileSync(cfg.wikiLog, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] wiki-worker(${cfg.sessionId}): ${msg}
 `);
   } catch {
   }
@@ -178,8 +155,7 @@ async function query(sql, retries = 4) {
 function cleanup() {
   try {
     rmSync(tmpDir, { recursive: true, force: true });
-  } catch (cleanupErr) {
-    dlog2(`cleanup failed to remove ${tmpDir}: ${cleanupErr.message}`);
+  } catch {
   }
 }
 async function main() {
@@ -258,8 +234,7 @@ async function main() {
     cleanup();
     try {
       releaseLock(cfg.sessionId);
-    } catch (releaseErr) {
-      dlog2(`releaseLock failed in finally for ${cfg.sessionId}: ${releaseErr.message}`);
+    } catch {
     }
   }
 }

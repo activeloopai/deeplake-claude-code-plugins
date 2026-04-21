@@ -4,27 +4,30 @@
  * SessionStart hook:
  * 1. If no credentials → run device flow login (opens browser)
  * 2. Inject Deeplake memory instructions into Claude's context
+ *
+ * This sync hook stays local-only. All network work (table setup, placeholder,
+ * queue drain, version refresh, auto-update) runs in session-start-setup.ts.
  */
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { readdirSync, rmSync } from "node:fs";
-import { execSync } from "node:child_process";
-import { homedir } from "node:os";
-import { loadCredentials, saveCredentials, login } from "../commands/auth.js";
-import { loadConfig } from "../config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr } from "../utils/sql.js";
+import { loadCredentials, saveCredentials } from "../commands/auth.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
-import { getInstalledVersion, getLatestVersion, isNewer } from "../utils/version-check.js";
-import { makeWikiLogger } from "../utils/wiki-log.js";
+import { isDirectRun } from "../utils/direct-run.js";
+import {
+  DEFAULT_VERSION_CACHE_TTL_MS,
+  getInstalledVersion,
+  isNewer,
+  readFreshCachedLatestVersion,
+} from "./version-check.js";
+
 const log = (msg: string) => _log("session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
 const AUTH_CMD = join(__bundleDir, "commands", "auth-login.js");
 
-const context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
+export const CLAUDE_SESSION_START_CONTEXT = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
 
 1. Your built-in memory (~/.claude/) — personal per-project notes
 2. Deeplake global memory (~/.deeplake/memory/) — global memory shared across all sessions, users, and agents in the org
@@ -32,9 +35,19 @@ const context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH
 Deeplake memory structure:
 - ~/.deeplake/memory/index.md — START HERE, table of all sessions
 - ~/.deeplake/memory/summaries/username/*.md — AI-generated wiki summaries per session
-- ~/.deeplake/memory/sessions/username/*.jsonl — raw session data (last resort)
+- ~/.deeplake/memory/sessions/{author}/* — raw session data (last resort)
 
-SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw JSONL if summaries don't have enough detail. Do NOT jump straight to JSONL files.
+SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw session files if summaries don't have enough detail. Do NOT jump straight to raw session files.
+When index.md points to a likely match, read that exact summary or session file directly before trying broader grep variants.
+If index.md already points to likely candidate files, open those exact files before broadening into synonym greps or wide exploratory scans.
+Do NOT probe unrelated local paths such as ~/.claude/projects/, arbitrary home directories, or guessed summary roots when the question is about Deeplake memory.
+TEMPORAL GROUNDING: If a summary or transcript uses relative time like "last year", "last week", or "next month", resolve it against that session's own date/date_time metadata, not today's date.
+TEMPORAL FOLLOW-THROUGH: If a summary only gives a relative time, open the linked source session and use its date/date_time to convert the final answer into an absolute month/date/year or explicit range before responding.
+ANSWER SHAPE: Once you have enough evidence, answer with the smallest exact phrase supported by memory. For identity or relationship questions, use just the noun phrase. For education questions, answer with the likely field or credential directly, not the broader life story. For "when" questions, prefer absolute dates/months/years over relative phrases. Avoid extra biography, explanation, or hedging.
+NOT-FOUND BAR: Do NOT answer "not found" until you have checked index.md plus at least one likely summary or raw session file for the named person. If keyword grep is empty, grep the person's name alone and inspect the candidate files.
+NEGATIVE-EVIDENCE QUESTIONS: For identity, relationship status, and research-topic questions, summaries may omit the exact phrase. If likely summaries are ambiguous, read the candidate raw session transcript and look for positive clues before concluding the answer is absent.
+SELF-LABEL PRIORITY: For identity questions, prefer the person's own explicit self-label from the transcript over broader category descriptions or paraphrases.
+RELATIONSHIP STATUS INFERENCE: For relationship-status questions, treat explicit self-descriptions about partnership, dating, marriage, or parenting plans as status evidence. If the transcript strongly supports an unpartnered status, answer with the concise status phrase instead of "not found."
 
 Search command: Grep pattern="keyword" path="~/.deeplake/memory"
 
@@ -55,161 +68,96 @@ LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty 
 
 Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
 
-const HOME = homedir();
-const { log: wikiLog } = makeWikiLogger(join(HOME, ".claude", "hooks"));
+const GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 
-/** Create a placeholder summary via direct SQL INSERT (no DeeplakeFs bootstrap needed). */
-async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
-  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
+export function buildSessionStartAdditionalContext(args: {
+  authCommand: string;
+  creds: ReturnType<typeof loadCredentials>;
+  currentVersion: string | null;
+  latestVersion: string | null;
+}): string {
+  const resolvedContext = CLAUDE_SESSION_START_CONTEXT.replace(/HIVEMIND_AUTH_CMD/g, args.authCommand);
 
-  const existing = await api.query(
-    `SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`
-  );
-  if (existing.length > 0) {
-    wikiLog(`SessionStart: summary exists for ${sessionId} (resumed)`);
-    return;
+  let updateNotice = "";
+  if (args.currentVersion) {
+    if (args.latestVersion && isNewer(args.latestVersion, args.currentVersion)) {
+      updateNotice = `\n\n⬆️ Hivemind update available: ${args.currentVersion} → ${args.latestVersion}.`;
+    } else {
+      updateNotice = `\n\n✅ Hivemind v${args.currentVersion}`;
+    }
   }
 
-  const now = new Date().toISOString();
-  const projectName = cwd.split("/").pop() ?? "unknown";
-  const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
-  const content = [
-    `# Session ${sessionId}`,
-    `- **Source**: ${sessionSource}`,
-    `- **Started**: ${now}`,
-    `- **Project**: ${projectName}`,
-    `- **Status**: in-progress`,
-    "",
-  ].join("\n");
-  const filename = `${sessionId}.md`;
-
-  await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${now}', '${now}')`
-  );
-
-  wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
+  return args.creds?.token
+    ? `${resolvedContext}\n\nLogged in to Deeplake as org: ${args.creds.orgName ?? args.creds.orgId} (workspace: ${args.creds.workspaceId ?? "default"})${updateNotice}`
+    : `${resolvedContext}\n\n⚠️ Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${updateNotice}`;
 }
 
-interface SessionStartInput {
-  session_id: string;
-  cwd?: string;
+interface SessionStartHookDeps {
+  wikiWorker?: boolean;
+  creds?: ReturnType<typeof loadCredentials>;
+  saveCredentialsFn?: typeof saveCredentials;
+  currentVersion?: string | null;
+  latestVersion?: string | null;
+  authCommand?: string;
+  bundleDir?: string;
+  logFn?: (msg: string) => void;
 }
 
-async function main(): Promise<void> {
-  // Skip if this is a sub-session spawned by the wiki worker
-  if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
+export async function runSessionStartHook(_input: Record<string, unknown>, deps: SessionStartHookDeps = {}): Promise<{
+  hookSpecificOutput: {
+    hookEventName: "SessionStart";
+    additionalContext: string;
+  };
+} | null> {
+  const {
+    wikiWorker = (process.env.HIVEMIND_WIKI_WORKER ?? process.env.DEEPLAKE_WIKI_WORKER) === "1",
+    creds = loadCredentials(),
+    saveCredentialsFn = saveCredentials,
+    currentVersion = getInstalledVersion(__bundleDir, ".claude-plugin"),
+    latestVersion = currentVersion
+      ? readFreshCachedLatestVersion(GITHUB_RAW_PKG, DEFAULT_VERSION_CACHE_TTL_MS) ?? null
+      : null,
+    authCommand = AUTH_CMD,
+    logFn = log,
+  } = deps;
 
-  const input = await readStdin<SessionStartInput>();
-
-  let creds = loadCredentials();
+  if (wikiWorker) return null;
 
   if (!creds?.token) {
-    log("no credentials found — run /hivemind:login to authenticate");
+    logFn("no credentials found — run /hivemind:login to authenticate");
   } else {
-    log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
-    // Backfill userName if missing (for users who logged in before this field was added)
+    logFn(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
     if (creds.token && !creds.userName) {
       try {
         const { userInfo } = await import("node:os");
         creds.userName = userInfo().username ?? "unknown";
-        saveCredentials(creds);
-        log(`backfilled and persisted userName: ${creds.userName}`);
+        saveCredentialsFn(creds);
+        logFn(`backfilled and persisted userName: ${creds.userName}`);
       } catch { /* non-fatal */ }
     }
   }
 
-  // Ensure tables exist and (when capture is enabled) create the placeholder
-  // summary via direct SQL. Tables must always be synced so queries return
-  // fresh data — only the placeholder INSERT is skipped when HIVEMIND_CAPTURE=false
-  // (benchmark runs, explicit opt-out). Mirrors the guard already in
-  // session-start-setup.ts / session-end.ts / codex hooks.
-  const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
-  if (input.session_id && creds?.token) {
-    try {
-      const config = loadConfig();
-      if (config) {
-        const table = config.tableName;
-        const sessionsTable = config.sessionsTableName;
-        const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
-        await api.ensureTable();
-        await api.ensureSessionsTable(sessionsTable);
-        if (captureEnabled) {
-          await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
-          log("placeholder created");
-        } else {
-          log("placeholder skipped (HIVEMIND_CAPTURE=false)");
-        }
-      }
-    } catch (e: any) {
-      log(`placeholder failed: ${e.message}`);
-      wikiLog(`SessionStart: placeholder failed for ${input.session_id}: ${e.message}`);
-    }
-  }
-
-  // Version check (non-blocking — failures are silently ignored)
-  const autoupdate = creds?.autoupdate !== false; // default: true
-  let updateNotice = "";
-  try {
-    const current = getInstalledVersion(__bundleDir, ".claude-plugin");
-    if (current) {
-      const latest = await getLatestVersion();
-      if (latest && isNewer(latest, current)) {
-        if (autoupdate) {
-          log(`autoupdate: updating ${current} → ${latest}`);
-          try {
-            const scopes = ["user", "project", "local", "managed"];
-            const cmd = scopes
-              .map(s => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null || true`)
-              .join("; ");
-            execSync(cmd, { stdio: "ignore", timeout: 60_000 });
-            // Clean up old cached versions, keep only the latest
-            try {
-              const cacheParent = join(homedir(), ".claude", "plugins", "cache", "hivemind", "hivemind");
-              const entries = readdirSync(cacheParent, { withFileTypes: true });
-              for (const e of entries) {
-                if (e.isDirectory() && e.name !== latest) {
-                  rmSync(join(cacheParent, e.name), { recursive: true, force: true });
-                  log(`cache cleanup: removed old version ${e.name}`);
-                }
-              }
-            } catch (e: any) {
-              log(`cache cleanup failed: ${e.message}`);
-            }
-            updateNotice = `\n\n✅ Hivemind auto-updated: ${current} → ${latest}. Run /reload-plugins to apply.`;
-            process.stderr.write(`✅ Hivemind auto-updated: ${current} → ${latest}. Run /reload-plugins to apply.\n`);
-            log(`autoupdate succeeded: ${current} → ${latest}`);
-          } catch (e: any) {
-            updateNotice = `\n\n⬆️ Hivemind update available: ${current} → ${latest}. Auto-update failed — run /hivemind:update to upgrade manually.`;
-            process.stderr.write(`⬆️ Hivemind update available: ${current} → ${latest}. Auto-update failed — run /hivemind:update to upgrade manually.\n`);
-            log(`autoupdate failed: ${e.message}`);
-          }
-        } else {
-          updateNotice = `\n\n⬆️ Hivemind update available: ${current} → ${latest}. Run /hivemind:update to upgrade.`;
-          process.stderr.write(`⬆️ Hivemind update available: ${current} → ${latest}. Run /hivemind:update to upgrade.\n`);
-          log(`update available (autoupdate off): ${current} → ${latest}`);
-        }
-      } else {
-        log(`version up to date: ${current}`);
-        updateNotice = `\n\n✅ Hivemind v${current} (up to date)`;
-      }
-    }
-  } catch (e: any) {
-    log(`version check failed: ${e.message}`);
-  }
-
-  const resolvedContext = context.replace(/HIVEMIND_AUTH_CMD/g, AUTH_CMD);
-  const additionalContext = creds?.token
-    ? `${resolvedContext}\n\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}`
-    : `${resolvedContext}\n\n⚠️ Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${updateNotice}`;
-
-  console.log(JSON.stringify({
+  return {
     hookSpecificOutput: {
       hookEventName: "SessionStart",
-      additionalContext,
+      additionalContext: buildSessionStartAdditionalContext({
+        authCommand,
+        creds,
+        currentVersion,
+        latestVersion,
+      }),
     },
-  }));
+  };
 }
 
-main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
+/* c8 ignore start */
+async function main(): Promise<void> {
+  await readStdin<Record<string, unknown>>();
+  const result = await runSessionStartHook({});
+  if (result) console.log(JSON.stringify(result));
+}
+
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });
+}
+/* c8 ignore stop */

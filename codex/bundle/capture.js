@@ -2,13 +2,13 @@
 
 // dist/src/utils/stdin.js
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let data = "";
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => data += chunk);
     process.stdin.on("end", () => {
       try {
-        resolve(JSON.parse(data));
+        resolve2(JSON.parse(data));
       } catch (err) {
         reject(new Error(`Failed to parse hook input: ${err}`));
       }
@@ -53,21 +53,12 @@ function loadConfig() {
   };
 }
 
-// dist/src/deeplake-api.js
-import { randomUUID } from "node:crypto";
-import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "node:fs";
-import { join as join3 } from "node:path";
-import { tmpdir } from "node:os";
-
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 var DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
 var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
-function utcTimestamp(d = /* @__PURE__ */ new Date()) {
-  return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
-}
 function log(tag, msg) {
   if (!DEBUG)
     return;
@@ -75,364 +66,51 @@ function log(tag, msg) {
 `);
 }
 
-// dist/src/utils/sql.js
-function sqlStr(value) {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
-}
-
-// dist/src/deeplake-api.js
-var log2 = (msg) => log("sdk", msg);
-function summarizeSql(sql, maxLen = 220) {
-  const compact = sql.replace(/\s+/g, " ").trim();
-  return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
-}
-function traceSql(msg) {
-  const traceEnabled = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-  if (!traceEnabled)
-    return;
-  process.stderr.write(`[deeplake-sql] ${msg}
-`);
-  const debugFileLog = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-  if (debugFileLog)
-    log2(msg);
-}
-var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
-var MAX_RETRIES = 3;
-var BASE_DELAY_MS = 500;
-var MAX_CONCURRENCY = 5;
-var QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 1e4);
-var INDEX_MARKER_TTL_MS = Number(process.env["HIVEMIND_INDEX_MARKER_TTL_MS"] ?? 6 * 60 * 6e4);
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-function isTimeoutError(error) {
-  const name = error instanceof Error ? error.name.toLowerCase() : "";
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return name.includes("timeout") || name === "aborterror" || message.includes("timeout") || message.includes("timed out");
-}
-function isDuplicateIndexError(error) {
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return message.includes("duplicate key value violates unique constraint") || message.includes("pg_class_relname_nsp_index") || message.includes("already exists");
-}
-function isSessionInsertQuery(sql) {
-  return /^\s*insert\s+into\s+"[^"]+"\s*\(\s*id\s*,\s*path\s*,\s*filename\s*,\s*message\s*,/i.test(sql);
-}
-function isTransientHtml403(text) {
-  const body = text.toLowerCase();
-  return body.includes("<html") || body.includes("403 forbidden") || body.includes("cloudflare") || body.includes("nginx");
-}
-function getIndexMarkerDir() {
-  return process.env["HIVEMIND_INDEX_MARKER_DIR"] ?? join3(tmpdir(), "hivemind-deeplake-indexes");
-}
-var Semaphore = class {
-  max;
-  waiting = [];
-  active = 0;
-  constructor(max) {
-    this.max = max;
+// dist/src/utils/direct-run.js
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+function isDirectRun(metaUrl) {
+  const entry = process.argv[1];
+  if (!entry)
+    return false;
+  try {
+    return resolve(fileURLToPath(metaUrl)) === resolve(entry);
+  } catch {
+    return false;
   }
-  async acquire() {
-    if (this.active < this.max) {
-      this.active++;
-      return;
-    }
-    await new Promise((resolve) => this.waiting.push(resolve));
-  }
-  release() {
-    this.active--;
-    const next = this.waiting.shift();
-    if (next) {
-      this.active++;
-      next();
-    }
-  }
-};
-var DeeplakeApi = class {
-  token;
-  apiUrl;
-  orgId;
-  workspaceId;
-  tableName;
-  _pendingRows = [];
-  _sem = new Semaphore(MAX_CONCURRENCY);
-  _tablesCache = null;
-  constructor(token, apiUrl, orgId, workspaceId, tableName) {
-    this.token = token;
-    this.apiUrl = apiUrl;
-    this.orgId = orgId;
-    this.workspaceId = workspaceId;
-    this.tableName = tableName;
-  }
-  /** Execute SQL with retry on transient errors and bounded concurrency. */
-  async query(sql) {
-    const startedAt = Date.now();
-    const summary = summarizeSql(sql);
-    traceSql(`query start: ${summary}`);
-    await this._sem.acquire();
-    try {
-      const rows = await this._queryWithRetry(sql);
-      traceSql(`query ok (${Date.now() - startedAt}ms, rows=${rows.length}): ${summary}`);
-      return rows;
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      traceSql(`query fail (${Date.now() - startedAt}ms): ${summary} :: ${message}`);
-      throw e;
-    } finally {
-      this._sem.release();
-    }
-  }
-  async _queryWithRetry(sql) {
-    let lastError;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      let resp;
-      try {
-        const signal = AbortSignal.timeout(QUERY_TIMEOUT_MS);
-        resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.token}`,
-            "Content-Type": "application/json",
-            "X-Activeloop-Org-Id": this.orgId
-          },
-          signal,
-          body: JSON.stringify({ query: sql })
-        });
-      } catch (e) {
-        if (isTimeoutError(e)) {
-          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
-          throw lastError;
-        }
-        lastError = e instanceof Error ? e : new Error(String(e));
-        if (attempt < MAX_RETRIES) {
-          const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
-          log2(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
-          await sleep(delay);
-          continue;
-        }
-        throw lastError;
-      }
-      if (resp.ok) {
-        const raw = await resp.json();
-        if (!raw?.rows || !raw?.columns)
-          return [];
-        return raw.rows.map((row) => Object.fromEntries(raw.columns.map((col, i) => [col, row[i]])));
-      }
-      const text = await resp.text().catch(() => "");
-      const retryable403 = isSessionInsertQuery(sql) && (resp.status === 401 || resp.status === 403 && (text.length === 0 || isTransientHtml403(text)));
-      if (attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
-        const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
-        log2(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
-        await sleep(delay);
-        continue;
-      }
-      throw new Error(`Query failed: ${resp.status}: ${text.slice(0, 200)}`);
-    }
-    throw lastError ?? new Error("Query failed: max retries exceeded");
-  }
-  // ── Writes ──────────────────────────────────────────────────────────────────
-  /** Queue rows for writing. Call commit() to flush. */
-  appendRows(rows) {
-    this._pendingRows.push(...rows);
-  }
-  /** Flush pending rows via SQL. */
-  async commit() {
-    if (this._pendingRows.length === 0)
-      return;
-    const rows = this._pendingRows;
-    this._pendingRows = [];
-    const CONCURRENCY = 10;
-    for (let i = 0; i < rows.length; i += CONCURRENCY) {
-      const chunk = rows.slice(i, i + CONCURRENCY);
-      await Promise.allSettled(chunk.map((r) => this.upsertRowSql(r)));
-    }
-    log2(`commit: ${rows.length} rows`);
-  }
-  async upsertRowSql(row) {
-    const ts = (/* @__PURE__ */ new Date()).toISOString();
-    const cd = row.creationDate ?? ts;
-    const lud = row.lastUpdateDate ?? ts;
-    const exists = await this.query(`SELECT path FROM "${this.tableName}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`);
-    if (exists.length > 0) {
-      let setClauses = `summary = E'${sqlStr(row.contentText)}', mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
-      if (row.project !== void 0)
-        setClauses += `, project = '${sqlStr(row.project)}'`;
-      if (row.description !== void 0)
-        setClauses += `, description = '${sqlStr(row.description)}'`;
-      await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(row.path)}'`);
-    } else {
-      const id = randomUUID();
-      let cols = "id, path, filename, summary, mime_type, size_bytes, creation_date, last_update_date";
-      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
-      if (row.project !== void 0) {
-        cols += ", project";
-        vals += `, '${sqlStr(row.project)}'`;
-      }
-      if (row.description !== void 0) {
-        cols += ", description";
-        vals += `, '${sqlStr(row.description)}'`;
-      }
-      await this.query(`INSERT INTO "${this.tableName}" (${cols}) VALUES (${vals})`);
-    }
-  }
-  /** Update specific columns on a row by path. */
-  async updateColumns(path, columns) {
-    const setClauses = Object.entries(columns).map(([col, val]) => typeof val === "number" ? `${col} = ${val}` : `${col} = '${sqlStr(String(val))}'`).join(", ");
-    await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(path)}'`);
-  }
-  // ── Convenience ─────────────────────────────────────────────────────────────
-  /** Create a BM25 search index on a column. */
-  async createIndex(column) {
-    await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
-  }
-  buildLookupIndexName(table, suffix) {
-    return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
-  }
-  getLookupIndexMarkerPath(table, suffix) {
-    const markerKey = [
-      this.workspaceId,
-      this.orgId,
-      table,
-      suffix
-    ].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
-    return join3(getIndexMarkerDir(), `${markerKey}.json`);
-  }
-  hasFreshLookupIndexMarker(table, suffix) {
-    const markerPath = this.getLookupIndexMarkerPath(table, suffix);
-    if (!existsSync2(markerPath))
-      return false;
-    try {
-      const raw = JSON.parse(readFileSync2(markerPath, "utf-8"));
-      const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
-      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS)
-        return false;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  markLookupIndexReady(table, suffix) {
-    mkdirSync(getIndexMarkerDir(), { recursive: true });
-    writeFileSync(this.getLookupIndexMarkerPath(table, suffix), JSON.stringify({ updatedAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf-8");
-  }
-  async ensureLookupIndex(table, suffix, columnsSql) {
-    if (this.hasFreshLookupIndexMarker(table, suffix))
-      return;
-    const indexName = this.buildLookupIndexName(table, suffix);
-    try {
-      await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
-      this.markLookupIndexReady(table, suffix);
-    } catch (e) {
-      if (isDuplicateIndexError(e)) {
-        this.markLookupIndexReady(table, suffix);
-        return;
-      }
-      log2(`index "${indexName}" skipped: ${e.message}`);
-    }
-  }
-  /** List all tables in the workspace (with retry). */
-  async listTables(forceRefresh = false) {
-    if (!forceRefresh && this._tablesCache)
-      return [...this._tablesCache];
-    const { tables, cacheable } = await this._fetchTables();
-    if (cacheable)
-      this._tablesCache = [...tables];
-    return tables;
-  }
-  async _fetchTables() {
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
-          headers: {
-            Authorization: `Bearer ${this.token}`,
-            "X-Activeloop-Org-Id": this.orgId
-          }
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          return {
-            tables: (data.tables ?? []).map((t) => t.table_name),
-            cacheable: true
-          };
-        }
-        if (attempt < MAX_RETRIES && RETRYABLE_CODES.has(resp.status)) {
-          await sleep(BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200);
-          continue;
-        }
-        return { tables: [], cacheable: false };
-      } catch {
-        if (attempt < MAX_RETRIES) {
-          await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
-          continue;
-        }
-        return { tables: [], cacheable: false };
-      }
-    }
-    return { tables: [], cacheable: false };
-  }
-  /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
-  async ensureTable(name) {
-    const tbl = name ?? this.tableName;
-    const tables = await this.listTables();
-    if (!tables.includes(tbl)) {
-      log2(`table "${tbl}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
-      log2(`table "${tbl}" created`);
-      if (!tables.includes(tbl))
-        this._tablesCache = [...tables, tbl];
-    }
-  }
-  /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
-  async ensureSessionsTable(name) {
-    const tables = await this.listTables();
-    if (!tables.includes(name)) {
-      log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
-      log2(`table "${name}" created`);
-      if (!tables.includes(name))
-        this._tablesCache = [...tables, name];
-    }
-    await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
-  }
-};
-
-// dist/src/utils/session-path.js
-function buildSessionPath(config, sessionId) {
-  const workspace = config.workspaceId ?? "default";
-  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${workspace}_${sessionId}.jsonl`;
 }
 
 // dist/src/hooks/summary-state.js
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync2, writeSync, mkdirSync as mkdirSync2, renameSync, existsSync as existsSync3, unlinkSync, openSync, closeSync } from "node:fs";
+import { readFileSync as readFileSync2, writeFileSync, writeSync, mkdirSync, renameSync, existsSync as existsSync2, unlinkSync, openSync, closeSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
-import { join as join4 } from "node:path";
-var dlog = (msg) => log("summary-state", msg);
-var STATE_DIR = join4(homedir3(), ".claude", "hooks", "summary-state");
+import { join as join3 } from "node:path";
+var STATE_DIR = join3(homedir3(), ".claude", "hooks", "summary-state");
 var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
 function statePath(sessionId) {
-  return join4(STATE_DIR, `${sessionId}.json`);
+  return join3(STATE_DIR, `${sessionId}.json`);
 }
 function lockPath(sessionId) {
-  return join4(STATE_DIR, `${sessionId}.lock`);
+  return join3(STATE_DIR, `${sessionId}.lock`);
 }
 function readState(sessionId) {
   const p = statePath(sessionId);
-  if (!existsSync3(p))
+  if (!existsSync2(p))
     return null;
   try {
-    return JSON.parse(readFileSync3(p, "utf-8"));
+    return JSON.parse(readFileSync2(p, "utf-8"));
   } catch {
     return null;
   }
 }
 function writeState(sessionId, state) {
-  mkdirSync2(STATE_DIR, { recursive: true });
+  mkdirSync(STATE_DIR, { recursive: true });
   const p = statePath(sessionId);
   const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync2(tmp, JSON.stringify(state));
+  writeFileSync(tmp, JSON.stringify(state));
   renameSync(tmp, p);
 }
 function withRmwLock(sessionId, fn) {
-  mkdirSync2(STATE_DIR, { recursive: true });
+  mkdirSync(STATE_DIR, { recursive: true });
   const rmwLock = statePath(sessionId) + ".rmw";
   const deadline = Date.now() + 2e3;
   let fd = null;
@@ -443,11 +121,9 @@ function withRmwLock(sessionId, fn) {
       if (e.code !== "EEXIST")
         throw e;
       if (Date.now() > deadline) {
-        dlog(`rmw lock deadline exceeded for ${sessionId}, reclaiming stale lock`);
         try {
           unlinkSync(rmwLock);
-        } catch (unlinkErr) {
-          dlog(`stale rmw lock unlink failed for ${sessionId}: ${unlinkErr.message}`);
+        } catch {
         }
         continue;
       }
@@ -460,8 +136,7 @@ function withRmwLock(sessionId, fn) {
     closeSync(fd);
     try {
       unlinkSync(rmwLock);
-    } catch (unlinkErr) {
-      dlog(`rmw lock cleanup failed for ${sessionId}: ${unlinkErr.message}`);
+    } catch {
     }
   }
 }
@@ -494,20 +169,18 @@ function shouldTrigger(state, cfg, now = Date.now()) {
   return false;
 }
 function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
-  mkdirSync2(STATE_DIR, { recursive: true });
+  mkdirSync(STATE_DIR, { recursive: true });
   const p = lockPath(sessionId);
-  if (existsSync3(p)) {
+  if (existsSync2(p)) {
     try {
-      const ageMs = Date.now() - parseInt(readFileSync3(p, "utf-8"), 10);
+      const ageMs = Date.now() - parseInt(readFileSync2(p, "utf-8"), 10);
       if (Number.isFinite(ageMs) && ageMs < maxAgeMs)
         return false;
-    } catch (readErr) {
-      dlog(`lock file unreadable for ${sessionId}, treating as stale: ${readErr.message}`);
+    } catch {
     }
     try {
       unlinkSync(p);
-    } catch (unlinkErr) {
-      dlog(`could not unlink stale lock for ${sessionId}: ${unlinkErr.message}`);
+    } catch {
       return false;
     }
   }
@@ -525,45 +198,15 @@ function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
     throw e;
   }
 }
-function releaseLock(sessionId) {
-  try {
-    unlinkSync(lockPath(sessionId));
-  } catch (e) {
-    if (e?.code !== "ENOENT") {
-      dlog(`releaseLock unlink failed for ${sessionId}: ${e.message}`);
-    }
-  }
-}
 
 // dist/src/hooks/codex/spawn-wiki-worker.js
 import { spawn, execSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { dirname, join as join6 } from "node:path";
-import { writeFileSync as writeFileSync3, mkdirSync as mkdirSync4 } from "node:fs";
-import { homedir as homedir4, tmpdir as tmpdir2 } from "node:os";
-
-// dist/src/utils/wiki-log.js
-import { mkdirSync as mkdirSync3, appendFileSync as appendFileSync2 } from "node:fs";
-import { join as join5 } from "node:path";
-function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
-  const path = join5(hooksDir, filename);
-  return {
-    path,
-    log(msg) {
-      try {
-        mkdirSync3(hooksDir, { recursive: true });
-        appendFileSync2(path, `[${utcTimestamp()}] ${msg}
-`);
-      } catch {
-      }
-    }
-  };
-}
-
-// dist/src/hooks/codex/spawn-wiki-worker.js
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { dirname, join as join4 } from "node:path";
+import { writeFileSync as writeFileSync2, mkdirSync as mkdirSync2, appendFileSync as appendFileSync2 } from "node:fs";
+import { homedir as homedir4, tmpdir } from "node:os";
 var HOME = homedir4();
-var wikiLogger = makeWikiLogger(join6(HOME, ".codex", "hooks"));
-var WIKI_LOG = wikiLogger.path;
+var WIKI_LOG = join4(HOME, ".codex", "hooks", "deeplake-wiki.log");
 var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry.
 
 SESSION JSONL path: __JSONL__
@@ -613,7 +256,14 @@ Format: **entity** (type) \u2014 what was done with it, its current state>
 IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact.
 PRIVACY: Never include absolute filesystem paths in the summary.
 LENGTH LIMIT: Keep the total summary under 4000 characters.`;
-var wikiLog = wikiLogger.log;
+function wikiLog(msg) {
+  try {
+    mkdirSync2(join4(HOME, ".codex", "hooks"), { recursive: true });
+    appendFileSync2(WIKI_LOG, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] ${msg}
+`);
+  } catch {
+  }
+}
 function findCodexBin() {
   try {
     return execSync("which codex 2>/dev/null", { encoding: "utf-8" }).trim();
@@ -624,10 +274,10 @@ function findCodexBin() {
 function spawnCodexWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
   const projectName = cwd.split("/").pop() || "unknown";
-  const tmpDir = join6(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
-  mkdirSync4(tmpDir, { recursive: true });
-  const configFile = join6(tmpDir, "config.json");
-  writeFileSync3(configFile, JSON.stringify({
+  const tmpDir = join4(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  mkdirSync2(tmpDir, { recursive: true });
+  const configFile = join4(tmpDir, "config.json");
+  writeFileSync2(configFile, JSON.stringify({
     apiUrl: config.apiUrl,
     token: config.token,
     orgId: config.orgId,
@@ -640,11 +290,11 @@ function spawnCodexWikiWorker(opts) {
     tmpDir,
     codexBin: findCodexBin(),
     wikiLog: WIKI_LOG,
-    hooksDir: join6(HOME, ".codex", "hooks"),
+    hooksDir: join4(HOME, ".codex", "hooks"),
     promptTemplate: WIKI_PROMPT_TEMPLATE
   }));
   wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
-  const workerPath = join6(bundleDir, "wiki-worker.js");
+  const workerPath = join4(bundleDir, "wiki-worker.js");
   spawn("nohup", ["node", workerPath, configFile], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"]
@@ -652,24 +302,72 @@ function spawnCodexWikiWorker(opts) {
   wikiLog(`${reason}: spawned summary worker for ${sessionId}`);
 }
 function bundleDirFromImportMeta(importMetaUrl) {
-  return dirname(fileURLToPath(importMetaUrl));
+  return dirname(fileURLToPath2(importMetaUrl));
+}
+
+// dist/src/hooks/session-queue.js
+import { appendFileSync as appendFileSync3, closeSync as closeSync2, existsSync as existsSync3, mkdirSync as mkdirSync3, openSync as openSync2, readFileSync as readFileSync3, readdirSync, renameSync as renameSync2, rmSync, statSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname as dirname2, join as join5 } from "node:path";
+import { homedir as homedir5 } from "node:os";
+var DEFAULT_QUEUE_DIR = join5(homedir5(), ".deeplake", "queue");
+var DEFAULT_AUTH_FAILURE_TTL_MS = 5 * 6e4;
+function buildSessionPath(config, sessionId) {
+  return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
+}
+function buildQueuedSessionRow(args) {
+  return {
+    id: crypto.randomUUID(),
+    path: args.sessionPath,
+    filename: args.sessionPath.split("/").pop() ?? "",
+    message: args.line,
+    author: args.userName,
+    sizeBytes: Buffer.byteLength(args.line, "utf-8"),
+    project: args.projectName,
+    description: args.description,
+    agent: args.agent,
+    creationDate: args.timestamp,
+    lastUpdateDate: args.timestamp
+  };
+}
+function appendQueuedSessionRow(row, queueDir = DEFAULT_QUEUE_DIR) {
+  mkdirSync3(queueDir, { recursive: true });
+  const sessionId = extractSessionId(row.path);
+  const queuePath = getQueuePath(queueDir, sessionId);
+  appendFileSync3(queuePath, `${JSON.stringify(row)}
+`);
+  return queuePath;
+}
+function getQueuePath(queueDir, sessionId) {
+  return join5(queueDir, `${sessionId}.jsonl`);
+}
+function extractSessionId(sessionPath) {
+  const filename = sessionPath.split("/").pop() ?? "";
+  return filename.replace(/\.jsonl$/, "").split("_").pop() ?? filename;
+}
+
+// dist/src/hooks/query-cache.js
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync4, rmSync as rmSync2, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join6 } from "node:path";
+import { homedir as homedir6 } from "node:os";
+var log2 = (msg) => log("query-cache", msg);
+var DEFAULT_CACHE_ROOT = join6(homedir6(), ".deeplake", "query-cache");
+function getSessionQueryCacheDir(sessionId, deps = {}) {
+  const { cacheRoot = DEFAULT_CACHE_ROOT } = deps;
+  return join6(cacheRoot, sessionId);
+}
+function clearSessionQueryCache(sessionId, deps = {}) {
+  const { logFn = log2 } = deps;
+  try {
+    rmSync2(getSessionQueryCacheDir(sessionId, deps), { recursive: true, force: true });
+  } catch (e) {
+    logFn(`clear failed for session=${sessionId}: ${e.message}`);
+  }
 }
 
 // dist/src/hooks/codex/capture.js
 var log3 = (msg) => log("codex-capture", msg);
-var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
-async function main() {
-  if (!CAPTURE)
-    return;
-  const input = await readStdin();
-  const config = loadConfig();
-  if (!config) {
-    log3("no config");
-    return;
-  }
-  const sessionsTable = config.sessionsTableName;
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
-  const ts = (/* @__PURE__ */ new Date()).toISOString();
+var CAPTURE = (process.env.HIVEMIND_CAPTURE ?? process.env.DEEPLAKE_CAPTURE) !== "false";
+function buildCodexCaptureEntry(input, timestamp) {
   const meta = {
     session_id: input.session_id,
     transcript_path: input.transcript_path,
@@ -677,20 +375,18 @@ async function main() {
     hook_event_name: input.hook_event_name,
     model: input.model,
     turn_id: input.turn_id,
-    timestamp: ts
+    timestamp
   };
-  let entry;
   if (input.hook_event_name === "UserPromptSubmit" && input.prompt !== void 0) {
-    log3(`user session=${input.session_id}`);
-    entry = {
+    return {
       id: crypto.randomUUID(),
       ...meta,
       type: "user_message",
       content: input.prompt
     };
-  } else if (input.hook_event_name === "PostToolUse" && input.tool_name !== void 0) {
-    log3(`tool=${input.tool_name} session=${input.session_id}`);
-    entry = {
+  }
+  if (input.hook_event_name === "PostToolUse" && input.tool_name !== void 0) {
+    return {
       id: crypto.randomUUID(),
       ...meta,
       type: "tool_call",
@@ -699,66 +395,83 @@ async function main() {
       tool_input: JSON.stringify(input.tool_input),
       tool_response: JSON.stringify(input.tool_response)
     };
-  } else {
-    log3(`unknown event: ${input.hook_event_name}, skipping`);
+  }
+  return null;
+}
+function maybeTriggerPeriodicSummary(sessionId, cwd, config, deps = {}) {
+  const { bundleDir = bundleDirFromImportMeta(import.meta.url), wikiWorker = process.env.HIVEMIND_WIKI_WORKER === "1", logFn = log3, bumpTotalCountFn = bumpTotalCount, loadTriggerConfigFn = loadTriggerConfig, shouldTriggerFn = shouldTrigger, tryAcquireLockFn = tryAcquireLock, wikiLogFn = wikiLog, spawnCodexWikiWorkerFn = spawnCodexWikiWorker } = deps;
+  if (wikiWorker)
     return;
+  try {
+    const state = bumpTotalCountFn(sessionId);
+    const cfg = loadTriggerConfigFn();
+    if (!shouldTriggerFn(state, cfg))
+      return;
+    if (!tryAcquireLockFn(sessionId)) {
+      logFn(`periodic trigger suppressed (lock held) session=${sessionId}`);
+      return;
+    }
+    wikiLogFn(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
+    spawnCodexWikiWorkerFn({
+      config,
+      sessionId,
+      cwd,
+      bundleDir,
+      reason: "Periodic"
+    });
+  } catch (e) {
+    logFn(`periodic trigger error: ${e.message}`);
+  }
+}
+async function runCodexCaptureHook(input, deps = {}) {
+  const { captureEnabled = CAPTURE, config = loadConfig(), now = () => (/* @__PURE__ */ new Date()).toISOString(), appendQueuedSessionRowFn = appendQueuedSessionRow, buildQueuedSessionRowFn = buildQueuedSessionRow, clearSessionQueryCacheFn = clearSessionQueryCache, maybeTriggerPeriodicSummaryFn = maybeTriggerPeriodicSummary, logFn = log3 } = deps;
+  if (!captureEnabled)
+    return { status: "disabled" };
+  if (!config) {
+    logFn("no config");
+    return { status: "no_config" };
+  }
+  const ts = now();
+  const entry = buildCodexCaptureEntry(input, ts);
+  if (!entry) {
+    logFn(`unknown event: ${input.hook_event_name}, skipping`);
+    return { status: "ignored" };
+  }
+  if (input.hook_event_name === "UserPromptSubmit")
+    logFn(`user session=${input.session_id}`);
+  else
+    logFn(`tool=${input.tool_name} session=${input.session_id}`);
+  if (input.hook_event_name === "UserPromptSubmit") {
+    clearSessionQueryCacheFn(input.session_id);
   }
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);
-  log3(`writing to ${sessionPath}`);
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
-  const filename = sessionPath.split("/").pop() ?? "";
-  const jsonForSql = sqlStr(line);
-  const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'codex', '${ts}', '${ts}')`;
-  try {
-    await api.query(insertSql);
-  } catch (e) {
-    if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
-      log3("table missing, creating and retrying");
-      await api.ensureSessionsTable(sessionsTable);
-      await api.query(insertSql);
-    } else {
-      throw e;
-    }
-  }
-  log3("capture ok");
-  maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
+  appendQueuedSessionRowFn(buildQueuedSessionRowFn({
+    sessionPath,
+    line,
+    userName: config.userName,
+    projectName,
+    description: input.hook_event_name ?? "",
+    agent: "codex",
+    timestamp: ts
+  }));
+  logFn(`queued ${input.hook_event_name} for ${sessionPath}`);
+  maybeTriggerPeriodicSummaryFn(input.session_id, input.cwd ?? "", config);
+  return { status: "queued", entry };
 }
-function maybeTriggerPeriodicSummary(sessionId, cwd, config) {
-  if (process.env.HIVEMIND_WIKI_WORKER === "1")
-    return;
-  try {
-    const state = bumpTotalCount(sessionId);
-    const cfg = loadTriggerConfig();
-    if (!shouldTrigger(state, cfg))
-      return;
-    if (!tryAcquireLock(sessionId)) {
-      log3(`periodic trigger suppressed (lock held) session=${sessionId}`);
-      return;
-    }
-    wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
-    try {
-      spawnCodexWikiWorker({
-        config,
-        sessionId,
-        cwd,
-        bundleDir: bundleDirFromImportMeta(import.meta.url),
-        reason: "Periodic"
-      });
-    } catch (e) {
-      log3(`periodic spawn failed: ${e.message}`);
-      try {
-        releaseLock(sessionId);
-      } catch (releaseErr) {
-        log3(`releaseLock after periodic spawn failure also failed: ${releaseErr.message}`);
-      }
-      throw e;
-    }
-  } catch (e) {
-    log3(`periodic trigger error: ${e.message}`);
-  }
+async function main() {
+  const input = await readStdin();
+  await runCodexCaptureHook(input);
 }
-main().catch((e) => {
-  log3(`fatal: ${e.message}`);
-  process.exit(0);
-});
+if (isDirectRun(import.meta.url)) {
+  main().catch((e) => {
+    log3(`fatal: ${e.message}`);
+    process.exit(0);
+  });
+}
+export {
+  buildCodexCaptureEntry,
+  maybeTriggerPeriodicSummary,
+  runCodexCaptureHook
+};
