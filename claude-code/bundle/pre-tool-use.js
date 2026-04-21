@@ -814,6 +814,103 @@ var HarrierEmbedder = class {
   }
 };
 
+// dist/src/utils/hybrid-fusion.js
+function coerceFinite(value) {
+  return Number.isFinite(value) ? value : 0;
+}
+function normalizeWeights(vectorWeight, textWeight) {
+  const safeVector = Math.max(0, coerceFinite(vectorWeight));
+  const safeText = Math.max(0, coerceFinite(textWeight));
+  const total = safeVector + safeText;
+  if (total <= 0)
+    return { vectorWeight: 0.5, textWeight: 0.5 };
+  return {
+    vectorWeight: safeVector / total,
+    textWeight: safeText / total
+  };
+}
+function softmaxNormalizeScores(scores) {
+  if (scores.length === 0)
+    return [];
+  const safeScores = scores.map(coerceFinite);
+  const maxScore = Math.max(...safeScores);
+  const exps = safeScores.map((score) => Math.exp(score - maxScore));
+  const sum = exps.reduce((acc, value) => acc + value, 0) || 1;
+  return exps.map((value) => value / sum);
+}
+function pickPreferredRow(existing, candidate) {
+  if (!existing)
+    return candidate;
+  if (candidate.score > existing.score)
+    return candidate;
+  if (candidate.score < existing.score)
+    return existing;
+  if (candidate.sourceOrder < existing.sourceOrder)
+    return candidate;
+  if (candidate.sourceOrder > existing.sourceOrder)
+    return existing;
+  if (candidate.creationDate < existing.creationDate)
+    return candidate;
+  if (candidate.creationDate > existing.creationDate)
+    return existing;
+  return candidate.path < existing.path ? candidate : existing;
+}
+function dedupeBestRows(rows) {
+  const bestByPath = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    if (!row.path)
+      continue;
+    bestByPath.set(row.path, pickPreferredRow(bestByPath.get(row.path), row));
+  }
+  return [...bestByPath.values()];
+}
+function fuseRetrievalRows(args) {
+  const { textRows, vectorRows, limit } = args;
+  const { textWeight, vectorWeight } = normalizeWeights(args.vectorWeight, args.textWeight);
+  const dedupedTextRows = dedupeBestRows(textRows);
+  const dedupedVectorRows = dedupeBestRows(vectorRows);
+  const textNorm = softmaxNormalizeScores(dedupedTextRows.map((row) => row.score));
+  const vectorNorm = softmaxNormalizeScores(dedupedVectorRows.map((row) => row.score));
+  const fusedByPath = /* @__PURE__ */ new Map();
+  for (let i = 0; i < dedupedTextRows.length; i++) {
+    const row = dedupedTextRows[i];
+    fusedByPath.set(row.path, {
+      path: row.path,
+      content: row.content,
+      sourceOrder: row.sourceOrder,
+      creationDate: row.creationDate,
+      textScore: textNorm[i] ?? 0,
+      vectorScore: 0,
+      fusedScore: textWeight * (textNorm[i] ?? 0)
+    });
+  }
+  for (let i = 0; i < dedupedVectorRows.length; i++) {
+    const row = dedupedVectorRows[i];
+    const existing = fusedByPath.get(row.path);
+    const vectorScore = vectorNorm[i] ?? 0;
+    if (existing) {
+      if (existing.content.length === 0 && row.content.length > 0)
+        existing.content = row.content;
+      existing.sourceOrder = Math.min(existing.sourceOrder, row.sourceOrder);
+      if (!existing.creationDate || row.creationDate < existing.creationDate)
+        existing.creationDate = row.creationDate;
+      existing.vectorScore = vectorScore;
+      existing.fusedScore = textWeight * existing.textScore + vectorWeight * existing.vectorScore;
+      continue;
+    }
+    fusedByPath.set(row.path, {
+      path: row.path,
+      content: row.content,
+      sourceOrder: row.sourceOrder,
+      creationDate: row.creationDate,
+      textScore: 0,
+      vectorScore,
+      fusedScore: vectorWeight * vectorScore
+    });
+  }
+  return [...fusedByPath.values()].sort((a, b) => b.fusedScore - a.fusedScore || b.vectorScore - a.vectorScore || b.textScore - a.textScore || a.sourceOrder - b.sourceOrder || a.creationDate.localeCompare(b.creationDate) || a.path.localeCompare(b.path)).slice(0, Math.max(0, limit));
+}
+
 // dist/src/utils/retrieval-mode.js
 function isSessionsOnlyMode() {
   const raw = process.env["HIVEMIND_SESSIONS_ONLY"] ?? process.env["DEEPLAKE_SESSIONS_ONLY"] ?? "";
@@ -1111,16 +1208,15 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
   const regexSessFilter = regexPattern ? buildRegexFilter("message::text", regexPattern, ignoreCase) : "";
   const primarySessFilter = `${likeSessFilter}${regexSessFilter}`;
   const fallbackSessFilter = likeSessFilter;
-  const hasSqlRegexFilter = Boolean(regexMemFilter || regexSessFilter);
   const sessionsOnly = isSessionsOnlyMode();
   const retrievalMode = getGrepRetrievalMode();
   const semanticQueryText = (queryText ?? bm25QueryText ?? "").trim();
+  const lexicalQueryText = (bm25QueryText ?? semanticQueryText).trim();
   const useEmbeddingRetrieval = retrievalMode === "embedding" && semanticQueryText.length > 0;
   const useHybridRetrieval = retrievalMode === "hybrid" && semanticQueryText.length > 0;
   const useSummaryBm25 = retrievalMode === "classic" && !sessionsOnly && !isSummaryBm25Disabled() && Boolean(bm25QueryText);
-  const shouldUseFallbackCapablePrimary = useSummaryBm25 || hasSqlRegexFilter;
   const ensureSummaryBm25Index = api.ensureSummaryBm25Index;
-  if (useSummaryBm25 && typeof ensureSummaryBm25Index === "function") {
+  if ((useSummaryBm25 || useHybridRetrieval && !sessionsOnly && lexicalQueryText.length > 0) && typeof ensureSummaryBm25Index === "function") {
     await ensureSummaryBm25Index.call(api, memoryTable).catch(() => {
     });
   }
@@ -1137,21 +1233,35 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
     const queryVectorSql = sqlFloat4Array(queryEmbedding);
     const vectorWeight = envNumber(DEFAULT_HYBRID_VECTOR_WEIGHT, "HIVEMIND_HYBRID_VECTOR_WEIGHT", "DEEPLAKE_HYBRID_VECTOR_WEIGHT");
     const textWeight = envNumber(DEFAULT_HYBRID_TEXT_WEIGHT, "HIVEMIND_HYBRID_TEXT_WEIGHT", "DEEPLAKE_HYBRID_TEXT_WEIGHT");
-    const buildSemanticCombinedQuery = () => {
-      const memQuery = useHybridRetrieval ? buildHybridSimilarityQuery(memoryTable, pathFilter, "summary::text", 0, "''", queryVectorSql, semanticQueryText, vectorWeight, textWeight, limit) : buildEmbeddingSimilarityQuery(memoryTable, pathFilter, "summary::text", 0, "''", queryVectorSql, limit);
-      const sessQuery = useHybridRetrieval ? buildHybridSimilarityQuery(sessionsTable, pathFilter, "message::text", 1, "COALESCE(creation_date::text, '')", queryVectorSql, semanticQueryText, vectorWeight, textWeight, limit) : buildEmbeddingSimilarityQuery(sessionsTable, pathFilter, "message::text", 1, "COALESCE(creation_date::text, '')", queryVectorSql, limit);
-      return sessionsOnly ? `SELECT path, content, source_order, creation_date FROM (${sessQuery}) AS combined ORDER BY path, source_order, creation_date` : `SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`;
-    };
-    const rows2 = await api.query(buildSemanticCombinedQuery());
-    return rows2.map((row) => ({
-      path: String(row["path"]),
-      content: String(row["content"] ?? "")
+    const vectorQuery = buildScoredCombinedQuery(sessionsOnly, buildEmbeddingSimilarityQuery(memoryTable, pathFilter, "summary::text", 0, "''", queryVectorSql, limit), buildEmbeddingSimilarityQuery(sessionsTable, pathFilter, "message::text", 1, "COALESCE(creation_date::text, '')", queryVectorSql, limit), limit);
+    if (!useHybridRetrieval) {
+      const rows2 = await api.query(vectorQuery);
+      return rows2.map((row) => ({
+        path: String(row["path"]),
+        content: String(row["content"] ?? "")
+      }));
+    }
+    const lexicalQuery = buildScoredCombinedQuery(sessionsOnly, buildBm25SimilarityQuery(memoryTable, pathFilter, "summary::text", 0, "''", lexicalQueryText, limit), buildBm25SimilarityQuery(sessionsTable, pathFilter, "message::text", 1, "COALESCE(creation_date::text, '')", lexicalQueryText, limit), limit);
+    const lexicalFallbackQuery = buildScoredCombinedQuery(sessionsOnly, buildHeuristicLexicalQuery(memoryTable, pathFilter, "summary::text", 0, "''", lexicalQueryText, limit), buildHeuristicLexicalQuery(sessionsTable, pathFilter, "message::text", 1, "COALESCE(creation_date::text, '')", lexicalQueryText, limit), limit);
+    const [vectorRows, textRows] = await Promise.all([
+      api.query(vectorQuery),
+      api.query(lexicalQuery).catch(() => api.query(lexicalFallbackQuery))
+    ]);
+    return fuseRetrievalRows({
+      textRows: mapScoredRows(textRows),
+      vectorRows: mapScoredRows(vectorRows),
+      textWeight,
+      vectorWeight,
+      limit
+    }).map((row) => ({
+      path: row.path,
+      content: row.content
     }));
   }
   const primaryMemFilter = useSummaryBm25 ? "" : `${likeMemFilter}${regexMemFilter}`;
   const primaryQuery = buildCombinedQuery(primaryMemFilter, primarySessFilter, useSummaryBm25);
   const fallbackQuery = buildCombinedQuery(likeMemFilter, fallbackSessFilter, false);
-  const rows = shouldUseFallbackCapablePrimary ? await api.query(primaryQuery).catch(() => api.query(fallbackQuery)) : await api.query(primaryQuery);
+  const rows = useSummaryBm25 ? await api.query(primaryQuery).catch(() => api.query(fallbackQuery)) : await api.query(primaryQuery);
   return rows.map((row) => ({
     path: String(row["path"]),
     content: String(row["content"] ?? "")
@@ -1278,15 +1388,36 @@ function buildSummaryBm25Query(memoryTable, pathFilter, queryText, limit) {
   return `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter} ORDER BY (summary <#> '${sqlStr(queryText)}') DESC LIMIT ${limit}`;
 }
 function buildEmbeddingSimilarityQuery(tableName, pathFilter, contentExpr, sourceOrder, creationDateExpr, queryVectorSql, limit) {
-  return `SELECT path, ${contentExpr} AS content, ${sourceOrder} AS source_order, ${creationDateExpr} AS creation_date FROM "${tableName}" WHERE 1=1${pathFilter} AND embedding IS NOT NULL ORDER BY (embedding <#> ${queryVectorSql}) DESC LIMIT ${limit}`;
+  return `SELECT path, ${contentExpr} AS content, ${sourceOrder} AS source_order, ${creationDateExpr} AS creation_date, (embedding <#> ${queryVectorSql}) AS score FROM "${tableName}" WHERE 1=1${pathFilter} AND embedding IS NOT NULL ORDER BY score DESC LIMIT ${limit}`;
 }
-function buildHybridSimilarityQuery(tableName, pathFilter, contentExpr, sourceOrder, creationDateExpr, queryVectorSql, queryText, vectorWeight, textWeight, limit) {
-  return `SELECT path, ${contentExpr} AS content, ${sourceOrder} AS source_order, ${creationDateExpr} AS creation_date FROM "${tableName}" WHERE 1=1${pathFilter} AND embedding IS NOT NULL ORDER BY (((embedding, ${contentExpr})::deeplake_hybrid_record) <#> deeplake_hybrid_record(${queryVectorSql}, '${sqlStr(queryText)}', ${vectorWeight}, ${textWeight})) DESC LIMIT ${limit}`;
+function buildBm25SimilarityQuery(tableName, pathFilter, contentExpr, sourceOrder, creationDateExpr, queryText, limit) {
+  return `SELECT path, ${contentExpr} AS content, ${sourceOrder} AS source_order, ${creationDateExpr} AS creation_date, (${contentExpr} <#> '${sqlStr(queryText)}') AS score FROM "${tableName}" WHERE 1=1${pathFilter} ORDER BY score DESC LIMIT ${limit}`;
 }
-function toSqlRegexPattern(pattern, ignoreCase) {
+function buildHeuristicLexicalQuery(tableName, pathFilter, contentExpr, sourceOrder, creationDateExpr, queryText, limit) {
+  const terms = [...new Set(queryText.split(/\s+/).map((term) => term.trim()).filter((term) => term.length >= 2))].slice(0, 8);
+  const clauses = terms.map((term) => `${contentExpr} ILIKE '%${sqlLike(term)}%'`);
+  const scoreTerms = [
+    ...terms.map((term) => `CASE WHEN ${contentExpr} ILIKE '%${sqlLike(term)}%' THEN 1 ELSE 0 END`),
+    `CASE WHEN ${contentExpr} ILIKE '%${sqlLike(queryText)}%' THEN ${Math.max(1, Math.min(terms.length, 4))} ELSE 0 END`
+  ];
+  const scoreExpr = scoreTerms.join(" + ");
+  const where = clauses.length > 0 ? ` AND (${clauses.join(" OR ")})` : "";
+  return `SELECT path, ${contentExpr} AS content, ${sourceOrder} AS source_order, ${creationDateExpr} AS creation_date, (${scoreExpr})::float AS score FROM "${tableName}" WHERE 1=1${pathFilter}${where} ORDER BY score DESC LIMIT ${limit}`;
+}
+function buildScoredCombinedQuery(sessionsOnly, memQuery, sessQuery, limit) {
+  return sessionsOnly ? `SELECT path, content, source_order, creation_date, score FROM (${sessQuery}) AS combined ORDER BY score DESC, source_order, creation_date, path LIMIT ${limit}` : `SELECT path, content, source_order, creation_date, score FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY score DESC, source_order, creation_date, path LIMIT ${limit}`;
+}
+function mapScoredRows(rows) {
+  return rows.map((row) => ({
+    path: String(row["path"] ?? ""),
+    content: String(row["content"] ?? ""),
+    sourceOrder: Number(row["source_order"] ?? 0),
+    creationDate: String(row["creation_date"] ?? ""),
+    score: Number.isFinite(Number(row["score"])) ? Number(row["score"]) : 0
+  }));
+}
+function toSqlRegexPattern(pattern, _ignoreCase) {
   if (!pattern)
-    return null;
-  if (ignoreCase)
     return null;
   try {
     new RegExp(pattern);
@@ -1294,9 +1425,6 @@ function toSqlRegexPattern(pattern, ignoreCase) {
   } catch {
     return pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
-}
-function isSqlRegexPushdownSafe(pattern) {
-  return !/[\\[\]{}^$]/.test(pattern) && !/\(\?/.test(pattern);
 }
 function unwrapWholeRegexGroup(pattern) {
   if (!pattern.startsWith("(") || !pattern.endsWith(")"))
@@ -1400,12 +1528,10 @@ function buildContentPredicate(column, likeOp, patterns) {
 function buildRegexPredicate(column, pattern, ignoreCase) {
   if (!pattern)
     return "";
-  if (!isSqlRegexPushdownSafe(pattern))
-    return "";
   const sqlPattern = toSqlRegexPattern(pattern, ignoreCase);
   if (!sqlPattern)
     return "";
-  return `${column} ~ '${sqlStr(sqlPattern)}'`;
+  return `${column} ${ignoreCase ? "~*" : "~"} '${sqlStr(sqlPattern)}'`;
 }
 function compileGrepRegex(params) {
   const normalizedPattern = params.fixedString ? params.pattern : normalizeGrepRegexPattern(params.pattern);
@@ -2098,6 +2224,13 @@ function sqlFloat4Array2(values) {
     return Math.fround(value).toString();
   }).join(", ")}]::float4[]`;
 }
+function quoteShellToken(token) {
+  if (token === "")
+    return "''";
+  if (!/[\s"'\\|&;<>()[\]{}$*?]/.test(token))
+    return token;
+  return `'${token.replace(/'/g, `'"'"'`)}'`;
+}
 function isQuoted(ch) {
   return ch === "'" || ch === '"';
 }
@@ -2304,7 +2437,7 @@ function parseFindSpec(tokens) {
         return null;
       return {
         patterns,
-        execGrepCmd: execTokens.slice(0, -1).join(" ")
+        execGrepCmd: execTokens.slice(0, -1).map(quoteShellToken).join(" ")
       };
     }
     return null;
@@ -2681,24 +2814,50 @@ async function fetchSummaryCandidates(api, memoryTable, terms) {
     return [];
   const retrievalMode = getGrepRetrievalMode();
   const phrase = filteredTerms.join(" ");
-  const clauses = filteredTerms.map((term) => `summary ILIKE '%${sqlLike(term)}%'`);
-  let sql;
+  let rows = [];
   if (retrievalMode === "embedding" || retrievalMode === "hybrid") {
     const embedder = getSummaryRetrievalEmbedder();
     const [queryEmbedding] = await embedder.embedQueries([phrase]);
     if (!queryEmbedding)
       return [];
     const queryVectorSql = sqlFloat4Array2(queryEmbedding);
-    sql = retrievalMode === "hybrid" ? `SELECT path, summary, ((embedding, summary)::deeplake_hybrid_record <#> deeplake_hybrid_record(${queryVectorSql}, '${sqlStr(phrase)}', ${envNumber2(DEFAULT_HYBRID_VECTOR_WEIGHT2, "HIVEMIND_HYBRID_VECTOR_WEIGHT", "DEEPLAKE_HYBRID_VECTOR_WEIGHT")}, ${envNumber2(DEFAULT_HYBRID_TEXT_WEIGHT2, "HIVEMIND_HYBRID_TEXT_WEIGHT", "DEEPLAKE_HYBRID_TEXT_WEIGHT")})) AS score FROM "${memoryTable}" WHERE embedding IS NOT NULL ORDER BY score DESC LIMIT 8` : `SELECT path, summary, (embedding <#> ${queryVectorSql}) AS score FROM "${memoryTable}" WHERE embedding IS NOT NULL ORDER BY score DESC LIMIT 8`;
+    const vectorSql = `SELECT path, summary, (embedding <#> ${queryVectorSql}) AS score FROM "${memoryTable}" WHERE embedding IS NOT NULL ORDER BY score DESC LIMIT 8`;
+    if (retrievalMode === "embedding") {
+      rows = (await api.query(vectorSql)).map((row) => ({
+        path: typeof row["path"] === "string" ? row["path"] : "",
+        summary: typeof row["summary"] === "string" ? row["summary"] : ""
+      }));
+    } else {
+      const textSql = `SELECT path, summary, summary <#> '${sqlStr(phrase)}' AS score FROM "${memoryTable}" ORDER BY score DESC LIMIT 8`;
+      const textFallbackSql = buildSummaryHeuristicQuery(memoryTable, filteredTerms, phrase);
+      const [vectorRows, textRows] = await Promise.all([
+        api.query(vectorSql),
+        api.query(textSql).catch(() => api.query(textFallbackSql))
+      ]);
+      rows = fuseRetrievalRows({
+        textRows: mapSummaryRows(textRows),
+        vectorRows: mapSummaryRows(vectorRows),
+        textWeight: envNumber2(DEFAULT_HYBRID_TEXT_WEIGHT2, "HIVEMIND_HYBRID_TEXT_WEIGHT", "DEEPLAKE_HYBRID_TEXT_WEIGHT"),
+        vectorWeight: envNumber2(DEFAULT_HYBRID_VECTOR_WEIGHT2, "HIVEMIND_HYBRID_VECTOR_WEIGHT", "DEEPLAKE_HYBRID_VECTOR_WEIGHT"),
+        limit: 8
+      }).map((row) => ({
+        path: row.path,
+        summary: row.content
+      }));
+    }
   } else {
     const phraseSql = sqlStr(phrase);
-    sql = `SELECT path, summary, summary <#> '${phraseSql}' AS score FROM "${memoryTable}" WHERE ${clauses.join(" OR ")} ORDER BY score ASC LIMIT 8`;
+    const clauses = filteredTerms.map((term) => `summary ILIKE '%${sqlLike(term)}%'`);
+    const sql = `SELECT path, summary, summary <#> '${phraseSql}' AS score FROM "${memoryTable}" WHERE ${clauses.join(" OR ")} ORDER BY score DESC LIMIT 8`;
+    rows = (await api.query(sql).catch(() => api.query(buildSummaryHeuristicQuery(memoryTable, filteredTerms, phrase)))).map((row) => ({
+      path: typeof row["path"] === "string" ? row["path"] : "",
+      summary: typeof row["summary"] === "string" ? row["summary"] : ""
+    }));
   }
-  const rows = await api.query(sql);
   const candidateMap = /* @__PURE__ */ new Map();
   for (const row of rows) {
-    const path = typeof row["path"] === "string" ? row["path"] : "";
-    const summary = typeof row["summary"] === "string" ? row["summary"] : "";
+    const path = row.path;
+    const summary = row.summary;
     const sourcePath = extractSummarySourcePath(summary) || (extractSessionIdFromPath(path) ? `/sessions/${extractSessionIdFromPath(path)}.json` : "");
     const sessionId = extractSessionIdFromPath(path) || extractSessionIdFromPath(sourcePath);
     addHybridCandidate(candidateMap, {
@@ -2709,6 +2868,23 @@ async function fetchSummaryCandidates(api, memoryTable, terms) {
     });
   }
   return [...candidateMap.values()];
+}
+function buildSummaryHeuristicQuery(memoryTable, filteredTerms, phrase) {
+  const clauses = filteredTerms.map((term) => `summary ILIKE '%${sqlLike(term)}%'`);
+  const scoreTerms = [
+    ...filteredTerms.map((term) => `CASE WHEN summary ILIKE '%${sqlLike(term)}%' THEN 1 ELSE 0 END`),
+    `CASE WHEN summary ILIKE '%${sqlLike(phrase)}%' THEN ${Math.max(1, Math.min(filteredTerms.length, 4))} ELSE 0 END`
+  ];
+  return `SELECT path, summary, (${scoreTerms.join(" + ")})::float AS score FROM "${memoryTable}" WHERE ${clauses.join(" OR ")} ORDER BY score DESC LIMIT 8`;
+}
+function mapSummaryRows(rows) {
+  return rows.map((row) => ({
+    path: typeof row["path"] === "string" ? row["path"] : "",
+    content: typeof row["summary"] === "string" ? row["summary"] : "",
+    sourceOrder: 0,
+    creationDate: "",
+    score: Number.isFinite(Number(row["score"])) ? Number(row["score"]) : 0
+  }));
 }
 function prependCtes(sql, ctes) {
   if (ctes.length === 0)
@@ -3379,7 +3555,7 @@ function rewritePaths(cmd) {
 // dist/src/hooks/pre-tool-use.js
 function touchesVirtualMemoryPath(value) {
   const rewritten = rewritePaths(value).trim();
-  return rewritten === "/index.md" || rewritten === "/summaries" || rewritten.startsWith("/summaries/") || rewritten === "/sessions" || rewritten.startsWith("/sessions/");
+  return rewritten === "/index.md" || rewritten === "/summaries" || rewritten.startsWith("/summaries/") || rewritten === "/sessions" || rewritten.startsWith("/sessions/") || /(^|[\s"'`])\/(?:index\.md|summaries(?:\/|\b)|sessions(?:\/|\b))/.test(rewritten);
 }
 function touchesAnyMemoryPath(value) {
   return touchesMemory(value) || touchesVirtualMemoryPath(value);

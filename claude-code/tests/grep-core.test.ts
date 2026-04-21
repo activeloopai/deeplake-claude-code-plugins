@@ -683,7 +683,7 @@ describe("searchDeeplakeTables", () => {
     }
   });
 
-  it("uses deeplake hybrid record scoring when retrieval mode is hybrid", async () => {
+  it("runs separate lexical and vector queries then fuses them when retrieval mode is hybrid", async () => {
     const prevMode = process.env.HIVEMIND_GREP_RETRIEVAL_MODE;
     const prevVector = process.env.HIVEMIND_HYBRID_VECTOR_WEIGHT;
     const prevText = process.env.HIVEMIND_HYBRID_TEXT_WEIGHT;
@@ -692,8 +692,18 @@ describe("searchDeeplakeTables", () => {
     process.env.HIVEMIND_HYBRID_TEXT_WEIGHT = "0.4";
     const embedSpy = vi.spyOn(HarrierEmbedder.prototype, "embedQueries").mockResolvedValue([[0.1, 0.2, 0.3]]);
     try {
-      const api = mockApi([]);
-      await searchDeeplakeTables(api, "memory", "sessions", {
+      const api = {
+        query: vi.fn()
+          .mockResolvedValueOnce([
+            { path: "/summaries/shared.md", content: "shared", source_order: 0, creation_date: "", score: 5 },
+            { path: "/sessions/vector.json", content: "vector", source_order: 1, creation_date: "2024-01-01", score: 1 },
+          ])
+          .mockResolvedValueOnce([
+            { path: "/summaries/shared.md", content: "shared", source_order: 0, creation_date: "", score: 4 },
+            { path: "/sessions/text.json", content: "text", source_order: 1, creation_date: "2024-01-02", score: 3 },
+          ]),
+      } as any;
+      const rows = await searchDeeplakeTables(api, "memory", "sessions", {
         pathFilter: "",
         contentScanOnly: false,
         likeOp: "ILIKE",
@@ -702,11 +712,19 @@ describe("searchDeeplakeTables", () => {
         bm25QueryText: "book novel literature",
         limit: 50,
       });
-      const sql = api.query.mock.calls[0][0] as string;
       expect(embedSpy).toHaveBeenCalledWith(["book novel literature"]);
-      expect(sql).toContain("deeplake_hybrid_record");
-      expect(sql).toContain("0.6, 0.4");
-      expect(sql).toContain("ARRAY[0.10000000149011612");
+      expect(api.query).toHaveBeenCalledTimes(2);
+      const [vectorSql, textSql] = api.query.mock.calls.map((call: unknown[]) => call[0] as string);
+      expect(vectorSql).toContain("embedding <#> ARRAY[0.10000000149011612");
+      expect(textSql).toContain("summary::text <#> 'book novel literature'");
+      expect(textSql).toContain("message::text <#> 'book novel literature'");
+      expect(vectorSql).not.toContain("deeplake_hybrid_record");
+      expect(textSql).not.toContain("deeplake_hybrid_record");
+      expect(rows.map((row) => row.path)).toEqual([
+        "/summaries/shared.md",
+        "/sessions/text.json",
+        "/sessions/vector.json",
+      ]);
     } finally {
       embedSpy.mockRestore();
       if (prevMode === undefined) delete process.env.HIVEMIND_GREP_RETRIEVAL_MODE;
@@ -763,7 +781,7 @@ describe("searchDeeplakeTables", () => {
     expect(sql).toContain("message::text ~ 'relationship|partner|married'");
   });
 
-  it("skips SQL regex pushdown for ignore-case regex scans", async () => {
+  it("uses case-insensitive regex pushdown for ignore-case regex scans", async () => {
     const api = mockApi([]);
     await searchDeeplakeTables(api, "m", "s", {
       pathFilter: "",
@@ -775,8 +793,8 @@ describe("searchDeeplakeTables", () => {
     });
     const sql = api.query.mock.calls[0][0] as string;
     expect(sql).toContain("summary::text ILIKE '%relationship%'");
-    expect(sql).not.toContain("summary::text ~");
-    expect(sql).not.toContain("message::text ~");
+    expect(sql).toContain("summary::text ~* 'relationship|partner|married'");
+    expect(sql).toContain("message::text ~* 'relationship|partner|married'");
   });
 
   it("uses OR ILIKE prefilters for grep BRE alternation patterns", async () => {
@@ -801,7 +819,7 @@ describe("searchDeeplakeTables", () => {
     expect(sql).not.toContain("ILIKE '%book|novel|literature%'");
   });
 
-  it("keeps unsupported bracketed regex patterns out of SQL pushdown", async () => {
+  it("pushes down escaped regex literals for invalid bracketed patterns", async () => {
     const api = mockApi([]);
     await searchDeeplakeTables(api, "m", "s", {
       pathFilter: " AND path = '/index.md'",
@@ -812,30 +830,8 @@ describe("searchDeeplakeTables", () => {
     });
     const sql = api.query.mock.calls[0][0] as string;
     expect(sql).toContain("path = '/index.md'");
-    expect(sql).not.toContain("summary::text ~");
-    expect(sql).not.toContain("message::text ~");
-  });
-
-  it("falls back to OR LIKE prefilters when regex SQL is rejected", async () => {
-    const api = {
-      query: vi.fn()
-        .mockRejectedValueOnce(new Error("regex operator not supported"))
-        .mockResolvedValueOnce([]),
-    } as any;
-    await searchDeeplakeTables(api, "m", "s", {
-      pathFilter: "",
-      contentScanOnly: true,
-      likeOp: "LIKE",
-      escapedPattern: "relationship|partner|married",
-      regexPattern: "relationship|partner|married",
-      prefilterPatterns: ["relationship", "partner", "married"],
-    });
-    expect(api.query).toHaveBeenCalledTimes(2);
-    const fallbackSql = api.query.mock.calls[1][0] as string;
-    expect(fallbackSql).toContain("summary::text LIKE '%relationship%'");
-    expect(fallbackSql).toContain("summary::text LIKE '%partner%'");
-    expect(fallbackSql).toContain("summary::text LIKE '%married%'");
-    expect(fallbackSql).not.toContain("relationship|partner|married");
+    expect(sql).toContain("summary::text ~ '\\\\^- \\\\[conv_0_session_\\\\.\\\\*\\\\\\\\\\\\]'");
+    expect(sql).toContain("message::text ~ '\\\\^- \\\\[conv_0_session_\\\\.\\\\*\\\\\\\\\\\\]'");
   });
 
   it("falls back to summary ILIKE when BM25 query is rejected", async () => {
@@ -1144,7 +1140,7 @@ describe("regex literal prefilter", () => {
 
   it("builds SQL-safe regex patterns conservatively", () => {
     expect(toSqlRegexPattern("foo.*bar", false)).toBe("foo.*bar");
-    expect(toSqlRegexPattern("foo.*bar", true)).toBeNull();
+    expect(toSqlRegexPattern("foo.*bar", true)).toBe("foo.*bar");
     expect(toSqlRegexPattern("^- [conv_0_session_.*\\]", false)).toBe("\\^- \\[conv_0_session_\\.\\*\\\\\\]");
     expect(toSqlRegexPattern("\\bitem\\d+", false)).toBe("\\yitem[[:digit:]]+");
     expect(toSqlRegexPattern("foo(?=bar)", false)).toBeNull();
@@ -1292,7 +1288,7 @@ describe("regex literal prefilter", () => {
       expect(sql).toContain("message::text ILIKE '%ten years ago%'");
     });
 
-    it("avoids SQL regex pushdown for bracket-anchored patterns and matches the raw-json local output", async () => {
+    it("uses SQL regex pushdown for bracket-anchored patterns and matches the raw-json local output", async () => {
       const rows = [
         {
           path: "/sessions/conv_0_session_2.json",
@@ -1320,8 +1316,8 @@ describe("regex literal prefilter", () => {
       expect(remote).toEqual(local);
       expect(remote).toEqual([]);
       const sql = api.query.mock.calls[0][0] as string;
-      expect(sql).not.toContain("summary::text ~");
-      expect(sql).not.toContain("message::text ~");
+      expect(sql).toContain("ORDER BY (summary <#> 'D2:1') DESC");
+      expect(sql).toContain("message::text ~ '^\\\\[D2:1\\\\]'");
     });
   });
 

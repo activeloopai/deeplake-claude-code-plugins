@@ -198,6 +198,48 @@ describe("benchmark replay parity", () => {
     expect(virtual).toContain('"text": "We keep classic kids\' books like Dr. Seuss on the bookshelf."');
   });
 
+  it("matches file-list output for find -exec grep with regex alternation", async () => {
+    const files = [
+      buildSessionFile(6, [
+        { dia_id: "D6:1", speaker: "Melanie", text: "We keep classic kids' books like Dr. Seuss on the bookshelf." },
+        { dia_id: "D6:2", speaker: "Caroline", text: "That sounds perfect for the kids." },
+      ]),
+      buildSessionFile(7, [
+        { dia_id: "D7:1", speaker: "Caroline", text: "I just started a new counseling course." },
+      ]),
+    ];
+    const root = writeFixture(files);
+    roots.push(root);
+
+    const command = "find /sessions -name '*.json' -exec grep -El 'Dr. Seuss|bookshelf' {} \\; | head -10";
+    const local = runLocalBash(root, command);
+    const virtual = await runVirtualCommand(files, command);
+
+    expect(local.replaceAll(root, "")).toEqual(virtual);
+    expect(virtual).toBe("/sessions/conv_0_session_6.json");
+  });
+
+  it("matches file-list output for case-insensitive find -exec grep regex", async () => {
+    const files = [
+      buildSessionFile(10, [
+        { dia_id: "D10:1", speaker: "Caroline", text: "I joined the LGBTQ support group last Tuesday, July 18, 2023." },
+        { dia_id: "D10:2", speaker: "Melanie", text: "That sounds like such a good step." },
+      ]),
+      buildSessionFile(11, [
+        { dia_id: "D11:1", speaker: "Caroline", text: "I moved here from Sweden four years ago." },
+      ]),
+    ];
+    const root = writeFixture(files);
+    roots.push(root);
+
+    const command = "find /sessions -name '*.json' -exec grep -Eli 'support group|lgbtq support' {} \\; | head -10";
+    const local = runLocalBash(root, command);
+    const virtual = await runVirtualCommand(files, command);
+
+    expect(local.replaceAll(root, "")).toEqual(virtual);
+    expect(virtual).toBe("/sessions/conv_0_session_10.json");
+  });
+
   it("keeps the 18th-birthday shell-loop case explicitly divergent by returning retry guidance", async () => {
     const files = [
       buildSessionFile(12, [
@@ -348,5 +390,57 @@ describe("benchmark replay parity", () => {
 
     expect(local.replaceAll(root, "")).toEqual(virtual);
     expect(local).toContain("Charlotte's Web");
+  });
+
+  it("matches raw output for grep --regexp= alternation over summaries", async () => {
+    const files: FixtureFile[] = [
+      {
+        path: "/summaries/locomo/conv_0_session_6_summary.md",
+        content: [
+          "# Session 6",
+          "## Searchable Facts",
+          "- Melanie said Charlotte's Web was her favorite book as a child.",
+          "- The family keeps classic kids' books on the bookshelf.",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: "/summaries/locomo/conv_0_session_7_summary.md",
+        content: [
+          "# Session 7",
+          "## Searchable Facts",
+          "- Caroline started a new counseling course.",
+          "",
+        ].join("\n"),
+      },
+    ];
+    const root = writeFixture(files);
+    roots.push(root);
+
+    const command = "grep -r -i --regexp='book\\|read' /summaries/locomo/conv_0_session_*.md";
+    const local = runLocalBash(root, command);
+    const virtual = await runVirtualCommand(files, command);
+
+    expect(local.replaceAll(root, "")).toEqual(virtual);
+    expect(virtual).toContain("Charlotte's Web");
+  });
+
+  it("matches raw output for quoted regex over pretty-printed session json", async () => {
+    const files = [
+      buildSessionFile(10, [
+        { dia_id: "D10:12", speaker: "Melanie", text: "We camped near a mountain lake in a state park last summer." },
+        { dia_id: "D10:13", speaker: "Caroline", text: "That sounds beautiful." },
+      ]),
+    ];
+    const root = writeFixture(files);
+    roots.push(root);
+
+    const command = "grep -r -E '\"dia_id\": \"D10:12\"|\"text\": \"We camped near a mountain lake' /sessions/conv_0_session_10.json";
+    const local = runLocalBash(root, command);
+    const virtual = await runVirtualCommand(files, command);
+
+    expect(local.replaceAll(root, "")).toEqual(virtual);
+    expect(virtual).toContain('"dia_id": "D10:12"');
+    expect(virtual).toContain('"text": "We camped near a mountain lake in a state park last summer."');
   });
 });

@@ -39,7 +39,8 @@ function touchesVirtualMemoryPath(value: string): boolean {
     rewritten === "/summaries" ||
     rewritten.startsWith("/summaries/") ||
     rewritten === "/sessions" ||
-    rewritten.startsWith("/sessions/")
+    rewritten.startsWith("/sessions/") ||
+    /(^|[\s"'`])\/(?:index\.md|summaries(?:\/|\b)|sessions(?:\/|\b))/.test(rewritten)
   );
 }
 

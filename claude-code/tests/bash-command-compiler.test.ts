@@ -273,6 +273,24 @@ describe("bash-command-compiler parsing", () => {
       },
       lineLimit: 10,
     });
+    expect(parseCompiledSegment("find /sessions -name '*.json' -exec grep -Eli 'support group|lgbtq support' {} \\; | head -10")).toEqual({
+      kind: "find_grep",
+      dir: "/sessions",
+      patterns: ["*.json"],
+      params: {
+        pattern: "support group|lgbtq support",
+        targetPath: "{}",
+        recursive: false,
+        ignoreCase: true,
+        wordMatch: false,
+        filesOnly: true,
+        countOnly: false,
+        lineNumber: false,
+        invertMatch: false,
+        fixedString: false,
+      },
+      lineLimit: 10,
+    });
     expect(parseCompiledSegment("grep -i 'age\\|birthday\\|born.*19\\|born.*20' /sessions/*.json 2>/dev/null | head -3")).toEqual({
       kind: "grep",
       params: {

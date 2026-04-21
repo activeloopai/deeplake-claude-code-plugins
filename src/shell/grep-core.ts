@@ -17,6 +17,7 @@
 
 import type { DeeplakeApi } from "../deeplake-api.js";
 import { HarrierEmbedder } from "../embeddings/harrier.js";
+import { type ScoredRetrievalRow, fuseRetrievalRows } from "../utils/hybrid-fusion.js";
 import { sqlStr, sqlLike } from "../utils/sql.js";
 import { getGrepRetrievalMode, isSessionsOnlyMode, isSummaryBm25Disabled } from "../utils/retrieval-mode.js";
 
@@ -314,7 +315,7 @@ function buildPathCondition(targetPath: string): string {
 }
 
 /**
- * Dual-table LIKE/ILIKE search. Casts `summary` (TEXT) and `message` (JSONB)
+ * Dual-table text/regex search. Casts `summary` (TEXT) and `message` (JSONB)
  * to ::text so the same predicate works across both. The lookup always goes
  * through a single UNION ALL query so one grep maps to one SQL search.
  */
@@ -340,20 +341,18 @@ export async function searchDeeplakeTables(
   // coarser query path.
   const primarySessFilter = `${likeSessFilter}${regexSessFilter}`;
   const fallbackSessFilter = likeSessFilter;
-  const hasSqlRegexFilter = Boolean(regexMemFilter || regexSessFilter);
   const sessionsOnly = isSessionsOnlyMode();
   const retrievalMode = getGrepRetrievalMode();
   const semanticQueryText = (queryText ?? bm25QueryText ?? "").trim();
+  const lexicalQueryText = (bm25QueryText ?? semanticQueryText).trim();
   const useEmbeddingRetrieval = retrievalMode === "embedding" && semanticQueryText.length > 0;
   const useHybridRetrieval = retrievalMode === "hybrid" && semanticQueryText.length > 0;
   const useSummaryBm25 = retrievalMode === "classic" && !sessionsOnly && !isSummaryBm25Disabled() && Boolean(bm25QueryText);
-  const shouldUseFallbackCapablePrimary = useSummaryBm25
-    || hasSqlRegexFilter;
   const ensureSummaryBm25Index = (api as DeeplakeApi & {
     ensureSummaryBm25Index?: (tableName?: string) => Promise<void>;
   }).ensureSummaryBm25Index;
 
-  if (useSummaryBm25 && typeof ensureSummaryBm25Index === "function") {
+  if ((useSummaryBm25 || (useHybridRetrieval && !sessionsOnly && lexicalQueryText.length > 0)) && typeof ensureSummaryBm25Index === "function") {
     await ensureSummaryBm25Index.call(api, memoryTable).catch(() => {});
   }
 
@@ -374,59 +373,94 @@ export async function searchDeeplakeTables(
     const queryVectorSql = sqlFloat4Array(queryEmbedding);
     const vectorWeight = envNumber(DEFAULT_HYBRID_VECTOR_WEIGHT, "HIVEMIND_HYBRID_VECTOR_WEIGHT", "DEEPLAKE_HYBRID_VECTOR_WEIGHT");
     const textWeight = envNumber(DEFAULT_HYBRID_TEXT_WEIGHT, "HIVEMIND_HYBRID_TEXT_WEIGHT", "DEEPLAKE_HYBRID_TEXT_WEIGHT");
-    const buildSemanticCombinedQuery = (): string => {
-      const memQuery = useHybridRetrieval
-        ? buildHybridSimilarityQuery(
-            memoryTable,
-            pathFilter,
-            "summary::text",
-            0,
-            "''",
-            queryVectorSql,
-            semanticQueryText,
-            vectorWeight,
-            textWeight,
-            limit,
-          )
-        : buildEmbeddingSimilarityQuery(
-            memoryTable,
-            pathFilter,
-            "summary::text",
-            0,
-            "''",
-            queryVectorSql,
-            limit,
-          );
-      const sessQuery = useHybridRetrieval
-        ? buildHybridSimilarityQuery(
-            sessionsTable,
-            pathFilter,
-            "message::text",
-            1,
-            "COALESCE(creation_date::text, '')",
-            queryVectorSql,
-            semanticQueryText,
-            vectorWeight,
-            textWeight,
-            limit,
-          )
-        : buildEmbeddingSimilarityQuery(
-            sessionsTable,
-            pathFilter,
-            "message::text",
-            1,
-            "COALESCE(creation_date::text, '')",
-            queryVectorSql,
-            limit,
-          );
-      return sessionsOnly
-        ? `SELECT path, content, source_order, creation_date FROM (${sessQuery}) AS combined ORDER BY path, source_order, creation_date`
-        : `SELECT path, content, source_order, creation_date FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order, creation_date`;
-    };
-    const rows = await api.query(buildSemanticCombinedQuery());
-    return rows.map(row => ({
-      path: String(row["path"]),
-      content: String(row["content"] ?? ""),
+    const vectorQuery = buildScoredCombinedQuery(
+      sessionsOnly,
+      buildEmbeddingSimilarityQuery(
+        memoryTable,
+        pathFilter,
+        "summary::text",
+        0,
+        "''",
+        queryVectorSql,
+        limit,
+      ),
+      buildEmbeddingSimilarityQuery(
+        sessionsTable,
+        pathFilter,
+        "message::text",
+        1,
+        "COALESCE(creation_date::text, '')",
+        queryVectorSql,
+        limit,
+      ),
+      limit,
+    );
+
+    if (!useHybridRetrieval) {
+      const rows = await api.query(vectorQuery);
+      return rows.map(row => ({
+        path: String(row["path"]),
+        content: String(row["content"] ?? ""),
+      }));
+    }
+
+    const lexicalQuery = buildScoredCombinedQuery(
+      sessionsOnly,
+      buildBm25SimilarityQuery(
+        memoryTable,
+        pathFilter,
+        "summary::text",
+        0,
+        "''",
+        lexicalQueryText,
+        limit,
+      ),
+      buildBm25SimilarityQuery(
+        sessionsTable,
+        pathFilter,
+        "message::text",
+        1,
+        "COALESCE(creation_date::text, '')",
+        lexicalQueryText,
+        limit,
+      ),
+      limit,
+    );
+    const lexicalFallbackQuery = buildScoredCombinedQuery(
+      sessionsOnly,
+      buildHeuristicLexicalQuery(
+        memoryTable,
+        pathFilter,
+        "summary::text",
+        0,
+        "''",
+        lexicalQueryText,
+        limit,
+      ),
+      buildHeuristicLexicalQuery(
+        sessionsTable,
+        pathFilter,
+        "message::text",
+        1,
+        "COALESCE(creation_date::text, '')",
+        lexicalQueryText,
+        limit,
+      ),
+      limit,
+    );
+    const [vectorRows, textRows] = await Promise.all([
+      api.query(vectorQuery),
+      api.query(lexicalQuery).catch(() => api.query(lexicalFallbackQuery)),
+    ]);
+    return fuseRetrievalRows({
+      textRows: mapScoredRows(textRows),
+      vectorRows: mapScoredRows(vectorRows),
+      textWeight,
+      vectorWeight,
+      limit,
+    }).map(row => ({
+      path: row.path,
+      content: row.content,
     }));
   }
 
@@ -434,7 +468,7 @@ export async function searchDeeplakeTables(
   const primaryQuery = buildCombinedQuery(primaryMemFilter, primarySessFilter, useSummaryBm25);
   const fallbackQuery = buildCombinedQuery(likeMemFilter, fallbackSessFilter, false);
 
-  const rows = shouldUseFallbackCapablePrimary
+  const rows = useSummaryBm25
     ? await api.query(primaryQuery).catch(() => api.query(fallbackQuery))
     : await api.query(primaryQuery);
 
@@ -636,34 +670,72 @@ function buildEmbeddingSimilarityQuery(
   queryVectorSql: string,
   limit: number,
 ): string {
-  return `SELECT path, ${contentExpr} AS content, ${sourceOrder} AS source_order, ${creationDateExpr} AS creation_date FROM "${tableName}" WHERE 1=1${pathFilter} AND embedding IS NOT NULL ORDER BY (embedding <#> ${queryVectorSql}) DESC LIMIT ${limit}`;
+  return `SELECT path, ${contentExpr} AS content, ${sourceOrder} AS source_order, ${creationDateExpr} AS creation_date, (embedding <#> ${queryVectorSql}) AS score FROM "${tableName}" WHERE 1=1${pathFilter} AND embedding IS NOT NULL ORDER BY score DESC LIMIT ${limit}`;
 }
 
-function buildHybridSimilarityQuery(
+function buildBm25SimilarityQuery(
   tableName: string,
   pathFilter: string,
   contentExpr: string,
   sourceOrder: number,
   creationDateExpr: string,
-  queryVectorSql: string,
   queryText: string,
-  vectorWeight: number,
-  textWeight: number,
   limit: number,
 ): string {
-  return `SELECT path, ${contentExpr} AS content, ${sourceOrder} AS source_order, ${creationDateExpr} AS creation_date FROM "${tableName}" WHERE 1=1${pathFilter} AND embedding IS NOT NULL ORDER BY (((embedding, ${contentExpr})::deeplake_hybrid_record) <#> deeplake_hybrid_record(${queryVectorSql}, '${sqlStr(queryText)}', ${vectorWeight}, ${textWeight})) DESC LIMIT ${limit}`;
+  return `SELECT path, ${contentExpr} AS content, ${sourceOrder} AS source_order, ${creationDateExpr} AS creation_date, (${contentExpr} <#> '${sqlStr(queryText)}') AS score FROM "${tableName}" WHERE 1=1${pathFilter} ORDER BY score DESC LIMIT ${limit}`;
+}
+
+function buildHeuristicLexicalQuery(
+  tableName: string,
+  pathFilter: string,
+  contentExpr: string,
+  sourceOrder: number,
+  creationDateExpr: string,
+  queryText: string,
+  limit: number,
+): string {
+  const terms = [...new Set(
+    queryText
+      .split(/\s+/)
+      .map((term) => term.trim())
+      .filter((term) => term.length >= 2),
+  )].slice(0, 8);
+  const clauses = terms.map((term) => `${contentExpr} ILIKE '%${sqlLike(term)}%'`);
+  const scoreTerms = [
+    ...terms.map((term) => `CASE WHEN ${contentExpr} ILIKE '%${sqlLike(term)}%' THEN 1 ELSE 0 END`),
+    `CASE WHEN ${contentExpr} ILIKE '%${sqlLike(queryText)}%' THEN ${Math.max(1, Math.min(terms.length, 4))} ELSE 0 END`,
+  ];
+  const scoreExpr = scoreTerms.join(" + ");
+  const where = clauses.length > 0 ? ` AND (${clauses.join(" OR ")})` : "";
+  return `SELECT path, ${contentExpr} AS content, ${sourceOrder} AS source_order, ${creationDateExpr} AS creation_date, (${scoreExpr})::float AS score FROM "${tableName}" WHERE 1=1${pathFilter}${where} ORDER BY score DESC LIMIT ${limit}`;
+}
+
+function buildScoredCombinedQuery(
+  sessionsOnly: boolean,
+  memQuery: string,
+  sessQuery: string,
+  limit: number,
+): string {
+  return sessionsOnly
+    ? `SELECT path, content, source_order, creation_date, score FROM (${sessQuery}) AS combined ORDER BY score DESC, source_order, creation_date, path LIMIT ${limit}`
+    : `SELECT path, content, source_order, creation_date, score FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY score DESC, source_order, creation_date, path LIMIT ${limit}`;
+}
+
+function mapScoredRows(rows: Record<string, unknown>[]): ScoredRetrievalRow[] {
+  return rows.map((row) => ({
+    path: String(row["path"] ?? ""),
+    content: String(row["content"] ?? ""),
+    sourceOrder: Number(row["source_order"] ?? 0),
+    creationDate: String(row["creation_date"] ?? ""),
+    score: Number.isFinite(Number(row["score"])) ? Number(row["score"]) : 0,
+  }));
 }
 
 export function toSqlRegexPattern(
   pattern: string,
-  ignoreCase: boolean,
+  _ignoreCase: boolean,
 ): string | null {
   if (!pattern) return null;
-
-  // Deeplake SQL supports `~` but not `~*`. For ignore-case regex searches,
-  // rely on LIKE/ILIKE prefilters plus in-memory regex refinement instead of
-  // pushing an incompatible SQL operator.
-  if (ignoreCase) return null;
 
   try {
     new RegExp(pattern);
@@ -671,14 +743,6 @@ export function toSqlRegexPattern(
   } catch {
     return pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
-}
-
-function isSqlRegexPushdownSafe(pattern: string): boolean {
-  // The managed backend rejects some otherwise valid JS regexes, especially
-  // patterns with bracket syntax, anchors, or escaped literals like `^\[`.
-  // Keep SQL regex pushdown to a conservative subset and rely on in-memory
-  // refinement after candidate fetch for everything else.
-  return !/[\\[\]{}^$]/.test(pattern) && !/\(\?/.test(pattern);
 }
 
 function unwrapWholeRegexGroup(pattern: string): string {
@@ -777,10 +841,9 @@ function buildRegexPredicate(
   ignoreCase: boolean,
 ): string {
   if (!pattern) return "";
-  if (!isSqlRegexPushdownSafe(pattern)) return "";
   const sqlPattern = toSqlRegexPattern(pattern, ignoreCase);
   if (!sqlPattern) return "";
-  return `${column} ~ '${sqlStr(sqlPattern)}'`;
+  return `${column} ${ignoreCase ? "~*" : "~"} '${sqlStr(sqlPattern)}'`;
 }
 
 function joinAndPredicates(predicates: string[]): string {

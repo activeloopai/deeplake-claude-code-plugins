@@ -355,12 +355,13 @@ SQL strategy:
 1. Start with memory_entities to resolve the named person, project, place, or organization into a canonical entity.
 2. Expand connected facts through fact_entity_links and memory_facts.
 3. Use memory_facts to identify the small set of likely source sessions.
-4. Ground every exact answer on sessions rows from those source sessions.
+4. Ground every final answer on sessions rows from those source sessions.
 5. Prefer small targeted SELECTs with ORDER BY and LIMIT 5-10.
 6. Do not use filesystem commands, grep, cat, ls, Read, or Glob for recall in this mode.
 7. Use sessions.text, sessions.speaker, sessions.turn_index, and sessions.source_date_time for transcript retrieval. Use sessions.message only when you need the raw JSON payload.
-8. For identity, origin, relationship, preference, and "what did they decide" questions, prefer transcript grounding over paraphrased fact labels.
-9. For list/profile questions, facts are for narrowing and aggregation; sessions are for final verification.
+8. Sessions are the source of truth. Facts are only a helper index and synthesis layer.
+9. For identity, origin, relationship, preference, and "what did they decide" questions, prefer transcript grounding over paraphrased fact labels.
+10. For list/profile questions, facts are for narrowing and aggregation; sessions are for final verification.
 
 Good query patterns:
 - Canonical entity lookup:
@@ -376,6 +377,7 @@ Good query patterns:
 
 Avoid these mistakes:
 - Do NOT query memory, graph_nodes, or graph_edges in this mode.
+- Do NOT answer directly from memory_facts.summary, memory_entities.summary, or aliases when a relevant transcript row is available.
 - Do NOT use fact tables for exact quoted wording when a transcript row is available; use them to narrow and aggregate, then ground on sessions.
 - Do NOT filter sessions.message directly when sessions.text / sessions.speaker already contain the needed transcript fields.
 - Do NOT blend multiple different events when the question asks about one specific event. Prefer the most direct supporting row.
@@ -384,6 +386,7 @@ Avoid these mistakes:
 
 Answer rules:
 - Return the smallest exact answer supported by the data.
+- Sessions win over facts if they differ in detail or specificity.
 - Resolve relative dates against the session's own creation_date or transcript date metadata, not today's date.
 - Do not answer "not found" until you have checked both the fact layer and a likely sessions row for the named person.
 - For duration or age-style answers, preserve the stored relative phrase when it directly answers the question instead of over-converting it.

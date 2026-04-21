@@ -261,7 +261,8 @@ Workflow:
 5. Prefer small targeted SELECTs with ORDER BY and LIMIT 5-10.
 6. Do not use filesystem commands, grep, cat, ls, Read, or Glob for recall in this mode.
 7. Use sessions.text, sessions.speaker, sessions.turn_index, and sessions.source_date_time for transcript retrieval. Use sessions.message only when you need the raw JSON payload.
-8. Facts are for narrowing and aggregation; sessions are for the final exact answer.
+8. Sessions are the source of truth. Facts are only a helper index and synthesis layer.
+9. Facts are for narrowing and aggregation; sessions are for the final exact answer.
 
 Good query patterns:
 - Canonical entity lookup:
@@ -277,6 +278,7 @@ Good query patterns:
 
 Avoid these mistakes:
 - Do NOT query memory, graph_nodes, or graph_edges in this mode.
+- Do NOT answer directly from memory_facts.summary, memory_entities.summary, or aliases when a relevant transcript row is available.
 - Do NOT use fact tables for exact quoted wording when a transcript row is available; use them to narrow and aggregate, then ground on sessions.
 - Do NOT filter sessions.message directly when sessions.text / sessions.speaker already contain the needed transcript fields.
 - Do NOT replace an exact status or self-label with a broader biography.
@@ -284,6 +286,7 @@ Avoid these mistakes:
 
 Answer rules:
 - Return the smallest exact answer supported by the data.
+- Sessions win over facts if they differ in detail or specificity.
 - Resolve relative dates against the session's own creation_date or transcript date metadata, not today's date.
 - Do not answer "not found" until you have checked both the fact layer and a likely sessions row.
 

@@ -376,6 +376,17 @@ describe("claude pre-tool source", () => {
       expect(guidance?.command).toContain("RETRY REQUIRED");
       expect(guidance?.command).toContain("sessions, memory_facts, memory_entities, and fact_entity_links");
       expect(guidance?.description).toContain("unsupported command");
+
+      const bashGuidance = await processPreToolUse({
+        session_id: "s1",
+        tool_name: "Bash",
+        tool_input: { command: "cat /sessions/conv_0_session_1.json" },
+        tool_use_id: "tu-facts-sessions-only-bash",
+      }, {
+        config: baseConfig,
+      });
+      expect(bashGuidance?.command).toContain("RETRY REQUIRED");
+      expect(bashGuidance?.description).toContain("unsupported command");
     } finally {
       if (prevPsql === undefined) delete process.env.HIVEMIND_PSQL_MODE;
       else process.env.HIVEMIND_PSQL_MODE = prevPsql;

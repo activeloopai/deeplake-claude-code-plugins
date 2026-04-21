@@ -1,5 +1,6 @@
 import type { DeeplakeApi } from "../deeplake-api.js";
 import { HarrierEmbedder } from "../embeddings/harrier.js";
+import { type ScoredRetrievalRow, fuseRetrievalRows } from "../utils/hybrid-fusion.js";
 import { sqlLike, sqlStr } from "../utils/sql.js";
 import { type GrepParams, handleGrepDirect, parseBashGrep } from "./grep-direct.js";
 import { normalizeContent, refineGrepMatches } from "../shell/grep-core.js";
@@ -81,6 +82,12 @@ interface ParsedModifier {
 interface ParsedFindSpec {
   patterns: string[];
   execGrepCmd: string | null;
+}
+
+function quoteShellToken(token: string): string {
+  if (token === "") return "''";
+  if (!/[\s"'\\|&;<>()[\]{}$*?]/.test(token)) return token;
+  return `'${token.replace(/'/g, `'\"'\"'`)}'`;
 }
 
 function isQuoted(ch: string): boolean {
@@ -288,7 +295,7 @@ function parseFindSpec(tokens: string[]): ParsedFindSpec | null {
       if ((terminator !== "\\;" && terminator !== ";") || target !== "{}") return null;
       return {
         patterns,
-        execGrepCmd: execTokens.slice(0, -1).join(" "),
+        execGrepCmd: execTokens.slice(0, -1).map(quoteShellToken).join(" "),
       };
     }
     return null;
@@ -844,31 +851,64 @@ async function fetchSummaryCandidates(
   if (filteredTerms.length === 0) return [];
   const retrievalMode = getGrepRetrievalMode();
   const phrase = filteredTerms.join(" ");
-  const clauses = filteredTerms.map((term) => `summary ILIKE '%${sqlLike(term)}%'`);
-  let sql: string;
+  let rows: Array<{ path: string; summary: string }> = [];
 
   if (retrievalMode === "embedding" || retrievalMode === "hybrid") {
     const embedder = getSummaryRetrievalEmbedder();
     const [queryEmbedding] = await embedder.embedQueries([phrase]);
     if (!queryEmbedding) return [];
     const queryVectorSql = sqlFloat4Array(queryEmbedding);
-    sql = retrievalMode === "hybrid"
-      ? `SELECT path, summary, ((embedding, summary)::deeplake_hybrid_record <#> deeplake_hybrid_record(${queryVectorSql}, '${sqlStr(phrase)}', ${envNumber(DEFAULT_HYBRID_VECTOR_WEIGHT, "HIVEMIND_HYBRID_VECTOR_WEIGHT", "DEEPLAKE_HYBRID_VECTOR_WEIGHT")}, ${envNumber(DEFAULT_HYBRID_TEXT_WEIGHT, "HIVEMIND_HYBRID_TEXT_WEIGHT", "DEEPLAKE_HYBRID_TEXT_WEIGHT")})) AS score FROM "${memoryTable}" WHERE embedding IS NOT NULL ORDER BY score DESC LIMIT 8`
-      : `SELECT path, summary, (embedding <#> ${queryVectorSql}) AS score FROM "${memoryTable}" WHERE embedding IS NOT NULL ORDER BY score DESC LIMIT 8`;
+    const vectorSql =
+      `SELECT path, summary, (embedding <#> ${queryVectorSql}) AS score` +
+      ` FROM "${memoryTable}"` +
+      ` WHERE embedding IS NOT NULL` +
+      ` ORDER BY score DESC` +
+      ` LIMIT 8`;
+    if (retrievalMode === "embedding") {
+      rows = (await api.query(vectorSql)).map((row) => ({
+        path: typeof row["path"] === "string" ? row["path"] : "",
+        summary: typeof row["summary"] === "string" ? row["summary"] : "",
+      }));
+    } else {
+      const textSql =
+        `SELECT path, summary, summary <#> '${sqlStr(phrase)}' AS score` +
+        ` FROM "${memoryTable}"` +
+        ` ORDER BY score DESC` +
+        ` LIMIT 8`;
+      const textFallbackSql = buildSummaryHeuristicQuery(memoryTable, filteredTerms, phrase);
+      const [vectorRows, textRows] = await Promise.all([
+        api.query(vectorSql),
+        api.query(textSql).catch(() => api.query(textFallbackSql)),
+      ]);
+      rows = fuseRetrievalRows({
+        textRows: mapSummaryRows(textRows),
+        vectorRows: mapSummaryRows(vectorRows),
+        textWeight: envNumber(DEFAULT_HYBRID_TEXT_WEIGHT, "HIVEMIND_HYBRID_TEXT_WEIGHT", "DEEPLAKE_HYBRID_TEXT_WEIGHT"),
+        vectorWeight: envNumber(DEFAULT_HYBRID_VECTOR_WEIGHT, "HIVEMIND_HYBRID_VECTOR_WEIGHT", "DEEPLAKE_HYBRID_VECTOR_WEIGHT"),
+        limit: 8,
+      }).map((row) => ({
+        path: row.path,
+        summary: row.content,
+      }));
+    }
   } else {
     const phraseSql = sqlStr(phrase);
-    sql =
+    const clauses = filteredTerms.map((term) => `summary ILIKE '%${sqlLike(term)}%'`);
+    const sql =
       `SELECT path, summary, summary <#> '${phraseSql}' AS score` +
       ` FROM "${memoryTable}"` +
       ` WHERE ${clauses.join(" OR ")}` +
-      ` ORDER BY score ASC` +
+      ` ORDER BY score DESC` +
       ` LIMIT 8`;
+    rows = (await api.query(sql).catch(() => api.query(buildSummaryHeuristicQuery(memoryTable, filteredTerms, phrase)))).map((row) => ({
+      path: typeof row["path"] === "string" ? row["path"] : "",
+      summary: typeof row["summary"] === "string" ? row["summary"] : "",
+    }));
   }
-  const rows = await api.query(sql);
   const candidateMap = new Map<string, HybridCandidate>();
   for (const row of rows) {
-    const path = typeof row["path"] === "string" ? row["path"] : "";
-    const summary = typeof row["summary"] === "string" ? row["summary"] : "";
+    const path = row.path;
+    const summary = row.summary;
     const sourcePath = extractSummarySourcePath(summary) || (extractSessionIdFromPath(path) ? `/sessions/${extractSessionIdFromPath(path)}.json` : "");
     const sessionId = extractSessionIdFromPath(path) || extractSessionIdFromPath(sourcePath);
     addHybridCandidate(candidateMap, {
@@ -879,6 +919,35 @@ async function fetchSummaryCandidates(
     });
   }
   return [...candidateMap.values()];
+}
+
+function buildSummaryHeuristicQuery(
+  memoryTable: string,
+  filteredTerms: string[],
+  phrase: string,
+): string {
+  const clauses = filteredTerms.map((term) => `summary ILIKE '%${sqlLike(term)}%'`);
+  const scoreTerms = [
+    ...filteredTerms.map((term) => `CASE WHEN summary ILIKE '%${sqlLike(term)}%' THEN 1 ELSE 0 END`),
+    `CASE WHEN summary ILIKE '%${sqlLike(phrase)}%' THEN ${Math.max(1, Math.min(filteredTerms.length, 4))} ELSE 0 END`,
+  ];
+  return (
+    `SELECT path, summary, (${scoreTerms.join(" + ")})::float AS score` +
+    ` FROM "${memoryTable}"` +
+    ` WHERE ${clauses.join(" OR ")}` +
+    ` ORDER BY score DESC` +
+    ` LIMIT 8`
+  );
+}
+
+function mapSummaryRows(rows: Record<string, unknown>[]): ScoredRetrievalRow[] {
+  return rows.map((row) => ({
+    path: typeof row["path"] === "string" ? row["path"] : "",
+    content: typeof row["summary"] === "string" ? row["summary"] : "",
+    sourceOrder: 0,
+    creationDate: "",
+    score: Number.isFinite(Number(row["score"])) ? Number(row["score"]) : 0,
+  }));
 }
 
 function prependCtes(sql: string, ctes: string[]): string {
