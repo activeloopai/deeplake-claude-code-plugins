@@ -227,20 +227,30 @@ describe("session-start hook — placeholder branching", () => {
 // ═══ Version check + autoupdate ═════════════════════════════════════════════
 
 describe("session-start hook — version check", () => {
-  it("runs execSync and cleans old cache entries when a newer version is available", async () => {
+  it("runs execSync when a newer version is available and does NOT rm cache directories in-session", async () => {
+    // Regression guard: the old code explicitly rm -rf'd every
+    // non-latest version directory from inside the running session,
+    // which invalidated hook bundle paths and produced
+    // "Plugin directory does not exist" errors on later hooks in the
+    // same session. Cleanup now lives in the SessionEnd GC hook.
     fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ version: "999.0.0" }),
     });
     readdirSyncMock.mockReturnValue([
       { name: "0.0.1", isDirectory: () => true },
-      { name: "999.0.0", isDirectory: () => true }, // latest, must NOT be removed
+      { name: "999.0.0", isDirectory: () => true },
     ]);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     const out = await runHook();
     expect(execSyncMock).toHaveBeenCalled();
-    expect(rmSyncMock).toHaveBeenCalledTimes(1);
-    expect(rmSyncMock.mock.calls[0][0]).toContain("0.0.1");
+    // No in-session rm of version dirs. The only rmSync calls allowed
+    // are inside the snapshot helper (which is guarded and only runs
+    // under a real versioned install layout — not in test env).
+    for (const call of rmSyncMock.mock.calls) {
+      expect(String(call[0])).not.toMatch(/\/0\.0\.1(?:$|\/)/);
+      expect(String(call[0])).not.toMatch(/\/999\.0\.0(?:$|\/)/);
+    }
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("auto-updated"));
     const parsed = JSON.parse(out!);
     expect(parsed.hookSpecificOutput.additionalContext).toContain("auto-updated");
@@ -276,12 +286,15 @@ describe("session-start hook — version check", () => {
     expect(execSyncMock).not.toHaveBeenCalled();
   });
 
-  it("tolerates readdirSync throw during cache cleanup", async () => {
+  it("logs the snapshot outcome after a successful autoupdate", async () => {
+    // The snapshot helper is guarded by resolveVersionedPluginDir,
+    // which returns null outside a real ~/.claude/plugins/cache
+    // layout — so in this test the outcome is "noop". The log line
+    // proves the new code path ran end-to-end.
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ version: "999.0.0" }) });
-    readdirSyncMock.mockImplementation(() => { throw new Error("readdir boom"); });
     await runHook();
     expect(debugLogMock).toHaveBeenCalledWith(
-      expect.stringContaining("cache cleanup failed: readdir boom"),
+      expect.stringContaining("autoupdate snapshot outcome:"),
     );
   });
 
