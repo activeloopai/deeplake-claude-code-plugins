@@ -516,3 +516,58 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 });
+
+// ── traceSql coverage ─────────────────────────────────────────────────────
+describe("traceSql (indirect, via query() with trace env set)", () => {
+  const stderrSpy = vi.spyOn(process.stderr, "write");
+
+  beforeEach(() => {
+    stderrSpy.mockReset().mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    delete process.env.HIVEMIND_TRACE_SQL;
+    delete process.env.HIVEMIND_DEBUG;
+  });
+
+  it("writes [deeplake-sql] to stderr when HIVEMIND_TRACE_SQL=1", async () => {
+    process.env.HIVEMIND_TRACE_SQL = "1";
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["a"], rows: [["x"]] }));
+    await makeApi().query("SELECT a FROM t");
+    const wrote = stderrSpy.mock.calls.some(c => String(c[0]).includes("[deeplake-sql]"));
+    expect(wrote).toBe(true);
+  });
+
+  it("does not write [deeplake-sql] to stderr when trace env vars are unset", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["a"], rows: [["x"]] }));
+    await makeApi().query("SELECT a FROM t");
+    const wrote = stderrSpy.mock.calls.some(c => String(c[0]).includes("[deeplake-sql]"));
+    expect(wrote).toBe(false);
+  });
+});
+
+// ── hasFreshLookupIndexMarker: invalid updatedAt branch ────────────────────
+describe("lookup-index marker with invalid updatedAt", () => {
+  it("treats marker with non-parseable updatedAt as stale (triggers CREATE INDEX again)", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const markerDir = process.env.HIVEMIND_INDEX_MARKER_DIR!;
+    const markerKey = "ws1__org1__sessions__path_creation_date";
+    writeFileSync(
+      join(markerDir, `${markerKey}.json`),
+      JSON.stringify({ updatedAt: "not-a-date" }),
+    );
+
+    // Queue responses for: listTables + CREATE TABLE (no-op path returns exists) + CREATE INDEX
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse({ columns: ["table_name"], rows: [["sessions"]] }))
+      .mockResolvedValueOnce(jsonResponse({ columns: [], rows: [] }));
+
+    const api = makeApi();
+    await api.ensureSessionsTable("sessions");
+
+    // The invalid-updatedAt marker forced ensureLookupIndex to run CREATE INDEX.
+    const calls = mockFetch.mock.calls.map(c => c[1].body);
+    const rebuilt = calls.some(b => String(b).includes("CREATE INDEX"));
+    expect(rebuilt).toBe(true);
+  });
+});

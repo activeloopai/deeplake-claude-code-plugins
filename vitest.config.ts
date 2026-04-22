@@ -30,6 +30,10 @@ export default defineConfig({
         "src/**/*.d.ts",
         "src/**/*.js",
         "src/**/*.js.map",
+        // CLI entry points — `main()` calls process.exit(), so source-level
+        // unit tests don't make sense. These files have subprocess-spawn
+        // coverage via claude-code/tests/shell-bundle-*.test.ts instead.
+        "src/shell/deeplake-shell.ts",
       ],
       // Per-file thresholds. Each PR that ships new files should append
       // its paths here with 80 / 80 / 80 / 80, so we prevent regressions
