@@ -139,11 +139,7 @@ async function requestAuth(): Promise<string> {
 
 // --- API instance ---
 let api: DeeplakeApi | null = null;
-// Openclaw-specific default so we don't collide with legacy CC/Codex `sessions`
-// tables that pre-date the `message` JSONB column. Users who want to share a
-// table across platforms can set HIVEMIND_SESSIONS_TABLE=sessions explicitly.
-const OPENCLAW_SESSIONS_TABLE_DEFAULT = "hivemind_openclaw_sessions";
-let sessionsTable = OPENCLAW_SESSIONS_TABLE_DEFAULT;
+let sessionsTable = "sessions";
 let captureEnabled = true;
 const capturedCounts = new Map<string, number>();
 const fallbackSessionId = crypto.randomUUID();
@@ -162,9 +158,7 @@ async function getApi(): Promise<DeeplakeApi | null> {
     return null;
   }
 
-  // Prefer openclaw's namespaced default; only adopt config.sessionsTableName
-  // when the user explicitly overrode via HIVEMIND_SESSIONS_TABLE.
-  sessionsTable = process.env.HIVEMIND_SESSIONS_TABLE ?? OPENCLAW_SESSIONS_TABLE_DEFAULT;
+  sessionsTable = config.sessionsTableName;
   api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
   await api.ensureSessionsTable(sessionsTable);
   return api;
@@ -215,18 +209,12 @@ export default definePluginEntry({
         name: "hivemind_orgs",
         description: "List available organizations",
         handler: async () => {
-          try {
-            const creds = loadCredentials();
-            if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
-            const orgs = await listOrgs(creds.token, creds.apiUrl);
-            if (!orgs.length) return { text: "No organizations found." };
-            const lines = orgs.map(o => `${o.id === creds.orgId ? "→ " : "  "}${o.name}`);
-            return { text: lines.join("\n") };
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            pluginApi.logger.error?.(`/hivemind_orgs failed: ${msg}`);
-            return { text: `Failed to list orgs: ${msg}` };
-          }
+          const creds = loadCredentials();
+          if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
+          const orgs = await listOrgs(creds.token, creds.apiUrl);
+          if (!orgs.length) return { text: "No organizations found." };
+          const lines = orgs.map(o => `${o.id === creds.orgId ? "→ " : "  "}${o.name}`);
+          return { text: lines.join("\n") };
         },
       });
 
@@ -235,22 +223,16 @@ export default definePluginEntry({
         description: "Switch to a different organization",
         acceptsArgs: true,
         handler: async (ctx: CommandContext) => {
-          try {
-            const creds = loadCredentials();
-            if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
-            const target = ctx.args?.trim();
-            if (!target) return { text: "Usage: /hivemind_switch_org <name-or-id>" };
-            const orgs = await listOrgs(creds.token, creds.apiUrl);
-            const match = orgs.find(o => o.id === target || o.name.toLowerCase() === target.toLowerCase());
-            if (!match) return { text: `Org not found: ${target}. Available: ${orgs.map(o => o.name).join(", ") || "(none)"}` };
-            await switchOrg(match.id, match.name);
-            api = null;
-            return { text: `Switched to org: ${match.name}` };
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            pluginApi.logger.error?.(`/hivemind_switch_org failed: ${msg}`);
-            return { text: `Failed to switch org: ${msg}` };
-          }
+          const creds = loadCredentials();
+          if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
+          const target = ctx.args?.trim();
+          if (!target) return { text: "Usage: /hivemind_switch_org <name-or-id>" };
+          const orgs = await listOrgs(creds.token, creds.apiUrl);
+          const match = orgs.find(o => o.id === target || o.name.toLowerCase() === target.toLowerCase());
+          if (!match) return { text: `Org not found: ${target}` };
+          await switchOrg(match.id, match.name);
+          api = null;
+          return { text: `Switched to org: ${match.name}` };
         },
       });
 
@@ -258,18 +240,12 @@ export default definePluginEntry({
         name: "hivemind_workspaces",
         description: "List available workspaces",
         handler: async () => {
-          try {
-            const creds = loadCredentials();
-            if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
-            const ws = await listWorkspaces(creds.token, creds.apiUrl, creds.orgId);
-            if (!ws.length) return { text: "No workspaces found." };
-            const lines = ws.map(w => `${w.id === (creds.workspaceId ?? "default") ? "→ " : "  "}${w.name}`);
-            return { text: lines.join("\n") };
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            pluginApi.logger.error?.(`/hivemind_workspaces failed: ${msg}`);
-            return { text: `Failed to list workspaces: ${msg}` };
-          }
+          const creds = loadCredentials();
+          if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
+          const ws = await listWorkspaces(creds.token, creds.apiUrl, creds.orgId);
+          if (!ws.length) return { text: "No workspaces found." };
+          const lines = ws.map(w => `${w.id === (creds.workspaceId ?? "default") ? "→ " : "  "}${w.name}`);
+          return { text: lines.join("\n") };
         },
       });
 
@@ -278,22 +254,16 @@ export default definePluginEntry({
         description: "Switch to a different workspace",
         acceptsArgs: true,
         handler: async (ctx: CommandContext) => {
-          try {
-            const creds = loadCredentials();
-            if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
-            const target = ctx.args?.trim();
-            if (!target) return { text: "Usage: /hivemind_switch_workspace <name-or-id>" };
-            const ws = await listWorkspaces(creds.token, creds.apiUrl, creds.orgId);
-            const match = ws.find(w => w.id === target || w.name.toLowerCase() === target.toLowerCase());
-            if (!match) return { text: `Workspace not found: ${target}. Available: ${ws.map(w => w.name).join(", ") || "(none)"}` };
-            await switchWorkspace(match.id);
-            api = null;
-            return { text: `Switched to workspace: ${match.name}` };
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            pluginApi.logger.error?.(`/hivemind_switch_workspace failed: ${msg}`);
-            return { text: `Failed to switch workspace: ${msg}` };
-          }
+          const creds = loadCredentials();
+          if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
+          const target = ctx.args?.trim();
+          if (!target) return { text: "Usage: /hivemind_switch_workspace <name-or-id>" };
+          const ws = await listWorkspaces(creds.token, creds.apiUrl, creds.orgId);
+          const match = ws.find(w => w.id === target || w.name.toLowerCase() === target.toLowerCase());
+          if (!match) return { text: `Workspace not found: ${target}` };
+          await switchWorkspace(match.id);
+          api = null;
+          return { text: `Switched to workspace: ${match.name}` };
         },
       });
 
