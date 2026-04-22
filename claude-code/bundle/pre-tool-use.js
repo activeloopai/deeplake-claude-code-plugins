@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/pre-tool-use.js
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { homedir as homedir5 } from "node:os";
-import { join as join6, dirname, sep } from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { join as join7, dirname as dirname2, sep } from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // dist/src/utils/stdin.js
 function readStdin() {
@@ -381,7 +381,7 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', summary_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
@@ -392,7 +392,7 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, message_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
@@ -579,23 +579,24 @@ function normalizeContent(path, raw) {
     return raw;
   }
   if (Array.isArray(obj.turns)) {
-    const header = [];
-    if (obj.date_time)
-      header.push(`date: ${obj.date_time}`);
-    if (obj.speakers) {
-      const s = obj.speakers;
-      const names = [s.speaker_a, s.speaker_b].filter(Boolean).join(", ");
-      if (names)
-        header.push(`speakers: ${names}`);
-    }
+    const dateHeader = obj.date_time ? `(${String(obj.date_time)}) ` : "";
     const lines = obj.turns.map((t) => {
       const sp = String(t?.speaker ?? t?.name ?? "?").trim();
       const tx = String(t?.text ?? t?.content ?? "").replace(/\s+/g, " ").trim();
       const tag = t?.dia_id ? `[${t.dia_id}] ` : "";
-      return `${tag}${sp}: ${tx}`;
+      return `${dateHeader}${tag}${sp}: ${tx}`;
     });
-    const out2 = [...header, ...lines].join("\n");
+    const out2 = lines.join("\n");
     return out2.trim() ? out2 : raw;
+  }
+  if (obj.turn && typeof obj.turn === "object" && !Array.isArray(obj.turn)) {
+    const t = obj.turn;
+    const sp = String(t.speaker ?? t.name ?? "?").trim();
+    const tx = String(t.text ?? t.content ?? "").replace(/\s+/g, " ").trim();
+    const tag = t.dia_id ? `[${String(t.dia_id)}] ` : "";
+    const dateHeader = obj.date_time ? `(${String(obj.date_time)}) ` : "";
+    const line = `${dateHeader}${tag}${sp}: ${tx}`;
+    return line.trim() ? line : raw;
   }
   const stripRecalled = (t) => {
     const i = t.indexOf("<recalled-memories>");
@@ -639,8 +640,38 @@ function buildPathCondition(targetPath) {
   return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%' ESCAPE '\\')`;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, bm25Term } = opts;
   const limit = opts.limit ?? 100;
+  if (queryEmbedding && queryEmbedding.length > 0) {
+    const vecLit = serializeFloat4Array(queryEmbedding);
+    const semanticLimit = Math.min(limit, Number(process.env.HIVEMIND_SEMANTIC_LIMIT ?? "20"));
+    const lexicalLimit = Math.min(limit, Number(process.env.HIVEMIND_HYBRID_LEXICAL_LIMIT ?? "20"));
+    const filterPatternsForLex = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : [escapedPattern];
+    const memLexFilter = buildContentFilter("summary::text", likeOp, filterPatternsForLex);
+    const sessLexFilter = buildContentFilter("message::text", likeOp, filterPatternsForLex);
+    const memLexQuery = memLexFilter ? `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, 1.0 AS score FROM "${memoryTable}" WHERE 1=1${pathFilter}${memLexFilter} LIMIT ${lexicalLimit}` : null;
+    const sessLexQuery = sessLexFilter ? `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, 1.0 AS score FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessLexFilter} LIMIT ${lexicalLimit}` : null;
+    const memSemQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, (summary_embedding <#> ${vecLit}) AS score FROM "${memoryTable}" WHERE summary_embedding IS NOT NULL${pathFilter} ORDER BY score DESC LIMIT ${semanticLimit}`;
+    const sessSemQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, (message_embedding <#> ${vecLit}) AS score FROM "${sessionsTable}" WHERE message_embedding IS NOT NULL${pathFilter} ORDER BY score DESC LIMIT ${semanticLimit}`;
+    const parts = [memSemQuery, sessSemQuery];
+    if (memLexQuery)
+      parts.push(memLexQuery);
+    if (sessLexQuery)
+      parts.push(sessLexQuery);
+    const unionSql = parts.map((q) => `(${q})`).join(" UNION ALL ");
+    const outerLimit = semanticLimit + lexicalLimit;
+    const rows2 = await api.query(`SELECT path, content, source_order, creation_date, score FROM (` + unionSql + `) AS combined ORDER BY score DESC LIMIT ${outerLimit}`);
+    const seen = /* @__PURE__ */ new Set();
+    const unique = [];
+    for (const row of rows2) {
+      const p = String(row["path"]);
+      if (seen.has(p))
+        continue;
+      seen.add(p);
+      unique.push({ path: p, content: String(row["content"] ?? "") });
+    }
+    return unique;
+  }
   const filterPatterns = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : [escapedPattern];
   const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
   const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
@@ -651,6 +682,15 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
     path: String(row["path"]),
     content: String(row["content"] ?? "")
   }));
+}
+function serializeFloat4Array(vec) {
+  const parts = [];
+  for (const v of vec) {
+    if (!Number.isFinite(v))
+      return "NULL";
+    parts.push(String(v));
+  }
+  return `ARRAY[${parts.join(",")}]::float4[]`;
 }
 function buildPathFilter(targetPath) {
   const condition = buildPathCondition(targetPath);
@@ -730,13 +770,24 @@ function buildGrepSearchOptions(params, targetPath) {
   const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
   const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
   const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
+  let bm25Term;
+  if (!hasRegexMeta) {
+    bm25Term = params.pattern;
+  } else if (alternationPrefilters && alternationPrefilters.length > 0) {
+    bm25Term = alternationPrefilters.join(" ");
+  } else if (literalPrefilter) {
+    bm25Term = literalPrefilter;
+  }
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
-    likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
+    // Kept for the pure-lexical fallback path and existing tests; BM25 is now
+    // the preferred lexical ranker when a term can be extracted.
+    likeOp: process.env.HIVEMIND_GREP_LIKE === "case-sensitive" ? "LIKE" : "ILIKE",
     escapedPattern: sqlLike(params.pattern),
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0,
-    prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal))
+    prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
+    bm25Term
   };
 }
 function buildContentFilter(column, likeOp, patterns) {
@@ -787,11 +838,28 @@ function refineGrepMatches(rows, params, forceMultiFilePrefix) {
   }
   return output;
 }
-async function grepBothTables(api, memoryTable, sessionsTable, params, targetPath) {
-  const rows = await searchDeeplakeTables(api, memoryTable, sessionsTable, buildGrepSearchOptions(params, targetPath));
+async function grepBothTables(api, memoryTable, sessionsTable, params, targetPath, queryEmbedding) {
+  const rows = await searchDeeplakeTables(api, memoryTable, sessionsTable, {
+    ...buildGrepSearchOptions(params, targetPath),
+    queryEmbedding
+  });
   const seen = /* @__PURE__ */ new Set();
   const unique = rows.filter((r) => seen.has(r.path) ? false : (seen.add(r.path), true));
   const normalized = unique.map((r) => ({ path: r.path, content: normalizeContent(r.path, r.content) }));
+  if (queryEmbedding && queryEmbedding.length > 0) {
+    const emitAllLines = process.env.HIVEMIND_SEMANTIC_EMIT_ALL !== "false";
+    if (emitAllLines) {
+      const lines = [];
+      for (const r of normalized) {
+        for (const line of r.content.split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed)
+            lines.push(`${r.path}:${line}`);
+        }
+      }
+      return lines;
+    }
+  }
   return refineGrepMatches(normalized, params);
 }
 
@@ -831,7 +899,255 @@ function capOutputForClaude(output, options = {}) {
   return keptLines.join("\n") + footer;
 }
 
+// dist/src/embeddings/client.js
+import { connect } from "node:net";
+import { spawn } from "node:child_process";
+import { openSync, closeSync, writeSync, unlinkSync, existsSync as existsSync3, readFileSync as readFileSync3 } from "node:fs";
+
+// dist/src/embeddings/protocol.js
+var DEFAULT_SOCKET_DIR = "/tmp";
+var DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_CLIENT_TIMEOUT_MS = 200;
+function socketPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
+  return `${dir}/hivemind-embed-${uid}.sock`;
+}
+function pidPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
+  return `${dir}/hivemind-embed-${uid}.pid`;
+}
+
+// dist/src/embeddings/client.js
+var log3 = (m) => log("embed-client", m);
+function getUid() {
+  const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
+  return uid !== void 0 ? String(uid) : process.env.USER ?? "default";
+}
+var EmbedClient = class {
+  socketPath;
+  pidPath;
+  timeoutMs;
+  daemonEntry;
+  autoSpawn;
+  spawnWaitMs;
+  nextId = 0;
+  constructor(opts = {}) {
+    const uid = getUid();
+    const dir = opts.socketDir ?? "/tmp";
+    this.socketPath = socketPathFor(uid, dir);
+    this.pidPath = pidPathFor(uid, dir);
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS;
+    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON;
+    this.autoSpawn = opts.autoSpawn ?? true;
+    this.spawnWaitMs = opts.spawnWaitMs ?? 5e3;
+  }
+  /**
+   * Returns an embedding vector, or null on timeout/failure. Hooks MUST treat
+   * null as "skip embedding column" — never block the write path on us.
+   *
+   * Fire-and-forget spawn on miss: if the daemon isn't up, this call returns
+   * null AND kicks off a background spawn. The next call finds a ready daemon.
+   */
+  async embed(text, kind = "document") {
+    let sock;
+    try {
+      sock = await this.connectOnce();
+    } catch {
+      if (this.autoSpawn)
+        this.trySpawnDaemon();
+      return null;
+    }
+    try {
+      const id = String(++this.nextId);
+      const req = { op: "embed", id, kind, text };
+      const resp = await this.sendAndWait(sock, req);
+      if (resp.error || !("embedding" in resp) || !resp.embedding) {
+        log3(`embed err: ${resp.error ?? "no embedding"}`);
+        return null;
+      }
+      return resp.embedding;
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      log3(`embed failed: ${err}`);
+      return null;
+    } finally {
+      try {
+        sock.end();
+      } catch {
+      }
+    }
+  }
+  /**
+   * Wait up to spawnWaitMs for the daemon to accept connections, spawning if
+   * necessary. Meant for SessionStart / long-running batches — not the hot path.
+   */
+  async warmup() {
+    try {
+      const s = await this.connectOnce();
+      s.end();
+      return true;
+    } catch {
+      if (!this.autoSpawn)
+        return false;
+      this.trySpawnDaemon();
+      try {
+        const s = await this.waitForSocket();
+        s.end();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+  connectOnce() {
+    return new Promise((resolve2, reject) => {
+      const sock = connect(this.socketPath);
+      const to = setTimeout(() => {
+        sock.destroy();
+        reject(new Error("connect timeout"));
+      }, this.timeoutMs);
+      sock.once("connect", () => {
+        clearTimeout(to);
+        resolve2(sock);
+      });
+      sock.once("error", (e) => {
+        clearTimeout(to);
+        reject(e);
+      });
+    });
+  }
+  trySpawnDaemon() {
+    let fd;
+    try {
+      fd = openSync(this.pidPath, "wx", 384);
+      writeSync(fd, String(process.pid));
+    } catch (e) {
+      if (this.isPidFileStale()) {
+        try {
+          unlinkSync(this.pidPath);
+        } catch {
+        }
+        try {
+          fd = openSync(this.pidPath, "wx", 384);
+          writeSync(fd, String(process.pid));
+        } catch {
+          return;
+        }
+      } else {
+        return;
+      }
+    }
+    if (!this.daemonEntry || !existsSync3(this.daemonEntry)) {
+      log3(`daemonEntry not configured or missing: ${this.daemonEntry}`);
+      try {
+        closeSync(fd);
+        unlinkSync(this.pidPath);
+      } catch {
+      }
+      return;
+    }
+    try {
+      const child = spawn(process.execPath, [this.daemonEntry], {
+        detached: true,
+        stdio: "ignore",
+        env: process.env
+      });
+      child.unref();
+      log3(`spawned daemon pid=${child.pid}`);
+    } finally {
+      closeSync(fd);
+    }
+  }
+  isPidFileStale() {
+    try {
+      const raw = readFileSync3(this.pidPath, "utf-8").trim();
+      const pid = Number(raw);
+      if (!pid || Number.isNaN(pid))
+        return true;
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+  }
+  async waitForSocket() {
+    const deadline = Date.now() + this.spawnWaitMs;
+    let delay = 30;
+    while (Date.now() < deadline) {
+      await sleep2(delay);
+      delay = Math.min(delay * 1.5, 300);
+      if (!existsSync3(this.socketPath))
+        continue;
+      try {
+        return await this.connectOnce();
+      } catch {
+      }
+    }
+    throw new Error("daemon did not become ready within spawnWaitMs");
+  }
+  sendAndWait(sock, req) {
+    return new Promise((resolve2, reject) => {
+      let buf = "";
+      const to = setTimeout(() => {
+        sock.destroy();
+        reject(new Error("request timeout"));
+      }, this.timeoutMs);
+      sock.setEncoding("utf-8");
+      sock.on("data", (chunk) => {
+        buf += chunk;
+        const nl = buf.indexOf("\n");
+        if (nl === -1)
+          return;
+        const line = buf.slice(0, nl);
+        clearTimeout(to);
+        try {
+          resolve2(JSON.parse(line));
+        } catch (e) {
+          reject(e);
+        }
+      });
+      sock.on("error", (e) => {
+        clearTimeout(to);
+        reject(e);
+      });
+      sock.write(JSON.stringify(req) + "\n");
+    });
+  }
+};
+function sleep2(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 // dist/src/hooks/grep-direct.js
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { dirname, join as join4 } from "node:path";
+var SEMANTIC_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false";
+var SEMANTIC_TIMEOUT_MS = Number(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS ?? "500");
+function resolveDaemonPath() {
+  return join4(dirname(fileURLToPath2(import.meta.url)), "..", "embeddings", "embed-daemon.js");
+}
+var sharedEmbedClient = null;
+function getEmbedClient() {
+  if (!sharedEmbedClient) {
+    sharedEmbedClient = new EmbedClient({
+      daemonEntry: resolveDaemonPath(),
+      timeoutMs: SEMANTIC_TIMEOUT_MS
+    });
+  }
+  return sharedEmbedClient;
+}
+function patternIsSemanticFriendly(pattern, fixedString) {
+  if (!pattern || pattern.length < 2)
+    return false;
+  if (fixedString)
+    return true;
+  const meta = pattern.match(/[|()\[\]{}+?^$\\]/g);
+  if (!meta)
+    return true;
+  return meta.length <= 1;
+}
 function splitFirstPipelineStage(cmd) {
   const input = cmd.trim();
   let quote = null;
@@ -1069,7 +1385,15 @@ async function handleGrepDirect(api, table, sessionsTable, params) {
     invertMatch: params.invertMatch,
     fixedString: params.fixedString
   };
-  const output = await grepBothTables(api, table, sessionsTable, matchParams, params.targetPath);
+  let queryEmbedding = null;
+  if (SEMANTIC_ENABLED && patternIsSemanticFriendly(params.pattern, params.fixedString)) {
+    try {
+      queryEmbedding = await getEmbedClient().embed(params.pattern, "query");
+    } catch {
+      queryEmbedding = null;
+    }
+  }
+  const output = await grepBothTables(api, table, sessionsTable, matchParams, params.targetPath, queryEmbedding);
   const joined = output.join("\n") || "(no matches)";
   return capOutputForClaude(joined, { kind: "grep" });
 }
@@ -1690,20 +2014,20 @@ async function executeCompiledBashCommand(api, memoryTable, sessionsTable, cmd, 
 }
 
 // dist/src/hooks/query-cache.js
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync3, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join4 } from "node:path";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync4, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join5 } from "node:path";
 import { homedir as homedir3 } from "node:os";
-var log3 = (msg) => log("query-cache", msg);
-var DEFAULT_CACHE_ROOT = join4(homedir3(), ".deeplake", "query-cache");
+var log4 = (msg) => log("query-cache", msg);
+var DEFAULT_CACHE_ROOT = join5(homedir3(), ".deeplake", "query-cache");
 var INDEX_CACHE_FILE = "index.md";
 function getSessionQueryCacheDir(sessionId, deps = {}) {
   const { cacheRoot = DEFAULT_CACHE_ROOT } = deps;
-  return join4(cacheRoot, sessionId);
+  return join5(cacheRoot, sessionId);
 }
 function readCachedIndexContent(sessionId, deps = {}) {
-  const { logFn = log3 } = deps;
+  const { logFn = log4 } = deps;
   try {
-    return readFileSync3(join4(getSessionQueryCacheDir(sessionId, deps), INDEX_CACHE_FILE), "utf-8");
+    return readFileSync4(join5(getSessionQueryCacheDir(sessionId, deps), INDEX_CACHE_FILE), "utf-8");
   } catch (e) {
     if (e?.code === "ENOENT")
       return null;
@@ -1712,11 +2036,11 @@ function readCachedIndexContent(sessionId, deps = {}) {
   }
 }
 function writeCachedIndexContent(sessionId, content, deps = {}) {
-  const { logFn = log3 } = deps;
+  const { logFn = log4 } = deps;
   try {
     const dir = getSessionQueryCacheDir(sessionId, deps);
     mkdirSync2(dir, { recursive: true });
-    writeFileSync2(join4(dir, INDEX_CACHE_FILE), content, "utf-8");
+    writeFileSync2(join5(dir, INDEX_CACHE_FILE), content, "utf-8");
   } catch (e) {
     logFn(`write failed for session=${sessionId}: ${e.message}`);
   }
@@ -1724,8 +2048,8 @@ function writeCachedIndexContent(sessionId, content, deps = {}) {
 
 // dist/src/hooks/memory-path-utils.js
 import { homedir as homedir4 } from "node:os";
-import { join as join5 } from "node:path";
-var MEMORY_PATH = join5(homedir4(), ".deeplake", "memory");
+import { join as join6 } from "node:path";
+var MEMORY_PATH = join6(homedir4(), ".deeplake", "memory");
 var TILDE_PATH = "~/.deeplake/memory";
 var HOME_VAR_PATH = "$HOME/.deeplake/memory";
 var SAFE_BUILTINS = /* @__PURE__ */ new Set([
@@ -1841,20 +2165,20 @@ function rewritePaths(cmd) {
 }
 
 // dist/src/hooks/pre-tool-use.js
-var log4 = (msg) => log("pre", msg);
-var __bundleDir = dirname(fileURLToPath2(import.meta.url));
-var SHELL_BUNDLE = existsSync3(join6(__bundleDir, "shell", "deeplake-shell.js")) ? join6(__bundleDir, "shell", "deeplake-shell.js") : join6(__bundleDir, "..", "shell", "deeplake-shell.js");
-var READ_CACHE_ROOT = join6(homedir5(), ".deeplake", "query-cache");
+var log5 = (msg) => log("pre", msg);
+var __bundleDir = dirname2(fileURLToPath3(import.meta.url));
+var SHELL_BUNDLE = existsSync4(join7(__bundleDir, "shell", "deeplake-shell.js")) ? join7(__bundleDir, "shell", "deeplake-shell.js") : join7(__bundleDir, "..", "shell", "deeplake-shell.js");
+var READ_CACHE_ROOT = join7(homedir5(), ".deeplake", "query-cache");
 function writeReadCacheFile(sessionId, virtualPath, content, deps = {}) {
   const { cacheRoot = READ_CACHE_ROOT } = deps;
   const safeSessionId = sessionId.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown";
   const rel = virtualPath.replace(/^\/+/, "") || "content";
-  const expectedRoot = join6(cacheRoot, safeSessionId, "read");
-  const absPath = join6(expectedRoot, rel);
+  const expectedRoot = join7(cacheRoot, safeSessionId, "read");
+  const absPath = join7(expectedRoot, rel);
   if (absPath !== expectedRoot && !absPath.startsWith(expectedRoot + sep)) {
     throw new Error(`writeReadCacheFile: path escapes cache root: ${absPath}`);
   }
-  mkdirSync3(dirname(absPath), { recursive: true });
+  mkdirSync3(dirname2(absPath), { recursive: true });
   writeFileSync3(absPath, content, "utf-8");
   return absPath;
 }
@@ -1901,7 +2225,7 @@ function getShellCommand(toolName, toolInput) {
         break;
       const rewritten = rewritePaths(cmd);
       if (!isSafe(rewritten)) {
-        log4(`unsafe command blocked: ${rewritten}`);
+        log5(`unsafe command blocked: ${rewritten}`);
         return null;
       }
       return rewritten;
@@ -1941,7 +2265,7 @@ function buildFallbackDecision(shellCmd, shellBundle = SHELL_BUNDLE) {
   return buildAllowDecision(`node "${shellBundle}" -c "${shellCmd.replace(/"/g, '\\"')}"`, `[DeepLake shell] ${shellCmd}`);
 }
 async function processPreToolUse(input, deps = {}) {
-  const { config = loadConfig(), createApi = (table2, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table2), executeCompiledBashCommandFn = executeCompiledBashCommand, handleGrepDirectFn = handleGrepDirect, readVirtualPathContentsFn = readVirtualPathContents, readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, readCachedIndexContentFn = readCachedIndexContent, writeCachedIndexContentFn = writeCachedIndexContent, writeReadCacheFileFn = writeReadCacheFile, shellBundle = SHELL_BUNDLE, logFn = log4 } = deps;
+  const { config = loadConfig(), createApi = (table2, activeConfig) => new DeeplakeApi(activeConfig.token, activeConfig.apiUrl, activeConfig.orgId, activeConfig.workspaceId, table2), executeCompiledBashCommandFn = executeCompiledBashCommand, handleGrepDirectFn = handleGrepDirect, readVirtualPathContentsFn = readVirtualPathContents, readVirtualPathContentFn = readVirtualPathContent, listVirtualPathRowsFn = listVirtualPathRows, findVirtualPathsFn = findVirtualPaths, readCachedIndexContentFn = readCachedIndexContent, writeCachedIndexContentFn = writeCachedIndexContent, writeReadCacheFileFn = writeReadCacheFile, shellBundle = SHELL_BUNDLE, logFn = log5 } = deps;
   const cmd = input.tool_input.command ?? "";
   const shellCmd = getShellCommand(input.tool_name, input.tool_input);
   const toolPath = getReadTargetPath(input.tool_input) ?? input.tool_input.path ?? "";
@@ -2153,7 +2477,7 @@ async function main() {
 }
 if (isDirectRun(import.meta.url)) {
   main().catch((e) => {
-    log4(`fatal: ${e.message}`);
+    log5(`fatal: ${e.message}`);
     process.exit(0);
   });
 }

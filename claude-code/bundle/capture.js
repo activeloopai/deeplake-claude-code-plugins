@@ -375,7 +375,7 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', summary_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
@@ -386,7 +386,7 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, message_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
@@ -658,8 +658,247 @@ function bundleDirFromImportMeta(importMetaUrl) {
   return dirname(fileURLToPath(importMetaUrl));
 }
 
+// dist/src/embeddings/client.js
+import { connect } from "node:net";
+import { spawn as spawn2 } from "node:child_process";
+import { openSync as openSync2, closeSync as closeSync2, writeSync as writeSync2, unlinkSync as unlinkSync2, existsSync as existsSync4, readFileSync as readFileSync4 } from "node:fs";
+
+// dist/src/embeddings/protocol.js
+var DEFAULT_SOCKET_DIR = "/tmp";
+var DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_CLIENT_TIMEOUT_MS = 200;
+function socketPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
+  return `${dir}/hivemind-embed-${uid}.sock`;
+}
+function pidPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
+  return `${dir}/hivemind-embed-${uid}.pid`;
+}
+
+// dist/src/embeddings/client.js
+var log3 = (m) => log("embed-client", m);
+function getUid() {
+  const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
+  return uid !== void 0 ? String(uid) : process.env.USER ?? "default";
+}
+var EmbedClient = class {
+  socketPath;
+  pidPath;
+  timeoutMs;
+  daemonEntry;
+  autoSpawn;
+  spawnWaitMs;
+  nextId = 0;
+  constructor(opts = {}) {
+    const uid = getUid();
+    const dir = opts.socketDir ?? "/tmp";
+    this.socketPath = socketPathFor(uid, dir);
+    this.pidPath = pidPathFor(uid, dir);
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS;
+    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON;
+    this.autoSpawn = opts.autoSpawn ?? true;
+    this.spawnWaitMs = opts.spawnWaitMs ?? 5e3;
+  }
+  /**
+   * Returns an embedding vector, or null on timeout/failure. Hooks MUST treat
+   * null as "skip embedding column" — never block the write path on us.
+   *
+   * Fire-and-forget spawn on miss: if the daemon isn't up, this call returns
+   * null AND kicks off a background spawn. The next call finds a ready daemon.
+   */
+  async embed(text, kind = "document") {
+    let sock;
+    try {
+      sock = await this.connectOnce();
+    } catch {
+      if (this.autoSpawn)
+        this.trySpawnDaemon();
+      return null;
+    }
+    try {
+      const id = String(++this.nextId);
+      const req = { op: "embed", id, kind, text };
+      const resp = await this.sendAndWait(sock, req);
+      if (resp.error || !("embedding" in resp) || !resp.embedding) {
+        log3(`embed err: ${resp.error ?? "no embedding"}`);
+        return null;
+      }
+      return resp.embedding;
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      log3(`embed failed: ${err}`);
+      return null;
+    } finally {
+      try {
+        sock.end();
+      } catch {
+      }
+    }
+  }
+  /**
+   * Wait up to spawnWaitMs for the daemon to accept connections, spawning if
+   * necessary. Meant for SessionStart / long-running batches — not the hot path.
+   */
+  async warmup() {
+    try {
+      const s = await this.connectOnce();
+      s.end();
+      return true;
+    } catch {
+      if (!this.autoSpawn)
+        return false;
+      this.trySpawnDaemon();
+      try {
+        const s = await this.waitForSocket();
+        s.end();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+  connectOnce() {
+    return new Promise((resolve, reject) => {
+      const sock = connect(this.socketPath);
+      const to = setTimeout(() => {
+        sock.destroy();
+        reject(new Error("connect timeout"));
+      }, this.timeoutMs);
+      sock.once("connect", () => {
+        clearTimeout(to);
+        resolve(sock);
+      });
+      sock.once("error", (e) => {
+        clearTimeout(to);
+        reject(e);
+      });
+    });
+  }
+  trySpawnDaemon() {
+    let fd;
+    try {
+      fd = openSync2(this.pidPath, "wx", 384);
+      writeSync2(fd, String(process.pid));
+    } catch (e) {
+      if (this.isPidFileStale()) {
+        try {
+          unlinkSync2(this.pidPath);
+        } catch {
+        }
+        try {
+          fd = openSync2(this.pidPath, "wx", 384);
+          writeSync2(fd, String(process.pid));
+        } catch {
+          return;
+        }
+      } else {
+        return;
+      }
+    }
+    if (!this.daemonEntry || !existsSync4(this.daemonEntry)) {
+      log3(`daemonEntry not configured or missing: ${this.daemonEntry}`);
+      try {
+        closeSync2(fd);
+        unlinkSync2(this.pidPath);
+      } catch {
+      }
+      return;
+    }
+    try {
+      const child = spawn2(process.execPath, [this.daemonEntry], {
+        detached: true,
+        stdio: "ignore",
+        env: process.env
+      });
+      child.unref();
+      log3(`spawned daemon pid=${child.pid}`);
+    } finally {
+      closeSync2(fd);
+    }
+  }
+  isPidFileStale() {
+    try {
+      const raw = readFileSync4(this.pidPath, "utf-8").trim();
+      const pid = Number(raw);
+      if (!pid || Number.isNaN(pid))
+        return true;
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+  }
+  async waitForSocket() {
+    const deadline = Date.now() + this.spawnWaitMs;
+    let delay = 30;
+    while (Date.now() < deadline) {
+      await sleep2(delay);
+      delay = Math.min(delay * 1.5, 300);
+      if (!existsSync4(this.socketPath))
+        continue;
+      try {
+        return await this.connectOnce();
+      } catch {
+      }
+    }
+    throw new Error("daemon did not become ready within spawnWaitMs");
+  }
+  sendAndWait(sock, req) {
+    return new Promise((resolve, reject) => {
+      let buf = "";
+      const to = setTimeout(() => {
+        sock.destroy();
+        reject(new Error("request timeout"));
+      }, this.timeoutMs);
+      sock.setEncoding("utf-8");
+      sock.on("data", (chunk) => {
+        buf += chunk;
+        const nl = buf.indexOf("\n");
+        if (nl === -1)
+          return;
+        const line = buf.slice(0, nl);
+        clearTimeout(to);
+        try {
+          resolve(JSON.parse(line));
+        } catch (e) {
+          reject(e);
+        }
+      });
+      sock.on("error", (e) => {
+        clearTimeout(to);
+        reject(e);
+      });
+      sock.write(JSON.stringify(req) + "\n");
+    });
+  }
+};
+function sleep2(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// dist/src/embeddings/sql.js
+function embeddingSqlLiteral(vec) {
+  if (!vec || vec.length === 0)
+    return "NULL";
+  const parts = [];
+  for (const v of vec) {
+    if (!Number.isFinite(v))
+      return "NULL";
+    parts.push(String(v));
+  }
+  return `ARRAY[${parts.join(",")}]::float4[]`;
+}
+
 // dist/src/hooks/capture.js
-var log3 = (msg) => log("capture", msg);
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { dirname as dirname2, join as join7 } from "node:path";
+var log4 = (msg) => log("capture", msg);
+function resolveEmbedDaemonPath() {
+  return join7(dirname2(fileURLToPath2(import.meta.url)), "embeddings", "embed-daemon.js");
+}
 var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 async function main() {
   if (!CAPTURE)
@@ -667,7 +906,7 @@ async function main() {
   const input = await readStdin();
   const config = loadConfig();
   if (!config) {
-    log3("no config");
+    log4("no config");
     return;
   }
   const sessionsTable = config.sessionsTableName;
@@ -685,7 +924,7 @@ async function main() {
   };
   let entry;
   if (input.prompt !== void 0) {
-    log3(`user session=${input.session_id}`);
+    log4(`user session=${input.session_id}`);
     entry = {
       id: crypto.randomUUID(),
       ...meta,
@@ -693,7 +932,7 @@ async function main() {
       content: input.prompt
     };
   } else if (input.tool_name !== void 0) {
-    log3(`tool=${input.tool_name} session=${input.session_id}`);
+    log4(`tool=${input.tool_name} session=${input.session_id}`);
     entry = {
       id: crypto.randomUUID(),
       ...meta,
@@ -704,7 +943,7 @@ async function main() {
       tool_response: JSON.stringify(input.tool_response)
     };
   } else if (input.last_assistant_message !== void 0) {
-    log3(`assistant session=${input.session_id}`);
+    log4(`assistant session=${input.session_id}`);
     entry = {
       id: crypto.randomUUID(),
       ...meta,
@@ -713,28 +952,31 @@ async function main() {
       ...input.agent_transcript_path ? { agent_transcript_path: input.agent_transcript_path } : {}
     };
   } else {
-    log3("unknown event, skipping");
+    log4("unknown event, skipping");
     return;
   }
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);
-  log3(`writing to ${sessionPath}`);
+  log4(`writing to ${sessionPath}`);
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
   const filename = sessionPath.split("/").pop() ?? "";
   const jsonForSql = line.replace(/'/g, "''");
-  const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'claude_code', '${ts}', '${ts}')`;
+  const embedClient = new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() });
+  const embedding = await embedClient.embed(line, "document");
+  const embeddingSql = embeddingSqlLiteral(embedding);
+  const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'claude_code', '${ts}', '${ts}')`;
   try {
     await api.query(insertSql);
   } catch (e) {
     if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
-      log3("table missing, creating and retrying");
+      log4("table missing, creating and retrying");
       await api.ensureSessionsTable(sessionsTable);
       await api.query(insertSql);
     } else {
       throw e;
     }
   }
-  log3("capture ok \u2192 cloud");
+  log4("capture ok \u2192 cloud");
   maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
 }
 function maybeTriggerPeriodicSummary(sessionId, cwd, config) {
@@ -746,7 +988,7 @@ function maybeTriggerPeriodicSummary(sessionId, cwd, config) {
     if (!shouldTrigger(state, cfg))
       return;
     if (!tryAcquireLock(sessionId)) {
-      log3(`periodic trigger suppressed (lock held) session=${sessionId}`);
+      log4(`periodic trigger suppressed (lock held) session=${sessionId}`);
       return;
     }
     wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
@@ -759,19 +1001,19 @@ function maybeTriggerPeriodicSummary(sessionId, cwd, config) {
         reason: "Periodic"
       });
     } catch (e) {
-      log3(`periodic spawn failed: ${e.message}`);
+      log4(`periodic spawn failed: ${e.message}`);
       try {
         releaseLock(sessionId);
       } catch (releaseErr) {
-        log3(`releaseLock after periodic spawn failure also failed: ${releaseErr.message}`);
+        log4(`releaseLock after periodic spawn failure also failed: ${releaseErr.message}`);
       }
       throw e;
     }
   } catch (e) {
-    log3(`periodic trigger error: ${e.message}`);
+    log4(`periodic trigger error: ${e.message}`);
   }
 }
 main().catch((e) => {
-  log3(`fatal: ${e.message}`);
+  log4(`fatal: ${e.message}`);
   process.exit(0);
 });

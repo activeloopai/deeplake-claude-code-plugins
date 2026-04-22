@@ -46081,14 +46081,14 @@ var require_turndown_cjs = __commonJS({
         } else if (node.nodeType === 1) {
           replacement = replacementForNode.call(self2, node);
         }
-        return join7(output, replacement);
+        return join9(output, replacement);
       }, "");
     }
     function postProcess(output) {
       var self2 = this;
       this.rules.forEach(function(rule) {
         if (typeof rule.append === "function") {
-          output = join7(output, rule.append(self2.options));
+          output = join9(output, rule.append(self2.options));
         }
       });
       return output.replace(/^[\t\r\n]+/, "").replace(/[\t\r\n\s]+$/, "");
@@ -46100,7 +46100,7 @@ var require_turndown_cjs = __commonJS({
       if (whitespace.leading || whitespace.trailing) content = content.trim();
       return whitespace.leading + rule.replacement(content, node, this.options) + whitespace.trailing;
     }
-    function join7(output, replacement) {
+    function join9(output, replacement) {
       var s12 = trimTrailingNewlines(output);
       var s22 = trimLeadingNewlines(replacement);
       var nls = Math.max(output.length - s12.length, replacement.length - s22.length);
@@ -67078,7 +67078,7 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', summary_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
@@ -67089,7 +67089,7 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, message_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
@@ -67101,6 +67101,8 @@ var DeeplakeApi = class {
 // dist/src/shell/deeplake-fs.js
 import { basename as basename4, posix } from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { dirname as dirname4, join as join7 } from "node:path";
 
 // dist/src/shell/grep-core.js
 var TOOL_INPUT_FIELDS = [
@@ -67266,23 +67268,24 @@ function normalizeContent(path2, raw) {
     return raw;
   }
   if (Array.isArray(obj.turns)) {
-    const header = [];
-    if (obj.date_time)
-      header.push(`date: ${obj.date_time}`);
-    if (obj.speakers) {
-      const s10 = obj.speakers;
-      const names = [s10.speaker_a, s10.speaker_b].filter(Boolean).join(", ");
-      if (names)
-        header.push(`speakers: ${names}`);
-    }
+    const dateHeader = obj.date_time ? `(${String(obj.date_time)}) ` : "";
     const lines = obj.turns.map((t6) => {
       const sp = String(t6?.speaker ?? t6?.name ?? "?").trim();
       const tx = String(t6?.text ?? t6?.content ?? "").replace(/\s+/g, " ").trim();
       const tag = t6?.dia_id ? `[${t6.dia_id}] ` : "";
-      return `${tag}${sp}: ${tx}`;
+      return `${dateHeader}${tag}${sp}: ${tx}`;
     });
-    const out2 = [...header, ...lines].join("\n");
+    const out2 = lines.join("\n");
     return out2.trim() ? out2 : raw;
+  }
+  if (obj.turn && typeof obj.turn === "object" && !Array.isArray(obj.turn)) {
+    const t6 = obj.turn;
+    const sp = String(t6.speaker ?? t6.name ?? "?").trim();
+    const tx = String(t6.text ?? t6.content ?? "").replace(/\s+/g, " ").trim();
+    const tag = t6.dia_id ? `[${String(t6.dia_id)}] ` : "";
+    const dateHeader = obj.date_time ? `(${String(obj.date_time)}) ` : "";
+    const line = `${dateHeader}${tag}${sp}: ${tx}`;
+    return line.trim() ? line : raw;
   }
   const stripRecalled = (t6) => {
     const i11 = t6.indexOf("<recalled-memories>");
@@ -67326,8 +67329,38 @@ function buildPathCondition(targetPath) {
   return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%' ESCAPE '\\')`;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, bm25Term } = opts;
   const limit = opts.limit ?? 100;
+  if (queryEmbedding && queryEmbedding.length > 0) {
+    const vecLit = serializeFloat4Array(queryEmbedding);
+    const semanticLimit = Math.min(limit, Number(process.env.HIVEMIND_SEMANTIC_LIMIT ?? "20"));
+    const lexicalLimit = Math.min(limit, Number(process.env.HIVEMIND_HYBRID_LEXICAL_LIMIT ?? "20"));
+    const filterPatternsForLex = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : [escapedPattern];
+    const memLexFilter = buildContentFilter("summary::text", likeOp, filterPatternsForLex);
+    const sessLexFilter = buildContentFilter("message::text", likeOp, filterPatternsForLex);
+    const memLexQuery = memLexFilter ? `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, 1.0 AS score FROM "${memoryTable}" WHERE 1=1${pathFilter}${memLexFilter} LIMIT ${lexicalLimit}` : null;
+    const sessLexQuery = sessLexFilter ? `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, 1.0 AS score FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessLexFilter} LIMIT ${lexicalLimit}` : null;
+    const memSemQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, (summary_embedding <#> ${vecLit}) AS score FROM "${memoryTable}" WHERE summary_embedding IS NOT NULL${pathFilter} ORDER BY score DESC LIMIT ${semanticLimit}`;
+    const sessSemQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, (message_embedding <#> ${vecLit}) AS score FROM "${sessionsTable}" WHERE message_embedding IS NOT NULL${pathFilter} ORDER BY score DESC LIMIT ${semanticLimit}`;
+    const parts = [memSemQuery, sessSemQuery];
+    if (memLexQuery)
+      parts.push(memLexQuery);
+    if (sessLexQuery)
+      parts.push(sessLexQuery);
+    const unionSql = parts.map((q17) => `(${q17})`).join(" UNION ALL ");
+    const outerLimit = semanticLimit + lexicalLimit;
+    const rows2 = await api.query(`SELECT path, content, source_order, creation_date, score FROM (` + unionSql + `) AS combined ORDER BY score DESC LIMIT ${outerLimit}`);
+    const seen = /* @__PURE__ */ new Set();
+    const unique = [];
+    for (const row of rows2) {
+      const p22 = String(row["path"]);
+      if (seen.has(p22))
+        continue;
+      seen.add(p22);
+      unique.push({ path: p22, content: String(row["content"] ?? "") });
+    }
+    return unique;
+  }
   const filterPatterns = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : [escapedPattern];
   const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
   const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
@@ -67338,6 +67371,15 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
     path: String(row["path"]),
     content: String(row["content"] ?? "")
   }));
+}
+function serializeFloat4Array(vec) {
+  const parts = [];
+  for (const v27 of vec) {
+    if (!Number.isFinite(v27))
+      return "NULL";
+    parts.push(String(v27));
+  }
+  return `ARRAY[${parts.join(",")}]::float4[]`;
 }
 function buildPathFilter(targetPath) {
   const condition = buildPathCondition(targetPath);
@@ -67427,13 +67469,24 @@ function buildGrepSearchOptions(params, targetPath) {
   const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
   const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
   const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
+  let bm25Term;
+  if (!hasRegexMeta) {
+    bm25Term = params.pattern;
+  } else if (alternationPrefilters && alternationPrefilters.length > 0) {
+    bm25Term = alternationPrefilters.join(" ");
+  } else if (literalPrefilter) {
+    bm25Term = literalPrefilter;
+  }
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
-    likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
+    // Kept for the pure-lexical fallback path and existing tests; BM25 is now
+    // the preferred lexical ranker when a term can be extracted.
+    likeOp: process.env.HIVEMIND_GREP_LIKE === "case-sensitive" ? "LIKE" : "ILIKE",
     escapedPattern: sqlLike(params.pattern),
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0,
-    prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal))
+    prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
+    bm25Term
   };
 }
 function buildContentFilter(column, likeOp, patterns) {
@@ -67485,6 +67538,240 @@ function refineGrepMatches(rows, params, forceMultiFilePrefix) {
   return output;
 }
 
+// dist/src/embeddings/client.js
+import { connect } from "node:net";
+import { spawn } from "node:child_process";
+import { openSync, closeSync, writeSync, unlinkSync, existsSync as existsSync4, readFileSync as readFileSync3 } from "node:fs";
+
+// dist/src/embeddings/protocol.js
+var DEFAULT_SOCKET_DIR = "/tmp";
+var DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_CLIENT_TIMEOUT_MS = 200;
+function socketPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
+  return `${dir}/hivemind-embed-${uid}.sock`;
+}
+function pidPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
+  return `${dir}/hivemind-embed-${uid}.pid`;
+}
+
+// dist/src/embeddings/client.js
+var log3 = (m26) => log("embed-client", m26);
+function getUid() {
+  const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
+  return uid !== void 0 ? String(uid) : process.env.USER ?? "default";
+}
+var EmbedClient = class {
+  socketPath;
+  pidPath;
+  timeoutMs;
+  daemonEntry;
+  autoSpawn;
+  spawnWaitMs;
+  nextId = 0;
+  constructor(opts = {}) {
+    const uid = getUid();
+    const dir = opts.socketDir ?? "/tmp";
+    this.socketPath = socketPathFor(uid, dir);
+    this.pidPath = pidPathFor(uid, dir);
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS;
+    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON;
+    this.autoSpawn = opts.autoSpawn ?? true;
+    this.spawnWaitMs = opts.spawnWaitMs ?? 5e3;
+  }
+  /**
+   * Returns an embedding vector, or null on timeout/failure. Hooks MUST treat
+   * null as "skip embedding column" — never block the write path on us.
+   *
+   * Fire-and-forget spawn on miss: if the daemon isn't up, this call returns
+   * null AND kicks off a background spawn. The next call finds a ready daemon.
+   */
+  async embed(text, kind = "document") {
+    let sock;
+    try {
+      sock = await this.connectOnce();
+    } catch {
+      if (this.autoSpawn)
+        this.trySpawnDaemon();
+      return null;
+    }
+    try {
+      const id = String(++this.nextId);
+      const req = { op: "embed", id, kind, text };
+      const resp = await this.sendAndWait(sock, req);
+      if (resp.error || !("embedding" in resp) || !resp.embedding) {
+        log3(`embed err: ${resp.error ?? "no embedding"}`);
+        return null;
+      }
+      return resp.embedding;
+    } catch (e6) {
+      const err = e6 instanceof Error ? e6.message : String(e6);
+      log3(`embed failed: ${err}`);
+      return null;
+    } finally {
+      try {
+        sock.end();
+      } catch {
+      }
+    }
+  }
+  /**
+   * Wait up to spawnWaitMs for the daemon to accept connections, spawning if
+   * necessary. Meant for SessionStart / long-running batches — not the hot path.
+   */
+  async warmup() {
+    try {
+      const s10 = await this.connectOnce();
+      s10.end();
+      return true;
+    } catch {
+      if (!this.autoSpawn)
+        return false;
+      this.trySpawnDaemon();
+      try {
+        const s10 = await this.waitForSocket();
+        s10.end();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+  connectOnce() {
+    return new Promise((resolve5, reject) => {
+      const sock = connect(this.socketPath);
+      const to3 = setTimeout(() => {
+        sock.destroy();
+        reject(new Error("connect timeout"));
+      }, this.timeoutMs);
+      sock.once("connect", () => {
+        clearTimeout(to3);
+        resolve5(sock);
+      });
+      sock.once("error", (e6) => {
+        clearTimeout(to3);
+        reject(e6);
+      });
+    });
+  }
+  trySpawnDaemon() {
+    let fd;
+    try {
+      fd = openSync(this.pidPath, "wx", 384);
+      writeSync(fd, String(process.pid));
+    } catch (e6) {
+      if (this.isPidFileStale()) {
+        try {
+          unlinkSync(this.pidPath);
+        } catch {
+        }
+        try {
+          fd = openSync(this.pidPath, "wx", 384);
+          writeSync(fd, String(process.pid));
+        } catch {
+          return;
+        }
+      } else {
+        return;
+      }
+    }
+    if (!this.daemonEntry || !existsSync4(this.daemonEntry)) {
+      log3(`daemonEntry not configured or missing: ${this.daemonEntry}`);
+      try {
+        closeSync(fd);
+        unlinkSync(this.pidPath);
+      } catch {
+      }
+      return;
+    }
+    try {
+      const child = spawn(process.execPath, [this.daemonEntry], {
+        detached: true,
+        stdio: "ignore",
+        env: process.env
+      });
+      child.unref();
+      log3(`spawned daemon pid=${child.pid}`);
+    } finally {
+      closeSync(fd);
+    }
+  }
+  isPidFileStale() {
+    try {
+      const raw = readFileSync3(this.pidPath, "utf-8").trim();
+      const pid = Number(raw);
+      if (!pid || Number.isNaN(pid))
+        return true;
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+  }
+  async waitForSocket() {
+    const deadline = Date.now() + this.spawnWaitMs;
+    let delay = 30;
+    while (Date.now() < deadline) {
+      await sleep2(delay);
+      delay = Math.min(delay * 1.5, 300);
+      if (!existsSync4(this.socketPath))
+        continue;
+      try {
+        return await this.connectOnce();
+      } catch {
+      }
+    }
+    throw new Error("daemon did not become ready within spawnWaitMs");
+  }
+  sendAndWait(sock, req) {
+    return new Promise((resolve5, reject) => {
+      let buf = "";
+      const to3 = setTimeout(() => {
+        sock.destroy();
+        reject(new Error("request timeout"));
+      }, this.timeoutMs);
+      sock.setEncoding("utf-8");
+      sock.on("data", (chunk) => {
+        buf += chunk;
+        const nl3 = buf.indexOf("\n");
+        if (nl3 === -1)
+          return;
+        const line = buf.slice(0, nl3);
+        clearTimeout(to3);
+        try {
+          resolve5(JSON.parse(line));
+        } catch (e6) {
+          reject(e6);
+        }
+      });
+      sock.on("error", (e6) => {
+        clearTimeout(to3);
+        reject(e6);
+      });
+      sock.write(JSON.stringify(req) + "\n");
+    });
+  }
+};
+function sleep2(ms3) {
+  return new Promise((r10) => setTimeout(r10, ms3));
+}
+
+// dist/src/embeddings/sql.js
+function embeddingSqlLiteral(vec) {
+  if (!vec || vec.length === 0)
+    return "NULL";
+  const parts = [];
+  for (const v27 of vec) {
+    if (!Number.isFinite(v27))
+      return "NULL";
+    parts.push(String(v27));
+  }
+  return `ARRAY[${parts.join(",")}]::float4[]`;
+}
+
 // dist/src/shell/deeplake-fs.js
 var BATCH_SIZE = 10;
 var PREFETCH_BATCH_SIZE = 50;
@@ -67512,6 +67799,9 @@ function guessMime(filename) {
 function normalizeSessionMessage(path2, message) {
   const raw = typeof message === "string" ? message : JSON.stringify(message);
   return normalizeContent(path2, raw);
+}
+function resolveEmbedDaemonPath() {
+  return join7(dirname4(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
 }
 function joinSessionMessages(path2, messages) {
   return messages.map((message) => normalizeSessionMessage(path2, message)).join("\n");
@@ -67542,6 +67832,8 @@ var DeeplakeFs = class _DeeplakeFs {
   // Paths that live in the sessions table (multi-row, read by concatenation)
   sessionPaths = /* @__PURE__ */ new Set();
   sessionsTable = null;
+  // Embedding client lazily created on first flush. Lives as long as the process.
+  embedClient = null;
   constructor(client, table, mountPoint) {
     this.client = client;
     this.table = table;
@@ -67635,7 +67927,8 @@ var DeeplakeFs = class _DeeplakeFs {
     }
     const rows = [...this.pending.values()];
     this.pending.clear();
-    const results = await Promise.allSettled(rows.map((r10) => this.upsertRow(r10)));
+    const embeddings = await this.computeEmbeddings(rows);
+    const results = await Promise.allSettled(rows.map((r10, i11) => this.upsertRow(r10, embeddings[i11])));
     let failures = 0;
     for (let i11 = 0; i11 < results.length; i11++) {
       if (results[i11].status === "rejected") {
@@ -67649,7 +67942,15 @@ var DeeplakeFs = class _DeeplakeFs {
       throw new Error(`flush: ${failures}/${rows.length} writes failed and were re-queued`);
     }
   }
-  async upsertRow(r10) {
+  async computeEmbeddings(rows) {
+    if (rows.length === 0)
+      return [];
+    if (!this.embedClient) {
+      this.embedClient = new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() });
+    }
+    return Promise.all(rows.map((r10) => this.embedClient.embed(r10.contentText, "document")));
+  }
+  async upsertRow(r10, embedding) {
     const text = sqlStr(r10.contentText);
     const p22 = sqlStr(r10.path);
     const fname = sqlStr(r10.filename);
@@ -67657,8 +67958,9 @@ var DeeplakeFs = class _DeeplakeFs {
     const ts3 = (/* @__PURE__ */ new Date()).toISOString();
     const cd = r10.creationDate ?? ts3;
     const lud = r10.lastUpdateDate ?? ts3;
+    const embSql = embeddingSqlLiteral(embedding);
     if (this.flushed.has(r10.path)) {
-      let setClauses = `filename = '${fname}', summary = E'${text}', mime_type = '${mime}', size_bytes = ${r10.sizeBytes}, last_update_date = '${sqlStr(lud)}'`;
+      let setClauses = `filename = '${fname}', summary = E'${text}', summary_embedding = ${embSql}, mime_type = '${mime}', size_bytes = ${r10.sizeBytes}, last_update_date = '${sqlStr(lud)}'`;
       if (r10.project !== void 0)
         setClauses += `, project = '${sqlStr(r10.project)}'`;
       if (r10.description !== void 0)
@@ -67666,51 +67968,72 @@ var DeeplakeFs = class _DeeplakeFs {
       await this.client.query(`UPDATE "${this.table}" SET ${setClauses} WHERE path = '${p22}'`);
     } else {
       const id = randomUUID2();
-      const cols = "id, path, filename, summary, mime_type, size_bytes, creation_date, last_update_date" + (r10.project !== void 0 ? ", project" : "") + (r10.description !== void 0 ? ", description" : "");
-      const vals = `'${id}', '${p22}', '${fname}', E'${text}', '${mime}', ${r10.sizeBytes}, '${sqlStr(cd)}', '${sqlStr(lud)}'` + (r10.project !== void 0 ? `, '${sqlStr(r10.project)}'` : "") + (r10.description !== void 0 ? `, '${sqlStr(r10.description)}'` : "");
+      const cols = "id, path, filename, summary, summary_embedding, mime_type, size_bytes, creation_date, last_update_date" + (r10.project !== void 0 ? ", project" : "") + (r10.description !== void 0 ? ", description" : "");
+      const vals = `'${id}', '${p22}', '${fname}', E'${text}', ${embSql}, '${mime}', ${r10.sizeBytes}, '${sqlStr(cd)}', '${sqlStr(lud)}'` + (r10.project !== void 0 ? `, '${sqlStr(r10.project)}'` : "") + (r10.description !== void 0 ? `, '${sqlStr(r10.description)}'` : "");
       await this.client.query(`INSERT INTO "${this.table}" (${cols}) VALUES (${vals})`);
       this.flushed.add(r10.path);
     }
   }
   // ── Virtual index.md generation ────────────────────────────────────────────
   async generateVirtualIndex() {
-    const rows = await this.client.query(`SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" WHERE path LIKE '${sqlStr("/summaries/")}%' ORDER BY last_update_date DESC`);
-    const sessionPathsByKey = /* @__PURE__ */ new Map();
-    for (const sp of this.sessionPaths) {
-      const hivemind = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
-      if (hivemind) {
-        sessionPathsByKey.set(hivemind[1], sp.slice(1));
-      } else {
-        const fname = sp.split("/").pop() ?? "";
-        const stem = fname.replace(/\.[^.]+$/, "");
-        if (stem)
-          sessionPathsByKey.set(stem, sp.slice(1));
+    const summaryRows = await this.client.query(`SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" WHERE path LIKE '${sqlStr("/summaries/")}%' ORDER BY last_update_date DESC`);
+    let sessionRows = [];
+    if (this.sessionsTable) {
+      try {
+        sessionRows = await this.client.query(`SELECT path, MAX(description) AS description, MIN(creation_date) AS creation_date, MAX(last_update_date) AS last_update_date FROM "${this.sessionsTable}" WHERE path LIKE '${sqlStr("/sessions/")}%' GROUP BY path ORDER BY path`);
+      } catch {
+        sessionRows = [];
       }
     }
     const lines = [
       "# Session Index",
       "",
-      "List of all Claude Code sessions with summaries.",
-      "",
-      "| Session | Conversation | Created | Last Updated | Project | Description |",
-      "|---------|-------------|---------|--------------|---------|-------------|"
+      "Two sources are available. Consult the section relevant to the question.",
+      ""
     ];
-    for (const row of rows) {
-      const p22 = row["path"];
-      const match2 = p22.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
-      if (!match2)
-        continue;
-      const summaryUser = match2[1];
-      const sessionId = match2[2];
-      const relPath = `summaries/${summaryUser}/${sessionId}.md`;
-      const baseName = sessionId.replace(/_summary$/, "");
-      const convPath = sessionPathsByKey.get(sessionId) ?? sessionPathsByKey.get(baseName);
-      const convLink = convPath ? `[messages](${convPath})` : "";
-      const project = row["project"] || "";
-      const description = row["description"] || "";
-      const creationDate = row["creation_date"] || "";
-      const lastUpdateDate = row["last_update_date"] || "";
-      lines.push(`| [${sessionId}](${relPath}) | ${convLink} | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
+    lines.push("## memory");
+    lines.push("");
+    if (summaryRows.length === 0) {
+      lines.push("_(empty \u2014 no summaries ingested yet)_");
+    } else {
+      lines.push("AI-generated summaries per session. Read these first for topic-level overviews.");
+      lines.push("");
+      lines.push("| Session | Created | Last Updated | Project | Description |");
+      lines.push("|---------|---------|--------------|---------|-------------|");
+      for (const row of summaryRows) {
+        const p22 = row["path"];
+        const match2 = p22.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
+        if (!match2)
+          continue;
+        const summaryUser = match2[1];
+        const sessionId = match2[2];
+        const relPath = `summaries/${summaryUser}/${sessionId}.md`;
+        const project = row["project"] || "";
+        const description = row["description"] || "";
+        const creationDate = row["creation_date"] || "";
+        const lastUpdateDate = row["last_update_date"] || "";
+        lines.push(`| [${sessionId}](${relPath}) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
+      }
+    }
+    lines.push("");
+    lines.push("## sessions");
+    lines.push("");
+    if (sessionRows.length === 0) {
+      lines.push("_(empty \u2014 no session records ingested yet)_");
+    } else {
+      lines.push("Raw session records (dialogue, tool calls). Read for exact detail / quotes.");
+      lines.push("");
+      lines.push("| Session | Created | Last Updated | Description |");
+      lines.push("|---------|---------|--------------|-------------|");
+      for (const row of sessionRows) {
+        const p22 = row["path"] || "";
+        const rel = p22.startsWith("/") ? p22.slice(1) : p22;
+        const filename = p22.split("/").pop() ?? p22;
+        const description = row["description"] || "";
+        const creationDate = row["creation_date"] || "";
+        const lastUpdateDate = row["last_update_date"] || "";
+        lines.push(`| [${filename}](${rel}) | ${creationDate} | ${lastUpdateDate} | ${description} |`);
+      }
     }
     lines.push("");
     return lines.join("\n");
@@ -69021,7 +69344,7 @@ function stripQuotes(val) {
 }
 
 // node_modules/yargs-parser/build/lib/index.js
-import { readFileSync as readFileSync3 } from "fs";
+import { readFileSync as readFileSync4 } from "fs";
 import { createRequire } from "node:module";
 var _a3;
 var _b;
@@ -69048,7 +69371,7 @@ var parser = new YargsParser({
     if (typeof require2 !== "undefined") {
       return require2(path2);
     } else if (path2.match(/\.json$/)) {
-      return JSON.parse(readFileSync3(path2, "utf8"));
+      return JSON.parse(readFileSync4(path2, "utf8"));
     } else {
       throw Error("only .json config files are supported in ESM");
     }
@@ -69067,6 +69390,33 @@ yargsParser.looksLikeNumber = looksLikeNumber;
 var lib_default = yargsParser;
 
 // dist/src/shell/grep-interceptor.js
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { dirname as dirname5, join as join8 } from "node:path";
+var SEMANTIC_SEARCH_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false";
+var SEMANTIC_EMBED_TIMEOUT_MS = Number(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS ?? "500");
+function resolveGrepEmbedDaemonPath() {
+  return join8(dirname5(fileURLToPath2(import.meta.url)), "..", "embeddings", "embed-daemon.js");
+}
+var sharedGrepEmbedClient = null;
+function getGrepEmbedClient() {
+  if (!sharedGrepEmbedClient) {
+    sharedGrepEmbedClient = new EmbedClient({
+      daemonEntry: resolveGrepEmbedDaemonPath(),
+      timeoutMs: SEMANTIC_EMBED_TIMEOUT_MS
+    });
+  }
+  return sharedGrepEmbedClient;
+}
+function patternIsSemanticFriendly(pattern, fixedString) {
+  if (!pattern || pattern.length < 2)
+    return false;
+  if (fixedString)
+    return true;
+  const metaMatches = pattern.match(/[|()\[\]{}+?^$\\]/g);
+  if (!metaMatches)
+    return true;
+  return metaMatches.length <= 1;
+}
 var MAX_FALLBACK_CANDIDATES = 500;
 function createGrepCommand(client, fs3, table, sessionsTable) {
   return Yi2("grep", async (args, ctx) => {
@@ -69108,12 +69458,21 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
       filesOnly: Boolean(parsed.l || parsed["files-with-matches"]),
       countOnly: Boolean(parsed.c || parsed["count"])
     };
+    let queryEmbedding = null;
+    if (SEMANTIC_SEARCH_ENABLED && patternIsSemanticFriendly(pattern, matchParams.fixedString)) {
+      try {
+        queryEmbedding = await getGrepEmbedClient().embed(pattern, "query");
+      } catch {
+        queryEmbedding = null;
+      }
+    }
     let rows = [];
     try {
       const searchOptions = {
         ...buildGrepSearchOptions(matchParams, targets[0] ?? ctx.cwd),
         pathFilter: buildPathFilterForTargets(targets),
-        limit: 100
+        limit: 100,
+        queryEmbedding
       };
       const queryRows = await Promise.race([
         searchDeeplakeTables(client, table, sessionsTable ?? "sessions", searchOptions),
@@ -69122,6 +69481,21 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
       rows.push(...queryRows);
     } catch {
       rows = [];
+    }
+    if (rows.length === 0 && queryEmbedding) {
+      try {
+        const lexicalOptions = {
+          ...buildGrepSearchOptions(matchParams, targets[0] ?? ctx.cwd),
+          pathFilter: buildPathFilterForTargets(targets),
+          limit: 100
+        };
+        const lexicalRows = await Promise.race([
+          searchDeeplakeTables(client, table, sessionsTable ?? "sessions", lexicalOptions),
+          new Promise((_16, reject) => setTimeout(() => reject(new Error("timeout")), 3e3))
+        ]);
+        rows.push(...lexicalRows);
+      } catch {
+      }
     }
     const seen = /* @__PURE__ */ new Set();
     rows = rows.filter((r10) => seen.has(r10.path) ? false : (seen.add(r10.path), true));
@@ -69136,7 +69510,19 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
       }
     }
     const normalized = rows.map((r10) => ({ path: r10.path, content: normalizeContent(r10.path, r10.content) }));
-    const output = refineGrepMatches(normalized, matchParams);
+    let output;
+    if (queryEmbedding && queryEmbedding.length > 0 && process.env.HIVEMIND_SEMANTIC_EMIT_ALL !== "false") {
+      output = [];
+      for (const r10 of normalized) {
+        for (const line of r10.content.split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed)
+            output.push(`${r10.path}:${line}`);
+        }
+      }
+    } else {
+      output = refineGrepMatches(normalized, matchParams);
+    }
     return {
       stdout: output.length > 0 ? output.join("\n") + "\n" : "",
       stderr: "",
