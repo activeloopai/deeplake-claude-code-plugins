@@ -1,7 +1,8 @@
 import { build } from "esbuild";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, writeFileSync, readFileSync } from "node:fs";
 
 const esmPackageJson = '{"type":"module"}\n';
+const openclawVersion = JSON.parse(readFileSync("openclaw/package.json", "utf-8")).version;
 
 // Claude Code plugin
 const ccHooks = [
@@ -81,6 +82,7 @@ await build({
   outdir: "openclaw/dist",
   external: ["node:*"],
   define: {
+    __HIVEMIND_VERSION__: JSON.stringify(openclawVersion),
     "process.env.HIVEMIND_TOKEN": "undefined",
     "process.env.HIVEMIND_ORG_ID": "undefined",
     "process.env.HIVEMIND_WORKSPACE_ID": "undefined",
@@ -90,15 +92,10 @@ await build({
     "process.env.HIVEMIND_MEMORY_PATH": "undefined",
     "process.env.HIVEMIND_DEBUG": "undefined",
     "process.env.HIVEMIND_CAPTURE": "undefined",
-    "process.env.DEEPLAKE_TOKEN": "undefined",
-    "process.env.DEEPLAKE_ORG_ID": "undefined",
-    "process.env.DEEPLAKE_WORKSPACE_ID": "undefined",
-    "process.env.DEEPLAKE_API_URL": "undefined",
-    "process.env.DEEPLAKE_TABLE": "undefined",
-    "process.env.DEEPLAKE_SESSIONS_TABLE": "undefined",
-    "process.env.DEEPLAKE_MEMORY_PATH": "undefined",
-    "process.env.DEEPLAKE_DEBUG": "undefined",
-    "process.env.DEEPLAKE_CAPTURE": "undefined",
+    "process.env.HIVEMIND_TRACE_SQL": "undefined",
+    "process.env.HIVEMIND_QUERY_TIMEOUT_MS": "undefined",
+    "process.env.HIVEMIND_INDEX_MARKER_TTL_MS": "undefined",
+    "process.env.HIVEMIND_INDEX_MARKER_DIR": "undefined",
   },
   plugins: [{
     name: "strip-child-process",

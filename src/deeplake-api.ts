@@ -19,12 +19,11 @@ function summarizeSql(sql: string, maxLen = 220): string {
  * Bash-tool result — Claude Code merges child stderr into tool_result).
  */
 function traceSql(msg: string): void {
-  const traceEnabled = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1"
-    || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+  const traceEnabled = process.env.HIVEMIND_TRACE_SQL === "1"
+    || process.env.HIVEMIND_DEBUG === "1";
   if (!traceEnabled) return;
   process.stderr.write(`[deeplake-sql] ${msg}\n`);
-  const debugFileLog = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-  if (debugFileLog) log(msg);
+  if (process.env.HIVEMIND_DEBUG === "1") log(msg);
 }
 
 // ── Retry & concurrency primitives ──────────────────────────────────────────
@@ -33,8 +32,8 @@ const RETRYABLE_CODES = new Set([429, 500, 502, 503, 504]);
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 500;
 const MAX_CONCURRENCY = 5;
-const QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 10_000);
-const INDEX_MARKER_TTL_MS = Number(process.env["HIVEMIND_INDEX_MARKER_TTL_MS"] ?? 6 * 60 * 60_000);
+const QUERY_TIMEOUT_MS = Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 10_000);
+const INDEX_MARKER_TTL_MS = Number(process.env.HIVEMIND_INDEX_MARKER_TTL_MS ?? 6 * 60 * 60_000);
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -69,7 +68,7 @@ function isTransientHtml403(text: string): boolean {
 }
 
 function getIndexMarkerDir(): string {
-  return process.env["HIVEMIND_INDEX_MARKER_DIR"] ?? join(tmpdir(), "hivemind-deeplake-indexes");
+  return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join(tmpdir(), "hivemind-deeplake-indexes");
 }
 
 class Semaphore {

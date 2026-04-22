@@ -37,10 +37,8 @@ async function main(): Promise<void> {
   // written to stderr here pollutes the model's view of the command output.
   // Silence trace env vars regardless of how the caller set them.
   if (isOneShot) {
-    delete process.env["HIVEMIND_TRACE_SQL"];
-    delete process.env["DEEPLAKE_TRACE_SQL"];
-    delete process.env["HIVEMIND_DEBUG"];
-    delete process.env["DEEPLAKE_DEBUG"];
+    delete process.env.HIVEMIND_TRACE_SQL;
+    delete process.env.HIVEMIND_DEBUG;
   }
 
   const config = loadConfig();

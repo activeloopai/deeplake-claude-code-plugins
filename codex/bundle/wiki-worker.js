@@ -14,7 +14,7 @@ import { join as join2 } from "node:path";
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-var DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+var DEBUG = process.env.HIVEMIND_DEBUG === "1";
 var LOG = join(homedir(), ".deeplake", "hook-debug.log");
 function log(tag, msg) {
   if (!DEBUG)
