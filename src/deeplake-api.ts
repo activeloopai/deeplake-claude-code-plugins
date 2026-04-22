@@ -357,6 +357,7 @@ export class DeeplakeApi {
           `path TEXT NOT NULL DEFAULT '', ` +
           `filename TEXT NOT NULL DEFAULT '', ` +
           `summary TEXT NOT NULL DEFAULT '', ` +
+          `summary_embedding FLOAT4[], ` +
           `author TEXT NOT NULL DEFAULT '', ` +
           `mime_type TEXT NOT NULL DEFAULT 'text/plain', ` +
           `size_bytes BIGINT NOT NULL DEFAULT 0, ` +
@@ -390,6 +391,7 @@ export class DeeplakeApi {
           `path TEXT NOT NULL DEFAULT '', ` +
           `filename TEXT NOT NULL DEFAULT '', ` +
           `message JSONB, ` +
+          `message_embedding FLOAT4[], ` +
           `author TEXT NOT NULL DEFAULT '', ` +
           `mime_type TEXT NOT NULL DEFAULT 'application/json', ` +
           `size_bytes BIGINT NOT NULL DEFAULT 0, ` +
