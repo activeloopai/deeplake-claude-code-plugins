@@ -30,15 +30,10 @@ vi.mock("node:os", async () => {
   };
 });
 
-let stderrSpy: ReturnType<typeof vi.spyOn>;
-
 const ENV_KEYS = [
   "HIVEMIND_TOKEN", "HIVEMIND_ORG_ID", "HIVEMIND_WORKSPACE_ID",
   "HIVEMIND_API_URL", "HIVEMIND_TABLE", "HIVEMIND_SESSIONS_TABLE",
   "HIVEMIND_MEMORY_PATH",
-  "DEEPLAKE_TOKEN", "DEEPLAKE_ORG_ID", "DEEPLAKE_WORKSPACE_ID",
-  "DEEPLAKE_API_URL", "DEEPLAKE_TABLE", "DEEPLAKE_SESSIONS_TABLE",
-  "DEEPLAKE_MEMORY_PATH",
 ];
 
 async function importLoadConfig() {
@@ -53,7 +48,6 @@ beforeEach(() => {
   readFileSyncMock.mockReset();
   homedirMock.mockReset().mockReturnValue("/home/tester");
   userInfoMock.mockReset().mockReturnValue({ username: "tester" });
-  stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 });
 
 afterEach(() => {
@@ -83,27 +77,6 @@ describe("loadConfig — no credentials file", () => {
       sessionsTableName: "sessions",
       memoryPath: "/home/tester/.deeplake/memory",
     });
-  });
-
-  it("falls back to DEEPLAKE_* env vars and warns about deprecation", async () => {
-    process.env.DEEPLAKE_TOKEN = "tok";
-    process.env.DEEPLAKE_ORG_ID = "org-2";
-    const loadConfig = await importLoadConfig();
-    const cfg = loadConfig();
-    expect(cfg?.token).toBe("tok");
-    expect(cfg?.orgId).toBe("org-2");
-    expect(stderrSpy).toHaveBeenCalledWith(
-      expect.stringContaining("DEEPLAKE_* env vars are deprecated"),
-    );
-  });
-
-  it("does not warn when HIVEMIND_TOKEN is set (even if DEEPLAKE_TOKEN is also set)", async () => {
-    process.env.HIVEMIND_TOKEN = "tok";
-    process.env.DEEPLAKE_TOKEN = "legacy";
-    process.env.HIVEMIND_ORG_ID = "o";
-    const loadConfig = await importLoadConfig();
-    loadConfig();
-    expect(stderrSpy).not.toHaveBeenCalled();
   });
 
   it("returns null when token is missing", async () => {
@@ -187,13 +160,11 @@ describe("loadConfig — credentials file", () => {
     expect(cfg?.orgId).toBe("env-org");
   });
 
-  it("HIVEMIND_* env vars override DEEPLAKE_* env vars for non-token fields", async () => {
+  it("HIVEMIND_* env vars override per-field config values", async () => {
     process.env.HIVEMIND_TOKEN = "t";
     process.env.HIVEMIND_ORG_ID = "o";
     process.env.HIVEMIND_WORKSPACE_ID = "hw";
-    process.env.DEEPLAKE_WORKSPACE_ID = "dw";
     process.env.HIVEMIND_API_URL = "https://hm-api";
-    process.env.DEEPLAKE_API_URL = "https://dl-api";
     process.env.HIVEMIND_TABLE = "hm-mem";
     process.env.HIVEMIND_SESSIONS_TABLE = "hm-sess";
     process.env.HIVEMIND_MEMORY_PATH = "/custom/mem";
@@ -205,25 +176,6 @@ describe("loadConfig — credentials file", () => {
       tableName: "hm-mem",
       sessionsTableName: "hm-sess",
       memoryPath: "/custom/mem",
-    });
-  });
-
-  it("DEEPLAKE_* env vars fill in when HIVEMIND_* are absent", async () => {
-    process.env.HIVEMIND_TOKEN = "t";
-    process.env.HIVEMIND_ORG_ID = "o";
-    process.env.DEEPLAKE_WORKSPACE_ID = "dw";
-    process.env.DEEPLAKE_API_URL = "https://dl-api";
-    process.env.DEEPLAKE_TABLE = "dl-mem";
-    process.env.DEEPLAKE_SESSIONS_TABLE = "dl-sess";
-    process.env.DEEPLAKE_MEMORY_PATH = "/deeplake/mem";
-    const loadConfig = await importLoadConfig();
-    const cfg = loadConfig();
-    expect(cfg).toMatchObject({
-      workspaceId: "dw",
-      apiUrl: "https://dl-api",
-      tableName: "dl-mem",
-      sessionsTableName: "dl-sess",
-      memoryPath: "/deeplake/mem",
     });
   });
 });
