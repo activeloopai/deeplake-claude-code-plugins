@@ -1,11 +1,15 @@
 import { basename, posix } from "node:path";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import type { DeeplakeApi } from "../deeplake-api.js";
 import type {
   IFileSystem, FsStat, MkdirOptions, RmOptions, CpOptions,
   FileContent, BufferEncoding,
 } from "just-bash";
 import { normalizeContent } from "./grep-core.js";
+import { EmbedClient } from "../embeddings/client.js";
+import { embeddingSqlLiteral } from "../embeddings/sql.js";
 
 interface ReadFileOptions { encoding?: BufferEncoding }
 interface WriteFileOptions { encoding?: BufferEncoding }
@@ -43,6 +47,10 @@ export function guessMime(filename: string): string {
 function normalizeSessionMessage(path: string, message: unknown): string {
   const raw = typeof message === "string" ? message : JSON.stringify(message);
   return normalizeContent(path, raw);
+}
+
+function resolveEmbedDaemonPath(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
 }
 
 function joinSessionMessages(path: string, messages: unknown[]): string {
@@ -84,6 +92,9 @@ export class DeeplakeFs implements IFileSystem {
   // Paths that live in the sessions table (multi-row, read by concatenation)
   private sessionPaths = new Set<string>();
   private sessionsTable: string | null = null;
+
+  // Embedding client lazily created on first flush. Lives as long as the process.
+  private embedClient: EmbedClient | null = null;
 
   private constructor(
     private readonly client: DeeplakeApi,
@@ -194,9 +205,11 @@ export class DeeplakeFs implements IFileSystem {
     const rows = [...this.pending.values()];
     this.pending.clear();
 
+    const embeddings = await this.computeEmbeddings(rows);
+
     // Upsert in parallel — the semaphore in DeeplakeApi.query() handles concurrency.
     // Re-queue any rows that failed so they are retried on the next flush.
-    const results = await Promise.allSettled(rows.map(r => this.upsertRow(r)));
+    const results = await Promise.allSettled(rows.map((r, i) => this.upsertRow(r, embeddings[i])));
     let failures = 0;
     for (let i = 0; i < results.length; i++) {
       if (results[i].status === "rejected") {
@@ -212,7 +225,18 @@ export class DeeplakeFs implements IFileSystem {
     }
   }
 
-  private async upsertRow(r: PendingRow): Promise<void> {
+  private async computeEmbeddings(rows: PendingRow[]): Promise<(number[] | null)[]> {
+    if (rows.length === 0) return [];
+    if (!this.embedClient) {
+      this.embedClient = new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() });
+    }
+    // One request per row over the same daemon — daemon batches internally if
+    // ONNX is configured to do so. We fire in parallel; the Unix socket + daemon
+    // queue handles ordering. null entries are silently stored as empty.
+    return Promise.all(rows.map(r => this.embedClient!.embed(r.contentText, "document")));
+  }
+
+  private async upsertRow(r: PendingRow, embedding: number[] | null): Promise<void> {
     const text  = esc(r.contentText);
     const p     = esc(r.path);
     const fname = esc(r.filename);
@@ -220,8 +244,9 @@ export class DeeplakeFs implements IFileSystem {
     const ts = new Date().toISOString();
     const cd = r.creationDate ?? ts;
     const lud = r.lastUpdateDate ?? ts;
+    const embSql = embeddingSqlLiteral(embedding);
     if (this.flushed.has(r.path)) {
-      let setClauses = `filename = '${fname}', summary = E'${text}', ` +
+      let setClauses = `filename = '${fname}', summary = E'${text}', summary_embedding = ${embSql}, ` +
         `mime_type = '${mime}', size_bytes = ${r.sizeBytes}, last_update_date = '${esc(lud)}'`;
       if (r.project !== undefined) setClauses += `, project = '${esc(r.project)}'`;
       if (r.description !== undefined) setClauses += `, description = '${esc(r.description)}'`;
@@ -230,10 +255,10 @@ export class DeeplakeFs implements IFileSystem {
       );
     } else {
       const id = randomUUID();
-      const cols = "id, path, filename, summary, mime_type, size_bytes, creation_date, last_update_date" +
+      const cols = "id, path, filename, summary, summary_embedding, mime_type, size_bytes, creation_date, last_update_date" +
         (r.project !== undefined ? ", project" : "") +
         (r.description !== undefined ? ", description" : "");
-      const vals = `'${id}', '${p}', '${fname}', E'${text}', '${mime}', ${r.sizeBytes}, '${esc(cd)}', '${esc(lud)}'` +
+      const vals = `'${id}', '${p}', '${fname}', E'${text}', ${embSql}, '${mime}', ${r.sizeBytes}, '${esc(cd)}', '${esc(lud)}'` +
         (r.project !== undefined ? `, '${esc(r.project)}'` : "") +
         (r.description !== undefined ? `, '${esc(r.description)}'` : "");
       await this.client.query(
@@ -246,55 +271,85 @@ export class DeeplakeFs implements IFileSystem {
   // ── Virtual index.md generation ────────────────────────────────────────────
 
   private async generateVirtualIndex(): Promise<string> {
-    const rows = await this.client.query(
+    // Memory (summaries) section — high-level wikipage per session.
+    const summaryRows = await this.client.query(
       `SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" ` +
       `WHERE path LIKE '${esc("/summaries/")}%' ORDER BY last_update_date DESC`
     );
 
-    // Build a lookup: key → session path from sessionPaths
-    // Supports two formats:
-    //   1. /sessions/<user>/<user>_<org>_<ws>_<sessionId>.jsonl  → key = sessionId
-    //   2. /sessions/<author>/<filename>.json or .jsonl         → key = filename stem
-    const sessionPathsByKey = new Map<string, string>();
-    for (const sp of this.sessionPaths) {
-      const hivemind = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
-      if (hivemind) {
-        sessionPathsByKey.set(hivemind[1], sp.slice(1));
-      } else {
-        // Generic: extract filename without extension
-        const fname = sp.split("/").pop() ?? "";
-        const stem = fname.replace(/\.[^.]+$/, "");
-        if (stem) sessionPathsByKey.set(stem, sp.slice(1));
+    // Sessions section — raw session records (dialogue / events). Pulled
+    // directly from the sessions table so the index is never empty just
+    // because memory has no summaries yet.
+    let sessionRows: Record<string, unknown>[] = [];
+    if (this.sessionsTable) {
+      try {
+        sessionRows = await this.client.query(
+          `SELECT path, MAX(description) AS description, MIN(creation_date) AS creation_date, MAX(last_update_date) AS last_update_date ` +
+          `FROM "${this.sessionsTable}" WHERE path LIKE '${esc("/sessions/")}%' ` +
+          `GROUP BY path ORDER BY path`
+        );
+      } catch {
+        // sessions table absent or schema mismatch — leave empty, emit memory-only index.
+        sessionRows = [];
       }
     }
 
     const lines: string[] = [
       "# Session Index",
       "",
-      "List of all Claude Code sessions with summaries.",
+      "Two sources are available. Consult the section relevant to the question.",
       "",
-      "| Session | Conversation | Created | Last Updated | Project | Description |",
-      "|---------|-------------|---------|--------------|---------|-------------|",
     ];
-    for (const row of rows) {
-      const p = row["path"] as string;
-      // Extract session ID from path: /summaries/<user>/<id>.md
-      const match = p.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
-      if (!match) continue;
-      const summaryUser = match[1];
-      const sessionId = match[2];
-      const relPath = `summaries/${summaryUser}/${sessionId}.md`;
-      // Try matching session: first exact sessionId, then strip _summary suffix
-      const baseName = sessionId.replace(/_summary$/, "");
-      const convPath = sessionPathsByKey.get(sessionId) ?? sessionPathsByKey.get(baseName);
-      const convLink = convPath ? `[messages](${convPath})` : "";
-      const project = (row["project"] as string) || "";
-      const description = (row["description"] as string) || "";
-      const creationDate = (row["creation_date"] as string) || "";
-      const lastUpdateDate = (row["last_update_date"] as string) || "";
-      lines.push(`| [${sessionId}](${relPath}) | ${convLink} | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
+
+    // ── ## memory ────────────────────────────────────────────────────────────
+    lines.push("## memory");
+    lines.push("");
+    if (summaryRows.length === 0) {
+      lines.push("_(empty — no summaries ingested yet)_");
+    } else {
+      lines.push("AI-generated summaries per session. Read these first for topic-level overviews.");
+      lines.push("");
+      lines.push("| Session | Created | Last Updated | Project | Description |");
+      lines.push("|---------|---------|--------------|---------|-------------|");
+      for (const row of summaryRows) {
+        const p = row["path"] as string;
+        const match = p.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
+        if (!match) continue;
+        const summaryUser = match[1];
+        const sessionId = match[2];
+        const relPath = `summaries/${summaryUser}/${sessionId}.md`;
+        const project = (row["project"] as string) || "";
+        const description = (row["description"] as string) || "";
+        const creationDate = (row["creation_date"] as string) || "";
+        const lastUpdateDate = (row["last_update_date"] as string) || "";
+        lines.push(`| [${sessionId}](${relPath}) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
+      }
     }
     lines.push("");
+
+    // ── ## sessions ─────────────────────────────────────────────────────────
+    lines.push("## sessions");
+    lines.push("");
+    if (sessionRows.length === 0) {
+      lines.push("_(empty — no session records ingested yet)_");
+    } else {
+      lines.push("Raw session records (dialogue, tool calls). Read for exact detail / quotes.");
+      lines.push("");
+      lines.push("| Session | Created | Last Updated | Description |");
+      lines.push("|---------|---------|--------------|-------------|");
+      for (const row of sessionRows) {
+        const p = (row["path"] as string) || "";
+        // Show the path relative to /sessions/ so the table stays compact.
+        const rel = p.startsWith("/") ? p.slice(1) : p;
+        const filename = p.split("/").pop() ?? p;
+        const description = (row["description"] as string) || "";
+        const creationDate = (row["creation_date"] as string) || "";
+        const lastUpdateDate = (row["last_update_date"] as string) || "";
+        lines.push(`| [${filename}](${rel}) | ${creationDate} | ${lastUpdateDate} | ${description} |`);
+      }
+    }
+    lines.push("");
+
     return lines.join("\n");
   }
 

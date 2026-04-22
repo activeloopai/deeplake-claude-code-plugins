@@ -138,7 +138,9 @@ function makeClient(seed: Record<string, Buffer> = {}) {
             // Parse columns and values positionally
             const colsPart = sql.match(/\(([^)]+)\)\s+VALUES/)?.[1] ?? "";
             const colsList = colsPart.split(",").map(c => c.trim());
-            // Extract all quoted values from VALUES(...)
+            // Extract all values from VALUES(...): strings, integers,
+            // unquoted NULL, and ARRAY[...]::float4[] literals. Each value
+            // becomes one slot so positional column mapping stays correct.
             const valsStr = valuesMatch[1];
             const allVals: string[] = [];
             let i = 0;
@@ -158,6 +160,24 @@ function makeClient(seed: Record<string, Buffer> = {}) {
                 const m = valsStr.slice(i).match(/^(\d+)/);
                 if (m) { allVals.push(m[1]); i += m[1].length; }
                 else i++;
+              } else if (valsStr.slice(i, i + 4).toUpperCase() === "NULL") {
+                allVals.push("");
+                i += 4;
+              } else if (valsStr.slice(i, i + 6).toUpperCase() === "ARRAY[") {
+                // Consume up to the matching ']' and optional ::float4[] cast
+                let depth = 1;
+                let end = i + 6;
+                while (end < valsStr.length && depth > 0) {
+                  if (valsStr[end] === "[") depth++;
+                  else if (valsStr[end] === "]") depth--;
+                  end++;
+                }
+                // Skip optional ::float4[] cast
+                const rest = valsStr.slice(end);
+                const castMatch = rest.match(/^::float4\[\]/i);
+                if (castMatch) end += castMatch[0].length;
+                allVals.push(valsStr.slice(i, end));
+                i = end;
               } else { i++; }
             }
             // Map column names to values
@@ -809,7 +829,9 @@ describe("virtual index.md", () => {
     ]);
     const content = await fs.readFile("/index.md");
     expect(content).toContain("# Session Index");
-    expect(content).toContain("| Session | Conversation | Created | Last Updated | Project | Description |");
+    expect(content).toContain("## memory");
+    expect(content).toContain("## sessions");
+    expect(content).toContain("| Session | Created | Last Updated | Project | Description |");
     expect(content).toContain("aaa-111");
     expect(content).toContain("bbb-222");
     expect(content).toContain("my-project");
@@ -864,8 +886,9 @@ describe("virtual index.md", () => {
     const { fs } = await makeFs({}, "/");
     const content = await fs.readFile("/index.md");
     expect(content).toContain("# Session Index");
-    expect(content).toContain("| Session | Conversation | Created | Last Updated | Project | Description |");
-    // No data rows
+    expect(content).toContain("## memory");
+    expect(content).toContain("_(empty — no summaries ingested yet)_");
+    // No data rows in memory section
     const lines = content.split("\n").filter(l => l.startsWith("| ["));
     expect(lines.length).toBe(0);
   });
