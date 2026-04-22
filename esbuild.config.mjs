@@ -21,7 +21,11 @@ const ccCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
 ];
 
-const ccAll = [...ccHooks, ...ccShell, ...ccCommands];
+const ccEmbed = [
+  { entry: "dist/src/embeddings/daemon.js", out: "embeddings/embed-daemon" },
+];
+
+const ccAll = [...ccHooks, ...ccShell, ...ccCommands, ...ccEmbed];
 
 await build({
   entryPoints: Object.fromEntries(ccAll.map(h => [h.out, h.entry])),
@@ -29,7 +33,15 @@ await build({
   platform: "node",
   format: "esm",
   outdir: "claude-code/bundle",
-  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  external: [
+    "node:*",
+    "node-liblzma",
+    "@mongodb-js/zstd",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+    "onnxruntime-common",
+    "sharp",
+  ],
 });
 
 for (const h of ccAll) {
@@ -55,7 +67,11 @@ const codexCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
 ];
 
-const codexAll = [...codexHooks, ...codexShell, ...codexCommands];
+const codexEmbed = [
+  { entry: "dist/src/embeddings/daemon.js", out: "embeddings/embed-daemon" },
+];
+
+const codexAll = [...codexHooks, ...codexShell, ...codexCommands, ...codexEmbed];
 
 await build({
   entryPoints: Object.fromEntries(codexAll.map(h => [h.out, h.entry])),
@@ -63,7 +79,15 @@ await build({
   platform: "node",
   format: "esm",
   outdir: "codex/bundle",
-  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  external: [
+    "node:*",
+    "node-liblzma",
+    "@mongodb-js/zstd",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+    "onnxruntime-common",
+    "sharp",
+  ],
 });
 
 for (const h of codexAll) {

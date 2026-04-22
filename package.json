@@ -24,6 +24,7 @@
     "*.md": []
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.0.0",
     "deeplake": "^0.3.30",
     "just-bash": "^2.14.0",
     "yargs-parser": "^22.0.0"
