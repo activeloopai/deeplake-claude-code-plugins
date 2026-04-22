@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/plugin-cache-gc.js
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname as dirname2 } from "node:path";
 
 // dist/src/utils/debug.js
@@ -144,18 +144,20 @@ var DEFAULT_MANIFEST_PATH = join2(homedir2(), ".claude", "plugins", "installed_p
 var DEFAULT_KEEP_COUNT = 3;
 
 // dist/src/hooks/plugin-cache-gc.js
-var log2 = (msg) => log("plugin-cache-gc", msg);
-var __bundleDir = dirname2(fileURLToPath(import.meta.url));
-function main() {
+var defaultLog = (msg) => log("plugin-cache-gc", msg);
+function runGc(bundleDir, opts = {}) {
+  const log2 = opts.log ?? defaultLog;
   if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
-  const resolved = resolveVersionedPluginDir(__bundleDir);
+  const resolved = resolveVersionedPluginDir(bundleDir);
   if (!resolved) {
     log2("not a versioned install, skipping");
     return;
   }
-  const currentVersion = readCurrentVersionFromManifest(DEFAULT_MANIFEST_PATH);
-  const plan = planGc(resolved.versionsRoot, currentVersion, DEFAULT_KEEP_COUNT);
+  const manifestPath = opts.manifestPath ?? DEFAULT_MANIFEST_PATH;
+  const keepCount = opts.keepCount ?? DEFAULT_KEEP_COUNT;
+  const currentVersion = readCurrentVersionFromManifest(manifestPath);
+  const plan = planGc(resolved.versionsRoot, currentVersion, keepCount);
   if (plan.deleteVersions.length === 0 && plan.deleteSnapshots.length === 0) {
     log2(`nothing to gc (kept: ${plan.keep.join(", ")})`);
     return;
@@ -163,8 +165,15 @@ function main() {
   const result = executeGc(resolved.versionsRoot, plan);
   log2(`gc kept=${result.kept.join(",")} deletedVersions=${result.deletedVersions.join(",")} deletedSnapshots=${result.deletedSnapshots.join(",")} errors=${result.errors.length}`);
 }
-try {
-  main();
-} catch (e) {
-  log2(`fatal: ${e.message}`);
+var __bundleDir = dirname2(fileURLToPath(import.meta.url));
+var __entryUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
+if (import.meta.url === __entryUrl) {
+  try {
+    runGc(__bundleDir);
+  } catch (e) {
+    defaultLog(`fatal: ${e.message}`);
+  }
 }
+export {
+  runGc
+};

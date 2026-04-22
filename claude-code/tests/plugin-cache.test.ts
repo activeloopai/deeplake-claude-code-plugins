@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import {
@@ -136,6 +136,28 @@ describe("snapshotPluginDir + restoreOrCleanup", () => {
   it("restoreOrCleanup is a no-op when handle is null", () => {
     expect(restoreOrCleanup(null)).toBe("noop");
   });
+
+  it("returns 'noop' when rename/rm throws (fs error swallowed)", () => {
+    const root = mkRoot();
+    try {
+      const plugin = join(root, "0.6.38");
+      mkdirSync(plugin, { recursive: true });
+      writeFileSync(join(plugin, "marker"), "x");
+      const handle = snapshotPluginDir(plugin, 1234)!;
+      // Remove the live plugin dir so restoreOrCleanup goes through the
+      // rename path. Then chmod the parent so rename fails with EACCES —
+      // exercising the catch branch in restoreOrCleanup.
+      rmSync(plugin, { recursive: true, force: true });
+      chmodSync(root, 0o500);
+      try {
+        expect(restoreOrCleanup(handle)).toBe("noop");
+      } finally {
+        chmodSync(root, 0o700);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("readCurrentVersionFromManifest", () => {
@@ -173,6 +195,14 @@ describe("readCurrentVersionFromManifest", () => {
       plugins: { "hivemind@hivemind": [{ version: "latest" }, { version: "0.6.40" }] },
     }));
     expect(readCurrentVersionFromManifest(p)).toBe("0.6.40");
+  });
+
+  it("returns null when every entry has a non-semver version", () => {
+    const p = join(root, "installed_plugins.json");
+    writeFileSync(p, JSON.stringify({
+      plugins: { "hivemind@hivemind": [{ version: "latest" }, { version: "unknown" }, {}] },
+    }));
+    expect(readCurrentVersionFromManifest(p)).toBeNull();
   });
 });
 
@@ -261,5 +291,28 @@ describe("executeGc", () => {
     });
     expect(result.errors).toEqual([]);
     expect(result.deletedVersions).toEqual(["nonexistent-version"]);
+  });
+
+  it("collects errors from both rmSync catch blocks without throwing", () => {
+    const versionDir = join(root, "0.6.38");
+    mkdirSync(versionDir, { recursive: true });
+    const snapshotDir = join(root, "0.6.38.keep-9999");
+    mkdirSync(snapshotDir, { recursive: true });
+    // chmod 0500 on the parent makes unlink of its children fail EACCES.
+    chmodSync(root, 0o500);
+    try {
+      const result = executeGc(root, {
+        keep: ["0.6.39"],
+        deleteVersions: ["0.6.38"],
+        deleteSnapshots: ["0.6.38.keep-9999"],
+      });
+      expect(result.deletedVersions).toEqual([]);
+      expect(result.deletedSnapshots).toEqual([]);
+      expect(result.errors.length).toBe(2);
+      expect(result.errors[0]).toContain("0.6.38");
+      expect(result.errors[1]).toContain("0.6.38.keep-9999");
+    } finally {
+      chmodSync(root, 0o700);
+    }
   });
 });
