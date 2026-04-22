@@ -50,6 +50,23 @@ export interface SearchOptions {
   prefilterPatterns?: string[];
   /** Per-table row cap. */
   limit?: number;
+  /**
+   * If set, switches to semantic (cosine) search via Deeplake's `<#>` operator
+   * against `summary_embedding` / `message_embedding` FLOAT4[] columns. When
+   * absent, the BM25/LIKE path runs. Callers compute this vector via the
+   * EmbedClient; null means the daemon was unreachable and we should stick
+   * with lexical search.
+   */
+  queryEmbedding?: number[] | null;
+  /**
+   * Plain-text phrase used as the BM25 search term via Deeplake's `<#>`
+   * operator on TEXT columns (and on `message::text` for JSONB). Replaces
+   * the old LIKE/ILIKE substring scan: BM25 ranks by term frequency, handles
+   * multi-word queries natively, and respects a real token index (no full
+   * table scan). When the pattern is pure regex (no usable literal) this is
+   * undefined and the caller falls back to the semantic branch alone.
+   */
+  bm25Term?: string;
 }
 
 // ── Content normalization ───────────────────────────────────────────────────
@@ -174,22 +191,41 @@ export function normalizeContent(path: string, raw: string): string {
   try { obj = JSON.parse(raw); } catch { return raw; }
 
   // ── Turn-array session shape: { turns: [...] } ───────────────────────────
+  //
+  // Emit the session date as a prefix on EVERY turn line rather than a
+  // standalone header row. The downstream `refineGrepMatches` regex filter
+  // drops non-matching lines, so a header-only date gets stripped before
+  // Claude sees any grep hit — temporal questions ("When did X?") then
+  // answer with relative phrases like "Last Friday" because the absolute
+  // date was in the discarded header. Inlining the date keeps it attached
+  // to every line that survives the regex.
   if (Array.isArray(obj.turns)) {
-    const header: string[] = [];
-    if (obj.date_time) header.push(`date: ${obj.date_time}`);
-    if (obj.speakers) {
-      const s = obj.speakers;
-      const names = [s.speaker_a, s.speaker_b].filter(Boolean).join(", ");
-      if (names) header.push(`speakers: ${names}`);
-    }
+    const dateHeader = obj.date_time ? `(${String(obj.date_time)}) ` : "";
     const lines = obj.turns.map((t: any) => {
       const sp = String(t?.speaker ?? t?.name ?? "?").trim();
       const tx = String(t?.text ?? t?.content ?? "").replace(/\s+/g, " ").trim();
       const tag = t?.dia_id ? `[${t.dia_id}] ` : "";
-      return `${tag}${sp}: ${tx}`;
+      return `${dateHeader}${tag}${sp}: ${tx}`;
     });
-    const out = [...header, ...lines].join("\n");
+    const out = lines.join("\n");
     return out.trim() ? out : raw;
+  }
+
+  // ── Single-turn shape: { turn: { dia_id, speaker, text }, ... } ──────────
+  // Per-row per-turn ingestion (see workspace `with_embedding_multi_rows`)
+  // stores each row as one turn with enclosing session metadata. Emit the
+  // session date inline on every turn line so Claude can resolve relative
+  // times ("last Friday", "last month") against a real reference point —
+  // without the prefix, temporal-category questions degrade sharply
+  // because the turn text on its own lacks absolute dating.
+  if (obj.turn && typeof obj.turn === "object" && !Array.isArray(obj.turn)) {
+    const t = obj.turn as { dia_id?: unknown; speaker?: unknown; name?: unknown; text?: unknown; content?: unknown };
+    const sp = String(t.speaker ?? t.name ?? "?").trim();
+    const tx = String(t.text ?? t.content ?? "").replace(/\s+/g, " ").trim();
+    const tag = t.dia_id ? `[${String(t.dia_id)}] ` : "";
+    const dateHeader = obj.date_time ? `(${String(obj.date_time)}) ` : "";
+    const line = `${dateHeader}${tag}${sp}: ${tx}`;
+    return line.trim() ? line : raw;
   }
 
   // ── Production shape: single hook-event row (capture.ts output) ─────────
@@ -244,9 +280,15 @@ function buildPathCondition(targetPath: string): string {
 }
 
 /**
- * Dual-table LIKE/ILIKE search. Casts `summary` (TEXT) and `message` (JSONB)
- * to ::text so the same predicate works across both. The lookup always goes
- * through a single UNION ALL query so one grep maps to one SQL search.
+ * Dual-table search. Two branches:
+ *   • semantic — when `opts.queryEmbedding` is a non-empty vector, cosine
+ *     similarity (`<#>`) against the FLOAT4[] embedding columns. Rows are
+ *     ordered by score DESC and the top-N from both tables are merged.
+ *   • lexical — otherwise, LIKE/ILIKE against ::text of `summary` and
+ *     `message`. Same UNION ALL shape as before for backwards compat.
+ *
+ * The lookup always goes through a single top-level SQL query so one grep
+ * maps to one round-trip.
  */
 export async function searchDeeplakeTables(
   api: DeeplakeApi,
@@ -254,8 +296,92 @@ export async function searchDeeplakeTables(
   sessionsTable: string,
   opts: SearchOptions,
 ): Promise<ContentRow[]> {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, bm25Term } = opts;
   const limit = opts.limit ?? 100;
+
+  // ── Hybrid (lexical + semantic) branch ───────────────────────────────────
+  // Runs both halves in a single UNION ALL query so each grep = one round-
+  // trip. Lexical catches literal-keyword matches that semantic misses
+  // (single-word queries diluted by document-level embedding — see
+  // PR-NOTES.md P2/P3). Semantic catches conceptual matches that lexical
+  // can't express. De-duplicate by path in the outer layer; when a path
+  // appears in both halves, the semantic score wins (real cosine signal vs
+  // the lexical branch's constant 1.0 sentinel).
+  if (queryEmbedding && queryEmbedding.length > 0) {
+    const vecLit = serializeFloat4Array(queryEmbedding);
+    const semanticLimit = Math.min(
+      limit,
+      Number(process.env.HIVEMIND_SEMANTIC_LIMIT ?? "20"),
+    );
+    const lexicalLimit = Math.min(
+      limit,
+      Number(process.env.HIVEMIND_HYBRID_LEXICAL_LIMIT ?? "20"),
+    );
+
+    // Single UNION ALL of lexical (LIKE/ILIKE substring) + semantic (cosine).
+    // Lexical rows emit a score=1.0 sentinel, semantic rows emit their real
+    // cosine (0..1). ORDER BY score DESC then LIMIT top-K:
+    //   • exact-substring matches (lexical) dominate the top of the list
+    //     regardless of cosine score — desirable because they're likely to
+    //     contain the literal keyword Claude asked for
+    //   • semantic hits fill in below, covering concept matches where the
+    //     literal keyword doesn't appear
+    // BM25 tried and dropped (PR-NOTES F4c): score scale (~1..3) overpowered
+    // cosine in UNION, semantic hits were pushed out of top-K. LIKE is a
+    // better fit for "find any session mentioning X" which is the actual
+    // plugin use case.
+    const filterPatternsForLex = contentScanOnly
+      ? (prefilterPatterns && prefilterPatterns.length > 0
+          ? prefilterPatterns
+          : (prefilterPattern ? [prefilterPattern] : []))
+      : [escapedPattern];
+    const memLexFilter = buildContentFilter("summary::text", likeOp, filterPatternsForLex);
+    const sessLexFilter = buildContentFilter("message::text", likeOp, filterPatternsForLex);
+
+    const memLexQuery = memLexFilter
+      ? `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, 1.0 AS score ` +
+        `FROM "${memoryTable}" WHERE 1=1${pathFilter}${memLexFilter} LIMIT ${lexicalLimit}`
+      : null;
+    const sessLexQuery = sessLexFilter
+      ? `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, 1.0 AS score ` +
+        `FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessLexFilter} LIMIT ${lexicalLimit}`
+      : null;
+
+    const memSemQuery =
+      `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, ` +
+      `(summary_embedding <#> ${vecLit}) AS score ` +
+      `FROM "${memoryTable}" WHERE summary_embedding IS NOT NULL${pathFilter} ` +
+      `ORDER BY score DESC LIMIT ${semanticLimit}`;
+    const sessSemQuery =
+      `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, ` +
+      `(message_embedding <#> ${vecLit}) AS score ` +
+      `FROM "${sessionsTable}" WHERE message_embedding IS NOT NULL${pathFilter} ` +
+      `ORDER BY score DESC LIMIT ${semanticLimit}`;
+
+    const parts = [memSemQuery, sessSemQuery];
+    if (memLexQuery) parts.push(memLexQuery);
+    if (sessLexQuery) parts.push(sessLexQuery);
+    const unionSql = parts.map(q => `(${q})`).join(" UNION ALL ");
+
+    const outerLimit = semanticLimit + lexicalLimit;
+    const rows = await api.query(
+      `SELECT path, content, source_order, creation_date, score FROM (` +
+      unionSql +
+      `) AS combined ORDER BY score DESC LIMIT ${outerLimit}`
+    );
+
+    const seen = new Set<string>();
+    const unique: ContentRow[] = [];
+    for (const row of rows) {
+      const p = String(row["path"]);
+      if (seen.has(p)) continue;
+      seen.add(p);
+      unique.push({ path: p, content: String(row["content"] ?? "") });
+    }
+    return unique;
+  }
+
+  // ── Lexical branch ───────────────────────────────────────────────────────
   const filterPatterns = contentScanOnly
     ? (prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : (prefilterPattern ? [prefilterPattern] : []))
     : [escapedPattern];
@@ -275,6 +401,15 @@ export async function searchDeeplakeTables(
     path: String(row["path"]),
     content: String(row["content"] ?? ""),
   }));
+}
+
+function serializeFloat4Array(vec: number[]): string {
+  const parts: string[] = [];
+  for (const v of vec) {
+    if (!Number.isFinite(v)) return "NULL";
+    parts.push(String(v));
+  }
+  return `ARRAY[${parts.join(",")}]::float4[]`;
 }
 
 /** Build a LIKE pathFilter clause for a `path` column. Returns "" if targetPath is root or empty. */
@@ -377,13 +512,31 @@ export function buildGrepSearchOptions(params: GrepMatchParams, targetPath: stri
   const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
   const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
   const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
+
+  // bm25Term: the raw phrase we hand to Deeplake's `<#>` operator on TEXT /
+  // JSONB. Non-regex patterns go through verbatim; regex patterns collapse
+  // to their extracted literal prefilter (longest literal for a single
+  // prefilter, space-joined alternations otherwise). If nothing literal can
+  // be extracted, bm25Term is undefined and callers fall back to semantic.
+  let bm25Term: string | undefined;
+  if (!hasRegexMeta) {
+    bm25Term = params.pattern;
+  } else if (alternationPrefilters && alternationPrefilters.length > 0) {
+    bm25Term = alternationPrefilters.join(" ");
+  } else if (literalPrefilter) {
+    bm25Term = literalPrefilter;
+  }
+
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
-    likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
+    // Kept for the pure-lexical fallback path and existing tests; BM25 is now
+    // the preferred lexical ranker when a term can be extracted.
+    likeOp: process.env.HIVEMIND_GREP_LIKE === "case-sensitive" ? "LIKE" : "ILIKE",
     escapedPattern: sqlLike(params.pattern),
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : undefined,
     prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
+    bm25Term,
   };
 }
 
@@ -462,8 +615,12 @@ export async function grepBothTables(
   sessionsTable: string,
   params: GrepMatchParams,
   targetPath: string,
+  queryEmbedding?: number[] | null,
 ): Promise<string[]> {
-  const rows = await searchDeeplakeTables(api, memoryTable, sessionsTable, buildGrepSearchOptions(params, targetPath));
+  const rows = await searchDeeplakeTables(api, memoryTable, sessionsTable, {
+    ...buildGrepSearchOptions(params, targetPath),
+    queryEmbedding,
+  });
   // Defensive path dedup — memory and sessions tables use disjoint path
   // prefixes in every schema we ship (/summaries/… vs /sessions/…), so the
   // overlap is theoretical, but we dedupe to match grep-interceptor.ts and
@@ -472,5 +629,25 @@ export async function grepBothTables(
   const seen = new Set<string>();
   const unique = rows.filter(r => seen.has(r.path) ? false : (seen.add(r.path), true));
   const normalized = unique.map(r => ({ path: r.path, content: normalizeContent(r.path, r.content) }));
+
+  // Semantic mode: the ranking IS the retrieval. Emitting only regex-matched
+  // lines would drop relevant turns whose literal text doesn't contain the
+  // pattern (the whole point of semantic). Return every non-empty normalized
+  // line from the top-K rows, prefixed with the path so Claude can follow up
+  // with Read. The downstream output-cap keeps the response bounded.
+  if (queryEmbedding && queryEmbedding.length > 0) {
+    const emitAllLines = process.env.HIVEMIND_SEMANTIC_EMIT_ALL !== "false";
+    if (emitAllLines) {
+      const lines: string[] = [];
+      for (const r of normalized) {
+        for (const line of r.content.split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed) lines.push(`${r.path}:${line}`);
+        }
+      }
+      return lines;
+    }
+  }
+
   return refineGrepMatches(normalized, params);
 }

@@ -8,6 +8,37 @@
 import type { DeeplakeApi } from "../deeplake-api.js";
 import { grepBothTables, type GrepMatchParams } from "../shell/grep-core.js";
 import { capOutputForClaude } from "../utils/output-cap.js";
+import { EmbedClient } from "../embeddings/client.js";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const SEMANTIC_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false";
+const SEMANTIC_TIMEOUT_MS = Number(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS ?? "500");
+
+function resolveDaemonPath(): string {
+  // When bundled as bundle/pre-tool-use.js, the daemon sits at
+  // bundle/embeddings/embed-daemon.js — one level up from src/hooks/.
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "embeddings", "embed-daemon.js");
+}
+
+let sharedEmbedClient: EmbedClient | null = null;
+function getEmbedClient(): EmbedClient {
+  if (!sharedEmbedClient) {
+    sharedEmbedClient = new EmbedClient({
+      daemonEntry: resolveDaemonPath(),
+      timeoutMs: SEMANTIC_TIMEOUT_MS,
+    });
+  }
+  return sharedEmbedClient;
+}
+
+function patternIsSemanticFriendly(pattern: string, fixedString: boolean): boolean {
+  if (!pattern || pattern.length < 2) return false;
+  if (fixedString) return true;
+  const meta = pattern.match(/[|()\[\]{}+?^$\\]/g);
+  if (!meta) return true;
+  return meta.length <= 1;
+}
 
 export interface GrepParams {
   pattern: string;
@@ -229,7 +260,21 @@ export async function handleGrepDirect(
     fixedString: params.fixedString,
   };
 
-  const output = await grepBothTables(api, table, sessionsTable, matchParams, params.targetPath);
+  // Attempt semantic search. If the daemon is unavailable or the pattern is
+  // regex-heavy, embed returns null and searchDeeplakeTables falls back to
+  // lexical LIKE.
+  let queryEmbedding: number[] | null = null;
+  if (SEMANTIC_ENABLED && patternIsSemanticFriendly(params.pattern, params.fixedString)) {
+    try {
+      queryEmbedding = await getEmbedClient().embed(params.pattern, "query");
+    } catch {
+      queryEmbedding = null;
+    }
+  }
+
+  const output = await grepBothTables(
+    api, table, sessionsTable, matchParams, params.targetPath, queryEmbedding,
+  );
   const joined = output.join("\n") || "(no matches)";
   return capOutputForClaude(joined, { kind: "grep" });
 }

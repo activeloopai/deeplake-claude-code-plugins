@@ -2,6 +2,9 @@ import type { DeeplakeApi } from "../deeplake-api.js";
 import { defineCommand } from "just-bash";
 import yargsParser from "yargs-parser";
 import type { DeeplakeFs } from "./deeplake-fs.js";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { EmbedClient } from "../embeddings/client.js";
 
 import {
   buildGrepSearchOptions,
@@ -12,6 +15,38 @@ import {
   type GrepMatchParams,
   type ContentRow,
 } from "./grep-core.js";
+
+const SEMANTIC_SEARCH_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false";
+const SEMANTIC_EMBED_TIMEOUT_MS = Number(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS ?? "500");
+
+function resolveGrepEmbedDaemonPath(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "embeddings", "embed-daemon.js");
+}
+
+let sharedGrepEmbedClient: EmbedClient | null = null;
+function getGrepEmbedClient(): EmbedClient {
+  if (!sharedGrepEmbedClient) {
+    sharedGrepEmbedClient = new EmbedClient({
+      daemonEntry: resolveGrepEmbedDaemonPath(),
+      timeoutMs: SEMANTIC_EMBED_TIMEOUT_MS,
+    });
+  }
+  return sharedGrepEmbedClient;
+}
+
+/**
+ * Plain-text-ish pattern → candidate for semantic search.
+ * Skip regex-heavy queries (many metachars) where cosine similarity is not
+ * what the user asked for.
+ */
+function patternIsSemanticFriendly(pattern: string, fixedString: boolean): boolean {
+  if (!pattern || pattern.length < 2) return false;
+  if (fixedString) return true;
+  // Literal-ish patterns with only occasional `.*` are still fine for semantic.
+  const metaMatches = pattern.match(/[|()\[\]{}+?^$\\]/g);
+  if (!metaMatches) return true;
+  return metaMatches.length <= 1;
+}
 
 const MAX_FALLBACK_CANDIDATES = 500;
 
@@ -71,12 +106,25 @@ export function createGrepCommand(
       countOnly: Boolean(parsed.c || parsed["count"]),
     };
 
+    // Try semantic search first (daemon-backed embedding of the pattern).
+    // Falls back to lexical LIKE if the daemon is unreachable, disabled by
+    // env flag, or the pattern is regex-heavy.
+    let queryEmbedding: number[] | null = null;
+    if (SEMANTIC_SEARCH_ENABLED && patternIsSemanticFriendly(pattern, matchParams.fixedString)) {
+      try {
+        queryEmbedding = await getGrepEmbedClient().embed(pattern, "query");
+      } catch {
+        queryEmbedding = null;
+      }
+    }
+
     let rows: ContentRow[] = [];
     try {
       const searchOptions = {
         ...buildGrepSearchOptions(matchParams, targets[0] ?? ctx.cwd),
         pathFilter: buildPathFilterForTargets(targets),
         limit: 100,
+        queryEmbedding,
       };
       const queryRows = await Promise.race([
         searchDeeplakeTables(client, table, sessionsTable ?? "sessions", searchOptions),
@@ -85,6 +133,26 @@ export function createGrepCommand(
       rows.push(...queryRows);
     } catch {
       rows = []; // fall through to in-memory fallback
+    }
+
+    // Semantic returned nothing → retry with lexical LIKE as a second shot
+    // before giving up to the in-memory fallback. Keeps behavior robust when
+    // embeddings miss but BM25 would match.
+    if (rows.length === 0 && queryEmbedding) {
+      try {
+        const lexicalOptions = {
+          ...buildGrepSearchOptions(matchParams, targets[0] ?? ctx.cwd),
+          pathFilter: buildPathFilterForTargets(targets),
+          limit: 100,
+        };
+        const lexicalRows = await Promise.race([
+          searchDeeplakeTables(client, table, sessionsTable ?? "sessions", lexicalOptions),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 3000)),
+        ]);
+        rows.push(...lexicalRows);
+      } catch {
+        // fall through to in-memory fallback below
+      }
     }
 
     // Dedup by path (multiple targets may overlap)
@@ -106,9 +174,25 @@ export function createGrepCommand(
       }
     }
 
-    // Normalize session JSON blobs to per-turn lines before the regex pass.
+    // Normalize session JSON blobs to per-turn lines.
     const normalized = rows.map(r => ({ path: r.path, content: normalizeContent(r.path, r.content) }));
-    const output = refineGrepMatches(normalized, matchParams);
+
+    // In semantic mode, skip the regex refinement: cosine similarity has
+    // already done the filtering, and dropping lines whose literal text
+    // doesn't match the pattern would defeat the semantic retrieval.
+    // Toggle with HIVEMIND_SEMANTIC_EMIT_ALL=false to restore strict regex.
+    let output: string[];
+    if (queryEmbedding && queryEmbedding.length > 0 && process.env.HIVEMIND_SEMANTIC_EMIT_ALL !== "false") {
+      output = [];
+      for (const r of normalized) {
+        for (const line of r.content.split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed) output.push(`${r.path}:${line}`);
+        }
+      }
+    } else {
+      output = refineGrepMatches(normalized, matchParams);
+    }
 
     return {
       stdout: output.length > 0 ? output.join("\n") + "\n" : "",
