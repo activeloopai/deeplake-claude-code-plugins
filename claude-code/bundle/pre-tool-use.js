@@ -634,9 +634,9 @@ function buildPathCondition(targetPath) {
   return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%' ESCAPE '\\')`;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, multiWordPatterns } = opts;
   const limit = opts.limit ?? 100;
-  const filterPatterns = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : [escapedPattern];
+  const filterPatterns = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : multiWordPatterns && multiWordPatterns.length > 1 ? multiWordPatterns : [escapedPattern];
   const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
   const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
   const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
@@ -725,13 +725,15 @@ function buildGrepSearchOptions(params, targetPath) {
   const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
   const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
   const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
+  const multiWordPatterns = !hasRegexMeta ? params.pattern.split(/\s+/).filter((w) => w.length > 2).slice(0, 4) : [];
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
     likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
     escapedPattern: sqlLike(params.pattern),
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0,
-    prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal))
+    prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
+    multiWordPatterns: multiWordPatterns.length > 1 ? multiWordPatterns.map((w) => sqlLike(w)) : void 0
   };
 }
 function buildContentFilter(column, likeOp, patterns) {
@@ -1946,6 +1948,17 @@ async function processPreToolUse(input, deps = {}) {
   const toolPath = getReadTargetPath(input.tool_input) ?? input.tool_input.path ?? "";
   if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
     const guidance = "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. This virtual filesystem only supports bash builtins: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. python, python3, node, and curl are NOT available. You MUST rewrite your command using only the bash tools listed above and try again. For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
+    const isReadLike = /^(?:python3?|node|deno|bun|ruby|perl)\b/.test(cmd.trim());
+    const hasShellMeta = /[$`;|&<>()\\]/.test(cmd);
+    if (isReadLike && !hasShellMeta) {
+      const normalized = rewritePaths(cmd) + " " + rewritePaths(toolPath);
+      const pathMatch = normalized.match(/\s(\/[\w./_-]+)/);
+      const cleanPath = pathMatch ? pathMatch[1] : "";
+      if (cleanPath && !cleanPath.endsWith("/")) {
+        logFn(`unsupported command on file, converting to cat: ${cleanPath}`);
+        return buildAllowDecision(`cat '${cleanPath.replace(/'/g, "'\\''")}'`, "[DeepLake] converted unsupported interpreter read to cat");
+      }
+    }
     logFn(`unsupported command, returning guidance: ${cmd}`);
     return buildAllowDecision(`echo ${JSON.stringify(guidance)}`, "[DeepLake] unsupported command \u2014 rewrite using bash builtins");
   }

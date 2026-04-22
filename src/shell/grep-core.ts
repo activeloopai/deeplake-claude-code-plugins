@@ -48,6 +48,8 @@ export interface SearchOptions {
   prefilterPattern?: string;
   /** Optional safe literal alternation anchors for regex searches (e.g. foo|bar). */
   prefilterPatterns?: string[];
+  /** Per-word patterns for non-regex multi-word queries (OR-joined). */
+  multiWordPatterns?: string[];
   /** Per-table row cap. */
   limit?: number;
 }
@@ -254,11 +256,11 @@ export async function searchDeeplakeTables(
   sessionsTable: string,
   opts: SearchOptions,
 ): Promise<ContentRow[]> {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, multiWordPatterns } = opts;
   const limit = opts.limit ?? 100;
   const filterPatterns = contentScanOnly
     ? (prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : (prefilterPattern ? [prefilterPattern] : []))
-    : [escapedPattern];
+    : (multiWordPatterns && multiWordPatterns.length > 1 ? multiWordPatterns : [escapedPattern]);
   const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
   const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
 
@@ -377,6 +379,12 @@ export function buildGrepSearchOptions(params: GrepMatchParams, targetPath: stri
   const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
   const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
   const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
+  // For non-regex multi-word patterns, split into per-word OR filters so
+  // natural-language queries match any token, not only the full phrase.
+  const multiWordPatterns = (!hasRegexMeta)
+    ? params.pattern.split(/\s+/).filter((w) => w.length > 2).slice(0, 4)
+    : [];
+
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
@@ -384,6 +392,9 @@ export function buildGrepSearchOptions(params: GrepMatchParams, targetPath: stri
     escapedPattern: sqlLike(params.pattern),
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : undefined,
     prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
+    multiWordPatterns: multiWordPatterns.length > 1
+      ? multiWordPatterns.map((w) => sqlLike(w))
+      : undefined,
   };
 }
 

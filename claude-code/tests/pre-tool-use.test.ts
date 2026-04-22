@@ -242,6 +242,140 @@ describe("pre-tool-use: unsafe commands return guidance instead of deny", () => 
   });
 });
 
+describe("pre-tool-use: interpreter read on clean single-file path is rewritten to cat", () => {
+  it("python3 on tilde-prefixed memory file rewrites to cat", () => {
+    const r = runPreToolUse("Bash", {
+      command: "python3 ~/.deeplake/memory/data.json",
+    });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+      expect(r.updatedCommand).toMatch(/^cat '\/[^']+'/);
+      expect(r.updatedCommand).toContain("/data.json");
+      expect(r.updatedCommand).not.toContain("RETRY REQUIRED");
+    }
+  });
+
+  it("python3 on $HOME-prefixed path correctly falls through to RETRY", () => {
+    // $HOME contains a $ metacharacter, so we can't safely rewrite — the
+    // hook sends it to the RETRY guidance rather than guess at expansion.
+    const r = runPreToolUse("Bash", {
+      command: "python3 $HOME/.deeplake/memory/foo.json",
+    });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.updatedCommand).toContain("RETRY REQUIRED");
+    }
+  });
+
+  it("python3 on absolute /home/*/.deeplake/memory path rewrites to cat", () => {
+    // Simulates what haiku frequently generates — the agent resolves
+    // ~/ to the absolute home path before passing to Bash.
+    const { homedir } = require("node:os");
+    const cmd = `python3 ${homedir()}/.deeplake/memory/session.json`;
+    const r = runPreToolUse("Bash", { command: cmd });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+      expect(r.updatedCommand).toMatch(/^cat '\/[^']+'/);
+      expect(r.updatedCommand).toContain("/session.json");
+      expect(r.updatedCommand).not.toContain("RETRY REQUIRED");
+    }
+  });
+
+  it("node on tilde-prefixed memory file rewrites to cat", () => {
+    const r = runPreToolUse("Bash", {
+      command: "node ~/.deeplake/memory/locomo_bench/conv_0_session_1.json",
+    });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+      expect(r.updatedCommand).toMatch(/^cat '\/[^']+'/);
+      expect(r.updatedCommand).toContain("conv_0_session_1.json");
+      expect(r.updatedCommand).not.toContain("RETRY REQUIRED");
+    }
+  });
+
+  it("perl on memory file rewrites to cat", () => {
+    const r = runPreToolUse("Bash", {
+      command: "perl ~/.deeplake/memory/notes.txt",
+    });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+      expect(r.updatedCommand).toMatch(/^cat '\/[^']+'/);
+      expect(r.updatedCommand).toContain("/notes.txt");
+    }
+  });
+
+  it("python3 with shell metacharacter still returns RETRY", () => {
+    const r = runPreToolUse("Bash", {
+      command: "python3 ~/.deeplake/memory/file.json | head",
+    });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.updatedCommand).toContain("RETRY REQUIRED");
+    }
+  });
+
+  it("python3 on directory (trailing slash) returns RETRY, not cat", () => {
+    const r = runPreToolUse("Bash", {
+      command: "python3 ~/.deeplake/memory/",
+    });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.updatedCommand).toContain("RETRY REQUIRED");
+    }
+  });
+
+  it("deno on memory file rewrites to cat", () => {
+    const r = runPreToolUse("Bash", {
+      command: "deno ~/.deeplake/memory/config.json",
+    });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.updatedCommand).toMatch(/^cat '\/[^']+'/);
+      expect(r.updatedCommand).toContain("/config.json");
+    }
+  });
+
+  it("bun on memory file rewrites to cat", () => {
+    const r = runPreToolUse("Bash", {
+      command: "bun ~/.deeplake/memory/script.ts",
+    });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.updatedCommand).toMatch(/^cat '\/[^']+'/);
+    }
+  });
+
+  it("ruby on memory file rewrites to cat", () => {
+    const r = runPreToolUse("Bash", {
+      command: "ruby ~/.deeplake/memory/a.rb",
+    });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.updatedCommand).toMatch(/^cat '\/[^']+'/);
+    }
+  });
+
+  it("auto-read uses single-quote escape for paths containing apostrophes", () => {
+    // Memory filenames with single quotes are pathological but possible.
+    // The cat command must escape them with '\''.
+    const r = runPreToolUse("Bash", {
+      command: "python3 ~/.deeplake/memory/o'file.json",
+    });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      // Either RETRY (if regex rejects the apostrophe) or a properly-escaped cat
+      if (!r.updatedCommand.includes("RETRY")) {
+        // Must not close the outer single-quote naively
+        expect(r.updatedCommand).not.toMatch(/cat '[^']*'[^']+'$/);
+      }
+    }
+  });
+});
+
 // ── Deeplake CLI commands: no longer supported, should return guidance ────────
 
 describe("pre-tool-use: deeplake CLI commands blocked", () => {
