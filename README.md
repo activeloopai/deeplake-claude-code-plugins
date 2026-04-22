@@ -8,7 +8,7 @@
   <br>
 </h1>
 
-<h4 align="center">One brain for every agent on your team.</h4>
+<h4 align="center">One brain for all your agents</h4>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
