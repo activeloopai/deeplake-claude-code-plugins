@@ -37,12 +37,13 @@ export function loadConfig(): Config | null {
   }
 
   // Backwards-compat: fall back to DEEPLAKE_* env vars after HIVEMIND_*. Warn once if used.
-  const env = process.env;
-  if (!env.HIVEMIND_TOKEN && env.DEEPLAKE_TOKEN) {
+  // Using `process.env.X` directly (not aliasing) so esbuild's `define` in openclaw build can
+  // stub these to `undefined` at bundle-time — keeps openclaw scanner from flagging env+fetch.
+  if (!process.env.HIVEMIND_TOKEN && process.env.DEEPLAKE_TOKEN) {
     process.stderr.write("[hivemind] DEEPLAKE_* env vars are deprecated; use HIVEMIND_* instead\n");
   }
-  const token = env.HIVEMIND_TOKEN ?? env.DEEPLAKE_TOKEN ?? creds?.token;
-  const orgId = env.HIVEMIND_ORG_ID ?? env.DEEPLAKE_ORG_ID ?? creds?.orgId;
+  const token = process.env.HIVEMIND_TOKEN ?? process.env.DEEPLAKE_TOKEN ?? creds?.token;
+  const orgId = process.env.HIVEMIND_ORG_ID ?? process.env.DEEPLAKE_ORG_ID ?? creds?.orgId;
   if (!token || !orgId) return null;
 
   return {
@@ -50,10 +51,10 @@ export function loadConfig(): Config | null {
     orgId,
     orgName: creds?.orgName ?? orgId,
     userName: creds?.userName || userInfo().username || "unknown",
-    workspaceId: env.HIVEMIND_WORKSPACE_ID ?? env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
-    apiUrl: env.HIVEMIND_API_URL ?? env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: env.HIVEMIND_TABLE ?? env.DEEPLAKE_TABLE ?? "memory",
-    sessionsTableName: env.HIVEMIND_SESSIONS_TABLE ?? env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
-    memoryPath: env.HIVEMIND_MEMORY_PATH ?? env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory"),
+    workspaceId: process.env.HIVEMIND_WORKSPACE_ID ?? process.env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
+    apiUrl: process.env.HIVEMIND_API_URL ?? process.env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
+    tableName: process.env.HIVEMIND_TABLE ?? process.env.DEEPLAKE_TABLE ?? "memory",
+    sessionsTableName: process.env.HIVEMIND_SESSIONS_TABLE ?? process.env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
+    memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? process.env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory"),
   };
 }

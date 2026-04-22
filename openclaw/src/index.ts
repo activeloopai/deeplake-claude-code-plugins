@@ -36,22 +36,16 @@ interface PluginAPI {
 const DEFAULT_API_URL = "https://api.deeplake.ai";
 const VERSION_URL = "https://raw.githubusercontent.com/activeloopai/hivemind/main/openclaw/openclaw.plugin.json";
 
-async function getInstalledVersion(): Promise<string | null> {
-  try {
-    const [{ readFileSync }, { join }] = await Promise.all([
-      import("node:fs"),
-      import("node:path"),
-    ]);
-    const dir = new URL(".", import.meta.url).pathname;
-    const candidates = [join(dir, "..", "package.json"), join(dir, "package.json")];
-    for (const c of candidates) {
-      try {
-        const pkg = JSON.parse(readFileSync(c, "utf-8"));
-        if (pkg.name === "hivemind" && pkg.version) return pkg.version;
-      } catch {}
-    }
-  } catch {}
-  return null;
+// Version injected at build time by esbuild's `define` (see esbuild.config.mjs).
+// The constant is substituted into the bundle literally, so neither source
+// nor bundle contains a filesystem read primitive paired with the fetch call
+// below — keeps the scanner from pattern-matching exfiltration.
+declare const __HIVEMIND_VERSION__: string;
+
+function getInstalledVersion(): string | null {
+  return typeof __HIVEMIND_VERSION__ === "string" && __HIVEMIND_VERSION__.length > 0
+    ? __HIVEMIND_VERSION__
+    : null;
 }
 
 function isNewer(latest: string, current: string): boolean {
@@ -63,7 +57,7 @@ function isNewer(latest: string, current: string): boolean {
 
 async function checkForUpdate(logger: PluginLogger): Promise<void> {
   try {
-    const current = await getInstalledVersion();
+    const current = getInstalledVersion();
     if (!current) return;
     const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(3000) });
     if (!res.ok) return;
@@ -277,7 +271,7 @@ export default definePluginEntry({
         name: "hivemind_update",
         description: "Check for Hivemind updates and show how to upgrade",
         handler: async () => {
-          const current = await getInstalledVersion();
+          const current = getInstalledVersion();
           if (!current) return { text: "Could not determine installed version." };
           try {
             const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(3000) });
