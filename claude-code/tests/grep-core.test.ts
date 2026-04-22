@@ -46,10 +46,13 @@ describe("normalizeContent: turn-array session shape", () => {
     ],
   });
 
-  it("emits date and speakers header", () => {
+  it("prefixes every turn with the session date inline", () => {
     const out = normalizeContent("/sessions/alice/chat_1.json", raw);
-    expect(out).toContain("date: 1:56 pm on 8 May, 2023");
-    expect(out).toContain("speakers: Avery, Jordan");
+    // Date lives inline on every turn so it survives the refineGrepMatches
+    // line filter — a standalone `date:` header would be stripped whenever
+    // the regex didn't match the header line itself.
+    expect(out).toContain("(1:56 pm on 8 May, 2023) [D1:1] Avery: Hey Jordan!");
+    expect(out).toContain("(1:56 pm on 8 May, 2023) [D1:2] Jordan: Hi Avery.");
   });
 
   it("emits one line per turn with dia_id tag", () => {
@@ -66,23 +69,24 @@ describe("normalizeContent: turn-array session shape", () => {
     expect(out).toContain("X: ");
   });
 
-  it("omits speakers header when both speaker fields are empty", () => {
+  it("skips the date prefix when date_time is absent", () => {
     const raw = JSON.stringify({
       turns: [{ speaker: "A", text: "hi" }],
-      speakers: { speaker_a: "", speaker_b: "" },
     });
     const out = normalizeContent("/sessions/alice/chat_1.json", raw);
-    expect(out).not.toContain("speakers:");
+    // No leading "(...)" — the turn line starts with the dia_id or speaker.
     expect(out).toContain("A: hi");
+    expect(out).not.toMatch(/^\(/);
   });
 
-  it("emits only speaker_a when speaker_b is missing", () => {
+  it("still emits turn lines when only one speaker is set (date still inlined)", () => {
     const raw = JSON.stringify({
+      date_time: "1:56 pm on 8 May, 2023",
       turns: [{ speaker: "A", text: "hi" }],
       speakers: { speaker_a: "Alice" },
     });
     const out = normalizeContent("/sessions/alice/chat_1.json", raw);
-    expect(out).toContain("speakers: Alice");
+    expect(out).toContain("(1:56 pm on 8 May, 2023) A: hi");
   });
 
   it("falls back speaker->name when speaker field is absent on a turn", () => {
@@ -782,20 +786,39 @@ describe("grepBothTables", () => {
     const [sql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
     expect(sql).not.toContain("summary::text LIKE");
     expect(sql).not.toContain("message::text LIKE");
+    expect(sql).not.toContain("summary::text ILIKE");
+    expect(sql).not.toContain("message::text ILIKE");
   });
 
   it("adds a safe literal prefilter for wildcard regexes with stable anchors", async () => {
     const api = mockApi([{ path: "/a", content: "foo middle bar" }]);
     await grepBothTables(api, "m", "s", { ...baseParams, pattern: "foo.*bar" }, "/");
     const [sql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(sql).toContain("summary::text LIKE '%foo%'");
+    // Default likeOp is ILIKE (case-insensitive) — buildGrepSearchOptions
+    // picks it unless HIVEMIND_GREP_LIKE=case-sensitive overrides.
+    expect(sql).toContain("summary::text ILIKE '%foo%'");
   });
 
-  it("routes to ILIKE when ignoreCase is set", async () => {
+  it("routes to ILIKE regardless of ignoreCase (case-insensitive by default)", async () => {
     const api = mockApi([]);
     await grepBothTables(api, "m", "s", { ...baseParams, ignoreCase: true }, "/");
     const [sql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
     expect(sql).toContain("ILIKE");
+  });
+
+  it("switches to LIKE when HIVEMIND_GREP_LIKE=case-sensitive", async () => {
+    const prev = process.env.HIVEMIND_GREP_LIKE;
+    process.env.HIVEMIND_GREP_LIKE = "case-sensitive";
+    try {
+      const api = mockApi([{ path: "/a", content: "hi" }]);
+      await grepBothTables(api, "m", "s", baseParams, "/");
+      const [sql] = api.query.mock.calls.map((c: unknown[]) => c[0] as string);
+      expect(sql).toContain("summary::text LIKE");
+      expect(sql).not.toMatch(/summary::text ILIKE/);
+    } finally {
+      if (prev === undefined) delete process.env.HIVEMIND_GREP_LIKE;
+      else process.env.HIVEMIND_GREP_LIKE = prev;
+    }
   });
 
   it("uses a single union query even for scoped target paths", async () => {
@@ -806,6 +829,33 @@ describe("grepBothTables", () => {
     expect(sql).toContain('FROM "memory"');
     expect(sql).toContain('FROM "sessions"');
     expect(sql).toContain("UNION ALL");
+  });
+
+  it("emits every non-empty line when a query embedding is passed (semantic mode)", async () => {
+    const api = mockApi([
+      { path: "/summaries/a.md", content: "foo first line\nunrelated but kept\n\ntrailing" },
+    ]);
+    const out = await grepBothTables(api, "m", "s", baseParams, "/", [0.1, 0.2]);
+    // Semantic mode short-circuits the refinement — every non-empty line on
+    // the retrieved row survives, not just the pattern-matching ones.
+    expect(out).toContain("/summaries/a.md:foo first line");
+    expect(out).toContain("/summaries/a.md:unrelated but kept");
+    expect(out).toContain("/summaries/a.md:trailing");
+  });
+
+  it("falls back to refined output when HIVEMIND_SEMANTIC_EMIT_ALL=false even with an embedding", async () => {
+    const prev = process.env.HIVEMIND_SEMANTIC_EMIT_ALL;
+    process.env.HIVEMIND_SEMANTIC_EMIT_ALL = "false";
+    try {
+      const api = mockApi([{ path: "/a", content: "foo line\nunrelated" }]);
+      const out = await grepBothTables(api, "m", "s", baseParams, "/", [0.1]);
+      // Refinement ran, so only the pattern-matching line is emitted.
+      expect(out.some(l => l.includes("foo line"))).toBe(true);
+      expect(out.some(l => l.includes("unrelated"))).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.HIVEMIND_SEMANTIC_EMIT_ALL;
+      else process.env.HIVEMIND_SEMANTIC_EMIT_ALL = prev;
+    }
   });
 });
 
@@ -898,5 +948,266 @@ describe("regex literal prefilter", () => {
     expect(opts.contentScanOnly).toBe(false);
     expect(opts.prefilterPattern).toBeUndefined();
     expect(opts.pathFilter).toBe(" AND path = '/summaries/alice/s1.md'");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Additional coverage: single-turn JSONB shape + hybrid semantic branch
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("normalizeContent: single-turn shape { turn: {...} }", () => {
+  it("emits one line with date prefix when date_time is present", () => {
+    const raw = JSON.stringify({
+      date_time: "8:00 pm on 20 July, 2023",
+      speakers: { speaker_a: "Alice", speaker_b: "Bob" },
+      turn: { dia_id: "D5:3", speaker: "Alice", text: "hello world" },
+    });
+    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    expect(out).toBe("(8:00 pm on 20 July, 2023) [D5:3] Alice: hello world");
+  });
+
+  it("omits the date prefix when date_time is absent", () => {
+    const raw = JSON.stringify({
+      turn: { dia_id: "D1:1", speaker: "X", text: "y" },
+    });
+    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    expect(out).toBe("[D1:1] X: y");
+  });
+
+  it("falls back speaker->name on a single turn", () => {
+    const raw = JSON.stringify({ turn: { name: "Only", text: "hi" } });
+    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    expect(out).toContain("Only: hi");
+  });
+
+  it("falls back text->content on a single turn", () => {
+    const raw = JSON.stringify({ turn: { speaker: "X", content: "fallback" } });
+    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    expect(out).toContain("X: fallback");
+  });
+
+  it("emits placeholder `?: ` when the turn payload is empty", () => {
+    const raw = JSON.stringify({ turn: {} });
+    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    // Empty turn → "?: " (placeholder speaker, empty text). Non-empty after
+    // trim so the branch emits rather than falling back to raw.
+    expect(out).toBe("?: ");
+  });
+
+  it("does not treat an array value in `turn` as single-turn", () => {
+    // Defensive: older per-turn shapes might mistakenly pass an array; we
+    // must not enter the singular branch because .speaker / .text would be
+    // undefined on the array itself.
+    const raw = JSON.stringify({
+      turn: [{ speaker: "X", text: "y" }],
+    });
+    const out = normalizeContent("/sessions/conv_0_session_1.json", raw);
+    // Falls through to raw — no branch matched.
+    expect(out).toBe(raw);
+  });
+});
+
+describe("searchDeeplakeTables: hybrid semantic + lexical branch", () => {
+  function apiWithRows(rows: Record<string, unknown>[] = []) {
+    const query = vi.fn().mockResolvedValue(rows);
+    return { query, api: { query } as any };
+  }
+
+  it("issues a single UNION-ALL query mixing semantic + lexical on both tables", async () => {
+    const { query, api } = apiWithRows([]);
+    await searchDeeplakeTables(api, "mem", "sess", {
+      pathFilter: "",
+      contentScanOnly: false,
+      likeOp: "ILIKE",
+      escapedPattern: "caroline",
+      queryEmbedding: [0.1, 0.2, 0.3],
+    });
+    expect(query).toHaveBeenCalledTimes(1);
+    const sql = query.mock.calls[0][0] as string;
+    expect(sql).toContain("summary_embedding <#> ARRAY[0.1,0.2,0.3]::float4[]");
+    expect(sql).toContain("message_embedding <#> ARRAY[0.1,0.2,0.3]::float4[]");
+    expect(sql).toContain("summary::text ILIKE '%caroline%'");
+    expect(sql).toContain("message::text ILIKE '%caroline%'");
+    expect(sql).toContain("ORDER BY score DESC");
+  });
+
+  it("uses 1.0 sentinel on lexical sub-queries so they stay above cosine (0..1)", async () => {
+    const { query, api } = apiWithRows([]);
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: false,
+      likeOp: "ILIKE",
+      escapedPattern: "x",
+      queryEmbedding: [0.5],
+    });
+    const sql = query.mock.calls[0][0] as string;
+    // Lexical branches carry the constant score; semantic uses the real cosine.
+    expect(sql).toMatch(/1\.0 AS score/);
+    expect(sql).toMatch(/\(summary_embedding <#>/);
+  });
+
+  it("skips the lexical branch entirely when contentScanOnly=true and no prefilter", async () => {
+    const { query, api } = apiWithRows([]);
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: true,
+      likeOp: "ILIKE",
+      escapedPattern: "(?:unused)",
+      queryEmbedding: [0.1],
+    });
+    const sql = query.mock.calls[0][0] as string;
+    // No usable literal → only the two semantic sub-queries are unioned.
+    expect(sql).not.toContain("summary::text ILIKE");
+    expect(sql).not.toContain("message::text ILIKE");
+    expect(sql).toContain("summary_embedding <#>");
+    expect(sql).toContain("message_embedding <#>");
+  });
+
+  it("falls back to prefilterPattern for regex grep with extractable literal", async () => {
+    const { query, api } = apiWithRows([]);
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: true,
+      likeOp: "ILIKE",
+      escapedPattern: "foo.*bar",
+      prefilterPattern: "foo",
+      queryEmbedding: [0.1],
+    });
+    const sql = query.mock.calls[0][0] as string;
+    expect(sql).toContain("summary::text ILIKE '%foo%'");
+  });
+
+  it("uses prefilterPatterns alternation instead of a single prefilterPattern", async () => {
+    const { query, api } = apiWithRows([]);
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: true,
+      likeOp: "ILIKE",
+      escapedPattern: "a|b",
+      prefilterPattern: "a",
+      prefilterPatterns: ["apple", "banana"],
+      queryEmbedding: [0.1],
+    });
+    const sql = query.mock.calls[0][0] as string;
+    // prefilterPatterns wins over prefilterPattern when both are present.
+    expect(sql).toContain("%apple%");
+    expect(sql).toContain("%banana%");
+  });
+
+  it("dedupes rows by path, keeping the first occurrence (highest score wins)", async () => {
+    const { api } = apiWithRows([
+      { path: "/a", content: "sem-first" },
+      { path: "/a", content: "lex-dup" },
+      { path: "/b", content: "other" },
+    ]);
+    const out = await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: false,
+      likeOp: "ILIKE",
+      escapedPattern: "x",
+      queryEmbedding: [0.5],
+    });
+    expect(out.map(r => r.path)).toEqual(["/a", "/b"]);
+    expect(out[0].content).toBe("sem-first");
+  });
+
+  it("honors HIVEMIND_SEMANTIC_LIMIT env override for the semantic sub-queries", async () => {
+    const prev = process.env.HIVEMIND_SEMANTIC_LIMIT;
+    process.env.HIVEMIND_SEMANTIC_LIMIT = "7";
+    try {
+      const { query, api } = apiWithRows([]);
+      await searchDeeplakeTables(api, "m", "s", {
+        pathFilter: "",
+        contentScanOnly: false,
+        likeOp: "ILIKE",
+        escapedPattern: "x",
+        queryEmbedding: [0.5],
+      });
+      const sql = query.mock.calls[0][0] as string;
+      // Semantic LIMIT is 7; lexical still 20 (default).
+      expect(sql).toMatch(/summary_embedding <#> [^)]+\) AS score FROM "m" WHERE summary_embedding IS NOT NULL ORDER BY score DESC LIMIT 7/);
+    } finally {
+      if (prev === undefined) delete process.env.HIVEMIND_SEMANTIC_LIMIT;
+      else process.env.HIVEMIND_SEMANTIC_LIMIT = prev;
+    }
+  });
+
+  it("skips the semantic branch entirely when queryEmbedding is an empty array", async () => {
+    const { query, api } = apiWithRows([]);
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: false,
+      likeOp: "ILIKE",
+      escapedPattern: "x",
+      queryEmbedding: [],
+    });
+    const sql = query.mock.calls[0][0] as string;
+    // Empty embedding → falls through to the pure-lexical branch below.
+    expect(sql).not.toContain("<#>");
+  });
+
+  it("skips the semantic branch when queryEmbedding is null", async () => {
+    const { query, api } = apiWithRows([]);
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: false,
+      likeOp: "ILIKE",
+      escapedPattern: "x",
+      queryEmbedding: null,
+    });
+    const sql = query.mock.calls[0][0] as string;
+    expect(sql).not.toContain("<#>");
+  });
+});
+
+describe("serializeFloat4Array (indirect)", () => {
+  it("returns NULL when the embedding contains a non-finite value", async () => {
+    const query = vi.fn().mockResolvedValue([]);
+    const api = { query } as any;
+    await searchDeeplakeTables(api, "m", "s", {
+      pathFilter: "",
+      contentScanOnly: false,
+      likeOp: "ILIKE",
+      escapedPattern: "x",
+      queryEmbedding: [1, NaN, 0.3],
+    });
+    const sql = query.mock.calls[0][0] as string;
+    // Both semantic sub-queries degrade to NULL scoring; Deeplake accepts it
+    // and returns 0 rows for those two sub-queries so the hybrid still runs.
+    expect(sql).toContain("<#> NULL");
+  });
+});
+
+describe("bm25Term derivation in buildGrepSearchOptions", () => {
+  it("populates bm25Term with the raw pattern for non-regex fixed strings", () => {
+    const opts = buildGrepSearchOptions(
+      { pattern: "charity race", fixedString: true, ignoreCase: false, wordMatch: false, lineNumber: false, invertMatch: false, filesOnly: false, countOnly: false },
+      "/"
+    );
+    expect(opts.bm25Term).toBe("charity race");
+  });
+
+  it("uses the extracted literal prefilter for regex patterns", () => {
+    const opts = buildGrepSearchOptions(
+      { pattern: "foo.*bar", fixedString: false, ignoreCase: false, wordMatch: false, lineNumber: false, invertMatch: false, filesOnly: false, countOnly: false },
+      "/"
+    );
+    expect(opts.bm25Term).toBe("foo");
+  });
+
+  it("joins alternation prefilters with spaces for BM25", () => {
+    const opts = buildGrepSearchOptions(
+      { pattern: "apple|banana|cherry", fixedString: false, ignoreCase: false, wordMatch: false, lineNumber: false, invertMatch: false, filesOnly: false, countOnly: false },
+      "/"
+    );
+    expect(opts.bm25Term).toBe("apple banana cherry");
+  });
+
+  it("returns undefined bm25Term when the regex has no extractable literal", () => {
+    const opts = buildGrepSearchOptions(
+      { pattern: "(?:a)", fixedString: false, ignoreCase: false, wordMatch: false, lineNumber: false, invertMatch: false, filesOnly: false, countOnly: false },
+      "/"
+    );
+    expect(opts.bm25Term).toBeUndefined();
   });
 });

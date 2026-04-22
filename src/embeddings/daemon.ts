@@ -143,6 +143,7 @@ export class EmbedDaemon {
   }
 }
 
+/* v8 ignore start — CLI entrypoint, only runs when file is node's argv[1] */
 const invokedDirectly = import.meta.url === `file://${process.argv[1]}`
   || (process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop() ?? ""));
 
@@ -155,3 +156,4 @@ if (invokedDirectly) {
     process.exit(1);
   });
 }
+/* v8 ignore stop */
