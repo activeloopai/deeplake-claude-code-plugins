@@ -532,8 +532,13 @@ function restoreOrCleanup(handle) {
     }
     rmSync(snapshot, { recursive: true, force: true });
     return "cleaned";
-  } catch {
-    return "noop";
+  } catch (e) {
+    try {
+      process.stderr.write(`[plugin-cache] restoreOrCleanup failed for ${pluginDir}: ${e?.message}
+`);
+    } catch {
+    }
+    return "restore-failed";
   }
 }
 var DEFAULT_MANIFEST_PATH = join7(homedir4(), ".claude", "plugins", "installed_plugins.json");

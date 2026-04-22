@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { chmodSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
@@ -137,8 +137,13 @@ describe("snapshotPluginDir + restoreOrCleanup", () => {
     expect(restoreOrCleanup(null)).toBe("noop");
   });
 
-  it("returns 'noop' when rename/rm throws (fs error swallowed)", () => {
+  it("returns 'restore-failed' and writes to stderr when rename throws", () => {
     const root = mkRoot();
+    const stderrChunks: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: any) => {
+      stderrChunks.push(String(chunk));
+      return true;
+    }) as any);
     try {
       const plugin = join(root, "0.6.38");
       mkdirSync(plugin, { recursive: true });
@@ -146,15 +151,19 @@ describe("snapshotPluginDir + restoreOrCleanup", () => {
       const handle = snapshotPluginDir(plugin, 1234)!;
       // Remove the live plugin dir so restoreOrCleanup goes through the
       // rename path. Then chmod the parent so rename fails with EACCES —
-      // exercising the catch branch in restoreOrCleanup.
+      // exercising the catch branch in restoreOrCleanup. The new contract
+      // returns "restore-failed" (not "noop") so the caller / log line can
+      // tell a genuine fs failure apart from the no-op cases.
       rmSync(plugin, { recursive: true, force: true });
       chmodSync(root, 0o500);
       try {
-        expect(restoreOrCleanup(handle)).toBe("noop");
+        expect(restoreOrCleanup(handle)).toBe("restore-failed");
+        expect(stderrChunks.join("")).toMatch(/restoreOrCleanup failed/);
       } finally {
         chmodSync(root, 0o700);
       }
     } finally {
+      stderrSpy.mockRestore();
       rmSync(root, { recursive: true, force: true });
     }
   });

@@ -76,11 +76,22 @@ export function snapshotPluginDir(pluginDir: string, pid = process.pid): Snapsho
   }
 }
 
+export type RestoreOutcome = "restored" | "cleaned" | "noop" | "restore-failed";
+
 /**
  * After the installer runs, restore the snapshot if the installer wiped
  * the versioned directory; otherwise remove the snapshot.
+ *
+ * Returns:
+ *   - "restored"       snapshot renamed back into place
+ *   - "cleaned"        plugin dir survived; snapshot removed
+ *   - "noop"           nothing to do (dev layout or both pluginDir and snapshot already absent)
+ *   - "restore-failed" fs operation threw — pluginDir may still be absent,
+ *                      caller should treat this as a real failure. Also
+ *                      writes to stderr so the broken state is observable
+ *                      even if the log sink is unavailable.
  */
-export function restoreOrCleanup(handle: SnapshotHandle | null): "restored" | "cleaned" | "noop" {
+export function restoreOrCleanup(handle: SnapshotHandle | null): RestoreOutcome {
   if (!handle) return "noop";
   const { pluginDir, snapshot } = handle;
   try {
@@ -93,8 +104,9 @@ export function restoreOrCleanup(handle: SnapshotHandle | null): "restored" | "c
     }
     rmSync(snapshot, { recursive: true, force: true });
     return "cleaned";
-  } catch {
-    return "noop";
+  } catch (e: any) {
+    try { process.stderr.write(`[plugin-cache] restoreOrCleanup failed for ${pluginDir}: ${e?.message}\n`); } catch { /* ignore */ }
+    return "restore-failed";
   }
 }
 
