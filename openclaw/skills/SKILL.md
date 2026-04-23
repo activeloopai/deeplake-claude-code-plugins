@@ -8,11 +8,16 @@ allowed-tools: hivemind_search, hivemind_read, hivemind_index
 
 Cloud-backed shared memory powered by Deeplake.
 
+You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up information:
+
+1. **Your built-in memory** — personal per-project notes from the host agent
+2. **Hivemind global memory** — memory shared across all sessions, users, and agents in the org, accessed via the tools below
+
 ## When to use Hivemind
 
 Use Hivemind **before** answering any question that references:
 
-- a person by name (teammates, collaborators, users) — e.g. "what is Levon doing?", "who is Emanuele?"
+- a person by name (teammates, collaborators, users) — e.g. "what is Alice doing?", "who is Bob?"
 - past work, decisions, or incidents the user expects you to already know about
 - anything the user phrases as "remember", "recall", "look up", "find out about"
 
@@ -30,7 +35,7 @@ Overview tool: **`hivemind_index()`** — list all available summaries and sessi
 
 ## Do NOT
 
-- **Do NOT conflate distinct people.** Every username under `/summaries/<user>/...` and `/sessions/<user>/...` is a different person. Names like Levon, Sasun, Emanuele, Kamo are distinct teammates — never merge, alias, or treat them as the same person based on co-occurrence in search results.
+- **Do NOT conflate distinct people.** Every username under `/summaries/<user>/...` and `/sessions/<user>/...` is a different person. Two names that appear in adjacent search hits are NOT the same person — never merge, alias, or treat them as one based on co-occurrence.
 - **Do NOT invent facts** about a person based on adjacent search hits. If `hivemind_search` returned 5 hits and only 2 clearly mention the person, report only what's in those 2.
 - **Do NOT skip Hivemind** just because you have some local notes. Hivemind memory is shared across the whole org and is usually more current than anything stored locally.
 

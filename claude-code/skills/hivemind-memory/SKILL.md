@@ -34,6 +34,12 @@ You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall,
 
 Do NOT jump straight to reading raw JSONL files. Always start with index.md and summaries.
 
+## Do NOT
+
+- **Do NOT conflate distinct people.** Every username under `summaries/<user>/...` and `sessions/<user>/...` is a different person. Two names that appear in adjacent search hits are NOT the same person — never merge, alias, or treat them as one based on co-occurrence.
+- **Do NOT invent facts** about a person based on adjacent search hits. If a search returned 5 hits and only 2 clearly mention the person, report only what's in those 2.
+- **Do NOT guess.** If the hits you find don't actually answer the question, say so rather than filling in plausible-sounding details.
+
 ## Organization Management
 
 The auth command path is injected at session start. Use the exact path from the session context. Each argument is separate — do NOT quote subcommands together:
