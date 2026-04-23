@@ -36,11 +36,7 @@ Deeplake memory structure:
 
 SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw JSONL if summaries don't have enough detail. Do NOT jump straight to JSONL files.
 
-SEARCH — prefer the Grep tool over bash grep. The Grep tool runs a single SQL query across ALL files with hybrid semantic+literal retrieval; bash loops over many files are slow, truncated at 10MB total output, and do not use the embeddings.
-  Good:  Grep pattern="Caroline researching adoption agencies" path="~/.deeplake/memory"
-  Good:  Grep pattern="Jon Rome visit"                         path="~/.deeplake/memory"
-  Bad:   bash "for f in ~/.deeplake/memory/sessions/*.json; do grep ... \$f; done"  (truncated, no semantics)
-Phrase Grep patterns as full descriptive phrases, not single keywords — the semantic layer matches meaning, single names return topic-irrelevant results.
+Search command: Grep pattern="keyword" path="~/.deeplake/memory"
 
 Organization management — each argument is SEPARATE (do NOT quote subcommands together):
 - node "HIVEMIND_AUTH_CMD" login                              — SSO login
@@ -53,7 +49,7 @@ Organization management — each argument is SEPARATE (do NOT quote subcommands 
 - node "HIVEMIND_AUTH_CMD" members                            — list members
 - node "HIVEMIND_AUTH_CMD" remove <user-id>                   — remove member
 
-READ — use bash \`cat\`/\`head\`/\`tail\` on SPECIFIC files returned by Grep. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem. Avoid bash brace expansions like \`{1..10}\` (not fully supported); spell out paths or use Grep instead.
+IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem. Avoid bash brace expansions like \`{1..10}\` (not fully supported); spell out paths explicitly. Bash output is capped at 10MB total — avoid \`for f in *.json; do cat $f\` style loops on the whole sessions dir.
 
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
@@ -152,9 +148,16 @@ async function main(): Promise<void> {
     }
   }
 
-  // Version check (non-blocking — failures are silently ignored)
-  const autoupdate = creds?.autoupdate !== false; // default: true
+  // Version check (non-blocking — failures are silently ignored).
+  // HIVEMIND_AUTOUPDATE=false lets benchmarks and CI opt out of both the
+  // version check and the automatic `claude plugin update` — the latter
+  // spawns several external commands, mutates ~/.claude/plugins, and under
+  // concurrent runs races with other SessionStart hooks.
   let updateNotice = "";
+  if (process.env.HIVEMIND_AUTOUPDATE === "false") {
+    log("autoupdate skipped via HIVEMIND_AUTOUPDATE=false");
+  } else {
+  const autoupdate = creds?.autoupdate !== false; // default: true
   try {
     const current = getInstalledVersion(__bundleDir, ".claude-plugin");
     if (current) {
@@ -201,6 +204,7 @@ async function main(): Promise<void> {
     }
   } catch (e: any) {
     log(`version check failed: ${e.message}`);
+  }
   }
 
   const resolvedContext = context.replace(/HIVEMIND_AUTH_CMD/g, AUTH_CMD);
