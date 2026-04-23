@@ -141,7 +141,12 @@ export class DeeplakeFs implements IFileSystem {
     const sessionsBootstrap = (sessionsTable && sessionSyncOk) ? (async () => {
       try {
         const sessionRows = await client.query(
-          `SELECT path, SUM(size_bytes) as total_size FROM "${sessionsTable}" GROUP BY path ORDER BY path`
+          // NOTE: SUM(size_bytes) returns NULL on the Deeplake backend when combined
+          // with GROUP BY path (confirmed against workspace `with_embedding`). MAX
+          // works and — for the single-row-per-file layout — is equal to SUM. For
+          // multi-row-per-turn layouts MAX under-reports total size but stays >0
+          // so files don't look like empty placeholders in ls/stat.
+          `SELECT path, MAX(size_bytes) as total_size FROM "${sessionsTable}" GROUP BY path ORDER BY path`
         );
         for (const row of sessionRows) {
           const p = row["path"] as string;
