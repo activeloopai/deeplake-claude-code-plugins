@@ -38,7 +38,7 @@ type HookHandler = (event: Record<string, unknown>) => Promise<unknown>;
 
 async function loadPluginWithHooks() {
   vi.resetModules();
-  const mod = await import("../../openclaw/src/index.js");
+  const mod = await import("../src/index.js");
   const plugin = mod.default as { register: (api: any) => void };
   const hooks = new Map<string, HookHandler>();
   const mockApi = {

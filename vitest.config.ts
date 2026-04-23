@@ -14,6 +14,7 @@ export default defineConfig({
     include: [
       "claude-code/tests/**/*.test.ts",
       "codex/tests/**/*.test.ts",
+      "openclaw/tests/**/*.test.ts",
     ],
     environment: "node",
     coverage: {
