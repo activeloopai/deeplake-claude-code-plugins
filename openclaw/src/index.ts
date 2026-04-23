@@ -71,16 +71,14 @@ interface PluginAPI {
   pluginConfig?: Record<string, unknown>;
   logger: PluginLogger;
   on(event: string, handler: (event: Record<string, unknown>) => Promise<unknown>): void;
-  registerCommand?(command: {
+  registerCommand(command: {
     name: string;
     description: string;
     acceptsArgs?: boolean;
     handler: (ctx: CommandContext) => Promise<string | { text: string }>;
   }): void;
-  // Optional on purpose — older openclaw hosts (pre-2026.4.x) don't expose
-  // these seams. The plugin guards both before calling.
-  registerTool?(tool: AgentTool): void;
-  registerMemoryCorpusSupplement?(supplement: MemoryCorpusSupplement): void;
+  registerTool(tool: AgentTool): void;
+  registerMemoryCorpusSupplement(supplement: MemoryCorpusSupplement): void;
 }
 
 const DEFAULT_API_URL = "https://api.deeplake.ai";
@@ -286,7 +284,6 @@ export default definePluginEntry({
   register(pluginApi: PluginAPI) {
     try {
     // Login command — works immediately after install, no hook dependency
-    if (pluginApi.registerCommand) {
       pluginApi.registerCommand({
         name: "hivemind_login",
         description: "Log in to Hivemind and activate shared memory",
@@ -401,15 +398,12 @@ export default definePluginEntry({
           }
         },
       });
-    }
 
-    // Agent-facing memory tools. Registered only when the host exposes
-    // `registerTool`; older openclaw versions silently skip this block. These
-    // give the agent the same memory surface claude-code and codex agents
-    // get via PreToolUse-intercepted Grep/Read — multi-word search across
-    // the memory (summaries) and sessions (raw turns) tables, drill-down
-    // into a specific path, and a rendered index of what's available.
-    if (pluginApi.registerTool) {
+    // Agent-facing memory tools. Give the agent the same memory surface
+    // claude-code and codex agents get via PreToolUse-intercepted Grep/Read —
+    // multi-word search across the memory (summaries) and sessions (raw turns)
+    // tables, drill-down into a specific path, and a rendered index of what's
+    // available.
       pluginApi.registerTool({
         name: "hivemind_search",
         label: "Hivemind Search",
@@ -569,12 +563,10 @@ export default definePluginEntry({
           }
         },
       });
-    }
 
     // Memory-corpus supplement: if the host runs a `memory_search` tool (e.g.
     // from memory-core), it federates queries to all registered supplements.
     // Non-exclusive — coexists with any other corpus.
-    if (pluginApi.registerMemoryCorpusSupplement) {
       pluginApi.registerMemoryCorpusSupplement({
         search: async ({ query, maxResults }) => {
           const dl = await getApi();
@@ -614,13 +606,12 @@ export default definePluginEntry({
           }
         },
       });
-    }
 
     const config = (pluginApi.pluginConfig ?? {}) as PluginConfig;
     const logger = pluginApi.logger;
 
     const hook = (event: string, handler: (event: Record<string, unknown>) => Promise<unknown>) => {
-      if (pluginApi.on) pluginApi.on(event, handler);
+      pluginApi.on(event, handler);
     };
 
     // Auto-recall: search memory before each turn
