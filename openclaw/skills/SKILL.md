@@ -1,61 +1,38 @@
 ---
 name: hivemind
-description: Cloud-backed shared memory. ALWAYS check Hivemind when the user asks about people, past work, or anything that may have happened in prior sessions — call `hivemind_search` first, then `hivemind_read` to drill in.
+description: Global team and org memory powered by Activeloop. ALWAYS check BOTH built-in memory AND Hivemind memory when recalling information.
 allowed-tools: hivemind_search, hivemind_read, hivemind_index
 ---
 
-# Hivemind
+# Hivemind Memory
 
-Cloud-backed shared memory powered by Deeplake.
-
-You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up information:
+You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
 
 1. **Your built-in memory** — personal per-project notes from the host agent
-2. **Hivemind global memory** — memory shared across all sessions, users, and agents in the org, accessed via the tools below
+2. **Hivemind global memory** — global memory shared across all sessions, users, and agents in the org, accessed via the tools below
 
-## When to use Hivemind
+## Memory Structure
 
-Use Hivemind **before** answering any question that references:
+```
+/index.md                           ← START HERE — table of all sessions
+/summaries/
+  <username>/
+    <session-id>.md                 ← AI-generated wiki summary per session
+/sessions/
+  <username>/
+    <user_org_ws_slug>.jsonl        ← raw session data
+```
 
-- a person by name (teammates, collaborators, users) — e.g. "what is Alice doing?", "who is Bob?"
-- past work, decisions, or incidents the user expects you to already know about
-- anything the user phrases as "remember", "recall", "look up", "find out about"
+## How to Search
 
-Primary tool: **`hivemind_search(query, regex?, ignoreCase?, limit?)`** — substring/regex search across all captured sessions and summaries. Returns `path:line` hits.
+1. **First**: call `hivemind_index()` — table of all sessions with dates, projects, descriptions
+2. **If you need details**: call `hivemind_read("/summaries/<username>/<session>.md")`
+3. **If you need raw data**: call `hivemind_read("/sessions/<username>/<file>.jsonl")`
+4. **Keyword search**: call `hivemind_search("keyword")` — substring search across both summaries and sessions, returns `path:line` hits
 
-Drill-in tool: **`hivemind_read(path)`** — fetch the full content of a specific path returned by search (e.g. `/summaries/levon/2026-04-10-refactor.md`).
+Do NOT jump straight to reading raw JSONL files. Always start with `hivemind_index` and summaries.
 
-Overview tool: **`hivemind_index()`** — list all available summaries and sessions. Useful when you need to browse rather than search.
-
-### How to search
-
-1. Call `hivemind_search` with the most specific terms first (a name, a project, an error message). Don't start with a full natural-language sentence.
-2. If results span multiple paths under `/summaries/<user>/...`, pick the most relevant one and `hivemind_read` it.
-3. Only fall back to `/sessions/<user>/...` raw JSONL if summaries don't have enough detail.
-
-## Do NOT
-
-- **Do NOT conflate distinct people.** Every username under `/summaries/<user>/...` and `/sessions/<user>/...` is a different person. Two names that appear in adjacent search hits are NOT the same person — never merge, alias, or treat them as one based on co-occurrence.
-- **Do NOT invent facts** about a person based on adjacent search hits. If `hivemind_search` returned 5 hits and only 2 clearly mention the person, report only what's in those 2.
-- **Do NOT skip Hivemind** just because you have some local notes. Hivemind memory is shared across the whole org and is usually more current than anything stored locally.
-
-## After install
-
-**DO NOT tell the user to restart the gateway.** The plugin is ready immediately. Just tell the user to run `/hivemind_login` to authenticate.
-
-## Authentication
-
-The user types `/hivemind_login` in chat. The plugin returns an auth URL. The user clicks it, signs in, and memory activates on the next message. A long-lived API token is stored at `~/.deeplake/credentials.json`.
-
-## What the plugin does
-
-- **Captures** every conversation (user + assistant messages) and sends them to `api.deeplake.ai`. Disable anytime with `/hivemind_capture`.
-- **Recalls** relevant memories before each agent turn via keyword search.
-- **Stores** a long-lived API token at `~/.deeplake/credentials.json` after login.
-- **Does NOT** modify OpenClaw configuration or replace the built-in memory plugin.
-- **Network destinations**: `api.deeplake.ai` (memory storage, capture, recall) and `raw.githubusercontent.com` (version check on session start and via `/hivemind_update`).
-
-## Commands
+## Organization Management
 
 - `/hivemind_login` — sign in via device flow
 - `/hivemind_capture` — toggle capture on/off (off = no data sent)
@@ -66,11 +43,16 @@ The user types `/hivemind_login` in chat. The plugin returns an auth URL. The us
 - `/hivemind_switch_workspace <id>` — switch workspace
 - `/hivemind_update` — check for plugin updates
 
+## Limits
+
+Do NOT spawn subagents to read Hivemind memory. If a tool call returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
+
+## Getting Started
+
+After installing the plugin:
+1. Run `/hivemind_login` to authenticate
+2. Start using memory — ask questions, the agent automatically captures and searches
+
 ## Sharing memory
 
-Multiple agents share memory when users are in the same Deeplake organization.
-
-## Troubleshooting
-
-- **Auth link not appearing** → Type `/hivemind_login` explicitly
-- **Memory not recalling** → Memories are searched by keyword matching. Use specific terms.
+Multiple agents share memory when users are in the same Activeloop organization.
