@@ -27,11 +27,14 @@ function makeClient(memoryRows: Row[] = [], sessionRows: Row[] = []) {
         return rows.map(r => ({ path: r.path, size_bytes: r.size_bytes, mime_type: r.mime_type }));
       }
 
-      // Bootstrap: SELECT path, SUM(size_bytes) ... GROUP BY path (sessions table)
-      if (sql.includes("SUM(size_bytes)") && sql.includes("GROUP BY")) {
+      // Bootstrap: SELECT path, MAX(size_bytes) ... GROUP BY path (sessions table).
+      // The production SQL uses MAX to work around a Deeplake backend quirk
+      // where SUM() returns NULL under GROUP BY (see deeplake-fs.ts), so the
+      // mock mirrors that by taking MAX per path as well.
+      if (sql.includes("MAX(size_bytes)") && sql.includes("GROUP BY")) {
         const groups = new Map<string, number>();
         for (const r of sessionRows) {
-          groups.set(r.path, (groups.get(r.path) ?? 0) + r.size_bytes);
+          groups.set(r.path, Math.max(groups.get(r.path) ?? 0, r.size_bytes));
         }
         return [...groups.entries()].map(([path, total]) => ({ path, total_size: total }));
       }

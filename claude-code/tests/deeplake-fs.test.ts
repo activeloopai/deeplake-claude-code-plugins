@@ -622,10 +622,10 @@ describe("prefetch", () => {
       ensureTable: vi.fn().mockResolvedValue(undefined),
       query: vi.fn(async (sql: string) => {
         if (sql.includes("SELECT path, size_bytes, mime_type")) return [];
-        if (sql.includes("SELECT path, SUM(size_bytes) as total_size")) {
+        if (sql.includes("SELECT path, MAX(size_bytes) as total_size")) {
           return [...sessionMessages.entries()].map(([path, rows]) => ({
             path,
-            total_size: rows.reduce((sum, row) => sum + Buffer.byteLength(row.message, "utf-8"), 0),
+            total_size: Math.max(...rows.map((row) => Buffer.byteLength(row.message, "utf-8"))),
           }));
         }
         if (sql.includes("SELECT path, message, creation_date")) {
