@@ -355,8 +355,16 @@ export default definePluginEntry({
           const target = ctx.args?.trim();
           if (!target) return { text: "Usage: /hivemind_switch_org <name-or-id>" };
           const orgs = await listOrgs(creds.token, creds.apiUrl);
-          const match = orgs.find(o => o.id === target || o.name.toLowerCase() === target.toLowerCase());
-          if (!match) return { text: `Org not found: ${target}` };
+          const lc = target.toLowerCase();
+          const match =
+            orgs.find(o => o.id === target || o.name.toLowerCase() === lc) ??
+            orgs.find(o => o.name.toLowerCase().includes(lc) || o.id.toLowerCase().includes(lc));
+          if (!match) {
+            const available = orgs.length
+              ? orgs.map(o => `  - ${o.name} (id: ${o.id})`).join("\n")
+              : "  (none — your current token has no organization access)";
+            return { text: `Org not found: ${target}\n\nAvailable:\n${available}` };
+          }
           await switchOrg(match.id, match.name);
           api = null;
           return { text: `Switched to org: ${match.name}` };
@@ -386,8 +394,16 @@ export default definePluginEntry({
           const target = ctx.args?.trim();
           if (!target) return { text: "Usage: /hivemind_switch_workspace <name-or-id>" };
           const ws = await listWorkspaces(creds.token, creds.apiUrl, creds.orgId);
-          const match = ws.find(w => w.id === target || w.name.toLowerCase() === target.toLowerCase());
-          if (!match) return { text: `Workspace not found: ${target}` };
+          const lc = target.toLowerCase();
+          const match =
+            ws.find(w => w.id === target || w.name.toLowerCase() === lc) ??
+            ws.find(w => w.name.toLowerCase().includes(lc) || w.id.toLowerCase().includes(lc));
+          if (!match) {
+            const available = ws.length
+              ? ws.map(w => `  - ${w.name} (id: ${w.id})`).join("\n")
+              : "  (none in current org — try /hivemind_switch_org first)";
+            return { text: `Workspace not found: ${target}\n\nAvailable:\n${available}` };
+          }
           await switchWorkspace(match.id);
           api = null;
           return { text: `Switched to workspace: ${match.name}` };
