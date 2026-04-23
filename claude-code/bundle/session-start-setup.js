@@ -543,8 +543,229 @@ function restoreOrCleanup(handle) {
 }
 var DEFAULT_MANIFEST_PATH = join7(homedir4(), ".claude", "plugins", "installed_plugins.json");
 
+// dist/src/embeddings/client.js
+import { connect } from "node:net";
+import { spawn } from "node:child_process";
+import { openSync, closeSync, writeSync, unlinkSync as unlinkSync2, existsSync as existsSync5, readFileSync as readFileSync6 } from "node:fs";
+
+// dist/src/embeddings/protocol.js
+var DEFAULT_SOCKET_DIR = "/tmp";
+var DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_CLIENT_TIMEOUT_MS = 200;
+function socketPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
+  return `${dir}/hivemind-embed-${uid}.sock`;
+}
+function pidPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
+  return `${dir}/hivemind-embed-${uid}.pid`;
+}
+
+// dist/src/embeddings/client.js
+var log3 = (m) => log("embed-client", m);
+function getUid() {
+  const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
+  return uid !== void 0 ? String(uid) : process.env.USER ?? "default";
+}
+var EmbedClient = class {
+  socketPath;
+  pidPath;
+  timeoutMs;
+  daemonEntry;
+  autoSpawn;
+  spawnWaitMs;
+  nextId = 0;
+  constructor(opts = {}) {
+    const uid = getUid();
+    const dir = opts.socketDir ?? "/tmp";
+    this.socketPath = socketPathFor(uid, dir);
+    this.pidPath = pidPathFor(uid, dir);
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS;
+    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON;
+    this.autoSpawn = opts.autoSpawn ?? true;
+    this.spawnWaitMs = opts.spawnWaitMs ?? 5e3;
+  }
+  /**
+   * Returns an embedding vector, or null on timeout/failure. Hooks MUST treat
+   * null as "skip embedding column" — never block the write path on us.
+   *
+   * Fire-and-forget spawn on miss: if the daemon isn't up, this call returns
+   * null AND kicks off a background spawn. The next call finds a ready daemon.
+   */
+  async embed(text, kind = "document") {
+    let sock;
+    try {
+      sock = await this.connectOnce();
+    } catch {
+      if (this.autoSpawn)
+        this.trySpawnDaemon();
+      return null;
+    }
+    try {
+      const id = String(++this.nextId);
+      const req = { op: "embed", id, kind, text };
+      const resp = await this.sendAndWait(sock, req);
+      if (resp.error || !("embedding" in resp) || !resp.embedding) {
+        log3(`embed err: ${resp.error ?? "no embedding"}`);
+        return null;
+      }
+      return resp.embedding;
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      log3(`embed failed: ${err}`);
+      return null;
+    } finally {
+      try {
+        sock.end();
+      } catch {
+      }
+    }
+  }
+  /**
+   * Wait up to spawnWaitMs for the daemon to accept connections, spawning if
+   * necessary. Meant for SessionStart / long-running batches — not the hot path.
+   */
+  async warmup() {
+    try {
+      const s = await this.connectOnce();
+      s.end();
+      return true;
+    } catch {
+      if (!this.autoSpawn)
+        return false;
+      this.trySpawnDaemon();
+      try {
+        const s = await this.waitForSocket();
+        s.end();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+  connectOnce() {
+    return new Promise((resolve2, reject) => {
+      const sock = connect(this.socketPath);
+      const to = setTimeout(() => {
+        sock.destroy();
+        reject(new Error("connect timeout"));
+      }, this.timeoutMs);
+      sock.once("connect", () => {
+        clearTimeout(to);
+        resolve2(sock);
+      });
+      sock.once("error", (e) => {
+        clearTimeout(to);
+        reject(e);
+      });
+    });
+  }
+  trySpawnDaemon() {
+    let fd;
+    try {
+      fd = openSync(this.pidPath, "wx", 384);
+      writeSync(fd, String(process.pid));
+    } catch (e) {
+      if (this.isPidFileStale()) {
+        try {
+          unlinkSync2(this.pidPath);
+        } catch {
+        }
+        try {
+          fd = openSync(this.pidPath, "wx", 384);
+          writeSync(fd, String(process.pid));
+        } catch {
+          return;
+        }
+      } else {
+        return;
+      }
+    }
+    if (!this.daemonEntry || !existsSync5(this.daemonEntry)) {
+      log3(`daemonEntry not configured or missing: ${this.daemonEntry}`);
+      try {
+        closeSync(fd);
+        unlinkSync2(this.pidPath);
+      } catch {
+      }
+      return;
+    }
+    try {
+      const child = spawn(process.execPath, [this.daemonEntry], {
+        detached: true,
+        stdio: "ignore",
+        env: process.env
+      });
+      child.unref();
+      log3(`spawned daemon pid=${child.pid}`);
+    } finally {
+      closeSync(fd);
+    }
+  }
+  isPidFileStale() {
+    try {
+      const raw = readFileSync6(this.pidPath, "utf-8").trim();
+      const pid = Number(raw);
+      if (!pid || Number.isNaN(pid))
+        return true;
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+  }
+  async waitForSocket() {
+    const deadline = Date.now() + this.spawnWaitMs;
+    let delay = 30;
+    while (Date.now() < deadline) {
+      await sleep2(delay);
+      delay = Math.min(delay * 1.5, 300);
+      if (!existsSync5(this.socketPath))
+        continue;
+      try {
+        return await this.connectOnce();
+      } catch {
+      }
+    }
+    throw new Error("daemon did not become ready within spawnWaitMs");
+  }
+  sendAndWait(sock, req) {
+    return new Promise((resolve2, reject) => {
+      let buf = "";
+      const to = setTimeout(() => {
+        sock.destroy();
+        reject(new Error("request timeout"));
+      }, this.timeoutMs);
+      sock.setEncoding("utf-8");
+      sock.on("data", (chunk) => {
+        buf += chunk;
+        const nl = buf.indexOf("\n");
+        if (nl === -1)
+          return;
+        const line = buf.slice(0, nl);
+        clearTimeout(to);
+        try {
+          resolve2(JSON.parse(line));
+        } catch (e) {
+          reject(e);
+        }
+      });
+      sock.on("error", (e) => {
+        clearTimeout(to);
+        reject(e);
+      });
+      sock.write(JSON.stringify(req) + "\n");
+    });
+  }
+};
+function sleep2(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 // dist/src/hooks/session-start-setup.js
-var log3 = (msg) => log("session-setup", msg);
+var log4 = (msg) => log("session-setup", msg);
 var __bundleDir = dirname3(fileURLToPath(import.meta.url));
 var { log: wikiLog } = makeWikiLogger(join8(homedir5(), ".claude", "hooks"));
 async function main() {
@@ -553,7 +774,7 @@ async function main() {
   const input = await readStdin();
   const creds = loadCredentials();
   if (!creds?.token) {
-    log3("no credentials");
+    log4("no credentials");
     return;
   }
   if (!creds.userName) {
@@ -561,7 +782,7 @@ async function main() {
       const { userInfo: userInfo2 } = await import("node:os");
       creds.userName = userInfo2().username ?? "unknown";
       saveCredentials(creds);
-      log3(`backfilled userName: ${creds.userName}`);
+      log4(`backfilled userName: ${creds.userName}`);
     } catch {
     }
   }
@@ -572,10 +793,10 @@ async function main() {
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
         await api.ensureTable();
         await api.ensureSessionsTable(config.sessionsTableName);
-        log3("setup complete");
+        log4("setup complete");
       }
     } catch (e) {
-      log3(`setup failed: ${e.message}`);
+      log4(`setup failed: ${e.message}`);
       wikiLog(`SessionSetup: failed for ${input.session_id}: ${e.message}`);
     }
   }
@@ -586,7 +807,7 @@ async function main() {
       const latest = await getLatestVersion();
       if (latest && isNewer(latest, current)) {
         if (autoupdate) {
-          log3(`autoupdate: updating ${current} \u2192 ${latest}`);
+          log4(`autoupdate: updating ${current} \u2192 ${latest}`);
           const resolved = resolveVersionedPluginDir(__bundleDir);
           const handle = resolved ? snapshotPluginDir(resolved.pluginDir) : null;
           try {
@@ -594,30 +815,42 @@ async function main() {
             const cmd = scopes.map((s) => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null || true`).join("; ");
             execSync2(cmd, { stdio: "ignore", timeout: 6e4 });
             const outcome = restoreOrCleanup(handle);
-            log3(`autoupdate snapshot outcome: ${outcome}`);
+            log4(`autoupdate snapshot outcome: ${outcome}`);
             process.stderr.write(`\u2705 Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.
 `);
-            log3(`autoupdate succeeded: ${current} \u2192 ${latest}`);
+            log4(`autoupdate succeeded: ${current} \u2192 ${latest}`);
           } catch (e) {
             restoreOrCleanup(handle);
             process.stderr.write(`\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /hivemind:update to upgrade manually.
 `);
-            log3(`autoupdate failed: ${e.message}`);
+            log4(`autoupdate failed: ${e.message}`);
           }
         } else {
           process.stderr.write(`\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Run /hivemind:update to upgrade.
 `);
-          log3(`update available (autoupdate off): ${current} \u2192 ${latest}`);
+          log4(`update available (autoupdate off): ${current} \u2192 ${latest}`);
         }
       } else {
-        log3(`version up to date: ${current}`);
+        log4(`version up to date: ${current}`);
       }
     }
   } catch (e) {
-    log3(`version check failed: ${e.message}`);
+    log4(`version check failed: ${e.message}`);
+  }
+  if (process.env.HIVEMIND_EMBED_WARMUP !== "false") {
+    try {
+      const daemonEntry = join8(__bundleDir, "embeddings", "embed-daemon.js");
+      const client = new EmbedClient({ daemonEntry, timeoutMs: 300, spawnWaitMs: 5e3 });
+      const ok = await client.warmup();
+      log4(`embed daemon warmup: ${ok ? "ok" : "failed"}`);
+    } catch (e) {
+      log4(`embed daemon warmup threw: ${e.message}`);
+    }
+  } else {
+    log4("embed daemon warmup skipped via HIVEMIND_EMBED_WARMUP=false");
   }
 }
 main().catch((e) => {
-  log3(`fatal: ${e.message}`);
+  log4(`fatal: ${e.message}`);
   process.exit(0);
 });

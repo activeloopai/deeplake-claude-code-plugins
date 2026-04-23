@@ -18,6 +18,7 @@ import { log as _log } from "../utils/debug.js";
 import { getInstalledVersion, getLatestVersion, isNewer } from "../utils/version-check.js";
 import { makeWikiLogger } from "../utils/wiki-log.js";
 import { resolveVersionedPluginDir, snapshotPluginDir, restoreOrCleanup } from "../utils/plugin-cache.js";
+import { EmbedClient } from "../embeddings/client.js";
 const log = (msg: string) => _log("session-setup", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -102,6 +103,29 @@ async function main(): Promise<void> {
     }
   } catch (e: any) {
     log(`version check failed: ${e.message}`);
+  }
+
+  // Warm up the embedding daemon so the nomic-embed-text-v1.5 model is
+  // cached and loaded before the first Grep call. The daemon eagerly
+  // calls `embedder.load()` on startup (fire-and-forget), which downloads
+  // the model to ~/.cache/huggingface/hub/ on first run (~130 MB q8 /
+  // ~500 MB fp32) and keeps it resident for the lifetime of the process.
+  // `warmup()` itself just ensures the socket is accepting connections;
+  // the actual model download runs in the daemon's background — so this
+  // hook stays quick even on a cold install. Opt-out via
+  // HIVEMIND_EMBED_WARMUP=false for sessions that will never touch the
+  // memory path (lightweight CC runs, no-network CI).
+  if (process.env.HIVEMIND_EMBED_WARMUP !== "false") {
+    try {
+      const daemonEntry = join(__bundleDir, "embeddings", "embed-daemon.js");
+      const client = new EmbedClient({ daemonEntry, timeoutMs: 300, spawnWaitMs: 5000 });
+      const ok = await client.warmup();
+      log(`embed daemon warmup: ${ok ? "ok" : "failed"}`);
+    } catch (e: any) {
+      log(`embed daemon warmup threw: ${e.message}`);
+    }
+  } else {
+    log("embed daemon warmup skipped via HIVEMIND_EMBED_WARMUP=false");
   }
 }
 

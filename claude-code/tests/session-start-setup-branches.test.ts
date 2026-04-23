@@ -29,6 +29,7 @@ const isNewerMock = vi.fn();
 const resolveVersionedPluginDirMock = vi.fn();
 const snapshotPluginDirMock = vi.fn();
 const restoreOrCleanupMock = vi.fn();
+const embedWarmupMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/commands/auth.js", () => ({
@@ -64,6 +65,11 @@ vi.mock("../../src/utils/plugin-cache.js", () => ({
   snapshotPluginDir: (...a: any[]) => snapshotPluginDirMock(...a),
   restoreOrCleanup: (...a: any[]) => restoreOrCleanupMock(...a),
 }));
+vi.mock("../../src/embeddings/client.js", () => ({
+  EmbedClient: class {
+    async warmup() { return embedWarmupMock(); }
+  },
+}));
 
 async function runHook(): Promise<void> {
   delete process.env.HIVEMIND_WIKI_WORKER;
@@ -95,6 +101,7 @@ beforeEach(() => {
   getLatestVersionMock.mockReset().mockResolvedValue("0.6.38");
   isNewerMock.mockReset().mockReturnValue(false);
   resolveVersionedPluginDirMock.mockReset().mockReturnValue(null);
+  embedWarmupMock.mockReset().mockResolvedValue(true);
   snapshotPluginDirMock.mockReset();
   restoreOrCleanupMock.mockReset().mockReturnValue("noop");
 });
