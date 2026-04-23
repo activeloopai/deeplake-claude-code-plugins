@@ -504,7 +504,11 @@ Deeplake memory structure:
 
 SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw JSONL if summaries don't have enough detail. Do NOT jump straight to JSONL files.
 
-Search command: Grep pattern="keyword" path="~/.deeplake/memory"
+SEARCH \u2014 prefer the Grep tool over bash grep. The Grep tool runs a single SQL query across ALL files with hybrid semantic+literal retrieval; bash loops over many files are slow, truncated at 10MB total output, and do not use the embeddings.
+  Good:  Grep pattern="Caroline researching adoption agencies" path="~/.deeplake/memory"
+  Good:  Grep pattern="Jon Rome visit"                         path="~/.deeplake/memory"
+  Bad:   bash "for f in ~/.deeplake/memory/sessions/*.json; do grep ... $f; done"  (truncated, no semantics)
+Phrase Grep patterns as full descriptive phrases, not single keywords \u2014 the semantic layer matches meaning, single names return topic-irrelevant results.
 
 Organization management \u2014 each argument is SEPARATE (do NOT quote subcommands together):
 - node "HIVEMIND_AUTH_CMD" login                              \u2014 SSO login
@@ -517,7 +521,7 @@ Organization management \u2014 each argument is SEPARATE (do NOT quote subcomman
 - node "HIVEMIND_AUTH_CMD" members                            \u2014 list members
 - node "HIVEMIND_AUTH_CMD" remove <user-id>                   \u2014 remove member
 
-IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem. If a task seems to require Python, rewrite it using bash commands and standard text-processing tools (awk, sed, jq, grep, etc.).
+READ \u2014 use bash \`cat\`/\`head\`/\`tail\` on SPECIFIC files returned by Grep. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem. Avoid bash brace expansions like \`{1..10}\` (not fully supported); spell out paths or use Grep instead.
 
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
