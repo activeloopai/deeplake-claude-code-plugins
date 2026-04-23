@@ -286,13 +286,20 @@ export default definePluginEntry({
     // Login command — works immediately after install, no hook dependency
       pluginApi.registerCommand({
         name: "hivemind_login",
-        description: "Log in to Hivemind and activate shared memory",
+        description: "Log in to Hivemind (or switch accounts)",
         handler: async () => {
-          const creds = loadCredentials();
-          if (creds?.token) {
-            return { text: `✅ Already logged in. Org: ${creds.orgName ?? creds.orgId}` };
-          }
+          // Always return a fresh auth URL — even when already logged in —
+          // so the command doubles as a switch-account / re-auth path.
+          // Completed device flows overwrite the existing credentials, so the
+          // caller can cleanly change orgs without having to delete
+          // ~/.deeplake/credentials.json by hand.
+          const existing = loadCredentials();
           const url = await requestAuth();
+          if (existing?.token) {
+            return {
+              text: `ℹ️ Currently logged in as ${existing.orgName ?? existing.orgId}.\n\nTo re-authenticate or switch accounts:\n\n${url}\n\nAfter signing in, send another message.`,
+            };
+          }
           return { text: `🔐 Sign in to activate Hivemind memory:\n\n${url}\n\nAfter signing in, send another message.` };
         },
       });
