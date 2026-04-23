@@ -673,8 +673,18 @@ export default definePluginEntry({
             .join("\n\n");
 
           logger.info?.(`Auto-recalled ${rows.length} memories`);
+          const instruction =
+            "These are raw Hivemind search hits from prior sessions. Each hit is prefixed with its path " +
+            "(e.g. `/summaries/<username>/...`). Different usernames are different people — do NOT merge, " +
+            "alias, or conflate them. If you need more detail, call `hivemind_search` with a more specific " +
+            "query or `hivemind_read` on a specific path. If these hits don't answer the question, say so " +
+            "rather than guessing.";
           return {
-            prependContext: "\n\n<recalled-memories>\n" + recalled + "\n</recalled-memories>\n",
+            prependContext:
+              "\n\n<recalled-memories>\n" +
+              instruction + "\n\n" +
+              recalled +
+              "\n</recalled-memories>\n",
           };
         } catch (err) {
           logger.error(`Auto-recall failed: ${err instanceof Error ? err.message : String(err)}`);

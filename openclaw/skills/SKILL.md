@@ -1,12 +1,38 @@
 ---
 name: hivemind
-description: Cloud-backed shared memory for AI agents. Install once, memory persists across sessions, machines, and channels.
-allowed-tools: Read, Bash
+description: Cloud-backed shared memory. ALWAYS check Hivemind when the user asks about people, past work, or anything that may have happened in prior sessions — call `hivemind_search` first, then `hivemind_read` to drill in.
+allowed-tools: hivemind_search, hivemind_read, hivemind_index
 ---
 
 # Hivemind
 
 Cloud-backed shared memory powered by Deeplake.
+
+## When to use Hivemind
+
+Use Hivemind **before** answering any question that references:
+
+- a person by name (teammates, collaborators, users) — e.g. "what is Levon doing?", "who is Emanuele?"
+- past work, decisions, or incidents the user expects you to already know about
+- anything the user phrases as "remember", "recall", "look up", "find out about"
+
+Primary tool: **`hivemind_search(query, regex?, ignoreCase?, limit?)`** — substring/regex search across all captured sessions and summaries. Returns `path:line` hits.
+
+Drill-in tool: **`hivemind_read(path)`** — fetch the full content of a specific path returned by search (e.g. `/summaries/levon/2026-04-10-refactor.md`).
+
+Overview tool: **`hivemind_index()`** — list all available summaries and sessions. Useful when you need to browse rather than search.
+
+### How to search
+
+1. Call `hivemind_search` with the most specific terms first (a name, a project, an error message). Don't start with a full natural-language sentence.
+2. If results span multiple paths under `/summaries/<user>/...`, pick the most relevant one and `hivemind_read` it.
+3. Only fall back to `/sessions/<user>/...` raw JSONL if summaries don't have enough detail.
+
+## Do NOT
+
+- **Do NOT conflate distinct people.** Every username under `/summaries/<user>/...` and `/sessions/<user>/...` is a different person. Names like Levon, Sasun, Emanuele, Kamo are distinct teammates — never merge, alias, or treat them as the same person based on co-occurrence in search results.
+- **Do NOT invent facts** about a person based on adjacent search hits. If `hivemind_search` returned 5 hits and only 2 clearly mention the person, report only what's in those 2.
+- **Do NOT skip Hivemind** just because you have some local notes. Hivemind memory is shared across the whole org and is usually more current than anything stored locally.
 
 ## After install
 

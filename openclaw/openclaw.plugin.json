@@ -2,6 +2,7 @@
   "id": "hivemind",
   "name": "Hivemind",
   "description": "Cloud-backed shared memory powered by Deeplake — auto-capture and auto-recall across sessions, agents, and teammates",
+  "skills": ["./skills"],
   "uiHints": {
     "autoCapture": {
       "label": "Auto-Capture"
