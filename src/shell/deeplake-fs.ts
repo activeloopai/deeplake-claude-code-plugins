@@ -10,6 +10,7 @@ import type {
 import { normalizeContent } from "./grep-core.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingSqlLiteral } from "../embeddings/sql.js";
+import { embeddingsDisabled } from "../embeddings/disable.js";
 
 interface ReadFileOptions { encoding?: BufferEncoding }
 interface WriteFileOptions { encoding?: BufferEncoding }
@@ -232,6 +233,10 @@ export class DeeplakeFs implements IFileSystem {
 
   private async computeEmbeddings(rows: PendingRow[]): Promise<(number[] | null)[]> {
     if (rows.length === 0) return [];
+    // Skip the daemon hop entirely when embeddings are globally disabled.
+    // upsertRow writes NULL for embedding columns when the value is null,
+    // so the INSERT / UPDATE shape stays identical.
+    if (embeddingsDisabled()) return rows.map(() => null);
     if (!this.embedClient) {
       this.embedClient = new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() });
     }

@@ -9,10 +9,11 @@ import type { DeeplakeApi } from "../deeplake-api.js";
 import { grepBothTables, type GrepMatchParams } from "../shell/grep-core.js";
 import { capOutputForClaude } from "../utils/output-cap.js";
 import { EmbedClient } from "../embeddings/client.js";
+import { embeddingsDisabled } from "../embeddings/disable.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const SEMANTIC_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false";
+const SEMANTIC_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false" && !embeddingsDisabled();
 const SEMANTIC_TIMEOUT_MS = Number(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS ?? "500");
 
 function resolveDaemonPath(): string {

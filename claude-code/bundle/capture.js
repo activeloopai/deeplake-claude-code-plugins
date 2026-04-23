@@ -374,6 +374,12 @@ var DeeplakeApi = class {
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
+    } else {
+      try {
+        await this.query(`ALTER TABLE "${tbl}" ADD COLUMN IF NOT EXISTS summary_embedding FLOAT4[]`);
+      } catch (e) {
+        log2(`ALTER TABLE add summary_embedding skipped: ${e.message}`);
+      }
     }
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
@@ -385,6 +391,12 @@ var DeeplakeApi = class {
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
+    } else {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS message_embedding FLOAT4[]`);
+      } catch (e) {
+        log2(`ALTER TABLE add message_embedding skipped: ${e.message}`);
+      }
     }
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
@@ -887,6 +899,11 @@ function embeddingSqlLiteral(vec) {
   return `ARRAY[${parts.join(",")}]::float4[]`;
 }
 
+// dist/src/embeddings/disable.js
+function embeddingsDisabled() {
+  return process.env.HIVEMIND_EMBEDDINGS === "false";
+}
+
 // dist/src/hooks/capture.js
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { dirname as dirname2, join as join7 } from "node:path";
@@ -956,8 +973,7 @@ async function main() {
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
   const filename = sessionPath.split("/").pop() ?? "";
   const jsonForSql = line.replace(/'/g, "''");
-  const embedClient = new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() });
-  const embedding = await embedClient.embed(line, "document");
+  const embedding = embeddingsDisabled() ? null : await new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() }).embed(line, "document");
   const embeddingSql = embeddingSqlLiteral(embedding);
   const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'claude_code', '${ts}', '${ts}')`;
   try {

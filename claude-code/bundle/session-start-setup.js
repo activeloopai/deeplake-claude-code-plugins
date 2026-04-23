@@ -385,6 +385,12 @@ var DeeplakeApi = class {
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
+    } else {
+      try {
+        await this.query(`ALTER TABLE "${tbl}" ADD COLUMN IF NOT EXISTS summary_embedding FLOAT4[]`);
+      } catch (e) {
+        log2(`ALTER TABLE add summary_embedding skipped: ${e.message}`);
+      }
     }
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
@@ -396,6 +402,12 @@ var DeeplakeApi = class {
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
+    } else {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS message_embedding FLOAT4[]`);
+      } catch (e) {
+        log2(`ALTER TABLE add message_embedding skipped: ${e.message}`);
+      }
     }
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
@@ -764,6 +776,11 @@ function sleep2(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// dist/src/embeddings/disable.js
+function embeddingsDisabled() {
+  return process.env.HIVEMIND_EMBEDDINGS === "false";
+}
+
 // dist/src/hooks/session-start-setup.js
 var log4 = (msg) => log("session-setup", msg);
 var __bundleDir = dirname3(fileURLToPath(import.meta.url));
@@ -837,7 +854,9 @@ async function main() {
   } catch (e) {
     log4(`version check failed: ${e.message}`);
   }
-  if (process.env.HIVEMIND_EMBED_WARMUP !== "false") {
+  if (embeddingsDisabled()) {
+    log4("embed daemon warmup skipped via HIVEMIND_EMBEDDINGS=false");
+  } else if (process.env.HIVEMIND_EMBED_WARMUP !== "false") {
     try {
       const daemonEntry = join8(__bundleDir, "embeddings", "embed-daemon.js");
       const client = new EmbedClient({ daemonEntry, timeoutMs: 300, spawnWaitMs: 5e3 });

@@ -67077,6 +67077,12 @@ var DeeplakeApi = class {
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
+    } else {
+      try {
+        await this.query(`ALTER TABLE "${tbl}" ADD COLUMN IF NOT EXISTS summary_embedding FLOAT4[]`);
+      } catch (e6) {
+        log2(`ALTER TABLE add summary_embedding skipped: ${e6.message}`);
+      }
     }
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
@@ -67088,6 +67094,12 @@ var DeeplakeApi = class {
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
+    } else {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS message_embedding FLOAT4[]`);
+      } catch (e6) {
+        log2(`ALTER TABLE add message_embedding skipped: ${e6.message}`);
+      }
     }
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
@@ -67769,6 +67781,11 @@ function embeddingSqlLiteral(vec) {
   return `ARRAY[${parts.join(",")}]::float4[]`;
 }
 
+// dist/src/embeddings/disable.js
+function embeddingsDisabled() {
+  return process.env.HIVEMIND_EMBEDDINGS === "false";
+}
+
 // dist/src/shell/deeplake-fs.js
 var BATCH_SIZE = 10;
 var PREFETCH_BATCH_SIZE = 50;
@@ -67949,6 +67966,8 @@ var DeeplakeFs = class _DeeplakeFs {
   async computeEmbeddings(rows) {
     if (rows.length === 0)
       return [];
+    if (embeddingsDisabled())
+      return rows.map(() => null);
     if (!this.embedClient) {
       this.embedClient = new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() });
     }
@@ -69396,7 +69415,7 @@ var lib_default = yargsParser;
 // dist/src/shell/grep-interceptor.js
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { dirname as dirname5, join as join8 } from "node:path";
-var SEMANTIC_SEARCH_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false";
+var SEMANTIC_SEARCH_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false" && !embeddingsDisabled();
 var SEMANTIC_EMBED_TIMEOUT_MS = Number(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS ?? "500");
 function resolveGrepEmbedDaemonPath() {
   return join8(dirname5(fileURLToPath2(import.meta.url)), "..", "embeddings", "embed-daemon.js");

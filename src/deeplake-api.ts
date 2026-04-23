@@ -369,6 +369,19 @@ export class DeeplakeApi {
       );
       log(`table "${tbl}" created`);
       if (!tables.includes(tbl)) this._tablesCache = [...tables, tbl];
+    } else {
+      // Migrate older memory tables that were created before the embeddings
+      // feature landed. ADD COLUMN IF NOT EXISTS is idempotent on Postgres
+      // and Deeplake; we swallow errors because on backends that don't
+      // support it the column just stays absent and the embedding-column
+      // writes fall through to NULL (capture / flush tolerate that).
+      try {
+        await this.query(
+          `ALTER TABLE "${tbl}" ADD COLUMN IF NOT EXISTS summary_embedding FLOAT4[]`,
+        );
+      } catch (e: any) {
+        log(`ALTER TABLE add summary_embedding skipped: ${e.message}`);
+      }
     }
     // BM25 index disabled — CREATE INDEX causes intermittent oid errors on fresh tables.
     // See bm25-oid-bug.sh for reproduction. Re-enable once Deeplake fixes the oid invalidation.
@@ -403,6 +416,15 @@ export class DeeplakeApi {
       );
       log(`table "${name}" created`);
       if (!tables.includes(name)) this._tablesCache = [...tables, name];
+    } else {
+      // Same rationale as ensureTable: migrate pre-embeddings sessions tables.
+      try {
+        await this.query(
+          `ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS message_embedding FLOAT4[]`,
+        );
+      } catch (e: any) {
+        log(`ALTER TABLE add message_embedding skipped: ${e.message}`);
+      }
     }
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }

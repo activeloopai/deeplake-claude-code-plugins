@@ -23,6 +23,7 @@ import {
 import { bundleDirFromImportMeta, spawnWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingSqlLiteral } from "../embeddings/sql.js";
+import { embeddingsDisabled } from "../embeddings/disable.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 const log = (msg: string) => _log("capture", msg);
@@ -123,8 +124,11 @@ async function main(): Promise<void> {
   // sqlStr() would also escape backslashes and strip control chars, corrupting the JSON.
   const jsonForSql = line.replace(/'/g, "''");
 
-  const embedClient = new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() });
-  const embedding = await embedClient.embed(line, "document");
+  // Skip the daemon round-trip entirely when embeddings are globally disabled —
+  // the column stays NULL, schema-compatible with future re-enabling.
+  const embedding = embeddingsDisabled()
+    ? null
+    : await new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() }).embed(line, "document");
   const embeddingSql = embeddingSqlLiteral(embedding);
 
   const insertSql =

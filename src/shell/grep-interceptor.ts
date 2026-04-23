@@ -5,6 +5,7 @@ import type { DeeplakeFs } from "./deeplake-fs.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { EmbedClient } from "../embeddings/client.js";
+import { embeddingsDisabled } from "../embeddings/disable.js";
 
 import {
   buildGrepSearchOptions,
@@ -16,7 +17,7 @@ import {
   type ContentRow,
 } from "./grep-core.js";
 
-const SEMANTIC_SEARCH_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false";
+const SEMANTIC_SEARCH_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false" && !embeddingsDisabled();
 const SEMANTIC_EMBED_TIMEOUT_MS = Number(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS ?? "500");
 
 function resolveGrepEmbedDaemonPath(): string {

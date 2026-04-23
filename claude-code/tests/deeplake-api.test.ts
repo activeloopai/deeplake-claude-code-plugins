@@ -406,15 +406,29 @@ describe("DeeplakeApi.ensureTable", () => {
     expect(createSql).toContain("USING deeplake");
   });
 
-  it("does nothing when table already exists", async () => {
-    // BM25 index creation is disabled (oid bug), so ensureTable only calls listTables
+  it("issues ALTER TABLE ADD COLUMN IF NOT EXISTS for the embedding column when the table already exists", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "my_table" }] }),
     });
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
     const api = makeApi("my_table");
     await api.ensureTable();
-    expect(mockFetch).toHaveBeenCalledOnce(); // only listTables, no CREATE
+    expect(mockFetch).toHaveBeenCalledTimes(2); // listTables + ALTER
+    const alterSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    expect(alterSql).toContain("ALTER TABLE");
+    expect(alterSql).toContain("my_table");
+    expect(alterSql).toContain("ADD COLUMN IF NOT EXISTS summary_embedding FLOAT4[]");
+  });
+
+  it("swallows ALTER TABLE errors (older backend without ADD COLUMN IF NOT EXISTS)", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [{ table_name: "my_table" }] }),
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse("syntax error", 400));
+    const api = makeApi("my_table");
+    await expect(api.ensureTable()).resolves.toBeUndefined();
   });
 
   it("creates table with custom name", async () => {
@@ -434,18 +448,22 @@ describe("DeeplakeApi.ensureTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "memory" }] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({}));
-    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER memory
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE sessions
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX
     const api = makeApi("memory");
 
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(mockFetch).toHaveBeenCalledTimes(3);
-    const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+    const alterSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    expect(alterSql).toContain("ALTER TABLE");
+    expect(alterSql).toContain("summary_embedding");
+    const createSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
     expect(createSql).toContain("CREATE TABLE IF NOT EXISTS");
     expect(createSql).toContain("sessions");
-    const indexSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
+    const indexSql = JSON.parse(mockFetch.mock.calls[3][1].body).query;
     expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
     expect(indexSql).toContain("\"path\"");
     expect(indexSql).toContain("\"creation_date\"");
@@ -475,16 +493,20 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
     expect(indexSql).toContain("(\"path\", \"creation_date\")");
   });
 
-  it("ensures the lookup index when sessions table already exists", async () => {
+  it("adds message_embedding column and ensures the lookup index when sessions table already exists", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "sessions" }] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX
     const api = makeApi();
     await api.ensureSessionsTable("sessions");
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-    const indexSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    const alterSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    expect(alterSql).toContain("ALTER TABLE");
+    expect(alterSql).toContain("message_embedding FLOAT4[]");
+    const indexSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
     expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
   });
 
@@ -493,11 +515,12 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "sessions" }] }),
     });
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER ok
     mockFetch.mockResolvedValueOnce(jsonResponse("forbidden", 403));
     const api = makeApi();
 
     await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 
   it("treats duplicate concurrent index creation errors as success and records a local marker", async () => {
@@ -505,15 +528,23 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "sessions" }] }),
     });
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER ok
     mockFetch.mockResolvedValueOnce(jsonResponse("duplicate key value violates unique constraint \"pg_class_relname_nsp_index\"", 400));
 
     const api = makeApi();
     await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
 
     mockFetch.mockReset();
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER re-runs on 2nd call
     await api.ensureSessionsTable("sessions");
 
-    expect(mockFetch).not.toHaveBeenCalled();
+    // On the second call: listTables is cached, the index marker short-
+    // circuits the CREATE INDEX, but ALTER TABLE ADD COLUMN IF NOT EXISTS
+    // still fires once — it's cheap (the backend no-ops when the column
+    // already exists) and leaves the migration idempotent across versions.
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const secondCallSql = JSON.parse(mockFetch.mock.calls[0][1].body).query;
+    expect(secondCallSql).toContain("ALTER TABLE");
   });
 });
 

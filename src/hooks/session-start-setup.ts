@@ -19,6 +19,7 @@ import { getInstalledVersion, getLatestVersion, isNewer } from "../utils/version
 import { makeWikiLogger } from "../utils/wiki-log.js";
 import { resolveVersionedPluginDir, snapshotPluginDir, restoreOrCleanup } from "../utils/plugin-cache.js";
 import { EmbedClient } from "../embeddings/client.js";
+import { embeddingsDisabled } from "../embeddings/disable.js";
 const log = (msg: string) => _log("session-setup", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -115,7 +116,9 @@ async function main(): Promise<void> {
   // hook stays quick even on a cold install. Opt-out via
   // HIVEMIND_EMBED_WARMUP=false for sessions that will never touch the
   // memory path (lightweight CC runs, no-network CI).
-  if (process.env.HIVEMIND_EMBED_WARMUP !== "false") {
+  if (embeddingsDisabled()) {
+    log("embed daemon warmup skipped via HIVEMIND_EMBEDDINGS=false");
+  } else if (process.env.HIVEMIND_EMBED_WARMUP !== "false") {
     try {
       const daemonEntry = join(__bundleDir, "embeddings", "embed-daemon.js");
       const client = new EmbedClient({ daemonEntry, timeoutMs: 300, spawnWaitMs: 5000 });

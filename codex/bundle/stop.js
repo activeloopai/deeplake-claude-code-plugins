@@ -377,6 +377,12 @@ var DeeplakeApi = class {
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
+    } else {
+      try {
+        await this.query(`ALTER TABLE "${tbl}" ADD COLUMN IF NOT EXISTS summary_embedding FLOAT4[]`);
+      } catch (e) {
+        log2(`ALTER TABLE add summary_embedding skipped: ${e.message}`);
+      }
     }
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
@@ -388,6 +394,12 @@ var DeeplakeApi = class {
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
+    } else {
+      try {
+        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS message_embedding FLOAT4[]`);
+      } catch (e) {
+        log2(`ALTER TABLE add message_embedding skipped: ${e.message}`);
+      }
     }
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
