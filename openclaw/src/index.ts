@@ -7,7 +7,7 @@ import { sqlStr } from "../../src/utils/sql.js";
 // Memory-access primitives reused directly from the CC/Codex hooks so the
 // openclaw agent gets the same search + read semantics (multi-word across
 // memory ∪ sessions, path filters, JSONB normalization, virtual /index.md).
-import { searchDeeplakeTables, buildGrepSearchOptions, normalizeContent, type GrepMatchParams } from "../../src/shell/grep-core.js";
+import { searchDeeplakeTables, buildGrepSearchOptions, compileGrepRegex, normalizeContent, type GrepMatchParams } from "../../src/shell/grep-core.js";
 import { readVirtualPathContent } from "../../src/hooks/virtual-table-query.js";
 
 interface PluginConfig {
@@ -474,18 +474,30 @@ export default definePluginEntry({
           searchOpts.limit = Math.min(Math.max(params.limit ?? 20, 1), 100);
           const t0 = Date.now();
           try {
-            const rows = await searchDeeplakeTables(dl, memoryTable, sessionsTable, searchOpts);
-            pluginApi.logger.info?.(`hivemind_search "${params.query.slice(0, 60)}" → ${rows.length} hits in ${Date.now() - t0}ms`);
-            if (rows.length === 0) {
+            const rawRows = await searchDeeplakeTables(dl, memoryTable, sessionsTable, searchOpts);
+            // `buildGrepSearchOptions` sets `contentScanOnly: true` for any
+            // regex pattern; when no literal prefilter can be extracted
+            // (e.g. `\d+`, `[foo]bar`, or a non-literal alternation) the
+            // SQL runs without LIKE filters and returns up to `limit`
+            // rows regardless of whether they actually match. Post-filter
+            // in memory for regex mode so the agent never sees false hits.
+            const matchedRows = searchOpts.contentScanOnly
+              ? (() => {
+                  const re = compileGrepRegex(grepParams);
+                  return rawRows.filter(r => re.test(normalizeContent(r.path, r.content)));
+                })()
+              : rawRows;
+            pluginApi.logger.info?.(`hivemind_search "${params.query.slice(0, 60)}" → ${matchedRows.length}/${rawRows.length} hits in ${Date.now() - t0}ms`);
+            if (matchedRows.length === 0) {
               return { content: [{ type: "text", text: `No memory matches for "${params.query}" under ${targetPath}.` }] };
             }
-            const text = rows
+            const text = matchedRows
               .map((r, i) => {
                 const body = normalizeContent(r.path, r.content);
                 return `${i + 1}. ${r.path}\n${body.slice(0, 500)}`;
               })
               .join("\n\n");
-            return { content: [{ type: "text", text }], details: { hits: rows.length, path: targetPath } };
+            return { content: [{ type: "text", text }], details: { hits: matchedRows.length, path: targetPath } };
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             pluginApi.logger.error(`hivemind_search failed: ${msg}`);

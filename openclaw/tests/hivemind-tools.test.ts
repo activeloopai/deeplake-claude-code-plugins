@@ -191,6 +191,27 @@ describe("hivemind_search", () => {
     expect(result.content[0].text).toMatch(/Search failed/);
     expect(mockApi.logger.error).toHaveBeenCalled();
   });
+
+  it("regex=true with non-literal pattern post-filters rows in memory", async () => {
+    // `\d+` has no extractable literal prefilter and no alternation literals,
+    // so buildGrepSearchOptions falls through to contentScanOnly with empty
+    // filterPatterns and the SQL returns up-to-limit rows unfiltered. The
+    // tool must still only hand back rows that actually match the regex.
+    queryMock.mockResolvedValue([
+      { path: "/summaries/has-digits.md", content: "ran 42 tests today", source_order: 0, creation_date: "" },
+      { path: "/summaries/no-digits.md", content: "only letters here", source_order: 0, creation_date: "" },
+      { path: "/sessions/x/y.jsonl", content: "version 1.2.3 shipped", source_order: 1, creation_date: "" },
+    ]);
+    const { tools } = await loadPluginWithTools();
+    const search = tools.find(t => t.name === "hivemind_search")!;
+    const result = await search.execute("call-regex", { query: "\\d+", regex: true });
+
+    const text = result.content[0].text;
+    expect(text).toContain("/summaries/has-digits.md");
+    expect(text).toContain("/sessions/x/y.jsonl");
+    expect(text).not.toContain("/summaries/no-digits.md");
+    expect((result.details as { hits: number }).hits).toBe(2);
+  });
 });
 
 describe("hivemind_read", () => {
