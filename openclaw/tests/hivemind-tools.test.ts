@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const queryMock = vi.fn();
 const listTablesMock = vi.fn();
 const ensureSessionsTableMock = vi.fn();
+const ensureTableMock = vi.fn();
 const loadConfigMock = vi.fn();
 const loadCredsMock = vi.fn();
 
@@ -32,7 +33,7 @@ vi.mock("../../src/deeplake-api.js", () => ({
     query(sql: string) { return queryMock(sql); }
     listTables() { return listTablesMock(); }
     ensureSessionsTable(n: string) { return ensureSessionsTableMock(n); }
-    ensureTable() { return Promise.resolve(); }
+    ensureTable() { return ensureTableMock(); }
   },
 }));
 
@@ -66,6 +67,7 @@ beforeEach(() => {
   queryMock.mockReset();
   listTablesMock.mockReset().mockResolvedValue(["memory", "sessions"]);
   ensureSessionsTableMock.mockReset().mockResolvedValue(undefined);
+  ensureTableMock.mockReset().mockResolvedValue(undefined);
   loadCredsMock.mockReset().mockReturnValue({
     token: "tok", orgId: "o", orgName: "acme", userName: "alice",
   });
@@ -106,6 +108,49 @@ describe("openclaw hivemind tools — registration", () => {
       });
     } catch (e) { threw = e; }
     expect(threw).toBeNull();
+  });
+
+  it("ensures BOTH memory and sessions tables exist on first API connect", async () => {
+    // Regression: on an empty org/workspace, only ensureSessionsTable was being
+    // called, so auto-recall and the three agent tools 400'd with
+    // `relation "memory" does not exist` on the first query. The fix calls
+    // ensureTable() alongside ensureSessionsTable() during getApi() init.
+    queryMock.mockResolvedValue([]);
+    const { tools } = await loadPluginWithTools();
+    const search = tools.find(t => t.name === "hivemind_search")!;
+    await search.execute("call-init", { query: "anything" });
+    expect(ensureTableMock).toHaveBeenCalledTimes(1);
+    expect(ensureSessionsTableMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("injects SKILL.md body as prependSystemContext via before_prompt_build hook", async () => {
+    // Openclaw's skill loader only injects <available_skills> (name +
+    // description + location), not the body. Our openclaw agent has no
+    // generic file-read tool, so the skill body never reaches the model
+    // unless we prepend it ourselves. Verified by reading
+    // ext/openclaw/src/agents/system-prompt.ts buildSkillsSection and
+    // skills/skill-contract.ts formatSkillsForPrompt.
+    (globalThis as any).__HIVEMIND_SKILL__ = "TEST_SKILL_BODY_CONTENT";
+    try {
+      vi.resetModules();
+      const mod = await import("../src/index.js");
+      const plugin = mod.default as { register: (api: any) => void };
+      const onMock = vi.fn();
+      plugin.register({
+        logger: { info: vi.fn(), error: vi.fn() },
+        on: onMock,
+        registerCommand: vi.fn(),
+        registerTool: vi.fn(),
+        registerMemoryCorpusSupplement: vi.fn(),
+      });
+      const registration = onMock.mock.calls.find(c => c[0] === "before_prompt_build");
+      expect(registration).toBeDefined();
+      const result = await registration![1]({});
+      expect(result.prependSystemContext).toContain("TEST_SKILL_BODY_CONTENT");
+      expect(result.prependSystemContext).toContain("<hivemind-skill>");
+    } finally {
+      delete (globalThis as any).__HIVEMIND_SKILL__;
+    }
   });
 
   it("registers memoryCorpusSupplement when host exposes it", async () => {

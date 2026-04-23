@@ -3,6 +3,7 @@ import { chmodSync, writeFileSync, readFileSync } from "node:fs";
 
 const esmPackageJson = '{"type":"module"}\n';
 const openclawVersion = JSON.parse(readFileSync("openclaw/package.json", "utf-8")).version;
+const openclawSkillBody = readFileSync("openclaw/skills/SKILL.md", "utf-8");
 
 // Claude Code plugin
 const ccHooks = [
@@ -84,6 +85,7 @@ await build({
   external: ["node:*"],
   define: {
     __HIVEMIND_VERSION__: JSON.stringify(openclawVersion),
+    __HIVEMIND_SKILL__: JSON.stringify(openclawSkillBody),
     "process.env.HIVEMIND_TOKEN": "undefined",
     "process.env.HIVEMIND_ORG_ID": "undefined",
     "process.env.HIVEMIND_WORKSPACE_ID": "undefined",

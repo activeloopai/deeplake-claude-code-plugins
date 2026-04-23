@@ -1,4 +1,13 @@
 function definePluginEntry<T>(entry: T): T { return entry; }
+
+// Build-time constants injected by esbuild. __HIVEMIND_SKILL__ holds the
+// SKILL.md body (same file shipped under ./skills/SKILL.md), so we can
+// inject it into the system prompt without any runtime file I/O. Openclaw
+// only puts the skill's name + description + location XML into the prompt
+// via its skill index — not the body — so without this the agent never
+// actually sees the "call hivemind_search first" directives.
+declare const __HIVEMIND_VERSION__: string;
+declare const __HIVEMIND_SKILL__: string;
 // Shared core imports
 import { loadConfig } from "../../src/config.js";
 import { loadCredentials, saveCredentials, requestDeviceCode, pollForToken, listOrgs, switchOrg, listWorkspaces, switchWorkspace } from "../../src/commands/auth.js";
@@ -104,7 +113,6 @@ function extractLatestVersion(body: unknown): string | null {
 // The constant is substituted into the bundle literally, so neither source
 // nor bundle contains a filesystem read primitive paired with the fetch call
 // below — keeps the scanner from pattern-matching exfiltration.
-declare const __HIVEMIND_VERSION__: string;
 
 function getInstalledVersion(): string | null {
   return typeof __HIVEMIND_VERSION__ === "string" && __HIVEMIND_VERSION__.length > 0
@@ -272,6 +280,7 @@ async function getApi(): Promise<DeeplakeApi | null> {
   sessionsTable = config.sessionsTableName;
   memoryTable = config.tableName;
   api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+  await api.ensureTable();
   await api.ensureSessionsTable(sessionsTable);
   return api;
 }
@@ -592,11 +601,19 @@ export default definePluginEntry({
           searchOpts.limit = Math.min(Math.max(maxResults ?? 10, 1), 50);
           try {
             const rows = await searchDeeplakeTables(dl, memoryTable, sessionsTable, searchOpts);
-            return rows.map(r => ({
+            // Score field is consumed by memory-core's federation ranker
+            // (src/plugins/memory-state.ts MemoryCorpusSearchResult). We don't
+            // have a true relevance signal yet, so rank summaries slightly
+            // higher than raw session turns (they're pre-digested) and spread
+            // within-group by source_order so results stay deterministic.
+            return rows.map((r, i) => ({
               path: r.path,
               snippet: normalizeContent(r.path, r.content).slice(0, 400),
               corpus: "hivemind",
               kind: r.path.startsWith("/summaries/") ? "summary" : "session",
+              score: r.path.startsWith("/summaries/")
+                ? 0.8 - i * 0.005
+                : 0.6 - i * 0.005,
             }));
           } catch {
             return [];
@@ -620,6 +637,22 @@ export default definePluginEntry({
     const hook = (event: string, handler: (event: Record<string, unknown>) => Promise<unknown>) => {
       pluginApi.on(event, handler);
     };
+
+    // Inject SKILL.md body into the system prompt so the agent actually sees
+    // the "call hivemind_search first" directives + anti-conflation rules.
+    // Openclaw's built-in skill loader only puts <available_skills> name +
+    // description + location XML into the prompt (src/agents/system-prompt.ts
+    // buildSkillsSection), and expects the agent to `Read` the SKILL.md body
+    // on demand. Our openclaw agent has no generic file-read tool, so without
+    // this hook the directives never reach the model. Using
+    // `prependSystemContext` (not `prependContext`) so it's cached by the
+    // provider's prompt-cache path instead of costing tokens per turn.
+    if (typeof __HIVEMIND_SKILL__ === "string" && __HIVEMIND_SKILL__.length > 0) {
+      hook("before_prompt_build", async () => ({
+        prependSystemContext:
+          "\n\n<hivemind-skill>\n" + __HIVEMIND_SKILL__ + "\n</hivemind-skill>\n",
+      }));
+    }
 
     // Auto-recall: search memory before each turn
     if (config.autoRecall !== false) {
