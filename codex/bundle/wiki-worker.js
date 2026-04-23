@@ -129,6 +129,24 @@ async function uploadSummary(query2, params) {
   return { path: "insert", sql, descLength: desc.length, summaryLength: text.length };
 }
 
+// dist/src/utils/client-header.js
+function pluginVersion() {
+  try {
+    if ("0.6.45") {
+      return "0.6.45";
+    }
+  } catch {
+  }
+  return "dev";
+}
+var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
+function deeplakeClientValue() {
+  return `hivemind/${pluginVersion()}`;
+}
+function deeplakeClientHeader() {
+  return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
+}
+
 // dist/src/hooks/codex/wiki-worker.js
 var dlog2 = (msg) => log("codex-wiki-worker", msg);
 var cfg = JSON.parse(readFileSync2(process.argv[2], "utf-8"));
@@ -153,7 +171,8 @@ async function query(sql, retries = 4) {
       headers: {
         Authorization: `Bearer ${cfg.token}`,
         "Content-Type": "application/json",
-        "X-Activeloop-Org-Id": cfg.orgId
+        "X-Activeloop-Org-Id": cfg.orgId,
+        ...deeplakeClientHeader()
       },
       body: JSON.stringify({ query: sql })
     });

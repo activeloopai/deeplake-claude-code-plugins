@@ -21,6 +21,24 @@ function log(tag, msg) {
 `);
 }
 
+// dist/src/utils/client-header.js
+function pluginVersion() {
+  try {
+    if ("0.6.45") {
+      return "0.6.45";
+    }
+  } catch {
+  }
+  return "dev";
+}
+var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
+function deeplakeClientValue() {
+  return `hivemind/${pluginVersion()}`;
+}
+function deeplakeClientHeader() {
+  return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
+}
+
 // dist/src/hooks/summary-state.js
 import { readFileSync, writeFileSync, writeSync, mkdirSync, renameSync, existsSync, unlinkSync, openSync, closeSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
@@ -154,7 +172,8 @@ async function query(sql, retries = 4) {
       headers: {
         Authorization: `Bearer ${cfg.token}`,
         "Content-Type": "application/json",
-        "X-Activeloop-Org-Id": cfg.orgId
+        "X-Activeloop-Org-Id": cfg.orgId,
+        ...deeplakeClientHeader()
       },
       body: JSON.stringify({ query: sql })
     });

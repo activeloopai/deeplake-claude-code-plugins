@@ -12,6 +12,26 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
+
+// dist/src/utils/client-header.js
+function pluginVersion() {
+  try {
+    if ("0.6.45") {
+      return "0.6.45";
+    }
+  } catch {
+  }
+  return "dev";
+}
+var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
+function deeplakeClientValue() {
+  return `hivemind/${pluginVersion()}`;
+}
+function deeplakeClientHeader() {
+  return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
+}
+
+// dist/src/commands/auth.js
 var CONFIG_DIR = join(homedir(), ".deeplake");
 var CREDS_PATH = join(CONFIG_DIR, "credentials.json");
 function loadCredentials() {
@@ -199,7 +219,8 @@ var DeeplakeApi = class {
           headers: {
             Authorization: `Bearer ${this.token}`,
             "Content-Type": "application/json",
-            "X-Activeloop-Org-Id": this.orgId
+            "X-Activeloop-Org-Id": this.orgId,
+            ...deeplakeClientHeader()
           },
           signal,
           body: JSON.stringify({ query: sql })
@@ -351,7 +372,8 @@ var DeeplakeApi = class {
         const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
           headers: {
             Authorization: `Bearer ${this.token}`,
-            "X-Activeloop-Org-Id": this.orgId
+            "X-Activeloop-Org-Id": this.orgId,
+            ...deeplakeClientHeader()
           }
         });
         if (resp.ok) {

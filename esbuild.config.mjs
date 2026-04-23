@@ -2,6 +2,7 @@ import { build } from "esbuild";
 import { chmodSync, writeFileSync, readFileSync } from "node:fs";
 
 const esmPackageJson = '{"type":"module"}\n';
+const hivemindVersion = JSON.parse(readFileSync("package.json", "utf-8")).version;
 const openclawVersion = JSON.parse(readFileSync("openclaw/package.json", "utf-8")).version;
 
 // Claude Code plugin
@@ -31,6 +32,9 @@ await build({
   format: "esm",
   outdir: "claude-code/bundle",
   external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  define: {
+    __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
+  },
 });
 
 for (const h of ccAll) {
@@ -65,6 +69,9 @@ await build({
   format: "esm",
   outdir: "codex/bundle",
   external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  define: {
+    __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
+  },
 });
 
 for (const h of codexAll) {
