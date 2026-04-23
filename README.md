@@ -32,54 +32,58 @@ Hivemind automatically captures every prompt, tool call, decision, and file oper
 - 📁 **Intercepts** file operations on `~/.deeplake/memory/` through a virtual filesystem backed by SQL
 - 📝 **Summarizes** sessions into AI-generated wiki pages via a background worker at session end
 
-## Platforms
+## Quick start
 
-| Platform        | Status         | Install                                                    |
-|-----------------|----------------|------------------------------------------------------------|
-| **Claude Code** | ✅ Stable      | See [Quick start](#claude-code-setup)                |
-| **OpenClaw**    | 🔧 Beta        | See [Quick start](#install-from-clawhub-telegram-tui-whatsapp)                   |
-| **Codex**       | 🔧 Beta        | See [Quick start](#tell-codex-to-fetch-and-follow-the-install-instructions)                      |
+One command, all your agents:
 
-## Claude Code Setup
+```bash
+npx @activeloop/hivemind@latest install
+```
 
-Add the marketplace:
+That's it. The installer detects every supported assistant on your machine (Claude Code, Codex, OpenClaw), wires up the hooks, and opens a browser once for login. Restart your assistants and they all share the same brain.
+
+**Install for a specific assistant only:**
+
+```bash
+npx @activeloop/hivemind@latest install --only claude
+npx @activeloop/hivemind@latest claude install    # equivalent
+npx @activeloop/hivemind@latest codex install
+npx @activeloop/hivemind@latest claw install
+```
+
+**Check what's wired up:**
+
+```bash
+npx @activeloop/hivemind@latest status
+```
+
+**Supported assistants:**
+
+| Platform        | Status    |
+|-----------------|-----------|
+| **Claude Code** | ✅ Stable |
+| **OpenClaw**    | 🔧 Beta   |
+| **Codex**       | 🔧 Beta   |
+
+### Alternative install paths
+
+<details>
+  <summary><b>Claude Code plugin marketplace</b></summary>
+
+If you prefer Claude Code's native plugin marketplace:
 
 ```
 /plugin marketplace add activeloopai/hivemind
-```
-
-Install the plugin:
-
-```
 /plugin install hivemind
-```
-
-Reload plugins:
-
-```
 /reload-plugins
-```
-
-Log in:
-
-```
 /hivemind:login
 ```
 
-That's it. Your agents now share a brain.
+Auto-updates on each session start. Manual update: `/hivemind:update`.
+</details>
 
-### Updating
-
-The plugin auto-updates on each session start. To manually update:
-
-```
-/hivemind:update
-```
 <details>
-  <summary><b> OpenClaw Setup </b></summary>
-
-
-#### Install from ClawHub (Telegram, TUI, WhatsApp):
+  <summary><b>OpenClaw ClawHub</b></summary>
 
 ```
 openclaw plugins install clawhub:hivemind
@@ -114,48 +118,32 @@ Hivemind runs **alongside** OpenClaw's built-in `memory-core` plugin. It does **
 - **Self-update via Telegram fails with "elevated is not available".** `tools.elevated.allowFrom` must include `telegram` before elevated commands work from that channel. Safer alternative: run the upgrade in a local shell with `openclaw plugins update hivemind`.
 - **`npm error EACCES` during self-update.** OpenClaw was installed under a root-owned npm prefix (e.g. `/usr/lib/node_modules/openclaw`). Reinstall under a user-writable prefix, or run the update with appropriate privileges locally — not via a channel.
 </details>
-<details>
-  <summary><b> Codex Setup </b></summary>
 
-#### Tell Codex to fetch and follow the install instructions:
+<details>
+  <summary><b>Codex (manual)</b></summary>
+
+Tell Codex to fetch and follow the install instructions:
 
 ```
 Fetch and follow instructions from https://raw.githubusercontent.com/activeloopai/hivemind/main/codex/INSTALL.md
 ```
 
-Or install manually:
+Or run the installer script directly:
 
 ```bash
 git clone https://github.com/activeloopai/hivemind.git ~/.codex/hivemind
 ~/.codex/hivemind/codex/install.sh
 ```
 
-Restart Codex (quit and relaunch the CLI) to activate.
-
-Log in when prompted, or run manually:
-
-```bash
-node ~/.codex/hivemind/codex/bundle/commands/auth-login.js login
-```
-
-
-### Updating
-
-```bash
-cd ~/.codex/hivemind && git pull
-```
-
-
-Hooks and skills update instantly — restart Codex to apply.
-
-### Uninstalling
-
-```bash
-rm -f ~/.codex/hooks.json ~/.agents/skills/hivemind-memory
-rm -rf ~/.codex/hivemind
-```
-
+Restart Codex to activate.
 </details>
+
+### Uninstall
+
+```bash
+npx @activeloop/hivemind@latest uninstall              # remove from every detected assistant
+npx @activeloop/hivemind@latest codex uninstall        # remove from one
+```
 
 ## How it works
 

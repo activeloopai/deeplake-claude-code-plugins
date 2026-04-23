@@ -130,4 +130,16 @@ await build({
 });
 writeFileSync("openclaw/dist/package.json", esmPackageJson);
 
-console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + 1 OpenClaw bundles`);
+// Unified CLI (`npx hivemind install` … single entrypoint for all assistants)
+await build({
+  entryPoints: { cli: "dist/src/cli/index.js" },
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "bundle",
+  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  banner: { js: "#!/usr/bin/env node" },
+});
+chmodSync("bundle/cli.js", 0o755);
+
+console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + 1 OpenClaw + 1 CLI bundle`);

@@ -1,59 +1,52 @@
 # Installing Hivemind for Codex CLI
 
-Persistent shared memory for Codex agents. Clone, install, and restart.
+The fastest path installs hivemind into every AI coding assistant on your machine (Claude Code, Codex, OpenClaw) with one command:
+
+```bash
+npx @activeloop/hivemind@latest install
+```
+
+Or install for Codex only:
+
+```bash
+npx @activeloop/hivemind@latest codex install
+```
+
+The installer:
+
+- Enables the `codex_hooks` feature flag
+- Writes `~/.codex/hooks.json` with hivemind entries
+- Copies the plugin bundle to `~/.codex/hivemind/`
+- Symlinks the skill into `~/.agents/skills/hivemind-memory`
+- Opens a browser once for login (shared across all assistants)
+
+Restart Codex (quit and relaunch the CLI) to activate.
 
 ## Prerequisites
 
-- Git
 - Node.js >= 22
 - [Codex CLI](https://github.com/openai/codex) installed
-
-## Installation
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/activeloopai/hivemind.git ~/.codex/hivemind
-   ```
-
-2. **Run the install script:**
-   ```bash
-   ~/.codex/hivemind/codex/install.sh
-   ```
-
-   This will:
-   - Enable the `codex_hooks` feature flag
-   - Generate `~/.codex/hooks.json` with the correct paths
-   - Symlink skills into `~/.agents/skills/hivemind-memory`
-   - Prompt you to log in if no credentials are found
-
-3. **Restart Codex** (quit and relaunch the CLI) to activate the hooks.
 
 ## Verify
 
 ```bash
-# Check hooks are configured
 cat ~/.codex/hooks.json | head -3
-
-# Check skill is linked
 ls -la ~/.agents/skills/hivemind-memory
-
-# Check bundles exist
-ls ~/.codex/hivemind/codex/bundle/
+ls ~/.codex/hivemind/bundle/
 ```
-
-You should see 7 bundle files and a symlink pointing to your hivemind skills directory.
 
 ## Updating
 
 ```bash
-cd ~/.codex/hivemind && git pull
+npx @activeloop/hivemind@latest codex install
 ```
 
-Hooks and skills update instantly — restart Codex to apply.
+Re-running is idempotent — hooks and skills get replaced in place.
 
 ## Uninstalling
 
 ```bash
-rm -f ~/.codex/hooks.json ~/.agents/skills/hivemind-memory
-rm -rf ~/.codex/hivemind
+npx @activeloop/hivemind@latest codex uninstall
 ```
+
+Removes `~/.codex/hooks.json` and the skill symlink. Plugin files remain at `~/.codex/hivemind/` so a reinstall is cheap; delete the directory manually if you want a full cleanup.

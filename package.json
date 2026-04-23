@@ -1,22 +1,44 @@
 {
-  "name": "hivemind",
+  "name": "@activeloop/hivemind",
   "version": "0.6.47",
   "description": "Cloud-backed persistent shared memory for AI agents powered by Deeplake",
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
+    "hivemind": "bundle/cli.js",
     "deeplake-shell": "bundle/deeplake-shell.js"
   },
+  "files": [
+    "bundle",
+    "claude-code/bundle",
+    "claude-code/commands",
+    "claude-code/skills",
+    "claude-code/hooks",
+    "codex/bundle",
+    "codex/skills",
+    "openclaw/dist",
+    "openclaw/skills",
+    "openclaw/openclaw.plugin.json",
+    "openclaw/package.json",
+    ".claude-plugin",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc && node esbuild.config.mjs",
     "bundle": "node esbuild.config.mjs",
     "dev": "tsc --watch",
     "shell": "tsx src/shell/deeplake-shell.ts",
+    "cli": "tsx src/cli/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "dup": "jscpd src",
     "audit:openclaw": "node scripts/audit-openclaw-bundle.mjs",
     "ci": "npm run typecheck && npm run dup && npm test",
-    "prepare": "husky"
+    "prepare": "husky",
+    "prepublishOnly": "npm run build"
   },
   "lint-staged": {
     "*.ts": [
