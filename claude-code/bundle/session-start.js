@@ -587,66 +587,62 @@ async function main() {
       wikiLog(`SessionStart: placeholder failed for ${input.session_id}: ${e.message}`);
     }
   }
+  const autoupdate = creds?.autoupdate !== false;
   let updateNotice = "";
-  if (process.env.HIVEMIND_AUTOUPDATE === "false") {
-    log3("autoupdate skipped via HIVEMIND_AUTOUPDATE=false");
-  } else {
-    const autoupdate = creds?.autoupdate !== false;
-    try {
-      const current = getInstalledVersion(__bundleDir, ".claude-plugin");
-      if (current) {
-        const latest = await getLatestVersion();
-        if (latest && isNewer(latest, current)) {
-          if (autoupdate) {
-            log3(`autoupdate: updating ${current} \u2192 ${latest}`);
+  try {
+    const current = getInstalledVersion(__bundleDir, ".claude-plugin");
+    if (current) {
+      const latest = await getLatestVersion();
+      if (latest && isNewer(latest, current)) {
+        if (autoupdate) {
+          log3(`autoupdate: updating ${current} \u2192 ${latest}`);
+          try {
+            const scopes = ["user", "project", "local", "managed"];
+            const cmd = scopes.map((s) => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null || true`).join("; ");
+            execSync2(cmd, { stdio: "ignore", timeout: 6e4 });
             try {
-              const scopes = ["user", "project", "local", "managed"];
-              const cmd = scopes.map((s) => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null || true`).join("; ");
-              execSync2(cmd, { stdio: "ignore", timeout: 6e4 });
-              try {
-                const cacheParent = join7(homedir4(), ".claude", "plugins", "cache", "hivemind", "hivemind");
-                const entries = readdirSync(cacheParent, { withFileTypes: true });
-                for (const e of entries) {
-                  if (e.isDirectory() && e.name !== latest) {
-                    rmSync(join7(cacheParent, e.name), { recursive: true, force: true });
-                    log3(`cache cleanup: removed old version ${e.name}`);
-                  }
+              const cacheParent = join7(homedir4(), ".claude", "plugins", "cache", "hivemind", "hivemind");
+              const entries = readdirSync(cacheParent, { withFileTypes: true });
+              for (const e of entries) {
+                if (e.isDirectory() && e.name !== latest) {
+                  rmSync(join7(cacheParent, e.name), { recursive: true, force: true });
+                  log3(`cache cleanup: removed old version ${e.name}`);
                 }
-              } catch (e) {
-                log3(`cache cleanup failed: ${e.message}`);
               }
-              updateNotice = `
-
-\u2705 Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.`;
-              process.stderr.write(`\u2705 Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.
-`);
-              log3(`autoupdate succeeded: ${current} \u2192 ${latest}`);
             } catch (e) {
-              updateNotice = `
-
-\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /hivemind:update to upgrade manually.`;
-              process.stderr.write(`\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /hivemind:update to upgrade manually.
-`);
-              log3(`autoupdate failed: ${e.message}`);
+              log3(`cache cleanup failed: ${e.message}`);
             }
-          } else {
             updateNotice = `
 
-\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Run /hivemind:update to upgrade.`;
-            process.stderr.write(`\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Run /hivemind:update to upgrade.
+\u2705 Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.`;
+            process.stderr.write(`\u2705 Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.
 `);
-            log3(`update available (autoupdate off): ${current} \u2192 ${latest}`);
+            log3(`autoupdate succeeded: ${current} \u2192 ${latest}`);
+          } catch (e) {
+            updateNotice = `
+
+\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /hivemind:update to upgrade manually.`;
+            process.stderr.write(`\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /hivemind:update to upgrade manually.
+`);
+            log3(`autoupdate failed: ${e.message}`);
           }
         } else {
-          log3(`version up to date: ${current}`);
           updateNotice = `
 
-\u2705 Hivemind v${current} (up to date)`;
+\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Run /hivemind:update to upgrade.`;
+          process.stderr.write(`\u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Run /hivemind:update to upgrade.
+`);
+          log3(`update available (autoupdate off): ${current} \u2192 ${latest}`);
         }
+      } else {
+        log3(`version up to date: ${current}`);
+        updateNotice = `
+
+\u2705 Hivemind v${current} (up to date)`;
       }
-    } catch (e) {
-      log3(`version check failed: ${e.message}`);
     }
+  } catch (e) {
+    log3(`version check failed: ${e.message}`);
   }
   const resolvedContext = context.replace(/HIVEMIND_AUTH_CMD/g, AUTH_CMD);
   const additionalContext = creds?.token ? `${resolvedContext}

@@ -148,16 +148,9 @@ async function main(): Promise<void> {
     }
   }
 
-  // Version check (non-blocking — failures are silently ignored).
-  // HIVEMIND_AUTOUPDATE=false lets benchmarks and CI opt out of both the
-  // version check and the automatic `claude plugin update` — the latter
-  // spawns several external commands, mutates ~/.claude/plugins, and under
-  // concurrent runs races with other SessionStart hooks.
-  let updateNotice = "";
-  if (process.env.HIVEMIND_AUTOUPDATE === "false") {
-    log("autoupdate skipped via HIVEMIND_AUTOUPDATE=false");
-  } else {
+  // Version check (non-blocking — failures are silently ignored)
   const autoupdate = creds?.autoupdate !== false; // default: true
+  let updateNotice = "";
   try {
     const current = getInstalledVersion(__bundleDir, ".claude-plugin");
     if (current) {
@@ -204,7 +197,6 @@ async function main(): Promise<void> {
     }
   } catch (e: any) {
     log(`version check failed: ${e.message}`);
-  }
   }
 
   const resolvedContext = context.replace(/HIVEMIND_AUTH_CMD/g, AUTH_CMD);
