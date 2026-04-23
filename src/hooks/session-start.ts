@@ -8,7 +8,6 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { readdirSync, rmSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials, login } from "../commands/auth.js";
@@ -19,6 +18,7 @@ import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
 import { getInstalledVersion, getLatestVersion, isNewer } from "../utils/version-check.js";
 import { makeWikiLogger } from "../utils/wiki-log.js";
+import { resolveVersionedPluginDir, snapshotPluginDir, restoreOrCleanup } from "../utils/plugin-cache.js";
 const log = (msg: string) => _log("session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -158,29 +158,25 @@ async function main(): Promise<void> {
       if (latest && isNewer(latest, current)) {
         if (autoupdate) {
           log(`autoupdate: updating ${current} → ${latest}`);
+          // Snapshot the versioned plugin dir before the installer runs so
+          // this live session keeps finding its bundle paths. Old-version
+          // cleanup is handled by the SessionEnd GC hook (keeps last 2),
+          // which is safe across concurrent sessions.
+          const resolved = resolveVersionedPluginDir(__bundleDir);
+          const handle = resolved ? snapshotPluginDir(resolved.pluginDir) : null;
           try {
             const scopes = ["user", "project", "local", "managed"];
             const cmd = scopes
               .map(s => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null || true`)
               .join("; ");
             execSync(cmd, { stdio: "ignore", timeout: 60_000 });
-            // Clean up old cached versions, keep only the latest
-            try {
-              const cacheParent = join(homedir(), ".claude", "plugins", "cache", "hivemind", "hivemind");
-              const entries = readdirSync(cacheParent, { withFileTypes: true });
-              for (const e of entries) {
-                if (e.isDirectory() && e.name !== latest) {
-                  rmSync(join(cacheParent, e.name), { recursive: true, force: true });
-                  log(`cache cleanup: removed old version ${e.name}`);
-                }
-              }
-            } catch (e: any) {
-              log(`cache cleanup failed: ${e.message}`);
-            }
+            const outcome = restoreOrCleanup(handle);
+            log(`autoupdate snapshot outcome: ${outcome}`);
             updateNotice = `\n\n✅ Hivemind auto-updated: ${current} → ${latest}. Run /reload-plugins to apply.`;
             process.stderr.write(`✅ Hivemind auto-updated: ${current} → ${latest}. Run /reload-plugins to apply.\n`);
             log(`autoupdate succeeded: ${current} → ${latest}`);
           } catch (e: any) {
+            restoreOrCleanup(handle);
             updateNotice = `\n\n⬆️ Hivemind update available: ${current} → ${latest}. Auto-update failed — run /hivemind:update to upgrade manually.`;
             process.stderr.write(`⬆️ Hivemind update available: ${current} → ${latest}. Auto-update failed — run /hivemind:update to upgrade manually.\n`);
             log(`autoupdate failed: ${e.message}`);
