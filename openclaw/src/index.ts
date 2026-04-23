@@ -4,6 +4,7 @@ import { loadConfig } from "../../src/config.js";
 import { loadCredentials, saveCredentials, requestDeviceCode, pollForToken, listOrgs, switchOrg, listWorkspaces, switchWorkspace } from "../../src/commands/auth.js";
 import { DeeplakeApi } from "../../src/deeplake-api.js";
 import { sqlStr, sqlLike } from "../../src/utils/sql.js";
+import { deeplakeClientHeader } from "../../src/utils/client-header.js";
 
 interface PluginConfig {
   autoCapture?: boolean;
@@ -108,6 +109,7 @@ async function requestAuth(): Promise<string> {
                     Authorization: `Bearer ${token}`,
                     "Content-Type": "application/json",
                     "X-Activeloop-Org-Id": orgId,
+                    ...deeplakeClientHeader(),
                   },
                   body: JSON.stringify({ name: `hivemind-${new Date().toISOString().split("T")[0]}`, duration: 365 * 24 * 60 * 60, organization_id: orgId }),
                 });
