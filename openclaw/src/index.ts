@@ -3,7 +3,12 @@ function definePluginEntry<T>(entry: T): T { return entry; }
 import { loadConfig } from "../../src/config.js";
 import { loadCredentials, saveCredentials, requestDeviceCode, pollForToken, listOrgs, switchOrg, listWorkspaces, switchWorkspace } from "../../src/commands/auth.js";
 import { DeeplakeApi } from "../../src/deeplake-api.js";
-import { sqlStr, sqlLike } from "../../src/utils/sql.js";
+import { sqlStr } from "../../src/utils/sql.js";
+// Memory-access primitives reused directly from the CC/Codex hooks so the
+// openclaw agent gets the same search + read semantics (multi-word across
+// memory ∪ sessions, path filters, JSONB normalization, virtual /index.md).
+import { searchDeeplakeTables, buildGrepSearchOptions, normalizeContent, type GrepMatchParams } from "../../src/shell/grep-core.js";
+import { readVirtualPathContent } from "../../src/hooks/virtual-table-query.js";
 
 interface PluginConfig {
   autoCapture?: boolean;
@@ -21,6 +26,47 @@ interface CommandContext {
   senderId?: string;
 }
 
+// Shape of tools plugins can register with the openclaw runtime so the active
+// agent model can call them. Matches the `AnyAgentTool` contract used by
+// bundled extensions like `memory-wiki` (see extensions/memory-wiki/src/tool.ts).
+// parameters uses plain JSON Schema so we don't need a typebox/zod dep here.
+interface AgentTool {
+  name: string;
+  label?: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  execute: (
+    toolCallId: string | undefined,
+    rawParams: Record<string, unknown>,
+  ) => Promise<{ content: Array<{ type: "text"; text: string }>; details?: unknown }>;
+}
+
+// Openclaw's memory-corpus federation contract. Other plugins' `memory_search`
+// tools can fan out to us if we register, so memory-core users who keep their
+// own runtime get hivemind hits automatically.
+interface MemoryCorpusSearchResult {
+  path: string;
+  snippet: string;
+  title?: string;
+  corpus?: string;
+  kind?: string;
+  score?: number;
+}
+
+interface MemoryCorpusSupplement {
+  search(params: {
+    query: string;
+    maxResults?: number;
+    agentSessionKey?: string;
+  }): Promise<MemoryCorpusSearchResult[]>;
+  get(params: {
+    lookup: string;
+    fromLine?: number;
+    lineCount?: number;
+    agentSessionKey?: string;
+  }): Promise<{ path: string; content: string; title?: string } | null>;
+}
+
 interface PluginAPI {
   pluginConfig?: Record<string, unknown>;
   logger: PluginLogger;
@@ -31,6 +77,10 @@ interface PluginAPI {
     acceptsArgs?: boolean;
     handler: (ctx: CommandContext) => Promise<string | { text: string }>;
   }): void;
+  // Optional on purpose — older openclaw hosts (pre-2026.4.x) don't expose
+  // these seams. The plugin guards both before calling.
+  registerTool?(tool: AgentTool): void;
+  registerMemoryCorpusSupplement?(supplement: MemoryCorpusSupplement): void;
 }
 
 const DEFAULT_API_URL = "https://api.deeplake.ai";
@@ -92,6 +142,22 @@ async function requestAuth(): Promise<string> {
           const result = await pollForToken(code.device_code);
           if (result) {
             const token = result.access_token;
+
+            // Fetch Deeplake user identity so captured sessions are attributed
+            // to the logged-in user (not the OS login — `userInfo().username`
+            // falls through to "ubuntu" on cloud boxes, which is never what we
+            // want). Mirrors the canonical login flow in src/commands/auth.ts.
+            let userName: string | undefined;
+            try {
+              const meResp = await fetch(`${DEFAULT_API_URL}/me`, {
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              if (meResp.ok) {
+                const me = await meResp.json() as { name?: string; email?: string };
+                userName = me.name || (me.email ? me.email.split("@")[0] : undefined);
+              }
+            } catch { /* fall through: userName stays undefined, config.ts falls back */ }
+
             const orgs = await listOrgs(token);
             const personal = orgs.find(o => o.name.endsWith("'s Organization"));
             const org = personal ?? orgs[0];
@@ -118,7 +184,7 @@ async function requestAuth(): Promise<string> {
               } catch {}
             }
 
-            saveCredentials({ token: savedToken, orgId, orgName, apiUrl: DEFAULT_API_URL, savedAt: new Date().toISOString() });
+            saveCredentials({ token: savedToken, orgId, orgName, userName, apiUrl: DEFAULT_API_URL, savedAt: new Date().toISOString() });
             authPending = false;
             authUrl = null;
             justAuthenticated = true;
@@ -140,6 +206,7 @@ async function requestAuth(): Promise<string> {
 // --- API instance ---
 let api: DeeplakeApi | null = null;
 let sessionsTable = "sessions";
+let memoryTable = "memory";
 let captureEnabled = true;
 const capturedCounts = new Map<string, number>();
 const fallbackSessionId = crypto.randomUUID();
@@ -147,6 +214,37 @@ const fallbackSessionId = crypto.randomUUID();
 /** Build session path matching CC convention: /sessions/<user>/<user>_<org>_<workspace>_<sessionId>.jsonl */
 function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
+}
+
+const RECALL_STOPWORDS = new Set([
+  "the","and","for","are","but","not","you","all","can","had","her","was","one",
+  "our","out","has","have","what","does","like","with","this","that","from","they",
+  "been","will","more","when","who","how","its","into","some","than","them","these",
+  "then","your","just","about","would","could","should","where","which","there",
+  "their","being","each","other",
+]);
+
+/**
+ * Extract the signal-bearing tokens from a natural-language prompt so we can
+ * feed them into `searchDeeplakeTables` as a multi-word ILIKE. Mirrors the
+ * pattern used by claude-code/codex grep intercepts — lowercase, strip
+ * non-alphanumeric, drop short words + stopwords, cap at 4 so the SQL doesn't
+ * turn into a 20-way OR.
+ */
+function extractKeywords(prompt: string): string[] {
+  return prompt.toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(w => w.length >= 3 && !RECALL_STOPWORDS.has(w))
+    .slice(0, 4);
+}
+
+/** Trim a path filter down to a safe virtual prefix. `/` ⇒ unfiltered. */
+function normalizeVirtualPath(p: string | undefined | null): string {
+  if (!p || typeof p !== "string") return "/";
+  const trimmed = p.trim();
+  if (!trimmed || trimmed === "/") return "/";
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
 }
 
 async function getApi(): Promise<DeeplakeApi | null> {
@@ -159,6 +257,7 @@ async function getApi(): Promise<DeeplakeApi | null> {
   }
 
   sessionsTable = config.sessionsTableName;
+  memoryTable = config.tableName;
   api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
   await api.ensureSessionsTable(sessionsTable);
   return api;
@@ -290,6 +389,207 @@ export default definePluginEntry({
       });
     }
 
+    // Agent-facing memory tools. Registered only when the host exposes
+    // `registerTool`; older openclaw versions silently skip this block. These
+    // give the agent the same memory surface claude-code and codex agents
+    // get via PreToolUse-intercepted Grep/Read — multi-word search across
+    // the memory (summaries) and sessions (raw turns) tables, drill-down
+    // into a specific path, and a rendered index of what's available.
+    if (pluginApi.registerTool) {
+      pluginApi.registerTool({
+        name: "hivemind_search",
+        label: "Hivemind Search",
+        description:
+          "Search Hivemind shared memory (summaries + past session turns) for keywords, phrases, or regex. Returns matching path + snippet pairs from BOTH the memory and sessions tables. Use this FIRST when the user asks about past work, decisions, people, or anything that might live in memory.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            query: {
+              type: "string",
+              minLength: 1,
+              description: "Search text. Treated as a literal substring by default; set `regex: true` to use regex metacharacters.",
+            },
+            path: {
+              type: "string",
+              description: "Optional virtual path prefix to scope the search, e.g. '/summaries/' or '/sessions/alice/'. Defaults to '/' (all of memory).",
+            },
+            regex: {
+              type: "boolean",
+              description: "If true, `query` is interpreted as a regex. Default false (literal substring).",
+            },
+            ignoreCase: {
+              type: "boolean",
+              description: "Case-insensitive match. Default true.",
+            },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+              description: "Max rows returned per table. Default 20.",
+            },
+          },
+          required: ["query"],
+        },
+        execute: async (_toolCallId, rawParams) => {
+          const params = rawParams as {
+            query: string;
+            path?: string;
+            regex?: boolean;
+            ignoreCase?: boolean;
+            limit?: number;
+          };
+          const dl = await getApi();
+          if (!dl) {
+            return {
+              content: [{ type: "text", text: "Not logged in. Run /hivemind_login first." }],
+            };
+          }
+          const targetPath = normalizeVirtualPath(params.path);
+          const grepParams: GrepMatchParams = {
+            pattern: params.query,
+            ignoreCase: params.ignoreCase !== false,
+            wordMatch: false,
+            filesOnly: false,
+            countOnly: false,
+            lineNumber: false,
+            invertMatch: false,
+            fixedString: params.regex !== true,
+          };
+          const searchOpts = buildGrepSearchOptions(grepParams, targetPath);
+          searchOpts.limit = Math.min(Math.max(params.limit ?? 20, 1), 100);
+          const t0 = Date.now();
+          try {
+            const rows = await searchDeeplakeTables(dl, memoryTable, sessionsTable, searchOpts);
+            pluginApi.logger.info?.(`hivemind_search "${params.query.slice(0, 60)}" → ${rows.length} hits in ${Date.now() - t0}ms`);
+            if (rows.length === 0) {
+              return { content: [{ type: "text", text: `No memory matches for "${params.query}" under ${targetPath}.` }] };
+            }
+            const text = rows
+              .map((r, i) => {
+                const body = normalizeContent(r.path, r.content);
+                return `${i + 1}. ${r.path}\n${body.slice(0, 500)}`;
+              })
+              .join("\n\n");
+            return { content: [{ type: "text", text }], details: { hits: rows.length, path: targetPath } };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            pluginApi.logger.error(`hivemind_search failed: ${msg}`);
+            return { content: [{ type: "text", text: `Search failed: ${msg}` }] };
+          }
+        },
+      });
+
+      pluginApi.registerTool({
+        name: "hivemind_read",
+        label: "Hivemind Read",
+        description:
+          "Read the full content of a specific Hivemind memory path (e.g. '/summaries/alice/abc.md' or '/sessions/alice/alice_org_ws_xyz.jsonl' or '/index.md'). Use this after hivemind_search to drill into a hit, or after hivemind_index to fetch a specific session.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            path: {
+              type: "string",
+              minLength: 1,
+              description: "Virtual path under /summaries/, /sessions/, or '/index.md' for the memory index.",
+            },
+          },
+          required: ["path"],
+        },
+        execute: async (_toolCallId, rawParams) => {
+          const params = rawParams as { path: string };
+          const dl = await getApi();
+          if (!dl) {
+            return { content: [{ type: "text", text: "Not logged in. Run /hivemind_login first." }] };
+          }
+          const virtualPath = normalizeVirtualPath(params.path);
+          try {
+            const content = await readVirtualPathContent(dl, memoryTable, sessionsTable, virtualPath);
+            if (content === null) {
+              return { content: [{ type: "text", text: `No content at ${virtualPath}.` }] };
+            }
+            return { content: [{ type: "text", text: content }], details: { path: virtualPath } };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            pluginApi.logger.error(`hivemind_read failed: ${msg}`);
+            return { content: [{ type: "text", text: `Read failed: ${msg}` }] };
+          }
+        },
+      });
+
+      pluginApi.registerTool({
+        name: "hivemind_index",
+        label: "Hivemind Index",
+        description:
+          "List every summary and session available in Hivemind (with paths, dates, descriptions). Use this when the user asks 'what's in memory?' or you don't know where to start looking.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {},
+        },
+        execute: async () => {
+          const dl = await getApi();
+          if (!dl) {
+            return { content: [{ type: "text", text: "Not logged in. Run /hivemind_login first." }] };
+          }
+          try {
+            const text = await readVirtualPathContent(dl, memoryTable, sessionsTable, "/index.md");
+            return { content: [{ type: "text", text: text ?? "(memory is empty)" }] };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            pluginApi.logger.error(`hivemind_index failed: ${msg}`);
+            return { content: [{ type: "text", text: `Index build failed: ${msg}` }] };
+          }
+        },
+      });
+    }
+
+    // Memory-corpus supplement: if the host runs a `memory_search` tool (e.g.
+    // from memory-core), it federates queries to all registered supplements.
+    // Non-exclusive — coexists with any other corpus.
+    if (pluginApi.registerMemoryCorpusSupplement) {
+      pluginApi.registerMemoryCorpusSupplement({
+        search: async ({ query, maxResults }) => {
+          const dl = await getApi();
+          if (!dl) return [];
+          const grepParams: GrepMatchParams = {
+            pattern: query,
+            ignoreCase: true,
+            wordMatch: false,
+            filesOnly: false,
+            countOnly: false,
+            lineNumber: false,
+            invertMatch: false,
+            fixedString: true,
+          };
+          const searchOpts = buildGrepSearchOptions(grepParams, "/");
+          searchOpts.limit = Math.min(Math.max(maxResults ?? 10, 1), 50);
+          try {
+            const rows = await searchDeeplakeTables(dl, memoryTable, sessionsTable, searchOpts);
+            return rows.map(r => ({
+              path: r.path,
+              snippet: normalizeContent(r.path, r.content).slice(0, 400),
+              corpus: "hivemind",
+              kind: r.path.startsWith("/summaries/") ? "summary" : "session",
+            }));
+          } catch {
+            return [];
+          }
+        },
+        get: async ({ lookup }) => {
+          const dl = await getApi();
+          if (!dl) return null;
+          try {
+            const content = await readVirtualPathContent(dl, memoryTable, sessionsTable, normalizeVirtualPath(lookup));
+            return content === null ? null : { path: lookup, content };
+          } catch {
+            return null;
+          }
+        },
+      });
+    }
+
     const config = (pluginApi.pluginConfig ?? {}) as PluginConfig;
     const logger = pluginApi.logger;
 
@@ -318,29 +618,37 @@ export default definePluginEntry({
             return { prependContext: `\n\n🐝 Welcome to Hivemind!\n\nCurrent org: ${orgName}\n\nYour agents now share memory across sessions, teammates, and machines.\n\nGet started:\n1. Verify sync: spin up multiple sessions and confirm agents share context\n2. Invite a teammate: ask the agent to add them over email\n3. Switch orgs: ask the agent to list or switch your organizations\n\nOne brain for every agent on your team.\n` };
           }
 
-          const stopWords = new Set(["the","and","for","are","but","not","you","all","can","had","her","was","one","our","out","has","have","what","does","like","with","this","that","from","they","been","will","more","when","who","how","its","into","some","than","them","these","then","your","just","about","would","could","should","where","which","there","their","being","each","other"]);
-          const words = event.prompt.toLowerCase()
-            .replace(/[^a-z0-9\s]/g, " ")
-            .split(/\s+/)
-            .filter(w => w.length >= 3 && !stopWords.has(w));
+          // Multi-keyword search across BOTH the memory (summaries) and
+          // sessions (raw turns) tables. Uses the same `searchDeeplakeTables`
+          // primitive that claude-code and codex agents reach via their
+          // PreToolUse-intercepted Grep, so recall quality is model-agnostic
+          // (no more first-keyword-only ILIKE on sessions alone).
+          const keywords = extractKeywords(event.prompt);
+          if (!keywords.length) return;
 
-          if (!words.length) return;
+          const grepParams: GrepMatchParams = {
+            pattern: keywords.join(" "),
+            ignoreCase: true,
+            wordMatch: false,
+            filesOnly: false,
+            countOnly: false,
+            lineNumber: false,
+            invertMatch: false,
+            fixedString: true,
+          };
+          const searchOpts = buildGrepSearchOptions(grepParams, "/");
+          searchOpts.limit = 10;
+          const rows = await searchDeeplakeTables(dl, memoryTable, sessionsTable, searchOpts);
+          if (!rows.length) return;
 
-          // Search sessions table — cast JSONB message to text for keyword search
-          const results = await dl.query(
-            `SELECT path, message FROM "${sessionsTable}" WHERE message::text ILIKE '%${sqlLike(words[0])}%' ORDER BY creation_date DESC LIMIT 5`
-          );
-
-          if (!results.length) return;
-
-          const recalled = results
+          const recalled = rows
             .map(r => {
-              const msg = typeof r.message === "string" ? r.message : JSON.stringify(r.message);
-              return `[${r.path}] ${msg.slice(0, 300)}`;
+              const body = normalizeContent(r.path, r.content);
+              return `[${r.path}] ${body.slice(0, 400)}`;
             })
             .join("\n\n");
 
-          logger.info?.(`Auto-recalled ${results.length} memories`);
+          logger.info?.(`Auto-recalled ${rows.length} memories`);
           return {
             prependContext: "\n\n<recalled-memories>\n" + recalled + "\n</recalled-memories>\n",
           };
