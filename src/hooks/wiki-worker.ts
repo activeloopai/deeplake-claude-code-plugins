@@ -9,12 +9,15 @@
 
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { utcTimestamp, log as _log } from "../utils/debug.js";
 
 const dlog = (msg: string) => _log("wiki-worker", msg);
 import { finalizeSummary, releaseLock } from "./summary-state.js";
 import { uploadSummary } from "./upload-summary.js";
+import { EmbedClient } from "../embeddings/client.js";
+import { embeddingsDisabled } from "../embeddings/disable.js";
 
 interface WorkerConfig {
   apiUrl: string;
@@ -181,6 +184,18 @@ async function main(): Promise<void> {
       if (text.trim()) {
         const fname = `${cfg.sessionId}.md`;
         const vpath = `/summaries/${cfg.userName}/${fname}`;
+        // Embed the summary so it ranks in the semantic retrieval branch.
+        // Skipped when globally disabled or the daemon is unreachable —
+        // uploadSummary() writes SQL NULL in that case.
+        let embedding: number[] | null = null;
+        if (!embeddingsDisabled()) {
+          try {
+            const daemonEntry = join(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
+            embedding = await new EmbedClient({ daemonEntry }).embed(text, "document");
+          } catch (e: any) {
+            wlog(`summary embedding failed, writing NULL: ${e.message}`);
+          }
+        }
         const result = await uploadSummary(query, {
           tableName: cfg.memoryTable,
           vpath, fname,
@@ -189,6 +204,7 @@ async function main(): Promise<void> {
           agent: "claude_code",
           sessionId: cfg.sessionId,
           text,
+          embedding,
         });
         wlog(`uploaded ${vpath} (summary=${result.summaryLength}, desc=${result.descLength})`);
 
