@@ -84,7 +84,23 @@ interface PluginAPI {
 }
 
 const DEFAULT_API_URL = "https://api.deeplake.ai";
-const VERSION_URL = "https://raw.githubusercontent.com/activeloopai/hivemind/main/openclaw/openclaw.plugin.json";
+// ClawHub package-info API — single source of truth for what
+// `openclaw plugins update hivemind` will actually fetch. Previously we
+// hit raw.githubusercontent.com/<...>/main/openclaw/openclaw.plugin.json,
+// which lagged ClawHub during the PR-review window (main would sit at
+// an older version while ClawHub already served the new one). Querying
+// ClawHub directly keeps /hivemind_update honest about the version the
+// CLI will pull.
+const VERSION_URL = "https://clawhub.ai/api/v1/packages/hivemind";
+
+/** Parse `{ package: { latestVersion: "X.Y.Z" } }` out of the ClawHub response. */
+function extractLatestVersion(body: unknown): string | null {
+  if (typeof body !== "object" || body === null) return null;
+  const pkg = (body as { package?: unknown }).package;
+  if (typeof pkg !== "object" || pkg === null) return null;
+  const v = (pkg as { latestVersion?: unknown }).latestVersion;
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
 
 // Version injected at build time by esbuild's `define` (see esbuild.config.mjs).
 // The constant is substituted into the bundle literally, so neither source
@@ -111,8 +127,7 @@ async function checkForUpdate(logger: PluginLogger): Promise<void> {
     if (!current) return;
     const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(3000) });
     if (!res.ok) return;
-    const manifest = await res.json() as { version?: string };
-    const latest = manifest.version ?? null;
+    const latest = extractLatestVersion(await res.json());
     if (latest && isNewer(latest, current)) {
       logger.info?.(`⬆️ Hivemind update available: ${current} → ${latest}. Run: openclaw plugins update hivemind`);
     }
@@ -375,8 +390,7 @@ export default definePluginEntry({
           try {
             const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(3000) });
             if (!res.ok) return { text: `Current version: ${current}. Could not check for updates.` };
-            const pkg = await res.json();
-            const latest = typeof pkg.version === "string" ? pkg.version : null;
+            const latest = extractLatestVersion(await res.json());
             if (!latest) return { text: `Current version: ${current}. Could not parse latest version.` };
             if (isNewer(latest, current)) {
               return { text: `⬆️ Update available: ${current} → ${latest}\n\nRun in your terminal:\n\`openclaw plugins update hivemind\`` };
