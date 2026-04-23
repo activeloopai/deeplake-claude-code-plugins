@@ -30,6 +30,10 @@ export default defineConfig({
         "src/**/*.d.ts",
         "src/**/*.js",
         "src/**/*.js.map",
+        // CLI entry points — `main()` calls process.exit(), so source-level
+        // unit tests don't make sense. These files have subprocess-spawn
+        // coverage via claude-code/tests/shell-bundle-*.test.ts instead.
+        "src/shell/deeplake-shell.ts",
       ],
       // Per-file thresholds. Each PR that ships new files should append
       // its paths here with 80 / 80 / 80 / 80, so we prevent regressions
@@ -113,6 +117,44 @@ export default defineConfig({
           lines: 90,
         },
         "src/embeddings/sql.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/pre-tool-use.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/memory-path-utils.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        // fix/plugin-autoupdate-session-safety — snapshot-restore around
+        // claude-plugin update + SessionEnd GC. All four files at 90+.
+        "src/utils/plugin-cache.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/plugin-cache-gc.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/session-start.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/session-start-setup.ts": {
           statements: 90,
           branches: 90,
           functions: 90,

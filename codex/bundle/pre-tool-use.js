@@ -38,12 +38,8 @@ function loadConfig() {
       return null;
     }
   }
-  const env = process.env;
-  if (!env.HIVEMIND_TOKEN && env.DEEPLAKE_TOKEN) {
-    process.stderr.write("[hivemind] DEEPLAKE_* env vars are deprecated; use HIVEMIND_* instead\n");
-  }
-  const token = env.HIVEMIND_TOKEN ?? env.DEEPLAKE_TOKEN ?? creds?.token;
-  const orgId = env.HIVEMIND_ORG_ID ?? env.DEEPLAKE_ORG_ID ?? creds?.orgId;
+  const token = process.env.HIVEMIND_TOKEN ?? creds?.token;
+  const orgId = process.env.HIVEMIND_ORG_ID ?? creds?.orgId;
   if (!token || !orgId)
     return null;
   return {
@@ -51,11 +47,11 @@ function loadConfig() {
     orgId,
     orgName: creds?.orgName ?? orgId,
     userName: creds?.userName || userInfo().username || "unknown",
-    workspaceId: env.HIVEMIND_WORKSPACE_ID ?? env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
-    apiUrl: env.HIVEMIND_API_URL ?? env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: env.HIVEMIND_TABLE ?? env.DEEPLAKE_TABLE ?? "memory",
-    sessionsTableName: env.HIVEMIND_SESSIONS_TABLE ?? env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
-    memoryPath: env.HIVEMIND_MEMORY_PATH ?? env.DEEPLAKE_MEMORY_PATH ?? join(home, ".deeplake", "memory")
+    workspaceId: process.env.HIVEMIND_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
+    apiUrl: process.env.HIVEMIND_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
+    tableName: process.env.HIVEMIND_TABLE ?? "memory",
+    sessionsTableName: process.env.HIVEMIND_SESSIONS_TABLE ?? "sessions",
+    memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? join(home, ".deeplake", "memory")
   };
 }
 
@@ -69,7 +65,7 @@ import { tmpdir } from "node:os";
 import { appendFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
-var DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+var DEBUG = process.env.HIVEMIND_DEBUG === "1";
 var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
 function log(tag, msg) {
   if (!DEBUG)
@@ -93,21 +89,20 @@ function summarizeSql(sql, maxLen = 220) {
   return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
 }
 function traceSql(msg) {
-  const traceEnabled = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+  const traceEnabled = process.env.HIVEMIND_TRACE_SQL === "1" || process.env.HIVEMIND_DEBUG === "1";
   if (!traceEnabled)
     return;
   process.stderr.write(`[deeplake-sql] ${msg}
 `);
-  const debugFileLog = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-  if (debugFileLog)
+  if (process.env.HIVEMIND_DEBUG === "1")
     log2(msg);
 }
 var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
-var QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 1e4);
-var INDEX_MARKER_TTL_MS = Number(process.env["HIVEMIND_INDEX_MARKER_TTL_MS"] ?? 6 * 60 * 6e4);
+var QUERY_TIMEOUT_MS = Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 1e4);
+var INDEX_MARKER_TTL_MS = Number(process.env.HIVEMIND_INDEX_MARKER_TTL_MS ?? 6 * 60 * 6e4);
 function sleep(ms) {
   return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
@@ -128,7 +123,7 @@ function isTransientHtml403(text) {
   return body.includes("<html") || body.includes("403 forbidden") || body.includes("cloudflare") || body.includes("nginx");
 }
 function getIndexMarkerDir() {
-  return process.env["HIVEMIND_INDEX_MARKER_DIR"] ?? join3(tmpdir(), "hivemind-deeplake-indexes");
+  return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join3(tmpdir(), "hivemind-deeplake-indexes");
 }
 var Semaphore = class {
   max;
@@ -626,7 +621,7 @@ function buildPathCondition(targetPath) {
   return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%' ESCAPE '\\')`;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, bm25Term } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, bm25Term, multiWordPatterns } = opts;
   const limit = opts.limit ?? 100;
   if (queryEmbedding && queryEmbedding.length > 0) {
     const vecLit = serializeFloat4Array(queryEmbedding);
@@ -658,7 +653,7 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
     }
     return unique;
   }
-  const filterPatterns = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : [escapedPattern];
+  const filterPatterns = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : multiWordPatterns && multiWordPatterns.length > 1 ? multiWordPatterns : [escapedPattern];
   const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
   const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
   const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
@@ -764,6 +759,7 @@ function buildGrepSearchOptions(params, targetPath) {
   } else if (literalPrefilter) {
     bm25Term = literalPrefilter;
   }
+  const multiWordPatterns = !hasRegexMeta ? params.pattern.split(/\s+/).filter((w) => w.length > 2).slice(0, 4) : [];
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
@@ -773,7 +769,8 @@ function buildGrepSearchOptions(params, targetPath) {
     escapedPattern: sqlLike(params.pattern),
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0,
     prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
-    bm25Term
+    bm25Term,
+    multiWordPatterns: multiWordPatterns.length > 1 ? multiWordPatterns.map((w) => sqlLike(w)) : void 0
   };
 }
 function buildContentFilter(column, likeOp, patterns) {
@@ -872,7 +869,11 @@ function capOutputForClaude(output, options = {}) {
     running += lineBytes;
   }
   if (keptLines.length === 0) {
-    const slice = Buffer.from(output, "utf8").slice(0, budget).toString("utf8");
+    const buf = Buffer.from(output, "utf8");
+    let cutByte = Math.min(budget, buf.length);
+    while (cutByte > 0 && (buf[cutByte] & 192) === 128)
+      cutByte--;
+    const slice = buf.subarray(0, cutByte).toString("utf8");
     const footer2 = `
 ... [${kind} truncated: ${(byteLen(output) / 1024).toFixed(1)} KB total; refine with '| head -N' or a tighter pattern]`;
     return slice + footer2;

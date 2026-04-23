@@ -225,6 +225,30 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
       "python, python3, node, and curl are NOT available. " +
       "You MUST rewrite your command using only the bash tools listed above and try again. " +
       "For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";
+
+    // Fast-path: a clean single-file read attempt by an unsupported interpreter
+    // (python/node/ruby/perl, no shell metacharacters) gets rewritten to
+    // `cat '<path>'` so the agent doesn't burn a turn on a RETRY. Anything with
+    // $(...), backticks, pipes, redirects, or chains falls through to the
+    // guidance below — safer than trying to rewrite composite commands.
+    const isReadLike = /^(?:python3?|node|deno|bun|ruby|perl)\b/.test(cmd.trim());
+    const hasShellMeta = /[$`;|&<>()\\]/.test(cmd);
+    if (isReadLike && !hasShellMeta) {
+      // Normalize path prefix (~/, $HOME/, or absolute /home/user/) to / via
+      // rewritePaths, then extract the leading memory-relative path.
+      // This catches all three forms that touchesMemory() accepts.
+      const normalized = rewritePaths(cmd) + " " + rewritePaths(toolPath);
+      const pathMatch = normalized.match(/\s(\/[\w./_-]+)/);
+      const cleanPath = pathMatch ? pathMatch[1] : "";
+      if (cleanPath && !cleanPath.endsWith("/")) {
+        logFn(`unsupported command on file, converting to cat: ${cleanPath}`);
+        return buildAllowDecision(
+          `cat '${cleanPath.replace(/'/g, "'\\''")}'`,
+          "[DeepLake] converted unsupported interpreter read to cat",
+        );
+      }
+    }
+
     logFn(`unsupported command, returning guidance: ${cmd}`);
     return buildAllowDecision(
       `echo ${JSON.stringify(guidance)}`,

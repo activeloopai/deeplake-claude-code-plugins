@@ -64,6 +64,38 @@ describe("capOutputForClaude", () => {
     expect(out).toMatch(/[\d.]+ KB total/);
   });
 
+  // Regression guard for PR #64 review comment: naive `Buffer.slice(0, budget)`
+  // can cut a multi-byte UTF-8 sequence in half, and `.toString("utf8")` then
+  // inserts U+FFFD replacement characters at the tail of the output. The cap
+  // backs up to the nearest valid UTF-8 start byte before decoding.
+
+  it("single-line truncation never produces U+FFFD replacement characters", () => {
+    // Each "©" is 2 bytes (c2 a9). Fill with enough of them that the byte
+    // budget lands inside one — the previous implementation would slice mid-
+    // sequence and leak at least one U+FFFD; the fix backs up and emits a
+    // clean prefix.
+    const input = "©".repeat(10_000);
+    expect(Buffer.byteLength(input, "utf8")).toBeGreaterThan(CLAUDE_OUTPUT_CAP_BYTES);
+    const out = capOutputForClaude(input, { kind: "grep" });
+
+    // Body is "<prefix>\n... [grep truncated: …]". The prefix must be clean.
+    const prefix = out.split("\n... [grep truncated:")[0];
+    expect(prefix).not.toContain("\uFFFD");
+    // And still useful — we kept ~most of the budget worth of characters.
+    expect(prefix.length).toBeGreaterThan(CLAUDE_OUTPUT_CAP_BYTES / 4);
+  });
+
+  it("multi-byte content with newlines still truncates on line boundaries without corruption", () => {
+    // Each line is "© ©".repeat(60) ≈ 240 bytes. 100 lines → 24 KB, exceeds
+    // the cap; truncation happens at a newline boundary so no multi-byte
+    // split is even attempted, but we still assert cleanliness.
+    const line = "© ©".repeat(60);
+    const input = Array.from({ length: 100 }, () => line).join("\n");
+    const out = capOutputForClaude(input, { kind: "grep" });
+    expect(out).not.toContain("\uFFFD");
+    expect(Buffer.byteLength(out, "utf8")).toBeLessThanOrEqual(CLAUDE_OUTPUT_CAP_BYTES);
+  });
+
   it("uses a custom maxBytes when provided", () => {
     const input = Array.from({ length: 20 }, (_, i) => `line${i}:${"x".repeat(80)}`).join("\n");
     const out = capOutputForClaude(input, { maxBytes: 500, kind: "ls" });

@@ -2,10 +2,9 @@
 
 // dist/src/hooks/session-start.js
 import { fileURLToPath } from "node:url";
-import { dirname as dirname2, join as join7 } from "node:path";
-import { readdirSync, rmSync } from "node:fs";
+import { dirname as dirname3, join as join8 } from "node:path";
 import { execSync as execSync2 } from "node:child_process";
-import { homedir as homedir4 } from "node:os";
+import { homedir as homedir5 } from "node:os";
 
 // dist/src/commands/auth.js
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
@@ -44,12 +43,8 @@ function loadConfig() {
       return null;
     }
   }
-  const env = process.env;
-  if (!env.HIVEMIND_TOKEN && env.DEEPLAKE_TOKEN) {
-    process.stderr.write("[hivemind] DEEPLAKE_* env vars are deprecated; use HIVEMIND_* instead\n");
-  }
-  const token = env.HIVEMIND_TOKEN ?? env.DEEPLAKE_TOKEN ?? creds?.token;
-  const orgId = env.HIVEMIND_ORG_ID ?? env.DEEPLAKE_ORG_ID ?? creds?.orgId;
+  const token = process.env.HIVEMIND_TOKEN ?? creds?.token;
+  const orgId = process.env.HIVEMIND_ORG_ID ?? creds?.orgId;
   if (!token || !orgId)
     return null;
   return {
@@ -57,11 +52,11 @@ function loadConfig() {
     orgId,
     orgName: creds?.orgName ?? orgId,
     userName: creds?.userName || userInfo().username || "unknown",
-    workspaceId: env.HIVEMIND_WORKSPACE_ID ?? env.DEEPLAKE_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
-    apiUrl: env.HIVEMIND_API_URL ?? env.DEEPLAKE_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
-    tableName: env.HIVEMIND_TABLE ?? env.DEEPLAKE_TABLE ?? "memory",
-    sessionsTableName: env.HIVEMIND_SESSIONS_TABLE ?? env.DEEPLAKE_SESSIONS_TABLE ?? "sessions",
-    memoryPath: env.HIVEMIND_MEMORY_PATH ?? env.DEEPLAKE_MEMORY_PATH ?? join2(home, ".deeplake", "memory")
+    workspaceId: process.env.HIVEMIND_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
+    apiUrl: process.env.HIVEMIND_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
+    tableName: process.env.HIVEMIND_TABLE ?? "memory",
+    sessionsTableName: process.env.HIVEMIND_SESSIONS_TABLE ?? "sessions",
+    memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? join2(home, ".deeplake", "memory")
   };
 }
 
@@ -75,7 +70,7 @@ import { tmpdir } from "node:os";
 import { appendFileSync } from "node:fs";
 import { join as join3 } from "node:path";
 import { homedir as homedir3 } from "node:os";
-var DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+var DEBUG = process.env.HIVEMIND_DEBUG === "1";
 var LOG = join3(homedir3(), ".deeplake", "hook-debug.log");
 function utcTimestamp(d = /* @__PURE__ */ new Date()) {
   return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
@@ -99,23 +94,22 @@ function summarizeSql(sql, maxLen = 220) {
   return compact.length > maxLen ? `${compact.slice(0, maxLen)}...` : compact;
 }
 function traceSql(msg) {
-  const traceEnabled = (process.env.HIVEMIND_TRACE_SQL ?? process.env.DEEPLAKE_TRACE_SQL) === "1" || (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+  const traceEnabled = process.env.HIVEMIND_TRACE_SQL === "1" || process.env.HIVEMIND_DEBUG === "1";
   if (!traceEnabled)
     return;
   process.stderr.write(`[deeplake-sql] ${msg}
 `);
-  const debugFileLog = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
-  if (debugFileLog)
+  if (process.env.HIVEMIND_DEBUG === "1")
     log2(msg);
 }
 var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
-var QUERY_TIMEOUT_MS = Number(process.env["HIVEMIND_QUERY_TIMEOUT_MS"] ?? process.env["DEEPLAKE_QUERY_TIMEOUT_MS"] ?? 1e4);
-var INDEX_MARKER_TTL_MS = Number(process.env["HIVEMIND_INDEX_MARKER_TTL_MS"] ?? 6 * 60 * 6e4);
+var QUERY_TIMEOUT_MS = Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 1e4);
+var INDEX_MARKER_TTL_MS = Number(process.env.HIVEMIND_INDEX_MARKER_TTL_MS ?? 6 * 60 * 6e4);
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 function isTimeoutError(error) {
   const name = error instanceof Error ? error.name.toLowerCase() : "";
@@ -134,7 +128,7 @@ function isTransientHtml403(text) {
   return body.includes("<html") || body.includes("403 forbidden") || body.includes("cloudflare") || body.includes("nginx");
 }
 function getIndexMarkerDir() {
-  return process.env["HIVEMIND_INDEX_MARKER_DIR"] ?? join4(tmpdir(), "hivemind-deeplake-indexes");
+  return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join4(tmpdir(), "hivemind-deeplake-indexes");
 }
 var Semaphore = class {
   max;
@@ -148,7 +142,7 @@ var Semaphore = class {
       this.active++;
       return;
     }
-    await new Promise((resolve) => this.waiting.push(resolve));
+    await new Promise((resolve2) => this.waiting.push(resolve2));
   }
   release() {
     this.active--;
@@ -409,13 +403,13 @@ var DeeplakeApi = class {
 
 // dist/src/utils/stdin.js
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let data = "";
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => data += chunk);
     process.stdin.on("end", () => {
       try {
-        resolve(JSON.parse(data));
+        resolve2(JSON.parse(data));
       } catch (err) {
         reject(new Error(`Failed to parse hook input: ${err}`));
       }
@@ -488,10 +482,71 @@ function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
   };
 }
 
+// dist/src/utils/plugin-cache.js
+import { cpSync, existsSync as existsSync4, readdirSync, readFileSync as readFileSync5, renameSync, rmSync, statSync } from "node:fs";
+import { basename, dirname as dirname2, join as join7, resolve, sep } from "node:path";
+import { homedir as homedir4 } from "node:os";
+var SEMVER_RE = /^\d+\.\d+\.\d+$/;
+function isSemver(name) {
+  return SEMVER_RE.test(name);
+}
+function resolveVersionedPluginDir(bundleDir) {
+  const pluginDir = dirname2(bundleDir);
+  const versionsRoot = dirname2(pluginDir);
+  const version = basename(pluginDir);
+  if (!isSemver(version))
+    return null;
+  if (basename(versionsRoot) !== "hivemind")
+    return null;
+  const expectedPrefix = resolve(homedir4(), ".claude", "plugins", "cache") + sep;
+  if (!resolve(versionsRoot).startsWith(expectedPrefix))
+    return null;
+  return { pluginDir, versionsRoot, version };
+}
+function snapshotPath(pluginDir, pid) {
+  return `${pluginDir}.keep-${pid}`;
+}
+function snapshotPluginDir(pluginDir, pid = process.pid) {
+  if (!existsSync4(pluginDir))
+    return null;
+  const snapshot = snapshotPath(pluginDir, pid);
+  try {
+    rmSync(snapshot, { recursive: true, force: true });
+    cpSync(pluginDir, snapshot, { recursive: true, dereference: false });
+    return { pluginDir, snapshot };
+  } catch {
+    return null;
+  }
+}
+function restoreOrCleanup(handle) {
+  if (!handle)
+    return "noop";
+  const { pluginDir, snapshot } = handle;
+  try {
+    if (!existsSync4(pluginDir)) {
+      if (existsSync4(snapshot)) {
+        renameSync(snapshot, pluginDir);
+        return "restored";
+      }
+      return "noop";
+    }
+    rmSync(snapshot, { recursive: true, force: true });
+    return "cleaned";
+  } catch (e) {
+    try {
+      process.stderr.write(`[plugin-cache] restoreOrCleanup failed for ${pluginDir}: ${e?.message}
+`);
+    } catch {
+    }
+    return "restore-failed";
+  }
+}
+var DEFAULT_MANIFEST_PATH = join7(homedir4(), ".claude", "plugins", "installed_plugins.json");
+
 // dist/src/hooks/session-start.js
 var log3 = (msg) => log("session-start", msg);
-var __bundleDir = dirname2(fileURLToPath(import.meta.url));
-var AUTH_CMD = join7(__bundleDir, "commands", "auth-login.js");
+var __bundleDir = dirname3(fileURLToPath(import.meta.url));
+var AUTH_CMD = join8(__bundleDir, "commands", "auth-login.js");
 var context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
 
 1. Your built-in memory (~/.claude/) \u2014 personal per-project notes
@@ -522,8 +577,8 @@ IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
-var HOME = homedir4();
-var { log: wikiLog } = makeWikiLogger(join7(HOME, ".claude", "hooks"));
+var HOME = homedir5();
+var { log: wikiLog } = makeWikiLogger(join8(HOME, ".claude", "hooks"));
 async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, workspaceId) {
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
   const existing = await api.query(`SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`);
@@ -596,22 +651,14 @@ async function main() {
       if (latest && isNewer(latest, current)) {
         if (autoupdate) {
           log3(`autoupdate: updating ${current} \u2192 ${latest}`);
+          const resolved = resolveVersionedPluginDir(__bundleDir);
+          const handle = resolved ? snapshotPluginDir(resolved.pluginDir) : null;
           try {
             const scopes = ["user", "project", "local", "managed"];
             const cmd = scopes.map((s) => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null || true`).join("; ");
             execSync2(cmd, { stdio: "ignore", timeout: 6e4 });
-            try {
-              const cacheParent = join7(homedir4(), ".claude", "plugins", "cache", "hivemind", "hivemind");
-              const entries = readdirSync(cacheParent, { withFileTypes: true });
-              for (const e of entries) {
-                if (e.isDirectory() && e.name !== latest) {
-                  rmSync(join7(cacheParent, e.name), { recursive: true, force: true });
-                  log3(`cache cleanup: removed old version ${e.name}`);
-                }
-              }
-            } catch (e) {
-              log3(`cache cleanup failed: ${e.message}`);
-            }
+            const outcome = restoreOrCleanup(handle);
+            log3(`autoupdate snapshot outcome: ${outcome}`);
             updateNotice = `
 
 \u2705 Hivemind auto-updated: ${current} \u2192 ${latest}. Run /reload-plugins to apply.`;
@@ -619,6 +666,7 @@ async function main() {
 `);
             log3(`autoupdate succeeded: ${current} \u2192 ${latest}`);
           } catch (e) {
+            restoreOrCleanup(handle);
             updateNotice = `
 
 \u2B06\uFE0F Hivemind update available: ${current} \u2192 ${latest}. Auto-update failed \u2014 run /hivemind:update to upgrade manually.`;

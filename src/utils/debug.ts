@@ -2,7 +2,7 @@ import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-const DEBUG = (process.env.HIVEMIND_DEBUG ?? process.env.DEEPLAKE_DEBUG) === "1";
+const DEBUG = process.env.HIVEMIND_DEBUG === "1";
 const LOG = join(homedir(), ".deeplake", "hook-debug.log");
 
 /** Format a Date (default: now) as `YYYY-MM-DD HH:MM:SS UTC`. */

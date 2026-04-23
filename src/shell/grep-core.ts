@@ -48,6 +48,8 @@ export interface SearchOptions {
   prefilterPattern?: string;
   /** Optional safe literal alternation anchors for regex searches (e.g. foo|bar). */
   prefilterPatterns?: string[];
+  /** Per-word patterns for non-regex multi-word queries (OR-joined). */
+  multiWordPatterns?: string[];
   /** Per-table row cap. */
   limit?: number;
   /**
@@ -296,7 +298,7 @@ export async function searchDeeplakeTables(
   sessionsTable: string,
   opts: SearchOptions,
 ): Promise<ContentRow[]> {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, bm25Term } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, bm25Term, multiWordPatterns } = opts;
   const limit = opts.limit ?? 100;
 
   // ── Hybrid (lexical + semantic) branch ───────────────────────────────────
@@ -384,7 +386,7 @@ export async function searchDeeplakeTables(
   // ── Lexical branch ───────────────────────────────────────────────────────
   const filterPatterns = contentScanOnly
     ? (prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : (prefilterPattern ? [prefilterPattern] : []))
-    : [escapedPattern];
+    : (multiWordPatterns && multiWordPatterns.length > 1 ? multiWordPatterns : [escapedPattern]);
   const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
   const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
 
@@ -512,7 +514,6 @@ export function buildGrepSearchOptions(params: GrepMatchParams, targetPath: stri
   const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
   const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
   const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
-
   // bm25Term: the raw phrase we hand to Deeplake's `<#>` operator on TEXT /
   // JSONB. Non-regex patterns go through verbatim; regex patterns collapse
   // to their extracted literal prefilter (longest literal for a single
@@ -527,6 +528,12 @@ export function buildGrepSearchOptions(params: GrepMatchParams, targetPath: stri
     bm25Term = literalPrefilter;
   }
 
+  // For non-regex multi-word patterns, split into per-word OR filters so
+  // natural-language queries match any token, not only the full phrase.
+  const multiWordPatterns = (!hasRegexMeta)
+    ? params.pattern.split(/\s+/).filter((w) => w.length > 2).slice(0, 4)
+    : [];
+
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
@@ -537,6 +544,9 @@ export function buildGrepSearchOptions(params: GrepMatchParams, targetPath: stri
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : undefined,
     prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
     bm25Term,
+    multiWordPatterns: multiWordPatterns.length > 1
+      ? multiWordPatterns.map((w) => sqlLike(w))
+      : undefined,
   };
 }
 

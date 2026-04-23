@@ -84,6 +84,12 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/session-end.js\"",
             "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/plugin-cache-gc.js\"",
+            "timeout": 15,
+            "async": true
           }
         ]
       }
