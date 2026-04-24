@@ -9,6 +9,9 @@ function definePluginEntry<T>(entry: T): T { return entry; }
 declare const __HIVEMIND_VERSION__: string;
 declare const __HIVEMIND_SKILL__: string;
 // Shared core imports
+import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "../../src/config.js";
 import { loadCredentials, saveCredentials, requestDeviceCode, pollForToken, listOrgs, switchOrg, listWorkspaces, switchWorkspace } from "../../src/commands/auth.js";
 import { DeeplakeApi } from "../../src/deeplake-api.js";
@@ -138,6 +141,76 @@ async function checkForUpdate(logger: PluginLogger): Promise<void> {
       logger.info?.(`⬆️ Hivemind update available: ${current} → ${latest}. Run: openclaw plugins update hivemind`);
     }
   } catch {}
+}
+
+// --- Openclaw allowlist setup ---
+// Openclaw's "coding" profile only admits core tools (read/write/exec/etc.) into
+// the agent's callable-tool list. Plugin-registered tools like ours must be
+// explicitly listed in tools.alsoAllow (or tools.allow), either by plugin id
+// ("hivemind") or by tool name. Without this, the three hivemind_* tools
+// register successfully but are filtered out before the agent ever sees them.
+//
+// `ensureHivemindAllowlisted` reads ~/.openclaw/openclaw.json, checks whether
+// we're in alsoAllow (directly, via the "hivemind" plugin id, via any specific
+// hivemind_* tool name, or via the "group:plugins" wildcard), and if not writes
+// the edit atomically with a backup. Invoked by the /hivemind_setup command.
+function getOpenclawConfigPath(): string {
+  return join(homedir(), ".openclaw", "openclaw.json");
+}
+
+const HIVEMIND_TOOL_NAMES = ["hivemind_search", "hivemind_read", "hivemind_index"];
+
+function isAllowlistCoveringHivemind(alsoAllow: unknown): boolean {
+  if (!Array.isArray(alsoAllow)) return false;
+  for (const entry of alsoAllow) {
+    if (typeof entry !== "string") continue;
+    const normalized = entry.trim().toLowerCase();
+    if (normalized === "hivemind") return true;
+    if (normalized === "group:plugins") return true;
+    if (HIVEMIND_TOOL_NAMES.includes(normalized)) return true;
+  }
+  return false;
+}
+
+type SetupResult =
+  | { status: "already-set"; configPath: string }
+  | { status: "added"; configPath: string; backupPath: string }
+  | { status: "error"; configPath: string; error: string };
+
+function ensureHivemindAllowlisted(): SetupResult {
+  const configPath = getOpenclawConfigPath();
+  if (!existsSync(configPath)) {
+    return { status: "error", configPath, error: "openclaw config file not found" };
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    const raw = readFileSync(configPath, "utf-8");
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch (e) {
+    return { status: "error", configPath, error: `could not read/parse config: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  const tools = (parsed.tools ?? {}) as Record<string, unknown>;
+  const alsoAllow = Array.isArray(tools.alsoAllow) ? (tools.alsoAllow as unknown[]) : [];
+  if (isAllowlistCoveringHivemind(alsoAllow)) {
+    return { status: "already-set", configPath };
+  }
+  const updated: Record<string, unknown> = {
+    ...parsed,
+    tools: {
+      ...tools,
+      alsoAllow: [...alsoAllow, "hivemind"],
+    },
+  };
+  const backupPath = `${configPath}.bak-hivemind-${Date.now()}`;
+  const tmpPath = `${configPath}.tmp-hivemind-${process.pid}`;
+  try {
+    writeFileSync(backupPath, readFileSync(configPath, "utf-8"));
+    writeFileSync(tmpPath, JSON.stringify(updated, null, 2) + "\n");
+    renameSync(tmpPath, configPath);
+  } catch (e) {
+    return { status: "error", configPath, error: `could not write config: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  return { status: "added", configPath, backupPath };
 }
 
 // --- Auth state ---
@@ -411,6 +484,21 @@ export default definePluginEntry({
       });
 
       pluginApi.registerCommand({
+        name: "hivemind_setup",
+        description: "Add Hivemind tools to your openclaw allowlist (needed once per install)",
+        handler: async () => {
+          const result = ensureHivemindAllowlisted();
+          if (result.status === "already-set") {
+            return { text: `✅ Hivemind tools are already enabled in your allowlist.\n\nNo changes needed — memory tools are available to the agent.` };
+          }
+          if (result.status === "added") {
+            return { text: `✅ Added "hivemind" to your tool allowlist.\n\nOpenclaw will detect the config change and restart. On the next turn, the agent will have access to hivemind_search, hivemind_read, and hivemind_index.\n\nBackup of previous config: ${result.backupPath}` };
+          }
+          return { text: `⚠️ Could not update allowlist: ${result.error}\n\nManual fix: open ${result.configPath} and add "hivemind" to the "alsoAllow" array under "tools".` };
+        },
+      });
+
+      pluginApi.registerCommand({
         name: "hivemind_update",
         description: "Check for Hivemind updates and show how to upgrade",
         handler: async () => {
@@ -664,8 +752,32 @@ export default definePluginEntry({
     // `prependSystemContext` (not `prependContext`) so it's cached by the
     // provider's prompt-cache path instead of costing tokens per turn.
     if (typeof __HIVEMIND_SKILL__ === "string" && __HIVEMIND_SKILL__.length > 0) {
+      // Evaluate once at register-time. prependSystemContext is cached by the
+      // provider's prompt cache, so returning a stable value here avoids
+      // invalidating the cache every turn. Openclaw restarts the gateway on
+      // config changes, which re-runs register() and re-evaluates this.
+      let allowlistNudge = "";
+      try {
+        const configPath = getOpenclawConfigPath();
+        if (existsSync(configPath)) {
+          const parsed = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
+          const tools = (parsed.tools ?? {}) as Record<string, unknown>;
+          if (!isAllowlistCoveringHivemind(tools.alsoAllow)) {
+            allowlistNudge =
+              "\n\n<hivemind-setup-needed>\n" +
+              "The user hasn't run /hivemind_setup yet, so hivemind_search, " +
+              "hivemind_read, and hivemind_index are NOT available to you. If " +
+              "they ask about memory and you can't help, tell them to run " +
+              "/hivemind_setup to enable Hivemind memory tools.\n" +
+              "</hivemind-setup-needed>\n";
+          }
+        }
+      } catch {
+        // If we can't read the config (not our host, perms), skip the nudge.
+      }
       hook("before_prompt_build", async () => ({
         prependSystemContext:
+          allowlistNudge +
           "\n\n<hivemind-skill>\n" + __HIVEMIND_SKILL__ + "\n</hivemind-skill>\n",
       }));
     }

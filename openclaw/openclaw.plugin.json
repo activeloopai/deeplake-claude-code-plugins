@@ -13,6 +13,7 @@
       "hivemind_switch_org",
       "hivemind_workspaces",
       "hivemind_switch_workspace",
+      "hivemind_setup",
       "hivemind_update"
     ],
     "memoryCorpusSupplements": true
@@ -37,5 +38,5 @@
       }
     }
   },
-  "version": "0.6.50"
+  "version": "0.6.51"
 }

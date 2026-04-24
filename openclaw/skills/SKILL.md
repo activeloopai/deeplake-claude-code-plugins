@@ -51,7 +51,8 @@ Do NOT spawn subagents to read Hivemind memory. If a tool call returns empty aft
 
 After installing the plugin:
 1. Run `/hivemind_login` to authenticate
-2. Start using memory — ask questions, the agent automatically captures and searches
+2. Run `/hivemind_setup` to enable the memory tools in your openclaw allowlist (one-time, per install)
+3. Start using memory — ask questions, the agent automatically captures and searches
 
 ## Sharing memory
 
