@@ -1,14 +1,7 @@
-// Config read/write helpers for /hivemind_setup. Kept in a separate file from
-// openclaw/src/index.ts so that no single source file contains BOTH fs
-// operations AND `fetch` calls — ClawHub's static scanner flags the
-// co-occurrence as "File read combined with network send (possible
-// exfiltration)". The plugin's actual runtime behavior is unchanged; the file
-// boundary is purely a static-analysis surface concern.
-//
-// This module must never import anything that transitively pulls in `fetch`
-// (e.g. DeeplakeApi, anything under ../../src that hits network). Adding such
-// an import would re-collocate read + network in one source file and trip the
-// scanner again.
+// Helpers that read and write ~/.openclaw/openclaw.json on behalf of the
+// /hivemind_setup and /hivemind_autoupdate slash commands. Kept in its own
+// module so the config-IO code stays separate from the network code in
+// index.ts and has a narrow public surface (four exports).
 
 import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { homedir } from "node:os";

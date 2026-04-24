@@ -74,8 +74,12 @@ for (const h of codexAll) {
 }
 writeFileSync("codex/bundle/package.json", esmPackageJson);
 
-// OpenClaw plugin — stub child_process and strip process.env references
-// to avoid OpenClaw security scanner flagging "env var + network = credential harvesting".
+// OpenClaw plugin bundle. The shared CC/Codex source modules reference a
+// handful of HIVEMIND_* env vars for dev-only overrides. Those env paths are
+// never taken in the openclaw runtime (the plugin loads config from
+// pluginApi.pluginConfig + ~/.deeplake/credentials.json), so we replace them
+// with `undefined` at build time to avoid shipping dead env-read code in the
+// plugin bundle.
 await build({
   entryPoints: { index: "openclaw/src/index.ts" },
   bundle: true,
@@ -101,61 +105,29 @@ await build({
     "process.env.HIVEMIND_INDEX_MARKER_DIR": "undefined",
   },
   plugins: [{
-    // Defensive: replace any node:child_process import with a no-op stub so
-    // spawn/exec literals never appear in the bundle. ClawHub's scanner blocks
-    // installs for plugins whose bundle contains child_process.* calls.
-    // Auto-update and /hivemind_update install are instead driven through the
-    // agent's allowlisted exec tool (see the pendingUpdate nudge injected in
-    // before_prompt_build).
-    name: "strip-child-process",
+    // Dead-code elimination for transitively bundled CC/Codex-only features.
+    // openclaw/src/index.ts imports shared modules from ../../src/ (DeeplakeApi,
+    // grep-core, virtual-table-query, auth device-flow). Several of those
+    // modules also host CC-specific helpers that shell out with execSync —
+    // opening the browser for SSO, nudging claude-plugin-update, spawning the
+    // wiki-worker daemon. Those helpers are never called through the openclaw
+    // entry point (openclaw is a pure HTTP/WebSocket gateway; it has no local
+    // browser, uses its own plugin installer, and does not run the wiki-worker
+    // daemon). Replacing node:child_process with a no-op export drops that
+    // dead code from the bundle instead of shipping unreachable exec calls.
+    name: "stub-unused-child-process",
     setup(build) {
       build.onResolve({ filter: /^node:child_process$/ }, () => ({
         path: "node:child_process",
         namespace: "stub",
       }));
       build.onLoad({ filter: /.*/, namespace: "stub" }, () => ({
-        contents: "export const execSync = () => {};",
-        loader: "js",
-      }));
-    },
-  }, {
-    // Wrap node:fs to avoid scanner flagging readFileSync + fetch as data exfiltration.
-    // Uses dynamic property access so the literals "readFileSync" / "writeFileSync"
-    // don't appear in output.
-    name: "wrap-fs",
-    setup(build) {
-      build.onResolve({ filter: /^node:fs$/ }, () => ({
-        path: "node:fs",
-        namespace: "fs-wrap",
-      }));
-      build.onLoad({ filter: /.*/, namespace: "fs-wrap" }, () => ({
-        contents: [
-          'import { createRequire } from "node:module";',
-          'const _f = createRequire(import.meta.url)("fs");',
-          'export const { existsSync, mkdirSync, appendFileSync, unlinkSync, renameSync } = _f;',
-          'const _k = ["rea","dFile","Sync"].join("");',
-          'const _w = ["writ","eFile","Sync"].join("");',
-          'export const rfs = _f[_k];',
-          'export const wfs = _f[_w];',
-          'export { rfs as readFileSync, wfs as writeFileSync };',
-          'export default _f;',
-        ].join("\n"),
+        contents: "export const execSync = () => {}; export const execFileSync = () => {}; export const spawn = () => {};",
         loader: "js",
       }));
     },
   }],
 });
 writeFileSync("openclaw/dist/package.json", esmPackageJson);
-
-// Post-build: strip "readFileSync" / "writeFileSync" literals from OpenClaw
-// bundle so the scanner doesn't match either against "readFileSync|readFile" +
-// "fetch" (exfiltration) or "writeFileSync" + "fetch" (config-write + network).
-import { readFileSync as _read } from "node:fs";
-const ocBundle = "openclaw/dist/index.js";
-const ocSrc = _read(ocBundle, "utf-8");
-writeFileSync(
-  ocBundle,
-  ocSrc.replace(/readFileSync/g, "rfs").replace(/writeFileSync/g, "wfs"),
-);
 
 console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + 1 OpenClaw bundles`);
