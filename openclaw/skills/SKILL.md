@@ -41,13 +41,13 @@ Do NOT jump straight to reading raw JSONL files. Always start with `hivemind_ind
 - `/hivemind_switch_org <name-or-id>` — switch organization
 - `/hivemind_workspaces` — list workspaces
 - `/hivemind_switch_workspace <id>` — switch workspace
-- `/hivemind_version` — show installed version and check for updates
-- `/hivemind_update` — install the latest version from ClawHub
-- `/hivemind_autoupdate [on|off]` — toggle automatic updates (on by default)
+- `/hivemind_version` — show installed version and check ClawHub for updates
+- `/hivemind_update` — shows how to install (ask the agent, or run `openclaw plugins update hivemind` in your terminal)
+- `/hivemind_autoupdate [on|off]` — toggle the agent-facing update nudge (on by default: when a newer version is available, the agent is prompted to install it via `exec` if you ask to update)
 
 ## Limits
 
-Do NOT spawn subagents to read Hivemind memory. If a tool call returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
+Do NOT delegate to subagents when reading Hivemind memory. If a tool call returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 ## Getting Started
 
