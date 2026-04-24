@@ -14,7 +14,9 @@
       "hivemind_workspaces",
       "hivemind_switch_workspace",
       "hivemind_setup",
-      "hivemind_update"
+      "hivemind_version",
+      "hivemind_update",
+      "hivemind_autoupdate"
     ],
     "memoryCorpusSupplements": true
   },
@@ -24,6 +26,9 @@
     },
     "autoRecall": {
       "label": "Auto-Recall"
+    },
+    "autoUpdate": {
+      "label": "Auto-Update"
     }
   },
   "configSchema": {
@@ -35,8 +40,11 @@
       },
       "autoRecall": {
         "type": "boolean"
+      },
+      "autoUpdate": {
+        "type": "boolean"
       }
     }
   },
-  "version": "0.6.52"
+  "version": "0.6.53"
 }

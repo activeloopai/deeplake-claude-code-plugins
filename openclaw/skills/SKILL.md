@@ -41,7 +41,9 @@ Do NOT jump straight to reading raw JSONL files. Always start with `hivemind_ind
 - `/hivemind_switch_org <name-or-id>` — switch organization
 - `/hivemind_workspaces` — list workspaces
 - `/hivemind_switch_workspace <id>` — switch workspace
-- `/hivemind_update` — check for plugin updates
+- `/hivemind_version` — show installed version and check for updates
+- `/hivemind_update` — install the latest version from ClawHub
+- `/hivemind_autoupdate [on|off]` — toggle automatic updates (on by default)
 
 ## Limits
 

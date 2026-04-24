@@ -73,6 +73,59 @@ export function ensureHivemindAllowlisted(): SetupResult {
   return { status: "added", configPath, backupPath };
 }
 
+export type AutoUpdateToggleResult =
+  | { status: "updated"; configPath: string; newValue: boolean }
+  | { status: "error"; configPath: string; error: string };
+
+/**
+ * Flip plugins.entries.hivemind.config.autoUpdate in ~/.openclaw/openclaw.json.
+ * Called by /hivemind_autoupdate. If `setTo` is provided, writes that value;
+ * otherwise toggles whatever is currently stored (defaulting "not set" → true).
+ * Persists atomically via tmp-rename with a timestamped backup, same pattern
+ * as ensureHivemindAllowlisted.
+ */
+export function toggleAutoUpdateConfig(setTo?: boolean): AutoUpdateToggleResult {
+  const configPath = getOpenclawConfigPath();
+  if (!existsSync(configPath)) {
+    return { status: "error", configPath, error: "openclaw config file not found" };
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
+  } catch (e) {
+    return { status: "error", configPath, error: `could not read/parse config: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  const plugins = (parsed.plugins ?? {}) as Record<string, unknown>;
+  const entries = (plugins.entries ?? {}) as Record<string, unknown>;
+  const hivemindEntry = (entries.hivemind ?? {}) as Record<string, unknown>;
+  const pluginConfig = (hivemindEntry.config ?? {}) as Record<string, unknown>;
+  const current = pluginConfig.autoUpdate !== false; // default true
+  const newValue = typeof setTo === "boolean" ? setTo : !current;
+  const updated: Record<string, unknown> = {
+    ...parsed,
+    plugins: {
+      ...plugins,
+      entries: {
+        ...entries,
+        hivemind: {
+          ...hivemindEntry,
+          config: { ...pluginConfig, autoUpdate: newValue },
+        },
+      },
+    },
+  };
+  const backupPath = `${configPath}.bak-hivemind-${Date.now()}`;
+  const tmpPath = `${configPath}.tmp-hivemind-${process.pid}`;
+  try {
+    writeFileSync(backupPath, readFileSync(configPath, "utf-8"));
+    writeFileSync(tmpPath, JSON.stringify(updated, null, 2) + "\n");
+    renameSync(tmpPath, configPath);
+  } catch (e) {
+    return { status: "error", configPath, error: `could not write config: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  return { status: "updated", configPath, newValue };
+}
+
 /**
  * True if the openclaw config exists but its tool allowlist doesn't admit
  * hivemind's agent tools. Used by index.ts at plugin-register time to decide

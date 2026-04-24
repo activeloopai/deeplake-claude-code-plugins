@@ -9,7 +9,8 @@ function definePluginEntry<T>(entry: T): T { return entry; }
 declare const __HIVEMIND_VERSION__: string;
 declare const __HIVEMIND_SKILL__: string;
 // Shared core imports
-import { ensureHivemindAllowlisted, detectAllowlistMissing } from "./setup-config.js";
+import { ensureHivemindAllowlisted, detectAllowlistMissing, toggleAutoUpdateConfig } from "./setup-config.js";
+import { runOpenclawPluginUpdate } from "./plugin-update.js";
 import { loadConfig } from "../../src/config.js";
 import { loadCredentials, saveCredentials, requestDeviceCode, pollForToken, listOrgs, switchOrg, listWorkspaces, switchWorkspace } from "../../src/commands/auth.js";
 import { DeeplakeApi } from "../../src/deeplake-api.js";
@@ -23,6 +24,7 @@ import { readVirtualPathContent } from "../../src/hooks/virtual-table-query.js";
 interface PluginConfig {
   autoCapture?: boolean;
   autoRecall?: boolean;
+  autoUpdate?: boolean;
 }
 
 interface PluginLogger {
@@ -427,8 +429,8 @@ export default definePluginEntry({
       });
 
       pluginApi.registerCommand({
-        name: "hivemind_update",
-        description: "Check for Hivemind updates and show how to upgrade",
+        name: "hivemind_version",
+        description: "Show the installed Hivemind version and check for updates",
         handler: async () => {
           const current = getInstalledVersion();
           if (!current) return { text: "Could not determine installed version." };
@@ -438,12 +440,45 @@ export default definePluginEntry({
             const latest = extractLatestVersion(await res.json());
             if (!latest) return { text: `Current version: ${current}. Could not parse latest version.` };
             if (isNewer(latest, current)) {
-              return { text: `⬆️ Update available: ${current} → ${latest}\n\nRun in your terminal:\n\`openclaw plugins update hivemind\`` };
+              return { text: `⬆️ Update available: ${current} → ${latest}\n\nRun /hivemind_update to install it now.` };
             }
             return { text: `✅ Hivemind v${current} is up to date.` };
           } catch {
             return { text: `Current version: ${current}. Could not check for updates.` };
           }
+        },
+      });
+
+      pluginApi.registerCommand({
+        name: "hivemind_update",
+        description: "Update Hivemind to the latest version from ClawHub",
+        handler: async () => {
+          const current = getInstalledVersion() ?? "unknown";
+          const result = await runOpenclawPluginUpdate();
+          if (result.ok) {
+            return { text: `✅ Update triggered (current: ${current}). The gateway will restart to pick up the new version.\n\n${result.message}` };
+          }
+          return { text: `⚠️ Update failed: ${result.message}\n\nFallback — run \`openclaw plugins update hivemind\` in your terminal.` };
+        },
+      });
+
+      pluginApi.registerCommand({
+        name: "hivemind_autoupdate",
+        description: "Toggle Hivemind auto-update on/off",
+        acceptsArgs: true,
+        handler: async (ctx: CommandContext) => {
+          const arg = ctx.args?.trim().toLowerCase();
+          let setTo: boolean | undefined;
+          if (arg === "on" || arg === "true" || arg === "enable") setTo = true;
+          else if (arg === "off" || arg === "false" || arg === "disable") setTo = false;
+          const result = toggleAutoUpdateConfig(setTo);
+          if (result.status === "error") {
+            return { text: `⚠️ Could not update auto-update setting: ${result.error}` };
+          }
+          return { text: result.newValue
+            ? "✅ Auto-update is ON. Hivemind will install new versions automatically when the gateway starts."
+            : "⏸️ Auto-update is OFF. Run /hivemind_update manually to install new versions."
+          };
         },
       });
 
@@ -669,6 +704,32 @@ export default definePluginEntry({
     const hook = (event: string, handler: (event: Record<string, unknown>) => Promise<unknown>) => {
       pluginApi.on(event, handler);
     };
+
+    // Auto-update: if enabled (default true), check ClawHub once per gateway
+    // start and trigger `openclaw plugins update hivemind` if a newer version
+    // is available. Fire-and-forget — openclaw's installer restarts the
+    // gateway on successful install, which re-runs register() at the new
+    // version. We don't block plugin init on this check so first-turn latency
+    // isn't affected.
+    if (config.autoUpdate !== false) {
+      (async () => {
+        try {
+          const current = getInstalledVersion();
+          if (!current) return;
+          const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(3000) });
+          if (!res.ok) return;
+          const latest = extractLatestVersion(await res.json());
+          if (!latest || !isNewer(latest, current)) return;
+          logger.info?.(`Auto-update: ${current} → ${latest}, triggering openclaw plugins update hivemind`);
+          const result = await runOpenclawPluginUpdate({ detached: true });
+          if (!result.ok) {
+            logger.error(`Auto-update failed: ${result.message}`);
+          }
+        } catch (err) {
+          logger.error(`Auto-update check failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      })();
+    }
 
     // Inject SKILL.md body into the system prompt so the agent actually sees
     // the "call hivemind_search first" directives + anti-conflation rules.

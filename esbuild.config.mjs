@@ -101,18 +101,6 @@ await build({
     "process.env.HIVEMIND_INDEX_MARKER_DIR": "undefined",
   },
   plugins: [{
-    name: "strip-child-process",
-    setup(build) {
-      build.onResolve({ filter: /^node:child_process$/ }, () => ({
-        path: "node:child_process",
-        namespace: "stub",
-      }));
-      build.onLoad({ filter: /.*/, namespace: "stub" }, () => ({
-        contents: "export const execSync = () => {};",
-        loader: "js",
-      }));
-    },
-  }, {
     // Wrap node:fs to avoid scanner flagging readFileSync + fetch as data exfiltration.
     // Uses dynamic property access so the literals "readFileSync" / "writeFileSync"
     // don't appear in output.
