@@ -6,10 +6,12 @@ import { fileURLToPath } from "node:url";
 import { dirname as dirname2, join as join4 } from "node:path";
 
 // dist/src/commands/auth.js
+import { execSync } from "node:child_process";
+
+// dist/src/commands/auth-creds.js
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { execSync } from "node:child_process";
 var CONFIG_DIR = join(homedir(), ".deeplake");
 var CREDS_PATH = join(CONFIG_DIR, "credentials.json");
 function loadCredentials() {
