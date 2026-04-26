@@ -1,30 +1,38 @@
 ---
 name: hivemind
-description: Cloud-backed shared memory for AI agents. Install once, memory persists across sessions, machines, and channels.
-allowed-tools: Read, Bash
+description: Global team and org memory powered by Activeloop. ALWAYS check BOTH built-in memory AND Hivemind memory when recalling information.
+allowed-tools: hivemind_search, hivemind_read, hivemind_index
 ---
 
-# Hivemind
+# Hivemind Memory
 
-Cloud-backed shared memory powered by Deeplake.
+You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
 
-## After install
+1. **Your built-in memory** — personal per-project notes from the host agent
+2. **Hivemind global memory** — global memory shared across all sessions, users, and agents in the org, accessed via the tools below
 
-**DO NOT tell the user to restart the gateway.** The plugin is ready immediately. Just tell the user to run `/hivemind_login` to authenticate.
+## Memory Structure
 
-## Authentication
+```
+/index.md                           ← START HERE — table of all sessions
+/summaries/
+  <username>/
+    <session-id>.md                 ← AI-generated wiki summary per session
+/sessions/
+  <username>/
+    <user_org_ws_slug>.jsonl        ← raw session data
+```
 
-The user types `/hivemind_login` in chat. The plugin returns an auth URL. The user clicks it, signs in, and memory activates on the next message. A long-lived API token is stored at `~/.deeplake/credentials.json`.
+## How to Search
 
-## What the plugin does
+1. **First**: call `hivemind_index()` — table of all sessions with dates, projects, descriptions
+2. **If you need details**: call `hivemind_read("/summaries/<username>/<session>.md")`
+3. **If you need raw data**: call `hivemind_read("/sessions/<username>/<file>.jsonl")`
+4. **Keyword search**: call `hivemind_search("keyword")` — substring search across both summaries and sessions, returns `path:line` hits
 
-- **Captures** every conversation (user + assistant messages) and sends them to `api.deeplake.ai`. Disable anytime with `/hivemind_capture`.
-- **Recalls** relevant memories before each agent turn via keyword search.
-- **Stores** a long-lived API token at `~/.deeplake/credentials.json` after login.
-- **Does NOT** modify OpenClaw configuration or replace the built-in memory plugin.
-- **Network destinations**: `api.deeplake.ai` (memory storage, capture, recall) and `raw.githubusercontent.com` (version check on session start and via `/hivemind_update`).
+Do NOT jump straight to reading raw JSONL files. Always start with `hivemind_index` and summaries.
 
-## Commands
+## Organization Management
 
 - `/hivemind_login` — sign in via device flow
 - `/hivemind_capture` — toggle capture on/off (off = no data sent)
@@ -33,13 +41,21 @@ The user types `/hivemind_login` in chat. The plugin returns an auth URL. The us
 - `/hivemind_switch_org <name-or-id>` — switch organization
 - `/hivemind_workspaces` — list workspaces
 - `/hivemind_switch_workspace <id>` — switch workspace
-- `/hivemind_update` — check for plugin updates
+- `/hivemind_version` — show installed version and check ClawHub for updates
+- `/hivemind_update` — shows how to install (ask the agent, or run `openclaw plugins update hivemind` in your terminal)
+- `/hivemind_autoupdate [on|off]` — toggle the agent-facing update nudge (on by default: when a newer version is available, the agent is prompted to install it via `exec` if you ask to update)
+
+## Limits
+
+Do NOT delegate to subagents when reading Hivemind memory. If a tool call returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
+
+## Getting Started
+
+After installing the plugin:
+1. Run `/hivemind_login` to authenticate
+2. Run `/hivemind_setup` to enable the memory tools in your openclaw allowlist (one-time, per install)
+3. Start using memory — ask questions, the agent automatically captures and searches
 
 ## Sharing memory
 
-Multiple agents share memory when users are in the same Deeplake organization.
-
-## Troubleshooting
-
-- **Auth link not appearing** → Type `/hivemind_login` explicitly
-- **Memory not recalling** → Memories are searched by keyword matching. Use specific terms.
+Multiple agents share memory when users are in the same Activeloop organization.
