@@ -1,6 +1,6 @@
 {
   "name": "hivemind",
-  "version": "0.6.46",
+  "version": "0.6.47",
   "description": "Cloud-backed persistent shared memory for AI agents powered by Deeplake",
   "type": "module",
   "bin": {
