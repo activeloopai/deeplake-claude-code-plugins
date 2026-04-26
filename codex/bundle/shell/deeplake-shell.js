@@ -59933,6 +59933,49 @@ var init_expansion_ENLSRCXJ = __esm({
   }
 });
 
+// dist/src/index-marker-store.js
+var index_marker_store_exports = {};
+__export(index_marker_store_exports, {
+  buildIndexMarkerPath: () => buildIndexMarkerPath,
+  getIndexMarkerDir: () => getIndexMarkerDir,
+  hasFreshIndexMarker: () => hasFreshIndexMarker,
+  writeIndexMarker: () => writeIndexMarker
+});
+import { existsSync as existsSync3, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "node:fs";
+import { join as join6 } from "node:path";
+import { tmpdir } from "node:os";
+function getIndexMarkerDir() {
+  return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join6(tmpdir(), "hivemind-deeplake-indexes");
+}
+function buildIndexMarkerPath(workspaceId, orgId, table, suffix) {
+  const markerKey = [workspaceId, orgId, table, suffix].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
+  return join6(getIndexMarkerDir(), `${markerKey}.json`);
+}
+function hasFreshIndexMarker(markerPath) {
+  if (!existsSync3(markerPath))
+    return false;
+  try {
+    const raw = JSON.parse(readFileSync2(markerPath, "utf-8"));
+    const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
+    if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS)
+      return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+function writeIndexMarker(markerPath) {
+  mkdirSync(getIndexMarkerDir(), { recursive: true });
+  writeFileSync(markerPath, JSON.stringify({ updatedAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf-8");
+}
+var INDEX_MARKER_TTL_MS;
+var init_index_marker_store = __esm({
+  "dist/src/index-marker-store.js"() {
+    "use strict";
+    INDEX_MARKER_TTL_MS = Number(process.env.HIVEMIND_INDEX_MARKER_TTL_MS ?? 24 * 3600 * 1e3);
+  }
+});
+
 // dist/src/shell/deeplake-shell.js
 import { createInterface } from "node:readline";
 
@@ -66754,9 +66797,6 @@ function loadConfig() {
 
 // dist/src/deeplake-api.js
 import { randomUUID } from "node:crypto";
-import { existsSync as existsSync3, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "node:fs";
-import { join as join6 } from "node:path";
-import { tmpdir } from "node:os";
 
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
@@ -66789,6 +66829,12 @@ function deeplakeClientHeader() {
 }
 
 // dist/src/deeplake-api.js
+var indexMarkerStorePromise = null;
+function getIndexMarkerStore() {
+  if (!indexMarkerStorePromise)
+    indexMarkerStorePromise = Promise.resolve().then(() => (init_index_marker_store(), index_marker_store_exports));
+  return indexMarkerStorePromise;
+}
 var log2 = (msg) => log("sdk", msg);
 function summarizeSql(sql, maxLen = 220) {
   const compact = sql.replace(/\s+/g, " ").trim();
@@ -66808,7 +66854,6 @@ var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
 var QUERY_TIMEOUT_MS = Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 1e4);
-var INDEX_MARKER_TTL_MS = Number(process.env.HIVEMIND_INDEX_MARKER_TTL_MS ?? 6 * 60 * 6e4);
 function sleep(ms3) {
   return new Promise((resolve5) => setTimeout(resolve5, ms3));
 }
@@ -66827,9 +66872,6 @@ function isSessionInsertQuery(sql) {
 function isTransientHtml403(text) {
   const body = text.toLowerCase();
   return body.includes("<html") || body.includes("403 forbidden") || body.includes("cloudflare") || body.includes("nginx");
-}
-function getIndexMarkerDir() {
-  return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join6(tmpdir(), "hivemind-deeplake-indexes");
 }
 var Semaphore = class {
   max;
@@ -66995,43 +67037,18 @@ var DeeplakeApi = class {
   buildLookupIndexName(table, suffix) {
     return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
   }
-  getLookupIndexMarkerPath(table, suffix) {
-    const markerKey = [
-      this.workspaceId,
-      this.orgId,
-      table,
-      suffix
-    ].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
-    return join6(getIndexMarkerDir(), `${markerKey}.json`);
-  }
-  hasFreshLookupIndexMarker(table, suffix) {
-    const markerPath = this.getLookupIndexMarkerPath(table, suffix);
-    if (!existsSync3(markerPath))
-      return false;
-    try {
-      const raw = JSON.parse(readFileSync2(markerPath, "utf-8"));
-      const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
-      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS)
-        return false;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  markLookupIndexReady(table, suffix) {
-    mkdirSync(getIndexMarkerDir(), { recursive: true });
-    writeFileSync(this.getLookupIndexMarkerPath(table, suffix), JSON.stringify({ updatedAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf-8");
-  }
   async ensureLookupIndex(table, suffix, columnsSql) {
-    if (this.hasFreshLookupIndexMarker(table, suffix))
+    const markers = await getIndexMarkerStore();
+    const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, suffix);
+    if (markers.hasFreshIndexMarker(markerPath))
       return;
     const indexName = this.buildLookupIndexName(table, suffix);
     try {
       await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
-      this.markLookupIndexReady(table, suffix);
+      markers.writeIndexMarker(markerPath);
     } catch (e6) {
       if (isDuplicateIndexError(e6)) {
-        this.markLookupIndexReady(table, suffix);
+        markers.writeIndexMarker(markerPath);
         return;
       }
       log2(`index "${indexName}" skipped: ${e6.message}`);
