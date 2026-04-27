@@ -150,7 +150,12 @@ else
 fi
 
 # ───────────────────────────────────────────────────────────────────────
-# pi — AGENTS.md + skill
+# pi — AGENTS.md + extension
+# No per-agent SKILL.md: pi reads skills from both ~/.pi/agent/skills/ AND
+# ~/.agents/skills/ (the agentskills.io shared dir), so dropping a local
+# skill would collide with the codex installer's shared symlink. AGENTS.md
+# (auto-loaded every turn) plus the registered hivemind tools cover the
+# action surface; see install-pi.ts for the rationale.
 section "pi"
 if [ -d "$HOME/.pi" ]; then
   AGENTS="$HOME/.pi/agent/AGENTS.md"
@@ -159,11 +164,23 @@ if [ -d "$HOME/.pi" ]; then
   else
     bad "AGENTS.md missing hivemind block" "rerun: hivemind pi install"
   fi
-  SKILL="$HOME/.pi/agent/skills/hivemind-memory/SKILL.md"
-  if [ -f "$SKILL" ]; then
-    ok "skill present at $SKILL"
+  EXT="$HOME/.pi/agent/extensions/hivemind.ts"
+  if [ -f "$EXT" ]; then
+    ok "extension installed at $EXT"
+    # Sanity-check that key surfaces are wired in the installed extension.
+    if grep -q "registerTool" "$EXT" && grep -q "hivemind_search" "$EXT" && \
+       grep -q "hivemind_read" "$EXT" && grep -q "hivemind_index" "$EXT"; then
+      ok "extension registers hivemind_search / hivemind_read / hivemind_index"
+    else
+      bad "extension missing one or more hivemind_* tool registrations"
+    fi
+    if grep -q 'pi.on("tool_result"' "$EXT" && grep -q 'pi.on("input"' "$EXT"; then
+      ok "extension subscribes to input + tool_result for autocapture"
+    else
+      bad "extension missing input/tool_result subscriptions"
+    fi
   else
-    bad "$SKILL not found"
+    bad "$EXT not found" "rerun: hivemind pi install"
   fi
 else
   skip "pi" "no ~/.pi"
