@@ -281,10 +281,19 @@ export class DeeplakeFs implements IFileSystem {
   // ── Virtual index.md generation ────────────────────────────────────────────
 
   private async generateVirtualIndex(): Promise<string> {
+    // Cap per section. A fully populated index (272 summaries + 272 sessions
+    // in the locomo benchmark workspace) renders to ~83 KB / ~32 k tokens,
+    // which trips Claude Code's Read tool output limit (fails with
+    // "File content (N tokens) exceeds maximum allowed tokens"). 50 most
+    // recent entries per section stays comfortably under the limit while
+    // covering the common "what happened recently" use case; older rows
+    // remain reachable via Grep on the memory path.
+    const INDEX_LIMIT_PER_SECTION = 50;
+
     // Memory (summaries) section — high-level wikipage per session.
     const summaryRows = await this.client.query(
       `SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" ` +
-      `WHERE path LIKE '${esc("/summaries/")}%' ORDER BY last_update_date DESC`
+      `WHERE path LIKE '${esc("/summaries/")}%' ORDER BY last_update_date DESC LIMIT ${INDEX_LIMIT_PER_SECTION + 1}`
     );
 
     // Sessions section — raw session records (dialogue / events). Pulled
@@ -296,13 +305,19 @@ export class DeeplakeFs implements IFileSystem {
         sessionRows = await this.client.query(
           `SELECT path, MAX(description) AS description, MIN(creation_date) AS creation_date, MAX(last_update_date) AS last_update_date ` +
           `FROM "${this.sessionsTable}" WHERE path LIKE '${esc("/sessions/")}%' ` +
-          `GROUP BY path ORDER BY path`
+          `GROUP BY path ORDER BY MAX(last_update_date) DESC LIMIT ${INDEX_LIMIT_PER_SECTION + 1}`
         );
       } catch {
         // sessions table absent or schema mismatch — leave empty, emit memory-only index.
         sessionRows = [];
       }
     }
+
+    // Slice the N+1 fetched rows to N and detect if more exist for the footer.
+    const summaryTruncated = summaryRows.length > INDEX_LIMIT_PER_SECTION;
+    const sessionTruncated = sessionRows.length > INDEX_LIMIT_PER_SECTION;
+    const summaryVisible = summaryRows.slice(0, INDEX_LIMIT_PER_SECTION);
+    const sessionVisible = sessionRows.slice(0, INDEX_LIMIT_PER_SECTION);
 
     const lines: string[] = [
       "# Session Index",
@@ -319,9 +334,13 @@ export class DeeplakeFs implements IFileSystem {
     } else {
       lines.push("AI-generated summaries per session. Read these first for topic-level overviews.");
       lines.push("");
+      if (summaryTruncated) {
+        lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many — older summaries reachable via \`Grep pattern=\"...\" path=\"~/.deeplake/memory\"\`._`);
+        lines.push("");
+      }
       lines.push("| Session | Created | Last Updated | Project | Description |");
       lines.push("|---------|---------|--------------|---------|-------------|");
-      for (const row of summaryRows) {
+      for (const row of summaryVisible) {
         const p = row["path"] as string;
         const match = p.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
         if (!match) continue;
@@ -345,9 +364,13 @@ export class DeeplakeFs implements IFileSystem {
     } else {
       lines.push("Raw session records (dialogue, tool calls). Read for exact detail / quotes.");
       lines.push("");
+      if (sessionTruncated) {
+        lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many — older sessions reachable via \`Grep pattern=\"...\" path=\"~/.deeplake/memory\"\`._`);
+        lines.push("");
+      }
       lines.push("| Session | Created | Last Updated | Description |");
       lines.push("|---------|---------|--------------|-------------|");
-      for (const row of sessionRows) {
+      for (const row of sessionVisible) {
         const p = (row["path"] as string) || "";
         // Show the path relative to /sessions/ so the table stays compact.
         const rel = p.startsWith("/") ? p.slice(1) : p;
