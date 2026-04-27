@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 // dist/src/cli/install-claude.js
-import { existsSync as existsSync2 } from "node:fs";
-import { join as join3 } from "node:path";
+import { execFileSync } from "node:child_process";
 
 // dist/src/cli/util.js
 import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, symlinkSync, unlinkSync, lstatSync } from "node:fs";
@@ -33,15 +32,6 @@ function isLink(path) {
     return false;
   }
 }
-function readJson(path) {
-  if (!existsSync(path))
-    return null;
-  try {
-    return JSON.parse(readFileSync(path, "utf-8"));
-  } catch {
-    return null;
-  }
-}
 function writeJson(path, obj) {
   ensureDir(dirname(path));
   writeFileSync(path, JSON.stringify(obj, null, 2) + "\n");
@@ -68,6 +58,79 @@ function warn(msg) {
   process.stderr.write(msg + "\n");
 }
 
+// dist/src/cli/install-claude.js
+var MARKETPLACE_NAME = "hivemind";
+var MARKETPLACE_SOURCE = "activeloopai/hivemind";
+var PLUGIN_KEY = "hivemind@hivemind";
+function runClaude(args) {
+  try {
+    const stdout = execFileSync("claude", args, {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    return { ok: true, stdout, stderr: "" };
+  } catch (err) {
+    const e = err;
+    return {
+      ok: false,
+      stdout: e.stdout?.toString() ?? "",
+      stderr: e.stderr?.toString() ?? e.message ?? ""
+    };
+  }
+}
+function requireClaudeCli() {
+  try {
+    execFileSync("claude", ["--version"], { stdio: "ignore" });
+  } catch {
+    throw new Error("Claude Code CLI ('claude') not found on PATH. Install Claude Code first: https://claude.com/claude-code");
+  }
+}
+function marketplaceAlreadyAdded() {
+  const r = runClaude(["plugin", "marketplace", "list"]);
+  if (!r.ok)
+    return false;
+  return new RegExp(`(^|\\s)${MARKETPLACE_NAME}(\\s|$)`, "m").test(r.stdout);
+}
+function pluginAlreadyInstalled() {
+  const r = runClaude(["plugin", "list"]);
+  if (!r.ok)
+    return false;
+  return r.stdout.includes(PLUGIN_KEY);
+}
+function installClaude() {
+  requireClaudeCli();
+  if (!marketplaceAlreadyAdded()) {
+    const add = runClaude(["plugin", "marketplace", "add", MARKETPLACE_SOURCE]);
+    if (!add.ok) {
+      throw new Error(`Failed to add marketplace '${MARKETPLACE_SOURCE}': ${add.stderr.slice(0, 200)}`);
+    }
+  }
+  if (!pluginAlreadyInstalled()) {
+    const inst = runClaude(["plugin", "install", "hivemind"]);
+    if (!inst.ok) {
+      throw new Error(`Failed to install hivemind plugin: ${inst.stderr.slice(0, 200)}`);
+    }
+  }
+  runClaude(["plugin", "enable", PLUGIN_KEY]);
+  log(`  Claude Code    installed via marketplace ${MARKETPLACE_SOURCE}`);
+}
+function uninstallClaude() {
+  try {
+    requireClaudeCli();
+  } catch {
+    log("  Claude Code    skip uninstall \u2014 claude CLI not on PATH");
+    return;
+  }
+  runClaude(["plugin", "disable", PLUGIN_KEY]);
+  runClaude(["plugin", "uninstall", PLUGIN_KEY]);
+  log("  Claude Code    plugin uninstalled");
+}
+
+// dist/src/cli/install-codex.js
+import { existsSync as existsSync2, unlinkSync as unlinkSync2 } from "node:fs";
+import { execFileSync as execFileSync2 } from "node:child_process";
+import { join as join3 } from "node:path";
+
 // dist/src/cli/version.js
 import { readFileSync as readFileSync2 } from "node:fs";
 import { join as join2 } from "node:path";
@@ -80,115 +143,17 @@ function getVersion() {
   }
 }
 
-// dist/src/cli/install-claude.js
-var PLUGIN_DIR = join3(HOME, ".claude", "plugins", "hivemind");
-var SETTINGS_PATH = join3(HOME, ".claude", "settings.json");
-function buildHookEntry(relPath, timeout = 10, asyncFlag = false) {
-  const absPath = join3(PLUGIN_DIR, "bundle", relPath);
-  const hook = {
-    type: "command",
-    command: `node "${absPath}"`,
-    timeout
-  };
-  if (asyncFlag)
-    hook.async = true;
-  return hook;
-}
-function hookBlock(hooks) {
-  return { hooks };
-}
-function buildHookConfig() {
-  return {
-    SessionStart: [hookBlock([
-      buildHookEntry("session-start.js", 10),
-      { ...buildHookEntry("session-start-setup.js", 120, true) }
-    ])],
-    UserPromptSubmit: [hookBlock([buildHookEntry("capture.js", 10, true)])],
-    PreToolUse: [hookBlock([buildHookEntry("pre-tool-use.js", 10)])],
-    PostToolUse: [hookBlock([buildHookEntry("capture.js", 15, true)])],
-    Stop: [hookBlock([buildHookEntry("capture.js", 30, true)])],
-    SubagentStop: [hookBlock([buildHookEntry("capture.js", 30, true)])],
-    SessionEnd: [hookBlock([buildHookEntry("session-end.js", 60)])]
-  };
-}
-var HIVEMIND_MARKER = "hivemind:managed";
-function isHivemindHook(entry) {
-  if (!entry || typeof entry !== "object")
-    return false;
-  const block = entry;
-  if (!Array.isArray(block.hooks))
-    return false;
-  return block.hooks.some((h) => {
-    const cmd = h?.command;
-    return typeof cmd === "string" && cmd.includes("plugins/hivemind/bundle/");
-  });
-}
-function mergeHooks(settings) {
-  const existing = settings.hooks ?? {};
-  const ours = buildHookConfig();
-  const merged = { ...existing };
-  for (const eventName of Object.keys(ours)) {
-    const existingEvent = Array.isArray(merged[eventName]) ? merged[eventName] : [];
-    const stripped = existingEvent.filter((e) => !isHivemindHook(e));
-    merged[eventName] = [...stripped, ...ours[eventName]];
-  }
-  settings.hooks = merged;
-  settings[HIVEMIND_MARKER] = { version: getVersion() };
-}
-function installClaude() {
-  const srcBundle = join3(pkgRoot(), "claude-code", "bundle");
-  const srcSkills = join3(pkgRoot(), "claude-code", "skills");
-  const srcCommands = join3(pkgRoot(), "claude-code", "commands");
-  if (!existsSync2(srcBundle)) {
-    throw new Error(`Hivemind bundle missing at ${srcBundle}. Run 'npm run build' first.`);
-  }
-  ensureDir(PLUGIN_DIR);
-  copyDir(srcBundle, join3(PLUGIN_DIR, "bundle"));
-  if (existsSync2(srcSkills))
-    copyDir(srcSkills, join3(PLUGIN_DIR, "skills"));
-  if (existsSync2(srcCommands))
-    copyDir(srcCommands, join3(PLUGIN_DIR, "commands"));
-  const settings = readJson(SETTINGS_PATH) ?? {};
-  mergeHooks(settings);
-  writeJson(SETTINGS_PATH, settings);
-  writeVersionStamp(PLUGIN_DIR, getVersion());
-  log(`  Claude Code    installed -> ${PLUGIN_DIR}`);
-}
-function uninstallClaude() {
-  const settings = readJson(SETTINGS_PATH);
-  if (!settings) {
-    log("  Claude Code    no settings.json to clean");
-    return;
-  }
-  const hooks = settings.hooks;
-  if (hooks) {
-    for (const eventName of Object.keys(hooks)) {
-      hooks[eventName] = (hooks[eventName] ?? []).filter((e) => !isHivemindHook(e));
-      if (hooks[eventName].length === 0)
-        delete hooks[eventName];
-    }
-    if (Object.keys(hooks).length === 0)
-      delete settings.hooks;
-  }
-  delete settings[HIVEMIND_MARKER];
-  writeJson(SETTINGS_PATH, settings);
-  log(`  Claude Code    hooks removed from ${SETTINGS_PATH} (plugin files kept at ${PLUGIN_DIR})`);
-}
-
 // dist/src/cli/install-codex.js
-import { existsSync as existsSync3, unlinkSync as unlinkSync2 } from "node:fs";
-import { execFileSync } from "node:child_process";
-import { join as join4 } from "node:path";
-var CODEX_HOME = join4(HOME, ".codex");
-var PLUGIN_DIR2 = join4(CODEX_HOME, "hivemind");
-var HOOKS_PATH = join4(CODEX_HOME, "hooks.json");
-var AGENTS_SKILLS_DIR = join4(HOME, ".agents", "skills");
-var SKILL_LINK = join4(AGENTS_SKILLS_DIR, "hivemind-memory");
+var CODEX_HOME = join3(HOME, ".codex");
+var PLUGIN_DIR = join3(CODEX_HOME, "hivemind");
+var HOOKS_PATH = join3(CODEX_HOME, "hooks.json");
+var AGENTS_SKILLS_DIR = join3(HOME, ".agents", "skills");
+var SKILL_LINK = join3(AGENTS_SKILLS_DIR, "hivemind-memory");
 function hookCmd(bundleFile, timeout, matcher) {
   const block = {
     hooks: [{
       type: "command",
-      command: `node "${join4(PLUGIN_DIR2, "bundle", bundleFile)}"`,
+      command: `node "${join3(PLUGIN_DIR, "bundle", bundleFile)}"`,
       timeout
     }]
   };
@@ -209,90 +174,90 @@ function buildHooksJson() {
 }
 function tryEnableCodexHooks() {
   try {
-    execFileSync("codex", ["features", "enable", "codex_hooks"], { stdio: "ignore" });
+    execFileSync2("codex", ["features", "enable", "codex_hooks"], { stdio: "ignore" });
   } catch {
   }
 }
 function installCodex() {
-  const srcBundle = join4(pkgRoot(), "codex", "bundle");
-  const srcSkills = join4(pkgRoot(), "codex", "skills");
-  if (!existsSync3(srcBundle)) {
+  const srcBundle = join3(pkgRoot(), "codex", "bundle");
+  const srcSkills = join3(pkgRoot(), "codex", "skills");
+  if (!existsSync2(srcBundle)) {
     throw new Error(`Codex bundle missing at ${srcBundle}. Run 'npm run build' first.`);
   }
-  ensureDir(PLUGIN_DIR2);
-  copyDir(srcBundle, join4(PLUGIN_DIR2, "bundle"));
-  if (existsSync3(srcSkills))
-    copyDir(srcSkills, join4(PLUGIN_DIR2, "skills"));
+  ensureDir(PLUGIN_DIR);
+  copyDir(srcBundle, join3(PLUGIN_DIR, "bundle"));
+  if (existsSync2(srcSkills))
+    copyDir(srcSkills, join3(PLUGIN_DIR, "skills"));
   tryEnableCodexHooks();
   writeJson(HOOKS_PATH, buildHooksJson());
   ensureDir(AGENTS_SKILLS_DIR);
-  const skillTarget = join4(PLUGIN_DIR2, "skills", "deeplake-memory");
-  if (existsSync3(skillTarget)) {
+  const skillTarget = join3(PLUGIN_DIR, "skills", "deeplake-memory");
+  if (existsSync2(skillTarget)) {
     symlinkForce(skillTarget, SKILL_LINK);
   } else {
     warn(`  Codex          skill source missing at ${skillTarget}; skipping symlink`);
   }
-  writeVersionStamp(PLUGIN_DIR2, getVersion());
-  log(`  Codex          installed -> ${PLUGIN_DIR2}`);
+  writeVersionStamp(PLUGIN_DIR, getVersion());
+  log(`  Codex          installed -> ${PLUGIN_DIR}`);
 }
 function uninstallCodex() {
-  if (existsSync3(HOOKS_PATH)) {
+  if (existsSync2(HOOKS_PATH)) {
     unlinkSync2(HOOKS_PATH);
     log(`  Codex          removed ${HOOKS_PATH}`);
   }
-  if (existsSync3(SKILL_LINK)) {
+  if (existsSync2(SKILL_LINK)) {
     unlinkSync2(SKILL_LINK);
     log(`  Codex          removed ${SKILL_LINK}`);
   }
-  log(`  Codex          plugin files kept at ${PLUGIN_DIR2}`);
+  log(`  Codex          plugin files kept at ${PLUGIN_DIR}`);
 }
 
 // dist/src/cli/install-openclaw.js
-import { existsSync as existsSync4, rmSync } from "node:fs";
-import { join as join5 } from "node:path";
-var PLUGIN_DIR3 = join5(HOME, ".openclaw", "extensions", "hivemind");
+import { existsSync as existsSync3, rmSync } from "node:fs";
+import { join as join4 } from "node:path";
+var PLUGIN_DIR2 = join4(HOME, ".openclaw", "extensions", "hivemind");
 function installOpenclaw() {
-  const srcDist = join5(pkgRoot(), "openclaw", "dist");
-  const srcManifest = join5(pkgRoot(), "openclaw", "openclaw.plugin.json");
-  const srcPkg = join5(pkgRoot(), "openclaw", "package.json");
-  const srcSkills = join5(pkgRoot(), "openclaw", "skills");
-  if (!existsSync4(srcDist)) {
+  const srcDist = join4(pkgRoot(), "openclaw", "dist");
+  const srcManifest = join4(pkgRoot(), "openclaw", "openclaw.plugin.json");
+  const srcPkg = join4(pkgRoot(), "openclaw", "package.json");
+  const srcSkills = join4(pkgRoot(), "openclaw", "skills");
+  if (!existsSync3(srcDist)) {
     throw new Error(`OpenClaw bundle missing at ${srcDist}. Run 'npm run build' first.`);
   }
-  ensureDir(PLUGIN_DIR3);
-  copyDir(srcDist, join5(PLUGIN_DIR3, "dist"));
-  if (existsSync4(srcManifest))
-    copyDir(srcManifest, join5(PLUGIN_DIR3, "openclaw.plugin.json"));
-  if (existsSync4(srcPkg))
-    copyDir(srcPkg, join5(PLUGIN_DIR3, "package.json"));
-  if (existsSync4(srcSkills))
-    copyDir(srcSkills, join5(PLUGIN_DIR3, "skills"));
-  writeVersionStamp(PLUGIN_DIR3, getVersion());
-  log(`  OpenClaw       installed -> ${PLUGIN_DIR3}`);
+  ensureDir(PLUGIN_DIR2);
+  copyDir(srcDist, join4(PLUGIN_DIR2, "dist"));
+  if (existsSync3(srcManifest))
+    copyDir(srcManifest, join4(PLUGIN_DIR2, "openclaw.plugin.json"));
+  if (existsSync3(srcPkg))
+    copyDir(srcPkg, join4(PLUGIN_DIR2, "package.json"));
+  if (existsSync3(srcSkills))
+    copyDir(srcSkills, join4(PLUGIN_DIR2, "skills"));
+  writeVersionStamp(PLUGIN_DIR2, getVersion());
+  log(`  OpenClaw       installed -> ${PLUGIN_DIR2}`);
 }
 function uninstallOpenclaw() {
-  if (existsSync4(PLUGIN_DIR3)) {
-    rmSync(PLUGIN_DIR3, { recursive: true, force: true });
-    log(`  OpenClaw       removed ${PLUGIN_DIR3}`);
+  if (existsSync3(PLUGIN_DIR2)) {
+    rmSync(PLUGIN_DIR2, { recursive: true, force: true });
+    log(`  OpenClaw       removed ${PLUGIN_DIR2}`);
   } else {
     log(`  OpenClaw       nothing to remove`);
   }
 }
 
 // dist/src/cli/auth.js
-import { existsSync as existsSync6 } from "node:fs";
-import { join as join7 } from "node:path";
+import { existsSync as existsSync5 } from "node:fs";
+import { join as join6 } from "node:path";
 
 // dist/src/commands/auth.js
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync2, existsSync as existsSync5, mkdirSync as mkdirSync2, unlinkSync as unlinkSync3 } from "node:fs";
-import { join as join6 } from "node:path";
+import { readFileSync as readFileSync3, writeFileSync as writeFileSync2, existsSync as existsSync4, mkdirSync as mkdirSync2, unlinkSync as unlinkSync3 } from "node:fs";
+import { join as join5 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 import { execSync } from "node:child_process";
-var CONFIG_DIR = join6(homedir2(), ".deeplake");
-var CREDS_PATH = join6(CONFIG_DIR, "credentials.json");
+var CONFIG_DIR = join5(homedir2(), ".deeplake");
+var CREDS_PATH = join5(CONFIG_DIR, "credentials.json");
 var DEFAULT_API_URL = "https://api.deeplake.ai";
 function loadCredentials() {
-  if (!existsSync5(CREDS_PATH))
+  if (!existsSync4(CREDS_PATH))
     return null;
   try {
     return JSON.parse(readFileSync3(CREDS_PATH, "utf-8"));
@@ -301,7 +266,7 @@ function loadCredentials() {
   }
 }
 function saveCredentials(creds) {
-  if (!existsSync5(CONFIG_DIR))
+  if (!existsSync4(CONFIG_DIR))
     mkdirSync2(CONFIG_DIR, { recursive: true, mode: 448 });
   writeFileSync2(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
 }
@@ -440,9 +405,9 @@ Using: ${orgName}
 }
 
 // dist/src/cli/auth.js
-var CREDS_PATH2 = join7(HOME, ".deeplake", "credentials.json");
+var CREDS_PATH2 = join6(HOME, ".deeplake", "credentials.json");
 function isLoggedIn() {
-  return existsSync6(CREDS_PATH2) && loadCredentials() !== null;
+  return existsSync5(CREDS_PATH2) && loadCredentials() !== null;
 }
 async function ensureLoggedIn() {
   if (isLoggedIn())

@@ -1,101 +1,105 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { HOME, pkgRoot, ensureDir, copyDir, readJson, writeJson, writeVersionStamp, log } from "./util.js";
-import { getVersion } from "./version.js";
+import { execFileSync } from "node:child_process";
+import { log } from "./util.js";
 
-const PLUGIN_DIR = join(HOME, ".claude", "plugins", "hivemind");
-const SETTINGS_PATH = join(HOME, ".claude", "settings.json");
+// Claude Code's plugin loader is a managed surface: it owns the cache layout,
+// the plugin registry, hook wiring, command discovery, and version updates.
+// Rather than reimplement that, this installer delegates to the `claude`
+// CLI and lets Claude Code drive the install through its supported flow:
+//   claude plugin marketplace add activeloopai/hivemind
+//   claude plugin install hivemind
+//   claude plugin enable hivemind@hivemind
+//
+// Side effect: requires `claude` on PATH at install time and network access
+// to fetch the marketplace from GitHub. Both are reasonable assumptions for
+// anyone running `npx @activeloop/hivemind claude install` — they already
+// have Claude Code installed and the marketplace flow is the canonical way
+// to ship plugins to Claude Code users.
 
-function buildHookEntry(relPath: string, timeout = 10, asyncFlag = false): Record<string, unknown> {
-  const absPath = join(PLUGIN_DIR, "bundle", relPath);
-  const hook: Record<string, unknown> = {
-    type: "command",
-    command: `node "${absPath}"`,
-    timeout,
-  };
-  if (asyncFlag) hook.async = true;
-  return hook;
+const MARKETPLACE_NAME = "hivemind";
+const MARKETPLACE_SOURCE = "activeloopai/hivemind";
+const PLUGIN_KEY = "hivemind@hivemind";
+
+interface ClaudeResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
 }
 
-function hookBlock(hooks: unknown[]): Record<string, unknown> {
-  return { hooks };
-}
-
-function buildHookConfig(): Record<string, unknown[]> {
-  return {
-    SessionStart: [hookBlock([
-      buildHookEntry("session-start.js", 10),
-      { ...buildHookEntry("session-start-setup.js", 120, true) },
-    ])],
-    UserPromptSubmit: [hookBlock([buildHookEntry("capture.js", 10, true)])],
-    PreToolUse: [hookBlock([buildHookEntry("pre-tool-use.js", 10)])],
-    PostToolUse: [hookBlock([buildHookEntry("capture.js", 15, true)])],
-    Stop: [hookBlock([buildHookEntry("capture.js", 30, true)])],
-    SubagentStop: [hookBlock([buildHookEntry("capture.js", 30, true)])],
-    SessionEnd: [hookBlock([buildHookEntry("session-end.js", 60)])],
-  };
-}
-
-const HIVEMIND_MARKER = "hivemind:managed";
-
-function isHivemindHook(entry: unknown): boolean {
-  if (!entry || typeof entry !== "object") return false;
-  const block = entry as { hooks?: unknown[] };
-  if (!Array.isArray(block.hooks)) return false;
-  return block.hooks.some(h => {
-    const cmd = (h as { command?: string })?.command;
-    return typeof cmd === "string" && cmd.includes("plugins/hivemind/bundle/");
-  });
-}
-
-function mergeHooks(settings: Record<string, unknown>): void {
-  const existing = (settings.hooks as Record<string, unknown[]> | undefined) ?? {};
-  const ours = buildHookConfig();
-
-  const merged: Record<string, unknown[]> = { ...existing };
-  for (const eventName of Object.keys(ours)) {
-    const existingEvent = Array.isArray(merged[eventName]) ? merged[eventName] : [];
-    const stripped = existingEvent.filter(e => !isHivemindHook(e));
-    merged[eventName] = [...stripped, ...ours[eventName]];
+function runClaude(args: string[]): ClaudeResult {
+  try {
+    const stdout = execFileSync("claude", args, {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { ok: true, stdout, stderr: "" };
+  } catch (err: unknown) {
+    const e = err as { stdout?: Buffer | string; stderr?: Buffer | string; message?: string };
+    return {
+      ok: false,
+      stdout: e.stdout?.toString() ?? "",
+      stderr: e.stderr?.toString() ?? e.message ?? "",
+    };
   }
-  settings.hooks = merged;
-  settings[HIVEMIND_MARKER] = { version: getVersion() };
+}
+
+function requireClaudeCli(): void {
+  try {
+    execFileSync("claude", ["--version"], { stdio: "ignore" });
+  } catch {
+    throw new Error(
+      "Claude Code CLI ('claude') not found on PATH. " +
+      "Install Claude Code first: https://claude.com/claude-code",
+    );
+  }
+}
+
+function marketplaceAlreadyAdded(): boolean {
+  const r = runClaude(["plugin", "marketplace", "list"]);
+  if (!r.ok) return false;
+  return new RegExp(`(^|\\s)${MARKETPLACE_NAME}(\\s|$)`, "m").test(r.stdout);
+}
+
+function pluginAlreadyInstalled(): boolean {
+  const r = runClaude(["plugin", "list"]);
+  if (!r.ok) return false;
+  return r.stdout.includes(PLUGIN_KEY);
 }
 
 export function installClaude(): void {
-  const srcBundle = join(pkgRoot(), "claude-code", "bundle");
-  const srcSkills = join(pkgRoot(), "claude-code", "skills");
-  const srcCommands = join(pkgRoot(), "claude-code", "commands");
+  requireClaudeCli();
 
-  if (!existsSync(srcBundle)) {
-    throw new Error(`Hivemind bundle missing at ${srcBundle}. Run 'npm run build' first.`);
+  if (!marketplaceAlreadyAdded()) {
+    const add = runClaude(["plugin", "marketplace", "add", MARKETPLACE_SOURCE]);
+    if (!add.ok) {
+      throw new Error(
+        `Failed to add marketplace '${MARKETPLACE_SOURCE}': ${add.stderr.slice(0, 200)}`,
+      );
+    }
   }
 
-  ensureDir(PLUGIN_DIR);
-  copyDir(srcBundle, join(PLUGIN_DIR, "bundle"));
-  if (existsSync(srcSkills)) copyDir(srcSkills, join(PLUGIN_DIR, "skills"));
-  if (existsSync(srcCommands)) copyDir(srcCommands, join(PLUGIN_DIR, "commands"));
+  if (!pluginAlreadyInstalled()) {
+    const inst = runClaude(["plugin", "install", "hivemind"]);
+    if (!inst.ok) {
+      throw new Error(
+        `Failed to install hivemind plugin: ${inst.stderr.slice(0, 200)}`,
+      );
+    }
+  }
 
-  const settings = (readJson<Record<string, unknown>>(SETTINGS_PATH) ?? {}) as Record<string, unknown>;
-  mergeHooks(settings);
-  writeJson(SETTINGS_PATH, settings);
+  // enable is idempotent in claude CLI — safe to run unconditionally
+  runClaude(["plugin", "enable", PLUGIN_KEY]);
 
-  writeVersionStamp(PLUGIN_DIR, getVersion());
-  log(`  Claude Code    installed -> ${PLUGIN_DIR}`);
+  log(`  Claude Code    installed via marketplace ${MARKETPLACE_SOURCE}`);
 }
 
 export function uninstallClaude(): void {
-  const settings = readJson<Record<string, unknown>>(SETTINGS_PATH);
-  if (!settings) { log("  Claude Code    no settings.json to clean"); return; }
-  const hooks = settings.hooks as Record<string, unknown[]> | undefined;
-  if (hooks) {
-    for (const eventName of Object.keys(hooks)) {
-      hooks[eventName] = (hooks[eventName] ?? []).filter(e => !isHivemindHook(e));
-      if (hooks[eventName].length === 0) delete hooks[eventName];
-    }
-    if (Object.keys(hooks).length === 0) delete settings.hooks;
+  try {
+    requireClaudeCli();
+  } catch {
+    log("  Claude Code    skip uninstall — claude CLI not on PATH");
+    return;
   }
-  delete settings[HIVEMIND_MARKER];
-  writeJson(SETTINGS_PATH, settings);
-  log(`  Claude Code    hooks removed from ${SETTINGS_PATH} (plugin files kept at ${PLUGIN_DIR})`);
+  runClaude(["plugin", "disable", PLUGIN_KEY]);
+  runClaude(["plugin", "uninstall", PLUGIN_KEY]);
+  log("  Claude Code    plugin uninstalled");
 }
