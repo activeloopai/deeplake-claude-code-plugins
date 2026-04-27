@@ -15,6 +15,7 @@
     "codex/bundle",
     "codex/skills",
     "cursor/bundle",
+    "hermes/bundle",
     "mcp/bundle",
     "openclaw/dist",
     "openclaw/skills",
@@ -47,11 +48,13 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "deeplake": "^0.3.30",
+    "js-yaml": "^4.1.1",
     "just-bash": "^2.14.0",
     "yargs-parser": "^22.0.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.0.0",
     "@types/yargs-parser": "^21.0.3",
     "@vitest/coverage-v8": "^4.1.3",
