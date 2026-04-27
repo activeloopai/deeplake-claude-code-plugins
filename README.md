@@ -244,7 +244,41 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | `HIVEMIND_SESSIONS_TABLE` | `sessions`                | SQL table for per-event session capture    |
 | `HIVEMIND_MEMORY_PATH`    | `~/.deeplake/memory`      | Path that triggers interception            |
 | `HIVEMIND_CAPTURE`        | `true`                    | Set to `false` to disable capture          |
+| `HIVEMIND_EMBEDDINGS`     | `true`                    | Set to `false` to force lexical-only mode  |
 | `HIVEMIND_DEBUG`          | —                         | Set to `1` for verbose hook debug logs     |
+
+## Optional: enable semantic search (embeddings)
+
+Hivemind can run a local embedding daemon (nomic-embed-text-v1.5, ~130 MB)
+so that `Grep` over `~/.deeplake/memory/` uses hybrid semantic + lexical
+ranking instead of pure BM25. This is **off by default** — the daemon
+depends on `@huggingface/transformers`, which has native bindings that
+can't be bundled into the plugin and is therefore not shipped with the
+marketplace install.
+
+To enable:
+
+```bash
+# Install the dependency inside the plugin's cache directory.
+cd ~/.claude/plugins/cache/hivemind/hivemind/<version>
+npm install @huggingface/transformers@^3.0.0
+```
+
+Restart Claude Code afterwards. From the next session, captured messages
+and AI-generated summaries will include a 768-dim embedding, and
+semantic recall queries will route through the local daemon (the model
+is downloaded on first use and cached in `~/.cache/huggingface/`).
+
+If `@huggingface/transformers` is **not** present (or `npm` is unavailable
+on your system), Hivemind silently degrades to lexical-only mode:
+
+- ✅ Capture continues; rows still land in Deeplake.
+- ✅ `Grep` still works via BM25 / `ILIKE` matching on text columns.
+- ⚪ The `message_embedding` / `summary_embedding` columns stay `NULL`.
+- ⚪ The hook log notes `embeddings: no-transformers` once at session start.
+
+You can also force lexical-only mode explicitly with
+`HIVEMIND_EMBEDDINGS=false` (useful for CI or air-gapped environments).
 
 ## Architecture
 

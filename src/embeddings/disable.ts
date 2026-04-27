@@ -1,22 +1,74 @@
+import { createRequire } from "node:module";
+
 /**
  * Master opt-out for the embedding feature.
  *
- * `HIVEMIND_EMBEDDINGS=false` short-circuits every call site that would
- * otherwise talk to the nomic daemon: the SessionStart warmup, the
- * capture-side write embed, the batched flush embed in DeeplakeFs, and
- * both grep query-time embed paths (direct + interceptor). The SQL
- * schema still has the embedding columns and existing rows' embeddings
- * remain readable, but no new embedding is computed and no daemon is
- * spawned.
+ * Embeddings are off when EITHER:
  *
- * Intended for: air-gapped / no-network installs, CI / benchmarks that
- * want pure-lexical retrieval, and users who want the plugin's capture
- * + grep without paying the ~110 MB nomic download.
+ * 1. `HIVEMIND_EMBEDDINGS=false` is set — explicit opt-out for air-gapped /
+ *    no-network installs, CI / benchmarks that want pure-lexical retrieval,
+ *    and users who don't want the ~110 MB nomic download.
  *
- * Read-once: honours mutations during the process lifetime; the hooks
- * are short-lived subprocesses so a live toggle via `export` takes
- * effect on the next session.
+ * 2. `@huggingface/transformers` is not resolvable from this bundle — the
+ *    plugin ships without it (it has native deps that can't be bundled into
+ *    the daemon). A fresh marketplace install lacks it; the README documents
+ *    the optional `npm install @huggingface/transformers` step. When absent,
+ *    we degrade silently to lexical-only mode rather than spawning a daemon
+ *    that will crash on `import("@huggingface/transformers")` and emit
+ *    confusing logs.
+ *
+ * In either case: SessionStart skips the warmup, capture / wiki-worker write
+ * rows with NULL in the embedding column, and `Grep` falls back to BM25 /
+ * ILIKE matching on text columns. Existing rows' embeddings remain readable.
+ *
+ * Read-once: cached for the lifetime of the (short-lived) hook process so a
+ * live `export HIVEMIND_EMBEDDINGS=...` takes effect on the next session.
  */
+
+export type EmbeddingsStatus = "enabled" | "env-disabled" | "no-transformers";
+
+let cachedStatus: EmbeddingsStatus | null = null;
+
+function defaultResolveTransformers(): void {
+  // Resolve from this module's location — the same node_modules walk Node
+  // would do for the spawned daemon, since the daemon lives in the same
+  // bundle dir tree.
+  createRequire(import.meta.url).resolve("@huggingface/transformers");
+}
+
+let _resolve: () => void = defaultResolveTransformers;
+
+function detectStatus(): EmbeddingsStatus {
+  if (process.env.HIVEMIND_EMBEDDINGS === "false") return "env-disabled";
+  try {
+    _resolve();
+    return "enabled";
+  } catch {
+    return "no-transformers";
+  }
+}
+
+export function embeddingsStatus(): EmbeddingsStatus {
+  if (cachedStatus !== null) return cachedStatus;
+  cachedStatus = detectStatus();
+  return cachedStatus;
+}
+
 export function embeddingsDisabled(): boolean {
-  return process.env.HIVEMIND_EMBEDDINGS === "false";
+  return embeddingsStatus() !== "enabled";
+}
+
+// ── Test helpers ────────────────────────────────────────────────────────────
+// Exposed so unit tests can simulate "transformers not installed" without
+// actually uninstalling the package. Underscore-prefixed and intentionally
+// not re-exported from any public entry point — runtime never calls these.
+
+export function _setResolveForTesting(fn: () => void): void {
+  _resolve = fn;
+  cachedStatus = null;
+}
+
+export function _resetForTesting(): void {
+  _resolve = defaultResolveTransformers;
+  cachedStatus = null;
 }
