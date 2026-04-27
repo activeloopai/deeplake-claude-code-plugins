@@ -282,3 +282,53 @@ describe("codex capture hook — defensive fallbacks", () => {
     expect(queryMock).not.toHaveBeenCalled();
   });
 });
+
+describe("codex capture hook — JSONB SQL escape (regression)", () => {
+  // Regression for the codex Bash capture 400 — sqlStr() doubles backslashes,
+  // which corrupts the \" sequences produced by the inner JSON.stringify of
+  // tool_input / tool_response. The fix: only escape ' for the SQL literal,
+  // leave JSON-escape sequences alone.
+  const extractMessage = (sql: string): string => {
+    const m = sql.match(/'(\{[\s\S]+\})'::jsonb,/);
+    if (!m) throw new Error("no jsonb literal found in INSERT");
+    return m[1].replace(/''/g, "'");
+  };
+
+  it("produces parseable JSON when tool_input.command contains double quotes", async () => {
+    stdinMock.mockResolvedValue({
+      session_id: "sid-jsonb",
+      cwd: "/proj",
+      hook_event_name: "PostToolUse",
+      model: "gpt-5",
+      tool_name: "Bash",
+      tool_use_id: "tu-1",
+      tool_input: { command: 'echo "hi"' },
+      tool_response: { stdout: "hi\n" },
+    });
+    await runHook();
+    const sql = queryMock.mock.calls[0][0] as string;
+    const messageJson = extractMessage(sql);
+    const parsed = JSON.parse(messageJson);
+    expect(parsed.type).toBe("tool_call");
+    expect(parsed.tool_name).toBe("Bash");
+    // Inner stringified JSON survives round-trip
+    expect(JSON.parse(parsed.tool_input)).toEqual({ command: 'echo "hi"' });
+    expect(JSON.parse(parsed.tool_response)).toEqual({ stdout: "hi\n" });
+  });
+
+  it("produces parseable JSON when user prompt contains double quotes and apostrophes", async () => {
+    stdinMock.mockResolvedValue({
+      session_id: "sid-jsonb-2",
+      cwd: "/proj",
+      hook_event_name: "UserPromptSubmit",
+      model: "gpt-5",
+      prompt: `she said "it's fine"`,
+    });
+    await runHook();
+    const sql = queryMock.mock.calls[0][0] as string;
+    const messageJson = extractMessage(sql);
+    const parsed = JSON.parse(messageJson);
+    expect(parsed.type).toBe("user_message");
+    expect(parsed.content).toBe(`she said "it's fine"`);
+  });
+});
