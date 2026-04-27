@@ -48,8 +48,10 @@ export function readVersionStamp(dir: string): string | null {
   try { return readFileSync(p, "utf-8").trim(); } catch { return null; }
 }
 
+export type PlatformId = "claude" | "codex" | "claw" | "cursor" | "hermes";
+
 export interface DetectedPlatform {
-  id: "claude" | "codex" | "claw";
+  id: PlatformId;
   markerDir: string;
 }
 
@@ -57,13 +59,17 @@ const PLATFORM_MARKERS: DetectedPlatform[] = [
   { id: "claude", markerDir: join(HOME, ".claude") },
   { id: "codex", markerDir: join(HOME, ".codex") },
   { id: "claw", markerDir: join(HOME, ".openclaw") },
+  { id: "cursor", markerDir: join(HOME, ".cursor") },
+  // Hermes Agent (NousResearch/hermes-agent) — Python plugin model. Marker dir
+  // is the user's hermes config; if absent, hermes isn't installed for this user.
+  { id: "hermes", markerDir: join(HOME, ".hermes") },
 ];
 
 export function detectPlatforms(): DetectedPlatform[] {
   return PLATFORM_MARKERS.filter(p => existsSync(p.markerDir));
 }
 
-export function allPlatformIds(): Array<"claude" | "codex" | "claw"> {
+export function allPlatformIds(): PlatformId[] {
   return PLATFORM_MARKERS.map(p => p.id);
 }
 

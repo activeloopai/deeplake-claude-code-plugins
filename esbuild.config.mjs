@@ -74,6 +74,37 @@ for (const h of codexAll) {
 }
 writeFileSync("codex/bundle/package.json", esmPackageJson);
 
+// Cursor plugin (1.7+ hooks API). Same shell + commands as the other agents.
+const cursorHooks = [
+  { entry: "dist/src/hooks/cursor/session-start.js", out: "session-start" },
+  { entry: "dist/src/hooks/cursor/capture.js", out: "capture" },
+  { entry: "dist/src/hooks/cursor/session-end.js", out: "session-end" },
+];
+
+const cursorShell = [
+  { entry: "dist/src/shell/deeplake-shell.js", out: "shell/deeplake-shell" },
+];
+
+const cursorCommands = [
+  { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
+];
+
+const cursorAll = [...cursorHooks, ...cursorShell, ...cursorCommands];
+
+await build({
+  entryPoints: Object.fromEntries(cursorAll.map(h => [h.out, h.entry])),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "cursor/bundle",
+  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+});
+
+for (const h of cursorAll) {
+  chmodSync(`cursor/bundle/${h.out}.js`, 0o755);
+}
+writeFileSync("cursor/bundle/package.json", esmPackageJson);
+
 // OpenClaw plugin bundle. The shared CC/Codex source modules reference a
 // handful of HIVEMIND_* env vars for dev-only overrides. Those env paths are
 // never taken in the openclaw runtime (the plugin loads config from
@@ -142,4 +173,4 @@ await build({
 });
 chmodSync("bundle/cli.js", 0o755);
 
-console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + 1 OpenClaw + 1 CLI bundle`);
+console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + ${cursorAll.length} Cursor + 1 OpenClaw + 1 CLI bundle`);

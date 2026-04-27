@@ -1,11 +1,11 @@
 import { installClaude, uninstallClaude } from "./install-claude.js";
 import { installCodex, uninstallCodex } from "./install-codex.js";
 import { installOpenclaw, uninstallOpenclaw } from "./install-openclaw.js";
+import { installCursor, uninstallCursor } from "./install-cursor.js";
+import { installHermes, uninstallHermes } from "./install-hermes.js";
 import { ensureLoggedIn, isLoggedIn, maybeShowOrgChoice } from "./auth.js";
-import { detectPlatforms, allPlatformIds, log, warn } from "./util.js";
+import { detectPlatforms, allPlatformIds, log, warn, type PlatformId } from "./util.js";
 import { getVersion } from "./version.js";
-
-type PlatformId = "claude" | "codex" | "claw";
 
 const USAGE = `
 hivemind — one brain for every agent on your team
@@ -13,11 +13,13 @@ hivemind — one brain for every agent on your team
 Usage:
   hivemind install [--only <platforms>] [--skip-auth]
       Auto-detect assistants on this machine and install hivemind into each.
-      --only takes a comma-separated list: claude,codex,claw
+      --only takes a comma-separated list: ${allPlatformIds().join(",")}
 
-  hivemind claude install | uninstall
-  hivemind codex  install | uninstall
-  hivemind claw   install | uninstall
+  hivemind claude  install | uninstall
+  hivemind codex   install | uninstall
+  hivemind claw    install | uninstall
+  hivemind cursor  install | uninstall
+  hivemind hermes  install | uninstall
       Install or remove hivemind for a specific assistant.
 
   hivemind login            Run device-flow login (open browser).
@@ -54,9 +56,9 @@ async function runInstallAll(args: string[]): Promise<void> {
   const targets: PlatformId[] = only ?? detectPlatforms().map(p => p.id);
 
   if (targets.length === 0) {
-    log("No supported assistants detected (~/.claude, ~/.codex, ~/.openclaw).");
-    log("Install Claude Code, Codex, or OpenClaw first, then rerun `hivemind install`.");
-    log("Or target a specific assistant: `hivemind claude install`.");
+    log("No supported assistants detected.");
+    log("Supported: Claude Code, Codex, OpenClaw, Cursor, Hermes Agent.");
+    log("Install one and rerun `hivemind install`, or target a specific assistant: `hivemind cursor install`.");
     return;
   }
 
@@ -84,6 +86,8 @@ function runSingleInstall(id: PlatformId): void {
     if (id === "claude") installClaude();
     else if (id === "codex") installCodex();
     else if (id === "claw") installOpenclaw();
+    else if (id === "cursor") installCursor();
+    else if (id === "hermes") installHermes();
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${(err as Error).message}`);
   }
@@ -94,6 +98,8 @@ function runSingleUninstall(id: PlatformId): void {
     if (id === "claude") uninstallClaude();
     else if (id === "codex") uninstallCodex();
     else if (id === "claw") uninstallOpenclaw();
+    else if (id === "cursor") uninstallCursor();
+    else if (id === "hermes") uninstallHermes();
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${(err as Error).message}`);
   }
@@ -133,7 +139,7 @@ async function main(): Promise<void> {
   if (cmd === "login") { await ensureLoggedIn(); return; }
   if (cmd === "status") { runStatus(); return; }
 
-  if (cmd === "claude" || cmd === "codex" || cmd === "claw") {
+  if (cmd === "claude" || cmd === "codex" || cmd === "claw" || cmd === "cursor" || cmd === "hermes") {
     const sub = args[1];
     if (sub === "install") runSingleInstall(cmd);
     else if (sub === "uninstall") runSingleUninstall(cmd);

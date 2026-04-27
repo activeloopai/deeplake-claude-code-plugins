@@ -14,6 +14,7 @@
     "bundle",
     "codex/bundle",
     "codex/skills",
+    "cursor/bundle",
     "openclaw/dist",
     "openclaw/skills",
     "openclaw/openclaw.plugin.json",

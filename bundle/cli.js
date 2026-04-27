@@ -32,6 +32,15 @@ function isLink(path) {
     return false;
   }
 }
+function readJson(path) {
+  if (!existsSync(path))
+    return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf-8"));
+  } catch {
+    return null;
+  }
+}
 function writeJson(path, obj) {
   ensureDir(dirname(path));
   writeFileSync(path, JSON.stringify(obj, null, 2) + "\n");
@@ -43,7 +52,11 @@ function writeVersionStamp(dir, version) {
 var PLATFORM_MARKERS = [
   { id: "claude", markerDir: join(HOME, ".claude") },
   { id: "codex", markerDir: join(HOME, ".codex") },
-  { id: "claw", markerDir: join(HOME, ".openclaw") }
+  { id: "claw", markerDir: join(HOME, ".openclaw") },
+  { id: "cursor", markerDir: join(HOME, ".cursor") },
+  // Hermes Agent (NousResearch/hermes-agent) — Python plugin model. Marker dir
+  // is the user's hermes config; if absent, hermes isn't installed for this user.
+  { id: "hermes", markerDir: join(HOME, ".hermes") }
 ];
 function detectPlatforms() {
   return PLATFORM_MARKERS.filter((p) => existsSync(p.markerDir));
@@ -244,20 +257,167 @@ function uninstallOpenclaw() {
   }
 }
 
-// dist/src/cli/auth.js
-import { existsSync as existsSync5 } from "node:fs";
+// dist/src/cli/install-cursor.js
+import { existsSync as existsSync4, unlinkSync as unlinkSync3 } from "node:fs";
+import { join as join5 } from "node:path";
+var CURSOR_HOME = join5(HOME, ".cursor");
+var PLUGIN_DIR3 = join5(CURSOR_HOME, "hivemind");
+var HOOKS_PATH2 = join5(CURSOR_HOME, "hooks.json");
+var HIVEMIND_MARKER_KEY = "_hivemindManaged";
+function buildHookCmd(bundleFile, timeout) {
+  return {
+    type: "command",
+    command: `node "${join5(PLUGIN_DIR3, "bundle", bundleFile)}"`,
+    timeout
+  };
+}
+function buildHookConfig() {
+  return {
+    sessionStart: [buildHookCmd("session-start.js", 30)],
+    beforeSubmitPrompt: [buildHookCmd("capture.js", 10)],
+    postToolUse: [buildHookCmd("capture.js", 15)],
+    afterAgentResponse: [buildHookCmd("capture.js", 15)],
+    stop: [buildHookCmd("capture.js", 15)],
+    sessionEnd: [buildHookCmd("session-end.js", 30)]
+  };
+}
+function isHivemindEntry(entry) {
+  if (!entry || typeof entry !== "object")
+    return false;
+  const cmd = entry.command;
+  return typeof cmd === "string" && cmd.includes("/.cursor/hivemind/bundle/");
+}
+function mergeHooks(existing) {
+  const root = existing ?? { version: 1, hooks: {} };
+  if (!root.version)
+    root.version = 1;
+  if (!root.hooks)
+    root.hooks = {};
+  const ours = buildHookConfig();
+  for (const [event, entries] of Object.entries(ours)) {
+    const prior = Array.isArray(root.hooks[event]) ? root.hooks[event] : [];
+    const stripped = prior.filter((e) => !isHivemindEntry(e));
+    root.hooks[event] = [...stripped, ...entries];
+  }
+  root[HIVEMIND_MARKER_KEY] = { version: getVersion() };
+  return root;
+}
+function stripHooksFromConfig(existing) {
+  if (!existing)
+    return null;
+  const root = existing;
+  if (root.hooks) {
+    for (const event of Object.keys(root.hooks)) {
+      root.hooks[event] = (root.hooks[event] ?? []).filter((e) => !isHivemindEntry(e));
+      if (root.hooks[event].length === 0)
+        delete root.hooks[event];
+    }
+    if (Object.keys(root.hooks).length === 0)
+      delete root.hooks;
+  }
+  delete existing[HIVEMIND_MARKER_KEY];
+  return existing;
+}
+function installCursor() {
+  const srcBundle = join5(pkgRoot(), "cursor", "bundle");
+  if (!existsSync4(srcBundle)) {
+    throw new Error(`Cursor bundle missing at ${srcBundle}. Run 'npm run build' first.`);
+  }
+  ensureDir(PLUGIN_DIR3);
+  copyDir(srcBundle, join5(PLUGIN_DIR3, "bundle"));
+  const existing = readJson(HOOKS_PATH2);
+  const merged = mergeHooks(existing);
+  writeJson(HOOKS_PATH2, merged);
+  writeVersionStamp(PLUGIN_DIR3, getVersion());
+  log(`  Cursor         installed -> ${PLUGIN_DIR3}`);
+}
+function uninstallCursor() {
+  const existing = readJson(HOOKS_PATH2);
+  if (!existing) {
+    log("  Cursor         no hooks.json to clean");
+    return;
+  }
+  const stripped = stripHooksFromConfig(existing);
+  if (!stripped || Object.keys(stripped).length === 1 && stripped.version) {
+    if (existsSync4(HOOKS_PATH2))
+      unlinkSync3(HOOKS_PATH2);
+  } else {
+    writeJson(HOOKS_PATH2, stripped);
+  }
+  log(`  Cursor         hooks removed from ${HOOKS_PATH2} (plugin files kept at ${PLUGIN_DIR3})`);
+}
+
+// dist/src/cli/install-hermes.js
+import { existsSync as existsSync5, writeFileSync as writeFileSync2, rmSync as rmSync2 } from "node:fs";
 import { join as join6 } from "node:path";
+var HERMES_HOME = join6(HOME, ".hermes");
+var SKILLS_DIR = join6(HERMES_HOME, "skills", "hivemind-memory");
+var SKILL_BODY = `---
+name: hivemind-memory
+description: Global team and org memory powered by Activeloop. ALWAYS check BOTH built-in memory AND Hivemind memory when recalling information.
+---
+
+# Hivemind Memory
+
+You have persistent memory at \`~/.deeplake/memory/\` \u2014 global memory shared across all sessions, users, and agents in the org.
+
+## Memory Structure
+
+\`\`\`
+~/.deeplake/memory/
+\u251C\u2500\u2500 index.md                          \u2190 START HERE \u2014 table of all sessions
+\u251C\u2500\u2500 summaries/
+\u2502   \u251C\u2500\u2500 session-abc.md                \u2190 AI-generated wiki summary
+\u2502   \u2514\u2500\u2500 session-xyz.md
+\u2514\u2500\u2500 sessions/
+    \u2514\u2500\u2500 username/
+        \u251C\u2500\u2500 user_org_ws_slug1.jsonl   \u2190 raw session data
+        \u2514\u2500\u2500 user_org_ws_slug2.jsonl
+\`\`\`
+
+## How to Search
+
+1. **First**: Read \`~/.deeplake/memory/index.md\` \u2014 quick scan of all sessions with dates, projects, descriptions
+2. **If you need details**: Read the specific summary at \`~/.deeplake/memory/summaries/<session>.md\`
+3. **If you need raw data**: Read the session JSONL at \`~/.deeplake/memory/sessions/<user>/<file>.jsonl\`
+4. **Keyword search**: \`grep -r "keyword" ~/.deeplake/memory/\`
+
+Do NOT jump straight to reading raw JSONL files. Always start with index.md and summaries.
+
+## Important Constraints
+
+- Only use bash builtins (\`cat\`, \`ls\`, \`grep\`, \`echo\`, \`jq\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, \`wc\`, \`sort\`, \`find\`) to interact with \`~/.deeplake/memory/\`. The memory filesystem does NOT support \`python\`, \`python3\`, \`node\`, or \`curl\`.
+- If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than retrying exhaustively.
+`;
+function installHermes() {
+  ensureDir(SKILLS_DIR);
+  writeFileSync2(join6(SKILLS_DIR, "SKILL.md"), SKILL_BODY);
+  writeVersionStamp(SKILLS_DIR, getVersion());
+  log(`  Hermes         skill installed -> ${SKILLS_DIR}`);
+}
+function uninstallHermes() {
+  if (existsSync5(SKILLS_DIR)) {
+    rmSync2(SKILLS_DIR, { recursive: true, force: true });
+    log(`  Hermes         removed ${SKILLS_DIR}`);
+  } else {
+    log("  Hermes         nothing to remove");
+  }
+}
+
+// dist/src/cli/auth.js
+import { existsSync as existsSync7 } from "node:fs";
+import { join as join8 } from "node:path";
 
 // dist/src/commands/auth.js
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync2, existsSync as existsSync4, mkdirSync as mkdirSync2, unlinkSync as unlinkSync3 } from "node:fs";
-import { join as join5 } from "node:path";
+import { readFileSync as readFileSync3, writeFileSync as writeFileSync3, existsSync as existsSync6, mkdirSync as mkdirSync2, unlinkSync as unlinkSync4 } from "node:fs";
+import { join as join7 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 import { execSync } from "node:child_process";
-var CONFIG_DIR = join5(homedir2(), ".deeplake");
-var CREDS_PATH = join5(CONFIG_DIR, "credentials.json");
+var CONFIG_DIR = join7(homedir2(), ".deeplake");
+var CREDS_PATH = join7(CONFIG_DIR, "credentials.json");
 var DEFAULT_API_URL = "https://api.deeplake.ai";
 function loadCredentials() {
-  if (!existsSync4(CREDS_PATH))
+  if (!existsSync6(CREDS_PATH))
     return null;
   try {
     return JSON.parse(readFileSync3(CREDS_PATH, "utf-8"));
@@ -266,9 +426,9 @@ function loadCredentials() {
   }
 }
 function saveCredentials(creds) {
-  if (!existsSync4(CONFIG_DIR))
+  if (!existsSync6(CONFIG_DIR))
     mkdirSync2(CONFIG_DIR, { recursive: true, mode: 448 });
-  writeFileSync2(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
+  writeFileSync3(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
 }
 async function apiGet(path, token, apiUrl, orgId) {
   const headers = {
@@ -405,9 +565,9 @@ Using: ${orgName}
 }
 
 // dist/src/cli/auth.js
-var CREDS_PATH2 = join6(HOME, ".deeplake", "credentials.json");
+var CREDS_PATH2 = join8(HOME, ".deeplake", "credentials.json");
 function isLoggedIn() {
-  return existsSync5(CREDS_PATH2) && loadCredentials() !== null;
+  return existsSync7(CREDS_PATH2) && loadCredentials() !== null;
 }
 async function ensureLoggedIn() {
   if (isLoggedIn())
@@ -446,11 +606,13 @@ hivemind \u2014 one brain for every agent on your team
 Usage:
   hivemind install [--only <platforms>] [--skip-auth]
       Auto-detect assistants on this machine and install hivemind into each.
-      --only takes a comma-separated list: claude,codex,claw
+      --only takes a comma-separated list: ${allPlatformIds().join(",")}
 
-  hivemind claude install | uninstall
-  hivemind codex  install | uninstall
-  hivemind claw   install | uninstall
+  hivemind claude  install | uninstall
+  hivemind codex   install | uninstall
+  hivemind claw    install | uninstall
+  hivemind cursor  install | uninstall
+  hivemind hermes  install | uninstall
       Install or remove hivemind for a specific assistant.
 
   hivemind login            Run device-flow login (open browser).
@@ -484,9 +646,9 @@ async function runInstallAll(args) {
   const skipAuth = hasFlag(args, "--skip-auth");
   const targets = only ?? detectPlatforms().map((p) => p.id);
   if (targets.length === 0) {
-    log("No supported assistants detected (~/.claude, ~/.codex, ~/.openclaw).");
-    log("Install Claude Code, Codex, or OpenClaw first, then rerun `hivemind install`.");
-    log("Or target a specific assistant: `hivemind claude install`.");
+    log("No supported assistants detected.");
+    log("Supported: Claude Code, Codex, OpenClaw, Cursor, Hermes Agent.");
+    log("Install one and rerun `hivemind install`, or target a specific assistant: `hivemind cursor install`.");
     return;
   }
   log(`Installing hivemind ${getVersion()} for: ${targets.join(", ")}`);
@@ -512,6 +674,10 @@ function runSingleInstall(id) {
       installCodex();
     else if (id === "claw")
       installOpenclaw();
+    else if (id === "cursor")
+      installCursor();
+    else if (id === "hermes")
+      installHermes();
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${err.message}`);
   }
@@ -524,6 +690,10 @@ function runSingleUninstall(id) {
       uninstallCodex();
     else if (id === "claw")
       uninstallOpenclaw();
+    else if (id === "cursor")
+      uninstallCursor();
+    else if (id === "hermes")
+      uninstallHermes();
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${err.message}`);
   }
@@ -569,7 +739,7 @@ async function main() {
     runStatus();
     return;
   }
-  if (cmd === "claude" || cmd === "codex" || cmd === "claw") {
+  if (cmd === "claude" || cmd === "codex" || cmd === "claw" || cmd === "cursor" || cmd === "hermes") {
     const sub = args[1];
     if (sub === "install")
       runSingleInstall(cmd);
