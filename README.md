@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  Persistent, cloud-backed shared memory for <b>Claude Code • OpenClaw • Codex • Cursor • Hermes • pi • Cline • Roo • Kilo</b> agents.<br>
+  Persistent, cloud-backed shared memory for <b>Claude Code • OpenClaw • Codex • Cursor • Hermes • pi</b> agents.<br>
 </p>
 
 > One session ends, everything important disappears. 
@@ -40,7 +40,7 @@ One command, all your agents:
 npx @deeplake/hivemind@latest install
 ```
 
-That's it. The installer detects every supported assistant on your machine (Claude Code, Codex, OpenClaw, Cursor, Hermes Agent, pi, Cline, Roo Code, Kilo Code), wires up the hooks or MCP server, and opens a browser once for login. Restart your assistants and they all share the same brain.
+That's it. The installer detects every supported assistant on your machine (Claude Code, Codex, OpenClaw, Cursor, Hermes Agent, pi), wires up the hooks, and opens a browser once for login. Restart your assistants and they all share the same brain.
 
 **Install for a specific assistant only:**
 
@@ -52,9 +52,6 @@ npx @deeplake/hivemind@latest claw install
 npx @deeplake/hivemind@latest cursor install
 npx @deeplake/hivemind@latest hermes install
 npx @deeplake/hivemind@latest pi install
-npx @deeplake/hivemind@latest cline install
-npx @deeplake/hivemind@latest roo install
-npx @deeplake/hivemind@latest kilo install
 ```
 
 **Check what's wired up:**
@@ -65,17 +62,14 @@ npx @deeplake/hivemind@latest status
 
 **Supported assistants:**
 
-| Platform         | Integration               | Auto-capture | Auto-recall |
-|------------------|---------------------------|--------------|-------------|
-| **Claude Code**  | Marketplace plugin        | ✅           | ✅          |
-| **OpenClaw**     | Native extension          | ✅           | ✅          |
-| **Codex**        | Hooks (`hooks.json`)      | ✅           | ✅          |
-| **Cursor**       | Hooks (`hooks.json` 1.7+) | ✅           | ✅          |
-| **Hermes Agent** | Skill (`agentskills.io`)  | —            | via grep    |
-| **pi**           | Skill + AGENTS.md         | —            | via grep    |
-| **Cline**        | MCP server                | —            | ✅          |
-| **Roo Code**     | MCP server                | —            | ✅          |
-| **Kilo Code**    | MCP server                | —            | ✅          |
+| Platform         | Integration                                      | Auto-capture | Auto-recall |
+|------------------|--------------------------------------------------|--------------|-------------|
+| **Claude Code**  | Marketplace plugin                               | ✅           | ✅          |
+| **OpenClaw**     | Native extension                                 | ✅           | ✅          |
+| **Codex**        | Hooks (`hooks.json`)                             | ✅           | ✅          |
+| **Cursor**       | Hooks (`hooks.json` 1.7+)                        | ✅           | ✅          |
+| **Hermes Agent** | Shell hooks (`config.yaml`) + skill + MCP server | ✅           | ✅          |
+| **pi**           | Extension API (`pi.on(...)`) + skill + AGENTS.md | ✅           | ✅          |
 
 ### Alternative install paths
 
@@ -182,19 +176,6 @@ npx @deeplake/hivemind@latest pi install
 ```
 </details>
 
-<details>
-  <summary><b>Cline / Roo Code / Kilo Code (MCP-based)</b></summary>
-
-Each MCP-aware editor extension gets a registered server entry pointing at the shared Hivemind MCP server at `~/.hivemind/mcp/server.js`. The server exposes three tools — `hivemind_search`, `hivemind_read`, `hivemind_index` — that the agent can call when it needs to recall org memory.
-
-```bash
-npx @deeplake/hivemind@latest cline install   # ~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json
-npx @deeplake/hivemind@latest roo install     # ~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json
-npx @deeplake/hivemind@latest kilo install    # ~/.kilocode/mcp.json
-```
-
-The MCP server is shared across all three — one binary, three configs. Auto-capture is not exposed via MCP; recall is on-demand only.
-</details>
 
 ### Uninstall
 
@@ -304,7 +285,6 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | **Cursor (1.7+)** | `~/.cursor/hooks.json`             | `sessionStart` · `beforeSubmitPrompt` · `postToolUse` · `afterAgentResponse` · `stop` · `sessionEnd` |
 | **Hermes**        | Skill at `~/.hermes/skills/hivemind-memory/` | recall via grep on `~/.deeplake/memory/`                                                |
 | **pi**            | `~/.pi/agent/AGENTS.md` + skill    | recall via grep on `~/.deeplake/memory/`                                                |
-| **Cline · Roo · Kilo** | MCP server at `~/.hivemind/mcp/server.js` | `hivemind_search` · `hivemind_read` · `hivemind_index`                                  |
 
 ### Monorepo structure
 
@@ -314,7 +294,7 @@ hivemind/
 │   ├── hooks/              ← Claude Code hooks
 │   ├── hooks/codex/        ← Codex hooks
 │   ├── hooks/cursor/       ← Cursor hooks
-│   ├── mcp/                ← MCP server (shared by Cline / Roo / Kilo)
+│   ├── mcp/                ← MCP server (used by Hermes; available to any future MCP-aware client)
 │   └── cli/                ← unified `hivemind install` CLI + per-agent installers
 ├── claude-code/            ← Claude Code plugin source (marketplace-distributed)
 ├── openclaw/               ← OpenClaw plugin source

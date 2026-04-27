@@ -55,14 +55,10 @@ var PLATFORM_MARKERS = [
   { id: "claw", markerDir: join(HOME, ".openclaw") },
   { id: "cursor", markerDir: join(HOME, ".cursor") },
   { id: "hermes", markerDir: join(HOME, ".hermes") },
-  // pi (badlogic/pi-mono coding-agent) — config at ~/.pi/agent/
-  { id: "pi", markerDir: join(HOME, ".pi") },
-  // Cline (saoudrizwan.claude-dev VS Code extension) — settings under VS Code's globalStorage
-  { id: "cline", markerDir: join(HOME, ".config", "Code", "User", "globalStorage", "saoudrizwan.claude-dev") },
-  // Roo Code (rooveterinaryinc.roo-cline VS Code extension)
-  { id: "roo", markerDir: join(HOME, ".config", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline") },
-  // Kilo Code — config at ~/.kilocode/
-  { id: "kilo", markerDir: join(HOME, ".kilocode") }
+  // pi (badlogic/pi-mono coding-agent) — config at ~/.pi/agent/. pi exposes
+  // a rich extension event API (session_start / input / tool_call /
+  // tool_result / message_end / session_shutdown / etc.) — Tier 1 capable.
+  { id: "pi", markerDir: join(HOME, ".pi") }
 ];
 function detectPlatforms() {
   return PLATFORM_MARKERS.filter((p) => existsSync(p.markerDir));
@@ -2971,12 +2967,6 @@ function ensureMcpServerInstalled() {
   writeVersionStamp(HIVEMIND_DIR, getVersion());
   log(`  hivemind-mcp   server installed -> ${MCP_SERVER_PATH}`);
 }
-function buildMcpServerEntry() {
-  return {
-    command: "node",
-    args: [MCP_SERVER_PATH]
-  };
-}
 
 // dist/src/cli/install-hermes.js
 var HERMES_HOME = join7(HOME, ".hermes");
@@ -3307,117 +3297,20 @@ function uninstallPi() {
   }
 }
 
-// dist/src/cli/install-cline.js
-import { existsSync as existsSync8, unlinkSync as unlinkSync5 } from "node:fs";
-import { join as join9 } from "node:path";
-var CONFIG_PATH2 = join9(HOME, ".config", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json");
-var SERVER_KEY2 = "hivemind";
-function installCline() {
-  ensureMcpServerInstalled();
-  const cfg = readJson(CONFIG_PATH2) ?? {};
-  if (!cfg.mcpServers)
-    cfg.mcpServers = {};
-  cfg.mcpServers[SERVER_KEY2] = buildMcpServerEntry();
-  writeJson(CONFIG_PATH2, cfg);
-  log(`  Cline          MCP server registered in ${CONFIG_PATH2}`);
-}
-function uninstallCline() {
-  const cfg = readJson(CONFIG_PATH2);
-  if (!cfg?.mcpServers || !(SERVER_KEY2 in cfg.mcpServers)) {
-    log("  Cline          nothing to remove");
-    return;
-  }
-  delete cfg.mcpServers[SERVER_KEY2];
-  if (Object.keys(cfg.mcpServers).length === 0) {
-    delete cfg.mcpServers;
-  }
-  if (Object.keys(cfg).length === 0) {
-    if (existsSync8(CONFIG_PATH2))
-      unlinkSync5(CONFIG_PATH2);
-  } else {
-    writeJson(CONFIG_PATH2, cfg);
-  }
-  log(`  Cline          MCP entry removed from ${CONFIG_PATH2}`);
-}
-
-// dist/src/cli/install-roo.js
-import { existsSync as existsSync9, unlinkSync as unlinkSync6 } from "node:fs";
-import { join as join10 } from "node:path";
-var CONFIG_PATH3 = join10(HOME, ".config", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json");
-var SERVER_KEY3 = "hivemind";
-function installRoo() {
-  ensureMcpServerInstalled();
-  const cfg = readJson(CONFIG_PATH3) ?? {};
-  if (!cfg.mcpServers)
-    cfg.mcpServers = {};
-  cfg.mcpServers[SERVER_KEY3] = buildMcpServerEntry();
-  writeJson(CONFIG_PATH3, cfg);
-  log(`  Roo Code       MCP server registered in ${CONFIG_PATH3}`);
-}
-function uninstallRoo() {
-  const cfg = readJson(CONFIG_PATH3);
-  if (!cfg?.mcpServers || !(SERVER_KEY3 in cfg.mcpServers)) {
-    log("  Roo Code       nothing to remove");
-    return;
-  }
-  delete cfg.mcpServers[SERVER_KEY3];
-  if (Object.keys(cfg.mcpServers).length === 0)
-    delete cfg.mcpServers;
-  if (Object.keys(cfg).length === 0) {
-    if (existsSync9(CONFIG_PATH3))
-      unlinkSync6(CONFIG_PATH3);
-  } else {
-    writeJson(CONFIG_PATH3, cfg);
-  }
-  log(`  Roo Code       MCP entry removed from ${CONFIG_PATH3}`);
-}
-
-// dist/src/cli/install-kilo.js
-import { existsSync as existsSync10, unlinkSync as unlinkSync7 } from "node:fs";
-import { join as join11 } from "node:path";
-var CONFIG_PATH4 = join11(HOME, ".kilocode", "mcp.json");
-var SERVER_KEY4 = "hivemind";
-function installKilo() {
-  ensureMcpServerInstalled();
-  const cfg = readJson(CONFIG_PATH4) ?? {};
-  if (!cfg.mcpServers)
-    cfg.mcpServers = {};
-  cfg.mcpServers[SERVER_KEY4] = buildMcpServerEntry();
-  writeJson(CONFIG_PATH4, cfg);
-  log(`  Kilo Code      MCP server registered in ${CONFIG_PATH4}`);
-}
-function uninstallKilo() {
-  const cfg = readJson(CONFIG_PATH4);
-  if (!cfg?.mcpServers || !(SERVER_KEY4 in cfg.mcpServers)) {
-    log("  Kilo Code      nothing to remove");
-    return;
-  }
-  delete cfg.mcpServers[SERVER_KEY4];
-  if (Object.keys(cfg.mcpServers).length === 0)
-    delete cfg.mcpServers;
-  if (Object.keys(cfg).length === 0) {
-    if (existsSync10(CONFIG_PATH4))
-      unlinkSync7(CONFIG_PATH4);
-  } else {
-    writeJson(CONFIG_PATH4, cfg);
-  }
-  log(`  Kilo Code      MCP entry removed from ${CONFIG_PATH4}`);
-}
-
 // dist/src/cli/auth.js
-import { existsSync as existsSync12 } from "node:fs";
-import { join as join13 } from "node:path";
+import { existsSync as existsSync9 } from "node:fs";
+import { join as join10 } from "node:path";
 
 // dist/src/commands/auth.js
-import { readFileSync as readFileSync5, writeFileSync as writeFileSync4, existsSync as existsSync11, mkdirSync as mkdirSync2, unlinkSync as unlinkSync8 } from "node:fs";
-import { join as join12 } from "node:path";
+import { readFileSync as readFileSync5, writeFileSync as writeFileSync4, existsSync as existsSync8, mkdirSync as mkdirSync2, unlinkSync as unlinkSync5 } from "node:fs";
+import { join as join9 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 import { execSync } from "node:child_process";
-var CONFIG_DIR = join12(homedir2(), ".deeplake");
-var CREDS_PATH = join12(CONFIG_DIR, "credentials.json");
+var CONFIG_DIR = join9(homedir2(), ".deeplake");
+var CREDS_PATH = join9(CONFIG_DIR, "credentials.json");
 var DEFAULT_API_URL = "https://api.deeplake.ai";
 function loadCredentials() {
-  if (!existsSync11(CREDS_PATH))
+  if (!existsSync8(CREDS_PATH))
     return null;
   try {
     return JSON.parse(readFileSync5(CREDS_PATH, "utf-8"));
@@ -3426,13 +3319,13 @@ function loadCredentials() {
   }
 }
 function saveCredentials(creds) {
-  if (!existsSync11(CONFIG_DIR))
+  if (!existsSync8(CONFIG_DIR))
     mkdirSync2(CONFIG_DIR, { recursive: true, mode: 448 });
   writeFileSync4(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
 }
 function deleteCredentials() {
-  if (existsSync11(CREDS_PATH)) {
-    unlinkSync8(CREDS_PATH);
+  if (existsSync8(CREDS_PATH)) {
+    unlinkSync5(CREDS_PATH);
     return true;
   }
   return false;
@@ -3610,9 +3503,9 @@ Using: ${orgName}
 }
 
 // dist/src/cli/auth.js
-var CREDS_PATH2 = join13(HOME, ".deeplake", "credentials.json");
+var CREDS_PATH2 = join10(HOME, ".deeplake", "credentials.json");
 function isLoggedIn() {
-  return existsSync12(CREDS_PATH2) && loadCredentials() !== null;
+  return existsSync9(CREDS_PATH2) && loadCredentials() !== null;
 }
 async function ensureLoggedIn() {
   if (isLoggedIn())
@@ -3645,14 +3538,14 @@ async function maybeShowOrgChoice() {
 }
 
 // dist/src/config.js
-import { readFileSync as readFileSync6, existsSync as existsSync13 } from "node:fs";
-import { join as join14 } from "node:path";
+import { readFileSync as readFileSync6, existsSync as existsSync10 } from "node:fs";
+import { join as join11 } from "node:path";
 import { homedir as homedir3, userInfo } from "node:os";
 function loadConfig() {
   const home = homedir3();
-  const credPath = join14(home, ".deeplake", "credentials.json");
+  const credPath = join11(home, ".deeplake", "credentials.json");
   let creds = null;
-  if (existsSync13(credPath)) {
+  if (existsSync10(credPath)) {
     try {
       creds = JSON.parse(readFileSync6(credPath, "utf-8"));
     } catch {
@@ -3672,22 +3565,22 @@ function loadConfig() {
     apiUrl: process.env.HIVEMIND_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.HIVEMIND_TABLE ?? "memory",
     sessionsTableName: process.env.HIVEMIND_SESSIONS_TABLE ?? "sessions",
-    memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? join14(home, ".deeplake", "memory")
+    memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? join11(home, ".deeplake", "memory")
   };
 }
 
 // dist/src/deeplake-api.js
 import { randomUUID } from "node:crypto";
-import { existsSync as existsSync14, mkdirSync as mkdirSync3, readFileSync as readFileSync7, writeFileSync as writeFileSync5 } from "node:fs";
-import { join as join16 } from "node:path";
+import { existsSync as existsSync11, mkdirSync as mkdirSync3, readFileSync as readFileSync7, writeFileSync as writeFileSync5 } from "node:fs";
+import { join as join13 } from "node:path";
 import { tmpdir } from "node:os";
 
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
-import { join as join15 } from "node:path";
+import { join as join12 } from "node:path";
 import { homedir as homedir4 } from "node:os";
 var DEBUG = process.env.HIVEMIND_DEBUG === "1";
-var LOG = join15(homedir4(), ".deeplake", "hook-debug.log");
+var LOG = join12(homedir4(), ".deeplake", "hook-debug.log");
 function log2(tag, msg) {
   if (!DEBUG)
     return;
@@ -3741,7 +3634,7 @@ function isTransientHtml403(text) {
   return body.includes("<html") || body.includes("403 forbidden") || body.includes("cloudflare") || body.includes("nginx");
 }
 function getIndexMarkerDir() {
-  return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join16(tmpdir(), "hivemind-deeplake-indexes");
+  return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join13(tmpdir(), "hivemind-deeplake-indexes");
 }
 var Semaphore = class {
   max;
@@ -3913,11 +3806,11 @@ var DeeplakeApi = class {
       table,
       suffix
     ].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
-    return join16(getIndexMarkerDir(), `${markerKey}.json`);
+    return join13(getIndexMarkerDir(), `${markerKey}.json`);
   }
   hasFreshLookupIndexMarker(table, suffix) {
     const markerPath = this.getLookupIndexMarkerPath(table, suffix);
-    if (!existsSync14(markerPath))
+    if (!existsSync11(markerPath))
       return false;
     try {
       const raw = JSON.parse(readFileSync7(markerPath, "utf-8"));
@@ -4332,9 +4225,6 @@ Usage:
   hivemind cursor  install | uninstall
   hivemind hermes  install | uninstall
   hivemind pi      install | uninstall
-  hivemind cline   install | uninstall
-  hivemind roo     install | uninstall
-  hivemind kilo    install | uninstall
       Install or remove hivemind for a specific assistant.
 
   hivemind login            Run device-flow login (open browser).
@@ -4416,12 +4306,6 @@ function runSingleInstall(id) {
       installHermes();
     else if (id === "pi")
       installPi();
-    else if (id === "cline")
-      installCline();
-    else if (id === "roo")
-      installRoo();
-    else if (id === "kilo")
-      installKilo();
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${err.message}`);
   }
@@ -4440,12 +4324,6 @@ function runSingleUninstall(id) {
       uninstallHermes();
     else if (id === "pi")
       uninstallPi();
-    else if (id === "cline")
-      uninstallCline();
-    else if (id === "roo")
-      uninstallRoo();
-    else if (id === "kilo")
-      uninstallKilo();
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${err.message}`);
   }
@@ -4495,7 +4373,7 @@ async function main() {
     await runAuthCommand(args);
     return;
   }
-  const platformCmds = ["claude", "codex", "claw", "cursor", "hermes", "pi", "cline", "roo", "kilo"];
+  const platformCmds = ["claude", "codex", "claw", "cursor", "hermes", "pi"];
   if (platformCmds.includes(cmd)) {
     const sub = args[1];
     if (sub === "install")

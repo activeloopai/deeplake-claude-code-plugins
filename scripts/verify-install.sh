@@ -170,7 +170,7 @@ else
 fi
 
 # ───────────────────────────────────────────────────────────────────────
-# MCP server (shared by Cline / Roo / Kilo)
+# MCP server (used by Hermes; reused by any future MCP-aware client).
 section "Hivemind MCP server"
 SERVER="$HOME/.hivemind/mcp/server.js"
 if [ -f "$SERVER" ]; then
@@ -186,50 +186,7 @@ if [ -f "$SERVER" ]; then
     bad "MCP server did not list expected tools" "check ~/.deeplake/credentials.json"
   fi
 else
-  skip "MCP server" "no ~/.hivemind/mcp/server.js (no Tier B agent installed yet)"
-fi
-
-# ───────────────────────────────────────────────────────────────────────
-# Cline / Roo / Kilo — MCP config
-check_mcp_config() {
-  local name="$1" path="$2" install_cmd="$3"
-  if [ -f "$path" ]; then
-    if jq -e '.mcpServers.hivemind.command' "$path" >/dev/null 2>&1; then
-      ok "mcpServers.hivemind registered in $path"
-      local args
-      args=$(jq -r '.mcpServers.hivemind.args[0]' "$path" 2>/dev/null)
-      if [ "$args" = "$HOME/.hivemind/mcp/server.js" ]; then
-        ok "args[0] points at $HOME/.hivemind/mcp/server.js"
-      else
-        bad "args[0] is '$args', expected $HOME/.hivemind/mcp/server.js"
-      fi
-    else
-      bad "$name has $path but no mcpServers.hivemind entry" "rerun: $install_cmd"
-    fi
-  else
-    bad "$name config not found at $path" "rerun: $install_cmd"
-  fi
-}
-
-section "Cline"
-if [ -d "$HOME/.config/Code/User/globalStorage/saoudrizwan.claude-dev" ]; then
-  check_mcp_config "Cline" "$HOME/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json" "hivemind cline install"
-else
-  skip "Cline" "VS Code Cline extension not installed"
-fi
-
-section "Roo Code"
-if [ -d "$HOME/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline" ]; then
-  check_mcp_config "Roo Code" "$HOME/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json" "hivemind roo install"
-else
-  skip "Roo Code" "VS Code Roo extension not installed"
-fi
-
-section "Kilo Code"
-if [ -d "$HOME/.kilocode" ]; then
-  check_mcp_config "Kilo Code" "$HOME/.kilocode/mcp.json" "hivemind kilo install"
-else
-  skip "Kilo Code" "no ~/.kilocode"
+  skip "MCP server" "no ~/.hivemind/mcp/server.js (no MCP-aware agent installed yet)"
 fi
 
 # ───────────────────────────────────────────────────────────────────────

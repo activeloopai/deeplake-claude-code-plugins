@@ -48,27 +48,30 @@ export function readVersionStamp(dir: string): string | null {
   try { return readFileSync(p, "utf-8").trim(); } catch { return null; }
 }
 
-export type PlatformId = "claude" | "codex" | "claw" | "cursor" | "hermes" | "pi" | "cline" | "roo" | "kilo";
+export type PlatformId = "claude" | "codex" | "claw" | "cursor" | "hermes" | "pi";
 
 export interface DetectedPlatform {
   id: PlatformId;
   markerDir: string;
 }
 
+// Hivemind's value is bidirectional shared memory — every supported agent
+// must capture (write) AND recall (read). Cline / Roo Code / Kilo Code were
+// dropped because their public API (src/exports/cline.d.ts) is control-only
+// (startNewTask / sendMessage / pressPrimary/SecondaryButton). No event
+// subscription, no listener, no observation API. Auto-capture would require
+// a fragile filesystem watcher on Cline's task storage. See the project
+// memory for the investigation that arrived at this decision.
 const PLATFORM_MARKERS: DetectedPlatform[] = [
   { id: "claude", markerDir: join(HOME, ".claude") },
   { id: "codex", markerDir: join(HOME, ".codex") },
   { id: "claw", markerDir: join(HOME, ".openclaw") },
   { id: "cursor", markerDir: join(HOME, ".cursor") },
   { id: "hermes", markerDir: join(HOME, ".hermes") },
-  // pi (badlogic/pi-mono coding-agent) — config at ~/.pi/agent/
+  // pi (badlogic/pi-mono coding-agent) — config at ~/.pi/agent/. pi exposes
+  // a rich extension event API (session_start / input / tool_call /
+  // tool_result / message_end / session_shutdown / etc.) — Tier 1 capable.
   { id: "pi", markerDir: join(HOME, ".pi") },
-  // Cline (saoudrizwan.claude-dev VS Code extension) — settings under VS Code's globalStorage
-  { id: "cline", markerDir: join(HOME, ".config", "Code", "User", "globalStorage", "saoudrizwan.claude-dev") },
-  // Roo Code (rooveterinaryinc.roo-cline VS Code extension)
-  { id: "roo", markerDir: join(HOME, ".config", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline") },
-  // Kilo Code — config at ~/.kilocode/
-  { id: "kilo", markerDir: join(HOME, ".kilocode") },
 ];
 
 export function detectPlatforms(): DetectedPlatform[] {
