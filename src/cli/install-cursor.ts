@@ -32,10 +32,22 @@ function buildHookCmd(bundleFile: string, timeout: number): CursorHookEntry {
   };
 }
 
+function buildHookCmdShellMatcher(bundleFile: string, timeout: number): CursorHookEntry {
+  return {
+    type: "command",
+    command: `node "${join(PLUGIN_DIR, "bundle", bundleFile)}"`,
+    timeout,
+    matcher: "Shell",
+  };
+}
+
 function buildHookConfig(): Record<string, CursorHookEntry[]> {
   return {
     sessionStart: [buildHookCmd("session-start.js", 30)],
     beforeSubmitPrompt: [buildHookCmd("capture.js", 10)],
+    // preToolUse with Shell matcher rewrites grep/rg against ~/.deeplake/memory/
+    // into a single SQL fast-path call, matching Claude Code / Codex accuracy.
+    preToolUse: [buildHookCmdShellMatcher("pre-tool-use.js", 30)],
     postToolUse: [buildHookCmd("capture.js", 15)],
     afterAgentResponse: [buildHookCmd("capture.js", 15)],
     stop: [buildHookCmd("capture.js", 15)],

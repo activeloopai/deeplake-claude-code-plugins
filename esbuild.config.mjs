@@ -79,6 +79,16 @@ const cursorHooks = [
   { entry: "dist/src/hooks/cursor/session-start.js", out: "session-start" },
   { entry: "dist/src/hooks/cursor/capture.js", out: "capture" },
   { entry: "dist/src/hooks/cursor/session-end.js", out: "session-end" },
+  { entry: "dist/src/hooks/cursor/pre-tool-use.js", out: "pre-tool-use" },
+];
+
+// Hermes Agent shell-hook bundles (matches Claude Code's wire protocol; see
+// agent/shell_hooks.py in NousResearch/hermes-agent).
+const hermesHooks = [
+  { entry: "dist/src/hooks/hermes/session-start.js", out: "session-start" },
+  { entry: "dist/src/hooks/hermes/capture.js", out: "capture" },
+  { entry: "dist/src/hooks/hermes/session-end.js", out: "session-end" },
+  { entry: "dist/src/hooks/hermes/pre-tool-use.js", out: "pre-tool-use" },
 ];
 
 const cursorShell = [
@@ -104,6 +114,30 @@ for (const h of cursorAll) {
   chmodSync(`cursor/bundle/${h.out}.js`, 0o755);
 }
 writeFileSync("cursor/bundle/package.json", esmPackageJson);
+
+// Hermes Agent bundle (auto-capture via on_session_start / pre_llm_call /
+// post_tool_call / post_llm_call / on_session_end).
+const hermesShell = [
+  { entry: "dist/src/shell/deeplake-shell.js", out: "shell/deeplake-shell" },
+];
+const hermesCommands = [
+  { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
+];
+const hermesAll = [...hermesHooks, ...hermesShell, ...hermesCommands];
+
+await build({
+  entryPoints: Object.fromEntries(hermesAll.map(h => [h.out, h.entry])),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "hermes/bundle",
+  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+});
+
+for (const h of hermesAll) {
+  chmodSync(`hermes/bundle/${h.out}.js`, 0o755);
+}
+writeFileSync("hermes/bundle/package.json", esmPackageJson);
 
 // OpenClaw plugin bundle. The shared CC/Codex source modules reference a
 // handful of HIVEMIND_* env vars for dev-only overrides. Those env paths are
@@ -187,4 +221,4 @@ await build({
 });
 chmodSync("bundle/cli.js", 0o755);
 
-console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + ${cursorAll.length} Cursor + 1 OpenClaw + 1 MCP + 1 CLI bundle`);
+console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + ${cursorAll.length} Cursor + ${hermesAll.length} Hermes + 1 OpenClaw + 1 MCP + 1 CLI bundle`);
