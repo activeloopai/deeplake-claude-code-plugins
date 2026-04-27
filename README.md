@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  Persistent, cloud-backed shared memory for <b>Claude Code • OpenClaw • Codex</b> agents.<br>
+  Persistent, cloud-backed shared memory for <b>Claude Code • OpenClaw • Codex • Cursor • Hermes • pi • Cline • Roo • Kilo</b> agents.<br>
 </p>
 
 > One session ends, everything important disappears. 
@@ -40,7 +40,7 @@ One command, all your agents:
 npx @activeloop/hivemind@latest install
 ```
 
-That's it. The installer detects every supported assistant on your machine (Claude Code, Codex, OpenClaw), wires up the hooks, and opens a browser once for login. Restart your assistants and they all share the same brain.
+That's it. The installer detects every supported assistant on your machine (Claude Code, Codex, OpenClaw, Cursor, Hermes Agent, pi, Cline, Roo Code, Kilo Code), wires up the hooks or MCP server, and opens a browser once for login. Restart your assistants and they all share the same brain.
 
 **Install for a specific assistant only:**
 
@@ -49,6 +49,12 @@ npx @activeloop/hivemind@latest install --only claude
 npx @activeloop/hivemind@latest claude install    # equivalent
 npx @activeloop/hivemind@latest codex install
 npx @activeloop/hivemind@latest claw install
+npx @activeloop/hivemind@latest cursor install
+npx @activeloop/hivemind@latest hermes install
+npx @activeloop/hivemind@latest pi install
+npx @activeloop/hivemind@latest cline install
+npx @activeloop/hivemind@latest roo install
+npx @activeloop/hivemind@latest kilo install
 ```
 
 **Check what's wired up:**
@@ -59,11 +65,17 @@ npx @activeloop/hivemind@latest status
 
 **Supported assistants:**
 
-| Platform        | Status    |
-|-----------------|-----------|
-| **Claude Code** | ✅ Stable |
-| **OpenClaw**    | 🔧 Beta   |
-| **Codex**       | 🔧 Beta   |
+| Platform         | Integration               | Auto-capture | Auto-recall |
+|------------------|---------------------------|--------------|-------------|
+| **Claude Code**  | Marketplace plugin        | ✅           | ✅          |
+| **OpenClaw**     | Native extension          | ✅           | ✅          |
+| **Codex**        | Hooks (`hooks.json`)      | ✅           | ✅          |
+| **Cursor**       | Hooks (`hooks.json` 1.7+) | ✅           | ✅          |
+| **Hermes Agent** | Skill (`agentskills.io`)  | —            | via grep    |
+| **pi**           | Skill + AGENTS.md         | —            | via grep    |
+| **Cline**        | MCP server                | —            | ✅          |
+| **Roo Code**     | MCP server                | —            | ✅          |
+| **Kilo Code**    | MCP server                | —            | ✅          |
 
 ### Alternative install paths
 
