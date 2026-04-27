@@ -323,9 +323,18 @@ async function getApi(): Promise<DeeplakeApi | null> {
 
   sessionsTable = config.sessionsTableName;
   memoryTable = config.tableName;
-  api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
-  await api.ensureTable();
-  await api.ensureSessionsTable(sessionsTable);
+
+  // Build the api in a local variable and only commit it to the module-level
+  // cache after both ensureX calls succeed. If a transient network failure
+  // hits CREATE TABLE during ensureTable / ensureSessionsTable, we bail
+  // without caching — the next getApi() call will retry full init from
+  // scratch. (Previously the api was cached before ensureX ran, so a single
+  // failed CREATE would leave subsequent SELECTs hitting a non-existent
+  // table forever until plugin restart.)
+  const candidate = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+  await candidate.ensureTable();
+  await candidate.ensureSessionsTable(sessionsTable);
+  api = candidate;
   return api;
 }
 
