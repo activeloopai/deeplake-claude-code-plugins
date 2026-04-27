@@ -257,7 +257,7 @@ describe("session-start-setup hook — embed daemon warmup", () => {
     await runHook({ HIVEMIND_EMBEDDINGS: "false" });
     expect(embedWarmupMock).not.toHaveBeenCalled();
     expect(debugLogMock).toHaveBeenCalledWith(
-      "embed daemon warmup skipped via HIVEMIND_EMBEDDINGS=false",
+      "embed daemon warmup skipped: HIVEMIND_EMBEDDINGS=false",
     );
   });
 });

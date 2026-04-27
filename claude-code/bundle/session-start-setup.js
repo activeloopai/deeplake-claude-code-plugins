@@ -878,7 +878,9 @@ async function main() {
     log4(`version check failed: ${e.message}`);
   }
   if (embeddingsDisabled()) {
-    log4("embed daemon warmup skipped via HIVEMIND_EMBEDDINGS=false");
+    const status = embeddingsStatus();
+    const reason = status === "no-transformers" ? "@huggingface/transformers not installed (see README to enable embeddings)" : "HIVEMIND_EMBEDDINGS=false";
+    log4(`embed daemon warmup skipped: ${reason}`);
   } else if (process.env.HIVEMIND_EMBED_WARMUP !== "false") {
     try {
       const daemonEntry = join8(__bundleDir, "embeddings", "embed-daemon.js");

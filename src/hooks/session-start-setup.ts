@@ -19,7 +19,7 @@ import { getInstalledVersion, getLatestVersion, isNewer } from "../utils/version
 import { makeWikiLogger } from "../utils/wiki-log.js";
 import { resolveVersionedPluginDir, snapshotPluginDir, restoreOrCleanup } from "../utils/plugin-cache.js";
 import { EmbedClient } from "../embeddings/client.js";
-import { embeddingsDisabled } from "../embeddings/disable.js";
+import { embeddingsDisabled, embeddingsStatus } from "../embeddings/disable.js";
 const log = (msg: string) => _log("session-setup", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -117,7 +117,11 @@ async function main(): Promise<void> {
   // HIVEMIND_EMBED_WARMUP=false for sessions that will never touch the
   // memory path (lightweight CC runs, no-network CI).
   if (embeddingsDisabled()) {
-    log("embed daemon warmup skipped via HIVEMIND_EMBEDDINGS=false");
+    const status = embeddingsStatus();
+    const reason = status === "no-transformers"
+      ? "@huggingface/transformers not installed (see README to enable embeddings)"
+      : "HIVEMIND_EMBEDDINGS=false";
+    log(`embed daemon warmup skipped: ${reason}`);
   } else if (process.env.HIVEMIND_EMBED_WARMUP !== "false") {
     try {
       const daemonEntry = join(__bundleDir, "embeddings", "embed-daemon.js");
