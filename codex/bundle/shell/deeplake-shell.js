@@ -67347,8 +67347,8 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
     const sessLexFilter = buildContentFilter("message::text", likeOp, filterPatternsForLex);
     const memLexQuery = memLexFilter ? `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, 1.0 AS score FROM "${memoryTable}" WHERE 1=1${pathFilter}${memLexFilter} LIMIT ${lexicalLimit}` : null;
     const sessLexQuery = sessLexFilter ? `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, 1.0 AS score FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessLexFilter} LIMIT ${lexicalLimit}` : null;
-    const memSemQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, (summary_embedding <#> ${vecLit}) AS score FROM "${memoryTable}" WHERE summary_embedding IS NOT NULL${pathFilter} ORDER BY score DESC LIMIT ${semanticLimit}`;
-    const sessSemQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, (message_embedding <#> ${vecLit}) AS score FROM "${sessionsTable}" WHERE message_embedding IS NOT NULL${pathFilter} ORDER BY score DESC LIMIT ${semanticLimit}`;
+    const memSemQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, (summary_embedding <#> ${vecLit}) AS score FROM "${memoryTable}" WHERE ARRAY_LENGTH(summary_embedding, 1) > 0${pathFilter} ORDER BY score DESC LIMIT ${semanticLimit}`;
+    const sessSemQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, (message_embedding <#> ${vecLit}) AS score FROM "${sessionsTable}" WHERE ARRAY_LENGTH(message_embedding, 1) > 0${pathFilter} ORDER BY score DESC LIMIT ${semanticLimit}`;
     const parts = [memSemQuery, sessSemQuery];
     if (memLexQuery)
       parts.push(memLexQuery);
@@ -67999,15 +67999,20 @@ var DeeplakeFs = class _DeeplakeFs {
   }
   // ── Virtual index.md generation ────────────────────────────────────────────
   async generateVirtualIndex() {
-    const summaryRows = await this.client.query(`SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" WHERE path LIKE '${sqlStr("/summaries/")}%' ORDER BY last_update_date DESC`);
+    const INDEX_LIMIT_PER_SECTION = 50;
+    const summaryRows = await this.client.query(`SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" WHERE path LIKE '${sqlStr("/summaries/")}%' ORDER BY last_update_date DESC LIMIT ${INDEX_LIMIT_PER_SECTION + 1}`);
     let sessionRows = [];
     if (this.sessionsTable) {
       try {
-        sessionRows = await this.client.query(`SELECT path, MAX(description) AS description, MIN(creation_date) AS creation_date, MAX(last_update_date) AS last_update_date FROM "${this.sessionsTable}" WHERE path LIKE '${sqlStr("/sessions/")}%' GROUP BY path ORDER BY path`);
+        sessionRows = await this.client.query(`SELECT path, MAX(description) AS description, MIN(creation_date) AS creation_date, MAX(last_update_date) AS last_update_date FROM "${this.sessionsTable}" WHERE path LIKE '${sqlStr("/sessions/")}%' GROUP BY path ORDER BY MAX(last_update_date) DESC LIMIT ${INDEX_LIMIT_PER_SECTION + 1}`);
       } catch {
         sessionRows = [];
       }
     }
+    const summaryTruncated = summaryRows.length > INDEX_LIMIT_PER_SECTION;
+    const sessionTruncated = sessionRows.length > INDEX_LIMIT_PER_SECTION;
+    const summaryVisible = summaryRows.slice(0, INDEX_LIMIT_PER_SECTION);
+    const sessionVisible = sessionRows.slice(0, INDEX_LIMIT_PER_SECTION);
     const lines = [
       "# Session Index",
       "",
@@ -68021,9 +68026,13 @@ var DeeplakeFs = class _DeeplakeFs {
     } else {
       lines.push("AI-generated summaries per session. Read these first for topic-level overviews.");
       lines.push("");
+      if (summaryTruncated) {
+        lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many \u2014 older summaries reachable via \`Grep pattern="..." path="~/.deeplake/memory"\`._`);
+        lines.push("");
+      }
       lines.push("| Session | Created | Last Updated | Project | Description |");
       lines.push("|---------|---------|--------------|---------|-------------|");
-      for (const row of summaryRows) {
+      for (const row of summaryVisible) {
         const p22 = row["path"];
         const match2 = p22.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
         if (!match2)
@@ -68046,9 +68055,13 @@ var DeeplakeFs = class _DeeplakeFs {
     } else {
       lines.push("Raw session records (dialogue, tool calls). Read for exact detail / quotes.");
       lines.push("");
+      if (sessionTruncated) {
+        lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many \u2014 older sessions reachable via \`Grep pattern="..." path="~/.deeplake/memory"\`._`);
+        lines.push("");
+      }
       lines.push("| Session | Created | Last Updated | Description |");
       lines.push("|---------|---------|--------------|-------------|");
-      for (const row of sessionRows) {
+      for (const row of sessionVisible) {
         const p22 = row["path"] || "";
         const rel = p22.startsWith("/") ? p22.slice(1) : p22;
         const filename = p22.split("/").pop() ?? p22;

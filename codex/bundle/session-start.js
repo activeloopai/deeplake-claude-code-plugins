@@ -86,10 +86,21 @@ var __bundleDir = dirname2(fileURLToPath(import.meta.url));
 var AUTH_CMD = join4(__bundleDir, "commands", "auth-login.js");
 var context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
 
-Structure: index.md (start here) \u2192 summaries/*.md \u2192 sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
-Search: grep -r "keyword" ~/.deeplake/memory/
-IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem.
-Do NOT spawn subagents to read deeplake memory.`;
+Deeplake memory has TWO tiers \u2014 search them IN THIS ORDER:
+1. ~/.deeplake/memory/summaries/ \u2014 condensed wiki summaries (~3 KB each). START HERE: the answer to recall questions is usually in a summary.
+2. ~/.deeplake/memory/sessions/  \u2014 raw full-dialogue JSONL (~5 KB each). Use as FALLBACK only if no summary matches.
+3. ~/.deeplake/memory/index.md   \u2014 skip (too large).
+
+Recall workflow:
+1. grep -r "keyword" ~/.deeplake/memory/summaries/   \u2190 FIRST
+2. cat the top-matching summary(ies)
+3. Only if no summary matches: grep -r "keyword" ~/.deeplake/memory/sessions/
+
+\u2705 grep -r "keyword" ~/.deeplake/memory/summaries/
+\u274C grep without a summaries/ or sessions/ suffix \u2014 too noisy
+
+IMPORTANT: Only use bash builtins (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) on ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem.
+Do NOT spawn subagents to read deeplake memory. Never read index.md.`;
 async function main() {
   if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;

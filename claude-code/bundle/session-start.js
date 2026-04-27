@@ -564,14 +564,24 @@ var context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH w
 1. Your built-in memory (~/.claude/) \u2014 personal per-project notes
 2. Deeplake global memory (~/.deeplake/memory/) \u2014 global memory shared across all sessions, users, and agents in the org
 
-Deeplake memory structure:
-- ~/.deeplake/memory/index.md \u2014 START HERE, table of all sessions
-- ~/.deeplake/memory/summaries/username/*.md \u2014 AI-generated wiki summaries per session
-- ~/.deeplake/memory/sessions/username/*.jsonl \u2014 raw session data (last resort)
+\u26A0\uFE0F CRITICAL: the built-in Grep tool is BROKEN on ~/.deeplake/memory \u2014 always errors "Path does not exist". Use the Bash tool with \`grep -r\`.
 
-SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw JSONL if summaries don't have enough detail. Do NOT jump straight to JSONL files.
+Deeplake memory has TWO tiers \u2014 search them IN THIS ORDER:
+1. ~/.deeplake/memory/summaries/ \u2014 condensed wiki summaries (~3 KB each). START HERE: the answer to recall questions is usually in a summary.
+2. ~/.deeplake/memory/sessions/  \u2014 raw full-dialogue JSONL (~5 KB each). Use as FALLBACK only if no summary matches.
+3. ~/.deeplake/memory/index.md   \u2014 skip (too large; agents shouldn't read it).
 
-Search command: Grep pattern="keyword" path="~/.deeplake/memory"
+Recall workflow (follow this order):
+  1. Bash \u2192 \`grep -r "keyword" ~/.deeplake/memory/summaries/\`   \u2190 FIRST
+  2. \`cat\` or Read the top-matching summary(ies) to pull the answer
+  3. Only if no summary matches: Bash \u2192 \`grep -r "keyword" ~/.deeplake/memory/sessions/\`
+
+Search shape:
+  \u2705 Bash tool \u2192 command: \`grep -r "keyword" ~/.deeplake/memory/summaries/\`
+  \u274C Grep tool on this path   \u2190 will fail with "Path does not exist"
+  \u274C grep without a \`summaries/\` or \`sessions/\` suffix   \u2190 too noisy, drowns the answer
+
+Never call the Grep tool on this path. Never read index.md.
 
 Organization management \u2014 each argument is SEPARATE (do NOT quote subcommands together):
 - node "HIVEMIND_AUTH_CMD" login                              \u2014 SSO login
