@@ -150,6 +150,52 @@ git clone https://github.com/activeloopai/hivemind.git ~/.codex/hivemind
 Restart Codex to activate.
 </details>
 
+<details>
+  <summary><b>Cursor (1.7+)</b></summary>
+
+The unified installer wires six lifecycle events in `~/.cursor/hooks.json` — sessionStart, beforeSubmitPrompt, postToolUse, afterAgentResponse, stop, sessionEnd. Hooks fork a Node bundle at `~/.cursor/hivemind/bundle/` per event. Restart Cursor after install to load.
+
+```bash
+npx @activeloop/hivemind@latest cursor install
+```
+
+Auto-capture is enabled the same way as Claude Code / Codex / OpenClaw.
+</details>
+
+<details>
+  <summary><b>Hermes Agent</b></summary>
+
+Drops an `agentskills.io`-compatible skill at `~/.hermes/skills/hivemind-memory/`. Recall is via direct grep on `~/.deeplake/memory/`. Auto-capture is not yet supported (Hermes' lifecycle-hook surface isn't documented at the time of writing).
+
+```bash
+npx @activeloop/hivemind@latest hermes install
+```
+</details>
+
+<details>
+  <summary><b>pi (badlogic/pi-mono coding-agent)</b></summary>
+
+Drops `~/.pi/agent/AGENTS.md` (idempotent BEGIN/END marker block) plus a skill at `~/.pi/agent/skills/hivemind-memory/`. Recall is via direct grep on `~/.deeplake/memory/`.
+
+```bash
+npx @activeloop/hivemind@latest pi install
+```
+</details>
+
+<details>
+  <summary><b>Cline / Roo Code / Kilo Code (MCP-based)</b></summary>
+
+Each MCP-aware editor extension gets a registered server entry pointing at the shared Hivemind MCP server at `~/.hivemind/mcp/server.js`. The server exposes three tools — `hivemind_search`, `hivemind_read`, `hivemind_index` — that the agent can call when it needs to recall org memory.
+
+```bash
+npx @activeloop/hivemind@latest cline install   # ~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json
+npx @activeloop/hivemind@latest roo install     # ~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json
+npx @activeloop/hivemind@latest kilo install    # ~/.kilocode/mcp.json
+```
+
+The MCP server is shared across all three — one binary, three configs. Auto-capture is not exposed via MCP; recall is on-demand only.
+</details>
+
 ### Uninstall
 
 ```bash
@@ -248,26 +294,33 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 
 ## Architecture
 
-### Hook lifecycle (Claude Code)
+### Integration model per agent
 
-| Hook                | Purpose                                          | Async |
-|---------------------|--------------------------------------------------|-------|
-| `SessionStart`      | Auth login, inject context, DATA NOTICE          | No    |
-| `UserPromptSubmit`  | Capture user message                             | No    |
-| `PreToolUse`        | Intercept and rewrite memory-targeting commands  | No    |
-| `PostToolUse`       | Capture tool call + response                     | Yes   |
-| `Stop`              | Capture assistant response                       | No    |
-| `SubagentStop`      | Capture subagent activity                        | Yes   |
-| `SessionEnd`        | Spawn wiki-worker for AI summary                 | No    |
+| Agent             | Mechanism                          | Hooks/tools wired                                                                       |
+|-------------------|------------------------------------|-----------------------------------------------------------------------------------------|
+| **Claude Code**   | Marketplace plugin                 | `SessionStart` · `UserPromptSubmit` · `PreToolUse` · `PostToolUse` · `Stop` · `SubagentStop` · `SessionEnd` |
+| **Codex**         | `~/.codex/hooks.json`              | `SessionStart` · `UserPromptSubmit` · `PreToolUse(Bash)` · `PostToolUse` · `Stop`        |
+| **OpenClaw**      | Native extension at `~/.openclaw/extensions/hivemind/` | `agent_end` capture · `before_agent_start` recall · contracted tools (`hivemind_search`/`read`/`index`) |
+| **Cursor (1.7+)** | `~/.cursor/hooks.json`             | `sessionStart` · `beforeSubmitPrompt` · `postToolUse` · `afterAgentResponse` · `stop` · `sessionEnd` |
+| **Hermes**        | Skill at `~/.hermes/skills/hivemind-memory/` | recall via grep on `~/.deeplake/memory/`                                                |
+| **pi**            | `~/.pi/agent/AGENTS.md` + skill    | recall via grep on `~/.deeplake/memory/`                                                |
+| **Cline · Roo · Kilo** | MCP server at `~/.hivemind/mcp/server.js` | `hivemind_search` · `hivemind_read` · `hivemind_index`                                  |
 
 ### Monorepo structure
 
 ```
 hivemind/
 ├── src/                    ← shared core (API client, auth, config, SQL utils)
-├── claude-code/            ← Claude Code plugin (hooks, virtual FS, shell)
-├── openclaw/               ← OpenClaw plugin (auto-recall, auto-capture)
-└── codex/                  ← Codex CLI plugin (hooks, block+inject interception)
+│   ├── hooks/              ← Claude Code hooks
+│   ├── hooks/codex/        ← Codex hooks
+│   ├── hooks/cursor/       ← Cursor hooks
+│   ├── mcp/                ← MCP server (shared by Cline / Roo / Kilo)
+│   └── cli/                ← unified `hivemind install` CLI + per-agent installers
+├── claude-code/            ← Claude Code plugin source (marketplace-distributed)
+├── openclaw/               ← OpenClaw plugin source
+├── codex/                  ← Codex plugin source
+├── cursor/                 ← Cursor plugin source
+└── mcp/                    ← MCP server build output
 ```
 
 ## Security
@@ -284,7 +337,7 @@ hivemind/
 git clone https://github.com/activeloopai/hivemind.git
 cd hivemind
 npm install
-npm run build     # tsc + esbuild → claude-code/bundle/ + codex/bundle/ + openclaw/dist/
+npm run build     # tsc + esbuild → claude-code/bundle/ + codex/bundle/ + cursor/bundle/ + openclaw/dist/ + mcp/bundle/ + bundle/cli.js
 npm test          # vitest
 ```
 
