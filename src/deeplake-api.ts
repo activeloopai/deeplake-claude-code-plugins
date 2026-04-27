@@ -176,7 +176,12 @@ export class DeeplakeApi {
       const retryable403 =
         isSessionInsertQuery(sql) &&
         (resp.status === 401 || (resp.status === 403 && (text.length === 0 || isTransientHtml403(text))));
-      if (attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
+      // Deeplake returns HTTP 500 (not 409) when ADD COLUMN IF NOT EXISTS / CREATE
+      // INDEX IF NOT EXISTS hit an already-present object. The error is
+      // deterministic — retrying just burns ~4s of exponential backoff per call,
+      // and SessionStart issues several of these on every run. Fail fast.
+      const alreadyExists = resp.status === 500 && isDuplicateIndexError(text);
+      if (!alreadyExists && attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
         log(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
         await sleep(delay);
