@@ -132,6 +132,22 @@ export default defineConfig({
           functions: 90,
           lines: 90,
         },
+        // PR #76 — feat/openclaw-static-scan-clean. Two new files extracted
+        // from auth.ts / deeplake-api.ts so the openclaw bundle could split
+        // fs reads from fetch calls. Tests in claude-code/tests/{auth-creds,
+        // index-marker-store}.test.ts cover both source modules above 90%.
+        "src/commands/auth-creds.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/index-marker-store.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
       },
     },
   },
