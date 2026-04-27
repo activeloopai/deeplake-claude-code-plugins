@@ -67783,8 +67783,30 @@ function embeddingSqlLiteral(vec) {
 }
 
 // dist/src/embeddings/disable.js
+import { createRequire } from "node:module";
+var cachedStatus = null;
+function defaultResolveTransformers() {
+  createRequire(import.meta.url).resolve("@huggingface/transformers");
+}
+var _resolve = defaultResolveTransformers;
+function detectStatus() {
+  if (process.env.HIVEMIND_EMBEDDINGS === "false")
+    return "env-disabled";
+  try {
+    _resolve();
+    return "enabled";
+  } catch {
+    return "no-transformers";
+  }
+}
+function embeddingsStatus() {
+  if (cachedStatus !== null)
+    return cachedStatus;
+  cachedStatus = detectStatus();
+  return cachedStatus;
+}
 function embeddingsDisabled() {
-  return process.env.HIVEMIND_EMBEDDINGS === "false";
+  return embeddingsStatus() !== "enabled";
 }
 
 // dist/src/shell/deeplake-fs.js
@@ -69382,7 +69404,7 @@ function stripQuotes(val) {
 
 // node_modules/yargs-parser/build/lib/index.js
 import { readFileSync as readFileSync4 } from "fs";
-import { createRequire } from "node:module";
+import { createRequire as createRequire2 } from "node:module";
 var _a3;
 var _b;
 var _c;
@@ -69395,7 +69417,7 @@ if (nodeVersion) {
   }
 }
 var env = process ? process.env : {};
-var require2 = createRequire ? createRequire(import.meta.url) : void 0;
+var require2 = createRequire2 ? createRequire2(import.meta.url) : void 0;
 var parser = new YargsParser({
   cwd: process.cwd,
   env: () => {

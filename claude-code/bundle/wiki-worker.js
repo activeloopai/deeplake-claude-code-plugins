@@ -369,8 +369,30 @@ function sleep(ms) {
 }
 
 // dist/src/embeddings/disable.js
+import { createRequire } from "node:module";
+var cachedStatus = null;
+function defaultResolveTransformers() {
+  createRequire(import.meta.url).resolve("@huggingface/transformers");
+}
+var _resolve = defaultResolveTransformers;
+function detectStatus() {
+  if (process.env.HIVEMIND_EMBEDDINGS === "false")
+    return "env-disabled";
+  try {
+    _resolve();
+    return "enabled";
+  } catch {
+    return "no-transformers";
+  }
+}
+function embeddingsStatus() {
+  if (cachedStatus !== null)
+    return cachedStatus;
+  cachedStatus = detectStatus();
+  return cachedStatus;
+}
 function embeddingsDisabled() {
-  return process.env.HIVEMIND_EMBEDDINGS === "false";
+  return embeddingsStatus() !== "enabled";
 }
 
 // dist/src/hooks/wiki-worker.js
