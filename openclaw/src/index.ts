@@ -334,7 +334,14 @@ export default definePluginEntry({
   name: "Hivemind",
   description: "Cloud-backed shared memory powered by Deeplake",
 
-  async register(pluginApi: PluginAPI) {
+  register(pluginApi: PluginAPI) {
+    // Top-level register() must be synchronous (openclaw plugin contract:
+    // "Error: plugin register must be synchronous"). All registerCommand /
+    // registerTool / on() calls below land before the first `await` inside
+    // the IIFE, so openclaw still sees a fully-registered plugin when this
+    // function returns. Anything past the first `await` (the post-register
+    // login prompt + version check) runs off the synchronous path.
+    void (async () => {
     try {
     // Login command — works immediately after install, no hook dependency
       pluginApi.registerCommand({
@@ -971,5 +978,6 @@ export default definePluginEntry({
     } catch (err) {
       pluginApi.logger?.error?.(`Hivemind register failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+    })();
   },
 });
