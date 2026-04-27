@@ -3161,7 +3161,7 @@ import { existsSync as existsSync7, writeFileSync as writeFileSync3, rmSync as r
 import { join as join8 } from "node:path";
 var PI_AGENT_DIR = join8(HOME, ".pi", "agent");
 var AGENTS_MD = join8(PI_AGENT_DIR, "AGENTS.md");
-var SKILL_DIR = join8(PI_AGENT_DIR, "skills", "hivemind-memory");
+var LEGACY_SKILL_DIR = join8(PI_AGENT_DIR, "skills", "hivemind-memory");
 var EXTENSIONS_DIR = join8(PI_AGENT_DIR, "extensions");
 var EXTENSION_PATH = join8(EXTENSIONS_DIR, "hivemind.ts");
 var VERSION_DIR = join8(PI_AGENT_DIR, ".hivemind");
@@ -3184,44 +3184,6 @@ or remember anything.
 Use only bash builtins (cat, ls, grep, jq, head, tail, sed, awk, wc, sort, find) to read this filesystem \u2014
 rg/ripgrep, node, python, curl are not available there.
 ${HIVEMIND_BLOCK_END}`;
-var SKILL_BODY2 = `---
-name: hivemind-memory
-description: Global team and org memory powered by Activeloop. Always check both local context AND Hivemind memory when recalling information.
----
-
-# Hivemind Memory
-
-You have persistent memory at \`~/.deeplake/memory/\` \u2014 global memory shared across all sessions, users, and agents in the org.
-
-## Memory Structure
-
-\`\`\`
-~/.deeplake/memory/
-\u251C\u2500\u2500 index.md                          \u2190 START HERE \u2014 table of all sessions
-\u251C\u2500\u2500 summaries/
-\u2502   \u251C\u2500\u2500 session-abc.md                \u2190 AI-generated wiki summary
-\u2502   \u2514\u2500\u2500 session-xyz.md
-\u2514\u2500\u2500 sessions/
-    \u2514\u2500\u2500 username/
-        \u251C\u2500\u2500 user_org_ws_slug1.jsonl   \u2190 raw session data
-        \u2514\u2500\u2500 user_org_ws_slug2.jsonl
-\`\`\`
-
-## How to Search
-
-1. **First**: Read \`~/.deeplake/memory/index.md\` \u2014 quick scan of all sessions with dates, projects, descriptions
-2. **If you need details**: Read the specific summary at \`~/.deeplake/memory/summaries/<session>.md\`
-3. **If you need raw data**: Read the session JSONL at \`~/.deeplake/memory/sessions/<user>/<file>.jsonl\`
-4. **Keyword search**: \`grep -r "keyword" ~/.deeplake/memory/\`
-
-Do NOT jump straight to reading raw JSONL files. Always start with index.md and summaries.
-
-## Important Constraints
-
-- Use \`grep\` (NOT \`rg\`/ripgrep) for keyword search \u2014 \`rg\` may not be installed on the host system.
-- Only use these bash builtins to interact with \`~/.deeplake/memory/\`: \`cat\`, \`ls\`, \`grep\`, \`echo\`, \`jq\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, \`wc\`, \`sort\`, \`find\`. The memory filesystem does NOT support \`rg\`, \`python\`, \`python3\`, \`node\`, or \`curl\`.
-- If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than retrying exhaustively.
-`;
 function upsertHivemindBlock(existing) {
   const block = HIVEMIND_BLOCK_BODY;
   if (!existing)
@@ -3270,8 +3232,9 @@ ${after}`;
 }
 function installPi() {
   ensureDir(PI_AGENT_DIR);
-  ensureDir(SKILL_DIR);
-  writeFileSync3(join8(SKILL_DIR, "SKILL.md"), SKILL_BODY2);
+  if (existsSync7(LEGACY_SKILL_DIR)) {
+    rmSync3(LEGACY_SKILL_DIR, { recursive: true, force: true });
+  }
   const prior = existsSync7(AGENTS_MD) ? readFileSync4(AGENTS_MD, "utf-8") : null;
   const next = upsertHivemindBlock(prior);
   writeFileSync3(AGENTS_MD, next);
@@ -3283,14 +3246,13 @@ function installPi() {
   copyFileSync(srcExtension, EXTENSION_PATH);
   ensureDir(VERSION_DIR);
   writeVersionStamp(VERSION_DIR, getVersion());
-  log(`  pi             skill installed -> ${SKILL_DIR}`);
   log(`  pi             AGENTS.md updated -> ${AGENTS_MD}`);
   log(`  pi             extension installed -> ${EXTENSION_PATH}`);
 }
 function uninstallPi() {
-  if (existsSync7(SKILL_DIR)) {
-    rmSync3(SKILL_DIR, { recursive: true, force: true });
-    log(`  pi             removed ${SKILL_DIR}`);
+  if (existsSync7(LEGACY_SKILL_DIR)) {
+    rmSync3(LEGACY_SKILL_DIR, { recursive: true, force: true });
+    log(`  pi             removed ${LEGACY_SKILL_DIR}`);
   }
   if (existsSync7(EXTENSION_PATH)) {
     rmSync3(EXTENSION_PATH, { force: true });

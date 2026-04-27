@@ -13,9 +13,14 @@ import { getVersion } from "./version.js";
 // as first-class pi tools (since pi has no MCP — see pi README).
 //
 // Surfaces installed:
-//   1. ~/.pi/agent/AGENTS.md — global context (BEGIN/END marker upsert)
-//   2. ~/.pi/agent/skills/hivemind-memory/SKILL.md — agent reads on every turn
-//   3. ~/.pi/agent/extensions/hivemind.ts — TS extension for autocapture + tools
+//   1. ~/.pi/agent/AGENTS.md — global context (BEGIN/END marker upsert).
+//      pi auto-loads AGENTS.md every turn, so the hivemind block is the
+//      sole guidance surface — no per-agent SKILL.md drop. Pi loads skills
+//      from both ~/.pi/agent/skills/ AND ~/.agents/skills/ (the shared
+//      agentskills.io location), so dropping a per-agent skill collides
+//      with the codex installer's ~/.agents/skills/hivemind-memory symlink.
+//   2. ~/.pi/agent/extensions/hivemind.ts — TS extension for autocapture +
+//      first-class hivemind_search / hivemind_read / hivemind_index tools.
 //
 // The extension is shipped as raw .ts; pi's runtime loader compiles it on
 // load (uses tsx-style on-the-fly compilation). Self-contained — uses only
@@ -23,7 +28,7 @@ import { getVersion } from "./version.js";
 
 const PI_AGENT_DIR = join(HOME, ".pi", "agent");
 const AGENTS_MD = join(PI_AGENT_DIR, "AGENTS.md");
-const SKILL_DIR = join(PI_AGENT_DIR, "skills", "hivemind-memory");
+const LEGACY_SKILL_DIR = join(PI_AGENT_DIR, "skills", "hivemind-memory");
 const EXTENSIONS_DIR = join(PI_AGENT_DIR, "extensions");
 const EXTENSION_PATH = join(EXTENSIONS_DIR, "hivemind.ts");
 const VERSION_DIR = join(PI_AGENT_DIR, ".hivemind");
@@ -48,45 +53,6 @@ or remember anything.
 Use only bash builtins (cat, ls, grep, jq, head, tail, sed, awk, wc, sort, find) to read this filesystem —
 rg/ripgrep, node, python, curl are not available there.
 ${HIVEMIND_BLOCK_END}`;
-
-const SKILL_BODY = `---
-name: hivemind-memory
-description: Global team and org memory powered by Activeloop. Always check both local context AND Hivemind memory when recalling information.
----
-
-# Hivemind Memory
-
-You have persistent memory at \`~/.deeplake/memory/\` — global memory shared across all sessions, users, and agents in the org.
-
-## Memory Structure
-
-\`\`\`
-~/.deeplake/memory/
-├── index.md                          ← START HERE — table of all sessions
-├── summaries/
-│   ├── session-abc.md                ← AI-generated wiki summary
-│   └── session-xyz.md
-└── sessions/
-    └── username/
-        ├── user_org_ws_slug1.jsonl   ← raw session data
-        └── user_org_ws_slug2.jsonl
-\`\`\`
-
-## How to Search
-
-1. **First**: Read \`~/.deeplake/memory/index.md\` — quick scan of all sessions with dates, projects, descriptions
-2. **If you need details**: Read the specific summary at \`~/.deeplake/memory/summaries/<session>.md\`
-3. **If you need raw data**: Read the session JSONL at \`~/.deeplake/memory/sessions/<user>/<file>.jsonl\`
-4. **Keyword search**: \`grep -r "keyword" ~/.deeplake/memory/\`
-
-Do NOT jump straight to reading raw JSONL files. Always start with index.md and summaries.
-
-## Important Constraints
-
-- Use \`grep\` (NOT \`rg\`/ripgrep) for keyword search — \`rg\` may not be installed on the host system.
-- Only use these bash builtins to interact with \`~/.deeplake/memory/\`: \`cat\`, \`ls\`, \`grep\`, \`echo\`, \`jq\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, \`wc\`, \`sort\`, \`find\`. The memory filesystem does NOT support \`rg\`, \`python\`, \`python3\`, \`node\`, or \`curl\`.
-- If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than retrying exhaustively.
-`;
 
 function upsertHivemindBlock(existing: string | null): string {
   const block = HIVEMIND_BLOCK_BODY;
@@ -121,16 +87,19 @@ function stripHivemindBlock(existing: string): string {
 export function installPi(): void {
   ensureDir(PI_AGENT_DIR);
 
-  // 1. Skill drop — agent context.
-  ensureDir(SKILL_DIR);
-  writeFileSync(join(SKILL_DIR, "SKILL.md"), SKILL_BODY);
+  // Clean up any per-agent SKILL.md left by an older installer — pi reads
+  // skills from both ~/.pi/agent/skills/ and ~/.agents/skills/, so a local
+  // drop collides with the codex installer's shared agentskills.io symlink.
+  if (existsSync(LEGACY_SKILL_DIR)) {
+    rmSync(LEGACY_SKILL_DIR, { recursive: true, force: true });
+  }
 
-  // 2. AGENTS.md hivemind block (idempotent upsert).
+  // 1. AGENTS.md hivemind block (idempotent upsert). Pi auto-loads this every turn.
   const prior = existsSync(AGENTS_MD) ? readFileSync(AGENTS_MD, "utf-8") : null;
   const next = upsertHivemindBlock(prior);
   writeFileSync(AGENTS_MD, next);
 
-  // 3. Extension — autocapture + first-class hivemind tools.
+  // 2. Extension — autocapture + first-class hivemind tools.
   const srcExtension = join(pkgRoot(), "pi", "extension-source", "hivemind.ts");
   if (!existsSync(srcExtension)) {
     throw new Error(`pi extension source missing at ${srcExtension}. Reinstall the @deeplake/hivemind package.`);
@@ -141,15 +110,14 @@ export function installPi(): void {
   ensureDir(VERSION_DIR);
   writeVersionStamp(VERSION_DIR, getVersion());
 
-  log(`  pi             skill installed -> ${SKILL_DIR}`);
   log(`  pi             AGENTS.md updated -> ${AGENTS_MD}`);
   log(`  pi             extension installed -> ${EXTENSION_PATH}`);
 }
 
 export function uninstallPi(): void {
-  if (existsSync(SKILL_DIR)) {
-    rmSync(SKILL_DIR, { recursive: true, force: true });
-    log(`  pi             removed ${SKILL_DIR}`);
+  if (existsSync(LEGACY_SKILL_DIR)) {
+    rmSync(LEGACY_SKILL_DIR, { recursive: true, force: true });
+    log(`  pi             removed ${LEGACY_SKILL_DIR}`);
   }
   if (existsSync(EXTENSION_PATH)) {
     rmSync(EXTENSION_PATH, { force: true });

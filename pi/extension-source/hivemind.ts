@@ -140,6 +140,12 @@ async function searchTables(creds: Creds, query: string, limit: number): Promise
     .join("\n\n---\n\n");
 }
 
+// pi tools must return AgentToolResult: { content: [{type:"text", text}], details }.
+// Returning a raw string crashes pi's renderer (render-utils.js: result.content.filter).
+function textResult(text: string) {
+  return { content: [{ type: "text" as const, text }], details: {} };
+}
+
 // ---------- main extension -----------------------------------------------------
 
 const CONTEXT_PREAMBLE = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents in your org.
@@ -167,13 +173,13 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
       },
       required: ["query"],
     },
-    async execute({ query, limit }: { query: string; limit?: number }) {
+    async execute(_toolCallId: string, params: { query: string; limit?: number }) {
       const creds = loadCreds();
-      if (!creds) return "Hivemind: not authenticated. Run `hivemind login` in a terminal.";
+      if (!creds) return textResult("Hivemind: not authenticated. Run `hivemind login` in a terminal.");
       try {
-        return await searchTables(creds, query, limit ?? 10);
+        return textResult(await searchTables(creds, params.query, params.limit ?? 10));
       } catch (err: any) {
-        return `Hivemind search failed: ${err.message}`;
+        return textResult(`Hivemind search failed: ${err.message}`);
       }
     },
   });
@@ -186,19 +192,20 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
       properties: { path: { type: "string", description: "Absolute Hivemind memory path." } },
       required: ["path"],
     },
-    async execute({ path }: { path: string }) {
+    async execute(_toolCallId: string, params: { path: string }) {
       const creds = loadCreds();
-      if (!creds) return "Hivemind: not authenticated.";
+      if (!creds) return textResult("Hivemind: not authenticated.");
+      const path = params.path;
       const isSession = path.startsWith("/sessions/");
       const table = isSession ? SESSIONS_TABLE : MEMORY_TABLE;
       const col = isSession ? "message::text" : "summary::text";
       const sql = `SELECT path, ${col} AS content FROM "${table}" WHERE path = '${sqlStr(path)}' LIMIT 200`;
       try {
         const rows = await dlQuery(creds, sql);
-        if (rows.length === 0) return `No content at ${path}.`;
-        return rows.map((r: any) => String(r.content ?? "")).join("\n");
+        if (rows.length === 0) return textResult(`No content at ${path}.`);
+        return textResult(rows.map((r: any) => String(r.content ?? "")).join("\n"));
       } catch (err: any) {
-        return `Hivemind read failed: ${err.message}`;
+        return textResult(`Hivemind read failed: ${err.message}`);
       }
     },
   });
@@ -213,28 +220,37 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
         limit: { type: "number", description: "Max rows (default 50)." },
       },
     },
-    async execute({ prefix, limit }: { prefix?: string; limit?: number }) {
+    async execute(_toolCallId: string, params: { prefix?: string; limit?: number }) {
       const creds = loadCreds();
-      if (!creds) return "Hivemind: not authenticated.";
-      const where = prefix
-        ? `WHERE path LIKE '${sqlStr(prefix)}%'`
+      if (!creds) return textResult("Hivemind: not authenticated.");
+      const where = params.prefix
+        ? `WHERE path LIKE '${sqlStr(params.prefix)}%'`
         : `WHERE path LIKE '/summaries/%'`;
-      const sql = `SELECT path, description, project, last_update_date FROM "${MEMORY_TABLE}" ${where} ORDER BY last_update_date DESC LIMIT ${limit ?? 50}`;
+      const sql = `SELECT path, description, project, last_update_date FROM "${MEMORY_TABLE}" ${where} ORDER BY last_update_date DESC LIMIT ${params.limit ?? 50}`;
       try {
         const rows = await dlQuery(creds, sql);
-        if (rows.length === 0) return "No summaries.";
-        return rows
+        if (rows.length === 0) return textResult("No summaries.");
+        return textResult(rows
           .map((r: any) => `${r.path}\t${r.last_update_date}\t${r.project ?? ""}\t${r.description ?? ""}`)
-          .join("\n");
+          .join("\n"));
       } catch (err: any) {
-        return `Hivemind index failed: ${err.message}`;
+        return textResult(`Hivemind index failed: ${err.message}`);
       }
     },
   });
 
   // --- Lifecycle hooks (capture path) -----------------------------------------
+  //
+  // Event shapes per pi-coding-agent/dist/core/extensions/types.d.ts:
+  //   - SessionStartEvent:  { type, reason, previousSessionFile? }
+  //   - InputEvent:         { type, text, images?, source }
+  //   - ToolResultEvent:    { type, toolCallId, toolName, input, content, isError, details }
+  //   - MessageEndEvent:    { type, message: AgentMessage }
+  // Every handler receives (event, ctx). ctx.sessionManager.getSessionId() and
+  // ctx.cwd are the canonical sources for session id + cwd — the events
+  // themselves don't carry them.
 
-  pi.on("session_start", async (event: any) => {
+  pi.on("session_start", async (_event: any, _ctx: any) => {
     const creds = loadCreds();
     const additional = creds
       ? `${CONTEXT_PREAMBLE}\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId}).`
@@ -242,15 +258,17 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
     return { additionalContext: additional };
   });
 
-  pi.on("input", async (event: any) => {
+  pi.on("input", async (event: any, ctx: any) => {
     if (!captureEnabled) return;
+    if (event.source === "extension") return; // skip our own injected inputs
     const creds = loadCreds();
     if (!creds) return;
-    const sessionId = event.sessionId ?? event.session_id ?? `pi-${Date.now()}`;
-    const text = typeof event.input === "string" ? event.input : event.text ?? "";
+    const text = typeof event.text === "string" ? event.text : "";
     if (!text) return;
+    const sessionId = ctx?.sessionManager?.getSessionId?.() ?? `pi-${Date.now()}`;
+    const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd();
     try {
-      await writeSessionRow(creds, sessionId, "pi", "input", event.cwd ?? process.cwd(), {
+      await writeSessionRow(creds, sessionId, "pi", "input", cwd, {
         id: crypto.randomUUID(),
         type: "user_message",
         session_id: sessionId,
@@ -260,39 +278,52 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
     } catch { /* non-fatal */ }
   });
 
-  pi.on("tool_result", async (event: any) => {
+  pi.on("tool_result", async (event: any, ctx: any) => {
     if (!captureEnabled) return;
     const creds = loadCreds();
     if (!creds) return;
-    const sessionId = event.sessionId ?? event.session_id ?? `pi-${Date.now()}`;
+    const sessionId = ctx?.sessionManager?.getSessionId?.() ?? `pi-${Date.now()}`;
+    const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd();
+    // event.content is (TextContent | ImageContent)[]; extract text blocks.
+    const contentBlocks: any[] = Array.isArray(event.content) ? event.content : [];
+    const responseText = contentBlocks
+      .filter((b: any) => b?.type === "text" && typeof b.text === "string")
+      .map((b: any) => b.text)
+      .join("\n");
     try {
-      await writeSessionRow(creds, sessionId, "pi", "tool_result", event.cwd ?? process.cwd(), {
+      await writeSessionRow(creds, sessionId, "pi", "tool_result", cwd, {
         id: crypto.randomUUID(),
         type: "tool_call",
         session_id: sessionId,
-        tool_name: event.toolName ?? event.tool_name ?? "unknown",
-        tool_input: JSON.stringify(event.toolInput ?? event.input ?? {}),
-        tool_response: JSON.stringify(event.result ?? event.toolResult ?? null),
+        tool_call_id: event.toolCallId ?? null,
+        tool_name: event.toolName ?? "unknown",
+        tool_input: JSON.stringify(event.input ?? {}),
+        tool_response: responseText || JSON.stringify(contentBlocks),
+        is_error: event.isError === true,
         timestamp: new Date().toISOString(),
       });
     } catch { /* non-fatal */ }
   });
 
-  pi.on("message_end", async (event: any) => {
+  pi.on("message_end", async (event: any, ctx: any) => {
     if (!captureEnabled) return;
     const creds = loadCreds();
     if (!creds) return;
-    const sessionId = event.sessionId ?? event.session_id ?? `pi-${Date.now()}`;
-    const message = event.message ?? event.assistantMessage ?? null;
-    if (!message) return;
-    const text = typeof message === "string"
-      ? message
-      : Array.isArray(message?.content)
-        ? message.content.filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n")
-        : (message?.content ?? message?.text ?? "");
+    const message = event.message ?? null;
+    // AgentMessage is UserMessage | AssistantMessage | ToolResultMessage.
+    // user is captured via `input`; toolResult via `tool_result`. Only assistant here.
+    if (!message || message.role !== "assistant") return;
+    // AssistantMessage.content is (TextContent | ThinkingContent | ToolCall)[].
+    const blocks: any[] = Array.isArray(message.content) ? message.content : [];
+    const text = blocks
+      .filter((b: any) => b?.type === "text" && typeof b.text === "string")
+      .map((b: any) => b.text)
+      .join("\n");
     if (!text) return;
+    const sessionId = ctx?.sessionManager?.getSessionId?.() ?? `pi-${Date.now()}`;
+    const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd();
     try {
-      await writeSessionRow(creds, sessionId, "pi", "message_end", event.cwd ?? process.cwd(), {
+      await writeSessionRow(creds, sessionId, "pi", "message_end", cwd, {
         id: crypto.randomUUID(),
         type: "assistant_message",
         session_id: sessionId,
@@ -302,7 +333,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
     } catch { /* non-fatal */ }
   });
 
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (_event: any, _ctx: any) => {
     // No-op for now. Future: trigger wiki-worker for AI summary.
   });
 }
