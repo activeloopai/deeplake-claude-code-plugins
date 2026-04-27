@@ -37,6 +37,12 @@ vi.mock("../../src/utils/debug.js", () => ({
 vi.mock("../../src/deeplake-api.js", () => ({
   DeeplakeApi: class { query(sql: string) { return queryMock(sql); } },
 }));
+vi.mock("../../src/embeddings/client.js", () => ({
+  EmbedClient: class {
+    embed(_text: string, _kind?: string) { return Promise.resolve(null); }
+    warmup() { return Promise.resolve(false); }
+  },
+}));
 
 async function runHook(env: Record<string, string | undefined> = {}): Promise<void> {
   delete process.env.HIVEMIND_WIKI_WORKER;
