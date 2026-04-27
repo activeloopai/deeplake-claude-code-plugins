@@ -443,8 +443,8 @@ var AUTH_CMD = join6(__bundleDir, "commands", "auth-login.js");
 var context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
 
 Structure: index.md (start here) \u2192 summaries/*.md \u2192 sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
-Search: grep -r "keyword" ~/.deeplake/memory/
-IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem.
+Search: use \`grep\` (NOT \`rg\`/ripgrep). Example: grep -ri "keyword" ~/.deeplake/memory/
+IMPORTANT: Only use these bash builtins to interact with ~/.deeplake/memory/: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find. Do NOT use rg/ripgrep, python, python3, node, curl, or other interpreters \u2014 they may not be installed and the memory filesystem only supports the listed builtins.
 Do NOT spawn subagents to read deeplake memory.`;
 function resolveSessionId(input) {
   return input.session_id ?? input.conversation_id ?? `cursor-${Date.now()}`;

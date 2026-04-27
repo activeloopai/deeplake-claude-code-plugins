@@ -37,10 +37,10 @@ or remember anything.
 - Start with \`~/.deeplake/memory/index.md\` (table of all sessions)
 - Then read specific summaries at \`~/.deeplake/memory/summaries/<user>/<session>.md\`
 - Only fall back to raw \`~/.deeplake/memory/sessions/<user>/*.jsonl\` if summaries don't have enough detail
-- Search: \`grep -r "keyword" ~/.deeplake/memory/\`
+- Search: use \`grep\` (NOT \`rg\`/ripgrep — \`rg\` is not always installed). Example: \`grep -ri "keyword" ~/.deeplake/memory/\`
 
-Use only bash builtins (cat, ls, grep, jq, head, tail, sed, awk) to read this filesystem —
-node/python/curl are not available there.
+Use only bash builtins (cat, ls, grep, jq, head, tail, sed, awk, wc, sort, find) to read this filesystem —
+rg/ripgrep, node, python, curl are not available there.
 ${HIVEMIND_BLOCK_END}`;
 
 const SKILL_BODY = `---
@@ -77,7 +77,8 @@ Do NOT jump straight to reading raw JSONL files. Always start with index.md and 
 
 ## Important Constraints
 
-- Only use bash builtins (\`cat\`, \`ls\`, \`grep\`, \`echo\`, \`jq\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, \`wc\`, \`sort\`, \`find\`) to interact with \`~/.deeplake/memory/\`. The memory filesystem does NOT support \`python\`, \`python3\`, \`node\`, or \`curl\`.
+- Use \`grep\` (NOT \`rg\`/ripgrep) for keyword search — \`rg\` may not be installed on the host system.
+- Only use these bash builtins to interact with \`~/.deeplake/memory/\`: \`cat\`, \`ls\`, \`grep\`, \`echo\`, \`jq\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, \`wc\`, \`sort\`, \`find\`. The memory filesystem does NOT support \`rg\`, \`python\`, \`python3\`, \`node\`, or \`curl\`.
 - If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than retrying exhaustively.
 `;
 
