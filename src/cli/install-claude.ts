@@ -11,7 +11,7 @@ import { log } from "./util.js";
 //
 // Side effect: requires `claude` on PATH at install time and network access
 // to fetch the marketplace from GitHub. Both are reasonable assumptions for
-// anyone running `npx @activeloop/hivemind claude install` — they already
+// anyone running `npx @deeplake/hivemind claude install` — they already
 // have Claude Code installed and the marketplace flow is the canonical way
 // to ship plugins to Claude Code users.
 

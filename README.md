@@ -37,7 +37,7 @@ Hivemind automatically captures every prompt, tool call, decision, and file oper
 One command, all your agents:
 
 ```bash
-npx @activeloop/hivemind@latest install
+npx @deeplake/hivemind@latest install
 ```
 
 That's it. The installer detects every supported assistant on your machine (Claude Code, Codex, OpenClaw, Cursor, Hermes Agent, pi, Cline, Roo Code, Kilo Code), wires up the hooks or MCP server, and opens a browser once for login. Restart your assistants and they all share the same brain.
@@ -45,22 +45,22 @@ That's it. The installer detects every supported assistant on your machine (Clau
 **Install for a specific assistant only:**
 
 ```bash
-npx @activeloop/hivemind@latest install --only claude
-npx @activeloop/hivemind@latest claude install    # equivalent
-npx @activeloop/hivemind@latest codex install
-npx @activeloop/hivemind@latest claw install
-npx @activeloop/hivemind@latest cursor install
-npx @activeloop/hivemind@latest hermes install
-npx @activeloop/hivemind@latest pi install
-npx @activeloop/hivemind@latest cline install
-npx @activeloop/hivemind@latest roo install
-npx @activeloop/hivemind@latest kilo install
+npx @deeplake/hivemind@latest install --only claude
+npx @deeplake/hivemind@latest claude install    # equivalent
+npx @deeplake/hivemind@latest codex install
+npx @deeplake/hivemind@latest claw install
+npx @deeplake/hivemind@latest cursor install
+npx @deeplake/hivemind@latest hermes install
+npx @deeplake/hivemind@latest pi install
+npx @deeplake/hivemind@latest cline install
+npx @deeplake/hivemind@latest roo install
+npx @deeplake/hivemind@latest kilo install
 ```
 
 **Check what's wired up:**
 
 ```bash
-npx @activeloop/hivemind@latest status
+npx @deeplake/hivemind@latest status
 ```
 
 **Supported assistants:**
@@ -156,7 +156,7 @@ Restart Codex to activate.
 The unified installer wires six lifecycle events in `~/.cursor/hooks.json` — sessionStart, beforeSubmitPrompt, postToolUse, afterAgentResponse, stop, sessionEnd. Hooks fork a Node bundle at `~/.cursor/hivemind/bundle/` per event. Restart Cursor after install to load.
 
 ```bash
-npx @activeloop/hivemind@latest cursor install
+npx @deeplake/hivemind@latest cursor install
 ```
 
 Auto-capture is enabled the same way as Claude Code / Codex / OpenClaw.
@@ -168,7 +168,7 @@ Auto-capture is enabled the same way as Claude Code / Codex / OpenClaw.
 Drops an `agentskills.io`-compatible skill at `~/.hermes/skills/hivemind-memory/`. Recall is via direct grep on `~/.deeplake/memory/`. Auto-capture is not yet supported (Hermes' lifecycle-hook surface isn't documented at the time of writing).
 
 ```bash
-npx @activeloop/hivemind@latest hermes install
+npx @deeplake/hivemind@latest hermes install
 ```
 </details>
 
@@ -178,7 +178,7 @@ npx @activeloop/hivemind@latest hermes install
 Drops `~/.pi/agent/AGENTS.md` (idempotent BEGIN/END marker block) plus a skill at `~/.pi/agent/skills/hivemind-memory/`. Recall is via direct grep on `~/.deeplake/memory/`.
 
 ```bash
-npx @activeloop/hivemind@latest pi install
+npx @deeplake/hivemind@latest pi install
 ```
 </details>
 
@@ -188,9 +188,9 @@ npx @activeloop/hivemind@latest pi install
 Each MCP-aware editor extension gets a registered server entry pointing at the shared Hivemind MCP server at `~/.hivemind/mcp/server.js`. The server exposes three tools — `hivemind_search`, `hivemind_read`, `hivemind_index` — that the agent can call when it needs to recall org memory.
 
 ```bash
-npx @activeloop/hivemind@latest cline install   # ~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json
-npx @activeloop/hivemind@latest roo install     # ~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json
-npx @activeloop/hivemind@latest kilo install    # ~/.kilocode/mcp.json
+npx @deeplake/hivemind@latest cline install   # ~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json
+npx @deeplake/hivemind@latest roo install     # ~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json
+npx @deeplake/hivemind@latest kilo install    # ~/.kilocode/mcp.json
 ```
 
 The MCP server is shared across all three — one binary, three configs. Auto-capture is not exposed via MCP; recall is on-demand only.
@@ -199,8 +199,8 @@ The MCP server is shared across all three — one binary, three configs. Auto-ca
 ### Uninstall
 
 ```bash
-npx @activeloop/hivemind@latest uninstall              # remove from every detected assistant
-npx @activeloop/hivemind@latest codex uninstall        # remove from one
+npx @deeplake/hivemind@latest uninstall              # remove from every detected assistant
+npx @deeplake/hivemind@latest codex uninstall        # remove from one
 ```
 
 ## How it works
