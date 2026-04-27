@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const INDEX_MARKER_TTL_MS = Number(process.env.HIVEMIND_INDEX_MARKER_TTL_MS ?? 24 * 3600 * 1000);
+const INDEX_MARKER_TTL_MS = Number(process.env.HIVEMIND_INDEX_MARKER_TTL_MS ?? 6 * 60 * 60_000);
 
 export function getIndexMarkerDir(): string {
   return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join(tmpdir(), "hivemind-deeplake-indexes");
