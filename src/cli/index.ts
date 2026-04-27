@@ -3,6 +3,10 @@ import { installCodex, uninstallCodex } from "./install-codex.js";
 import { installOpenclaw, uninstallOpenclaw } from "./install-openclaw.js";
 import { installCursor, uninstallCursor } from "./install-cursor.js";
 import { installHermes, uninstallHermes } from "./install-hermes.js";
+import { installPi, uninstallPi } from "./install-pi.js";
+import { installCline, uninstallCline } from "./install-cline.js";
+import { installRoo, uninstallRoo } from "./install-roo.js";
+import { installKilo, uninstallKilo } from "./install-kilo.js";
 import { ensureLoggedIn, isLoggedIn, maybeShowOrgChoice } from "./auth.js";
 import { detectPlatforms, allPlatformIds, log, warn, type PlatformId } from "./util.js";
 import { getVersion } from "./version.js";
@@ -20,6 +24,10 @@ Usage:
   hivemind claw    install | uninstall
   hivemind cursor  install | uninstall
   hivemind hermes  install | uninstall
+  hivemind pi      install | uninstall
+  hivemind cline   install | uninstall
+  hivemind roo     install | uninstall
+  hivemind kilo    install | uninstall
       Install or remove hivemind for a specific assistant.
 
   hivemind login            Run device-flow login (open browser).
@@ -88,6 +96,10 @@ function runSingleInstall(id: PlatformId): void {
     else if (id === "claw") installOpenclaw();
     else if (id === "cursor") installCursor();
     else if (id === "hermes") installHermes();
+    else if (id === "pi") installPi();
+    else if (id === "cline") installCline();
+    else if (id === "roo") installRoo();
+    else if (id === "kilo") installKilo();
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${(err as Error).message}`);
   }
@@ -100,6 +112,10 @@ function runSingleUninstall(id: PlatformId): void {
     else if (id === "claw") uninstallOpenclaw();
     else if (id === "cursor") uninstallCursor();
     else if (id === "hermes") uninstallHermes();
+    else if (id === "pi") uninstallPi();
+    else if (id === "cline") uninstallCline();
+    else if (id === "roo") uninstallRoo();
+    else if (id === "kilo") uninstallKilo();
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${(err as Error).message}`);
   }
@@ -139,10 +155,11 @@ async function main(): Promise<void> {
   if (cmd === "login") { await ensureLoggedIn(); return; }
   if (cmd === "status") { runStatus(); return; }
 
-  if (cmd === "claude" || cmd === "codex" || cmd === "claw" || cmd === "cursor" || cmd === "hermes") {
+  const platformCmds: PlatformId[] = ["claude", "codex", "claw", "cursor", "hermes", "pi", "cline", "roo", "kilo"];
+  if (platformCmds.includes(cmd as PlatformId)) {
     const sub = args[1];
-    if (sub === "install") runSingleInstall(cmd);
-    else if (sub === "uninstall") runSingleUninstall(cmd);
+    if (sub === "install") runSingleInstall(cmd as PlatformId);
+    else if (sub === "uninstall") runSingleUninstall(cmd as PlatformId);
     else { warn(`Usage: hivemind ${cmd} install|uninstall`); process.exit(1); }
     return;
   }

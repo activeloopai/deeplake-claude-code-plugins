@@ -48,7 +48,7 @@ export function readVersionStamp(dir: string): string | null {
   try { return readFileSync(p, "utf-8").trim(); } catch { return null; }
 }
 
-export type PlatformId = "claude" | "codex" | "claw" | "cursor" | "hermes";
+export type PlatformId = "claude" | "codex" | "claw" | "cursor" | "hermes" | "pi" | "cline" | "roo" | "kilo";
 
 export interface DetectedPlatform {
   id: PlatformId;
@@ -60,9 +60,15 @@ const PLATFORM_MARKERS: DetectedPlatform[] = [
   { id: "codex", markerDir: join(HOME, ".codex") },
   { id: "claw", markerDir: join(HOME, ".openclaw") },
   { id: "cursor", markerDir: join(HOME, ".cursor") },
-  // Hermes Agent (NousResearch/hermes-agent) — Python plugin model. Marker dir
-  // is the user's hermes config; if absent, hermes isn't installed for this user.
   { id: "hermes", markerDir: join(HOME, ".hermes") },
+  // pi (badlogic/pi-mono coding-agent) — config at ~/.pi/agent/
+  { id: "pi", markerDir: join(HOME, ".pi") },
+  // Cline (saoudrizwan.claude-dev VS Code extension) — settings under VS Code's globalStorage
+  { id: "cline", markerDir: join(HOME, ".config", "Code", "User", "globalStorage", "saoudrizwan.claude-dev") },
+  // Roo Code (rooveterinaryinc.roo-cline VS Code extension)
+  { id: "roo", markerDir: join(HOME, ".config", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline") },
+  // Kilo Code — config at ~/.kilocode/
+  { id: "kilo", markerDir: join(HOME, ".kilocode") },
 ];
 
 export function detectPlatforms(): DetectedPlatform[] {

@@ -15,6 +15,7 @@
     "codex/bundle",
     "codex/skills",
     "cursor/bundle",
+    "mcp/bundle",
     "openclaw/dist",
     "openclaw/skills",
     "openclaw/openclaw.plugin.json",
@@ -44,9 +45,11 @@
     "*.md": []
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "deeplake": "^0.3.30",
     "just-bash": "^2.14.0",
-    "yargs-parser": "^22.0.0"
+    "yargs-parser": "^22.0.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^25.0.0",

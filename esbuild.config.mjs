@@ -161,6 +161,20 @@ await build({
 });
 writeFileSync("openclaw/dist/package.json", esmPackageJson);
 
+// Hivemind MCP server (stdio). Reused by Cline / Roo / Kilo / any MCP-aware
+// agent. Lives at ~/.hivemind/mcp/server.js after install.
+await build({
+  entryPoints: { server: "dist/src/mcp/server.js" },
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "mcp/bundle",
+  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  banner: { js: "#!/usr/bin/env node" },
+});
+chmodSync("mcp/bundle/server.js", 0o755);
+writeFileSync("mcp/bundle/package.json", esmPackageJson);
+
 // Unified CLI (`npx hivemind install` … single entrypoint for all assistants)
 await build({
   entryPoints: { cli: "dist/src/cli/index.js" },
@@ -173,4 +187,4 @@ await build({
 });
 chmodSync("bundle/cli.js", 0o755);
 
-console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + ${cursorAll.length} Cursor + 1 OpenClaw + 1 CLI bundle`);
+console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + ${cursorAll.length} Cursor + 1 OpenClaw + 1 MCP + 1 CLI bundle`);
