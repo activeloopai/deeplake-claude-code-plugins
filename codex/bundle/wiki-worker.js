@@ -154,7 +154,7 @@ import { openSync as openSync2, closeSync as closeSync2, writeSync as writeSync2
 // dist/src/embeddings/protocol.js
 var DEFAULT_SOCKET_DIR = "/tmp";
 var DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1e3;
-var DEFAULT_CLIENT_TIMEOUT_MS = 200;
+var DEFAULT_CLIENT_TIMEOUT_MS = 2e3;
 function socketPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
   return `${dir}/hivemind-embed-${uid}.sock`;
 }
