@@ -1236,7 +1236,7 @@ describe("searchDeeplakeTables: hybrid semantic + lexical branch", () => {
       });
       const sql = query.mock.calls[0][0] as string;
       // Semantic LIMIT is 7; lexical still 20 (default).
-      expect(sql).toMatch(/summary_embedding <#> [^)]+\) AS score FROM "m" WHERE summary_embedding IS NOT NULL ORDER BY score DESC LIMIT 7/);
+      expect(sql).toMatch(/summary_embedding <#> [^)]+\) AS score FROM "m" WHERE ARRAY_LENGTH\(summary_embedding, 1\) > 0 ORDER BY score DESC LIMIT 7/);
     } finally {
       if (prev === undefined) delete process.env.HIVEMIND_SEMANTIC_LIMIT;
       else process.env.HIVEMIND_SEMANTIC_LIMIT = prev;

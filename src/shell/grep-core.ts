@@ -349,15 +349,23 @@ export async function searchDeeplakeTables(
         `FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessLexFilter} LIMIT ${lexicalLimit}`
       : null;
 
+    // Filter out rows with a missing OR empty embedding. ALTER TABLE ADD
+    // COLUMN FLOAT4[] on an existing table (our migration path for pre-0.7.x
+    // schemas) backfills existing rows with `[]`, NOT SQL NULL. Those rows
+    // pass an `IS NOT NULL` check but the cosine operator `<#>` returns NULL
+    // on an empty array, and Postgres orders NULL before any float under
+    // `ORDER BY score DESC` — so pre-migration rows would dominate the top-K
+    // and push real matches out. `ARRAY_LENGTH(col, 1)` returns NULL for
+    // empty arrays, so `> 0` excludes both the empty and the NULL cases.
     const memSemQuery =
       `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, ` +
       `(summary_embedding <#> ${vecLit}) AS score ` +
-      `FROM "${memoryTable}" WHERE summary_embedding IS NOT NULL${pathFilter} ` +
+      `FROM "${memoryTable}" WHERE ARRAY_LENGTH(summary_embedding, 1) > 0${pathFilter} ` +
       `ORDER BY score DESC LIMIT ${semanticLimit}`;
     const sessSemQuery =
       `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, ` +
       `(message_embedding <#> ${vecLit}) AS score ` +
-      `FROM "${sessionsTable}" WHERE message_embedding IS NOT NULL${pathFilter} ` +
+      `FROM "${sessionsTable}" WHERE ARRAY_LENGTH(message_embedding, 1) > 0${pathFilter} ` +
       `ORDER BY score DESC LIMIT ${semanticLimit}`;
 
     const parts = [memSemQuery, sessSemQuery];
