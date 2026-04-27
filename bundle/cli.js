@@ -3157,11 +3157,13 @@ function uninstallHermes() {
 }
 
 // dist/src/cli/install-pi.js
-import { existsSync as existsSync7, writeFileSync as writeFileSync3, rmSync as rmSync3, readFileSync as readFileSync4 } from "node:fs";
+import { existsSync as existsSync7, writeFileSync as writeFileSync3, rmSync as rmSync3, readFileSync as readFileSync4, copyFileSync } from "node:fs";
 import { join as join8 } from "node:path";
 var PI_AGENT_DIR = join8(HOME, ".pi", "agent");
 var AGENTS_MD = join8(PI_AGENT_DIR, "AGENTS.md");
 var SKILL_DIR = join8(PI_AGENT_DIR, "skills", "hivemind-memory");
+var EXTENSIONS_DIR = join8(PI_AGENT_DIR, "extensions");
+var EXTENSION_PATH = join8(EXTENSIONS_DIR, "hivemind.ts");
 var VERSION_DIR = join8(PI_AGENT_DIR, ".hivemind");
 var HIVEMIND_BLOCK_START = "<!-- BEGIN hivemind-memory -->";
 var HIVEMIND_BLOCK_END = "<!-- END hivemind-memory -->";
@@ -3172,6 +3174,8 @@ You have access to global org memory at \`~/.deeplake/memory/\`. Always check bo
 your local context AND Hivemind memory when the user asks you to recall, look up,
 or remember anything.
 
+- Three hivemind tools are registered: \`hivemind_search\`, \`hivemind_read\`, \`hivemind_index\`. **Prefer these** \u2014 one call returns ranked hits in a single SQL query.
+- Fall back to direct filesystem if the tools fail:
 - Start with \`~/.deeplake/memory/index.md\` (table of all sessions)
 - Then read specific summaries at \`~/.deeplake/memory/summaries/<user>/<session>.md\`
 - Only fall back to raw \`~/.deeplake/memory/sessions/<user>/*.jsonl\` if summaries don't have enough detail
@@ -3271,15 +3275,26 @@ function installPi() {
   const prior = existsSync7(AGENTS_MD) ? readFileSync4(AGENTS_MD, "utf-8") : null;
   const next = upsertHivemindBlock(prior);
   writeFileSync3(AGENTS_MD, next);
+  const srcExtension = join8(pkgRoot(), "pi", "extension-source", "hivemind.ts");
+  if (!existsSync7(srcExtension)) {
+    throw new Error(`pi extension source missing at ${srcExtension}. Reinstall the @deeplake/hivemind package.`);
+  }
+  ensureDir(EXTENSIONS_DIR);
+  copyFileSync(srcExtension, EXTENSION_PATH);
   ensureDir(VERSION_DIR);
   writeVersionStamp(VERSION_DIR, getVersion());
   log(`  pi             skill installed -> ${SKILL_DIR}`);
   log(`  pi             AGENTS.md updated -> ${AGENTS_MD}`);
+  log(`  pi             extension installed -> ${EXTENSION_PATH}`);
 }
 function uninstallPi() {
   if (existsSync7(SKILL_DIR)) {
     rmSync3(SKILL_DIR, { recursive: true, force: true });
     log(`  pi             removed ${SKILL_DIR}`);
+  }
+  if (existsSync7(EXTENSION_PATH)) {
+    rmSync3(EXTENSION_PATH, { force: true });
+    log(`  pi             removed extension ${EXTENSION_PATH}`);
   }
   if (existsSync7(AGENTS_MD)) {
     const prior = readFileSync4(AGENTS_MD, "utf-8");

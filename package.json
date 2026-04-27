@@ -17,6 +17,7 @@
     "cursor/bundle",
     "hermes/bundle",
     "mcp/bundle",
+    "pi/extension-source",
     "openclaw/dist",
     "openclaw/skills",
     "openclaw/openclaw.plugin.json",

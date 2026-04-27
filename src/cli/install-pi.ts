@@ -1,27 +1,31 @@
-import { existsSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { existsSync, writeFileSync, rmSync, readFileSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
-import { HOME, ensureDir, writeVersionStamp, log } from "./util.js";
+import { HOME, pkgRoot, ensureDir, writeVersionStamp, log } from "./util.js";
 import { getVersion } from "./version.js";
 
-// pi (badlogic/pi-mono `packages/coding-agent`) integration.
+// pi (badlogic/pi-mono `packages/coding-agent`) integration — Tier 1.
 //
-// pi's documented context surfaces:
-//   - ~/.pi/agent/AGENTS.md           — global context (concatenated with cwd-walked AGENTS.md)
-//   - ~/.pi/agent/skills/<name>/      — agentskills.io-compatible skills
-//   - ~/.pi/agent/extensions/<name>/  — TypeScript extensions registering tools and
-//                                        subscribing to lifecycle events (pi.on("tool_call", ...))
+// pi exposes a rich extension API at
+// `pi-mono/packages/coding-agent/src/core/extensions/types.ts` with 25+
+// lifecycle events including session_start, input, tool_call, tool_result,
+// message_end, and session_shutdown. Our extension subscribes to those for
+// auto-capture and registers hivemind_search / hivemind_read / hivemind_index
+// as first-class pi tools (since pi has no MCP — see pi README).
 //
-// This installer ships the AGENTS.md hook + the skill drop, which together
-// give pi recall capability via direct grep on ~/.deeplake/memory/. The
-// auto-capture path (TS extension wired to pi.on("tool_call", ...)) lands
-// in the follow-up alongside the hivemind MCP server.
+// Surfaces installed:
+//   1. ~/.pi/agent/AGENTS.md — global context (BEGIN/END marker upsert)
+//   2. ~/.pi/agent/skills/hivemind-memory/SKILL.md — agent reads on every turn
+//   3. ~/.pi/agent/extensions/hivemind.ts — TS extension for autocapture + tools
 //
-// Verify against current pi docs before changing the format:
-//   https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/README.md
+// The extension is shipped as raw .ts; pi's runtime loader compiles it on
+// load (uses tsx-style on-the-fly compilation). Self-contained — uses only
+// Node builtins + pi types (which pi provides at runtime).
 
 const PI_AGENT_DIR = join(HOME, ".pi", "agent");
 const AGENTS_MD = join(PI_AGENT_DIR, "AGENTS.md");
 const SKILL_DIR = join(PI_AGENT_DIR, "skills", "hivemind-memory");
+const EXTENSIONS_DIR = join(PI_AGENT_DIR, "extensions");
+const EXTENSION_PATH = join(EXTENSIONS_DIR, "hivemind.ts");
 const VERSION_DIR = join(PI_AGENT_DIR, ".hivemind");
 
 const HIVEMIND_BLOCK_START = "<!-- BEGIN hivemind-memory -->";
@@ -34,6 +38,8 @@ You have access to global org memory at \`~/.deeplake/memory/\`. Always check bo
 your local context AND Hivemind memory when the user asks you to recall, look up,
 or remember anything.
 
+- Three hivemind tools are registered: \`hivemind_search\`, \`hivemind_read\`, \`hivemind_index\`. **Prefer these** — one call returns ranked hits in a single SQL query.
+- Fall back to direct filesystem if the tools fail:
 - Start with \`~/.deeplake/memory/index.md\` (table of all sessions)
 - Then read specific summaries at \`~/.deeplake/memory/summaries/<user>/<session>.md\`
 - Only fall back to raw \`~/.deeplake/memory/sessions/<user>/*.jsonl\` if summaries don't have enough detail
@@ -115,26 +121,39 @@ function stripHivemindBlock(existing: string): string {
 export function installPi(): void {
   ensureDir(PI_AGENT_DIR);
 
-  // Skill drop
+  // 1. Skill drop — agent context.
   ensureDir(SKILL_DIR);
   writeFileSync(join(SKILL_DIR, "SKILL.md"), SKILL_BODY);
 
-  // AGENTS.md hivemind block (idempotent upsert)
+  // 2. AGENTS.md hivemind block (idempotent upsert).
   const prior = existsSync(AGENTS_MD) ? readFileSync(AGENTS_MD, "utf-8") : null;
   const next = upsertHivemindBlock(prior);
   writeFileSync(AGENTS_MD, next);
+
+  // 3. Extension — autocapture + first-class hivemind tools.
+  const srcExtension = join(pkgRoot(), "pi", "extension-source", "hivemind.ts");
+  if (!existsSync(srcExtension)) {
+    throw new Error(`pi extension source missing at ${srcExtension}. Reinstall the @deeplake/hivemind package.`);
+  }
+  ensureDir(EXTENSIONS_DIR);
+  copyFileSync(srcExtension, EXTENSION_PATH);
 
   ensureDir(VERSION_DIR);
   writeVersionStamp(VERSION_DIR, getVersion());
 
   log(`  pi             skill installed -> ${SKILL_DIR}`);
   log(`  pi             AGENTS.md updated -> ${AGENTS_MD}`);
+  log(`  pi             extension installed -> ${EXTENSION_PATH}`);
 }
 
 export function uninstallPi(): void {
   if (existsSync(SKILL_DIR)) {
     rmSync(SKILL_DIR, { recursive: true, force: true });
     log(`  pi             removed ${SKILL_DIR}`);
+  }
+  if (existsSync(EXTENSION_PATH)) {
+    rmSync(EXTENSION_PATH, { force: true });
+    log(`  pi             removed extension ${EXTENSION_PATH}`);
   }
   if (existsSync(AGENTS_MD)) {
     const prior = readFileSync(AGENTS_MD, "utf-8");
