@@ -250,7 +250,7 @@ function uninstallCodex() {
 // dist/src/cli/install-openclaw.js
 import { existsSync as existsSync4, rmSync } from "node:fs";
 import { join as join5 } from "node:path";
-var PLUGIN_DIR3 = join5(HOME, ".openclaw", "plugins", "hivemind");
+var PLUGIN_DIR3 = join5(HOME, ".openclaw", "extensions", "hivemind");
 function installOpenclaw() {
   const srcDist = join5(pkgRoot(), "openclaw", "dist");
   const srcManifest = join5(pkgRoot(), "openclaw", "openclaw.plugin.json");

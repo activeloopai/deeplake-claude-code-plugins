@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { HOME, pkgRoot, ensureDir, copyDir, writeVersionStamp, log } from "./util.js";
 import { getVersion } from "./version.js";
 
-const PLUGIN_DIR = join(HOME, ".openclaw", "plugins", "hivemind");
+const PLUGIN_DIR = join(HOME, ".openclaw", "extensions", "hivemind");
 
 export function installOpenclaw(): void {
   const srcDist = join(pkgRoot(), "openclaw", "dist");
