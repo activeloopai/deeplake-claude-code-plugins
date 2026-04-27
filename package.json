@@ -12,11 +12,6 @@
   },
   "files": [
     "bundle",
-    "claude-code/bundle",
-    "claude-code/commands",
-    "claude-code/skills",
-    "claude-code/hooks",
-    "claude-code/.claude-plugin",
     "codex/bundle",
     "codex/skills",
     "openclaw/dist",
