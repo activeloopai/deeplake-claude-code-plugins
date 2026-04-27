@@ -98,7 +98,9 @@ async function main(): Promise<void> {
 
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
   const filename = sessionPath.split("/").pop() ?? "";
-  const jsonForSql = sqlStr(line);
+  // For JSONB: only escape single quotes for the SQL literal, keep JSON structure intact.
+  // sqlStr() would also escape backslashes and strip control chars, corrupting the JSON.
+  const jsonForSql = line.replace(/'/g, "''");
 
   const insertSql =
     `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +

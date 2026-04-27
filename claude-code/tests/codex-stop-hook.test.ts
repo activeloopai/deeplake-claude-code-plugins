@@ -277,3 +277,27 @@ describe("codex stop hook — fatal catch", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 });
+
+describe("codex stop hook — JSONB SQL escape (regression)", () => {
+  // Regression: sqlStr() over the JSON line doubled backslashes, which
+  // mangles \" sequences from JSON.stringify when the assistant message
+  // contains literal quotes. Now only ' is escaped for the SQL literal.
+  it("produces parseable JSON when the assistant message contains double quotes", async () => {
+    const path = join(tmpDir, "transcript.jsonl");
+    writeFileSync(path, JSON.stringify({
+      payload: { role: "assistant", content: 'she said "hello"' },
+    }));
+    stdinMock.mockResolvedValue({
+      session_id: "sid-1", cwd: "/x", hook_event_name: "Stop", model: "m",
+      transcript_path: path,
+    });
+    await runHook();
+    const sql = queryMock.mock.calls[0][0] as string;
+    const m = sql.match(/'(\{[\s\S]+\})'::jsonb,/);
+    expect(m).not.toBeNull();
+    const messageJson = m![1].replace(/''/g, "'");
+    const parsed = JSON.parse(messageJson);
+    expect(parsed.type).toBe("assistant_message");
+    expect(parsed.content).toBe('she said "hello"');
+  });
+});
