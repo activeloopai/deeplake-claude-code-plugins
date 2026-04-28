@@ -13,15 +13,9 @@ import { homedir } from "node:os";
 import { execSync } from "node:child_process";
 
 // dist/src/utils/client-header.js
-function pluginVersion() {
-  if ("0.6.48") {
-    return "0.6.48";
-  }
-  return "dev";
-}
 var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
 function deeplakeClientValue() {
-  return `hivemind/${pluginVersion()}`;
+  return `hivemind/${"0.6.48"}`;
 }
 function deeplakeClientHeader() {
   return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };

@@ -10,6 +10,13 @@ import { defineConfig } from "vitest/config";
 // that hides regressions in new code.
 
 export default defineConfig({
+  // Match esbuild's `define` for __HIVEMIND_VERSION__ so source files that
+  // read it directly (e.g. src/utils/client-header.ts) don't need a typeof
+  // guard for tests. Bundled builds substitute the real version; tests get
+  // the "dev" sentinel.
+  define: {
+    __HIVEMIND_VERSION__: JSON.stringify("dev"),
+  },
   test: {
     include: [
       "claude-code/tests/**/*.test.ts",
