@@ -26,9 +26,13 @@ const USAGE = `
 hivemind — one brain for every agent on your team
 
 Usage:
-  hivemind install [--only <platforms>] [--skip-auth]
+  hivemind install   [--only <platforms>] [--skip-auth]
       Auto-detect assistants on this machine and install hivemind into each.
       --only takes a comma-separated list: ${allPlatformIds().join(",")}
+
+  hivemind uninstall [--only <platforms>]
+      Auto-detect installed assistants and remove hivemind from each.
+      --only takes the same list to scope the removal.
 
   hivemind claude  install | uninstall
   hivemind codex   install | uninstall
