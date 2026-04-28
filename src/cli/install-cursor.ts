@@ -113,8 +113,14 @@ export function uninstallCursor(): void {
     return;
   }
   const stripped = stripHooksFromConfig(existing);
-  if (!stripped || (Object.keys(stripped).length === 1 && stripped.version)) {
-    // Nothing else in the file — remove it.
+  // Delete the file when nothing meaningful remains. The previous check
+  // missed two edge cases: an empty object `{}` (no version key at all)
+  // and a stripped object with `version: 0` (falsy → block fired wrong).
+  // Count keys ignoring `version` regardless of its value.
+  const meaningfulKeys = stripped
+    ? Object.keys(stripped).filter(k => k !== "version").length
+    : 0;
+  if (!stripped || meaningfulKeys === 0) {
     if (existsSync(HOOKS_PATH)) unlinkSync(HOOKS_PATH);
   } else {
     writeJson(HOOKS_PATH, stripped);

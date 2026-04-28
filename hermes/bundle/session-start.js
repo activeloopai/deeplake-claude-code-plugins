@@ -417,12 +417,26 @@ function getInstalledVersion(bundleDir, pluginManifestDir) {
       return plugin.version;
   } catch {
   }
+  try {
+    const stamp = readFileSync4(join5(bundleDir, "..", ".hivemind_version"), "utf-8").trim();
+    if (stamp)
+      return stamp;
+  } catch {
+  }
+  const HIVEMIND_PKG_NAMES = /* @__PURE__ */ new Set([
+    "hivemind",
+    "hivemind-codex",
+    "@deeplake/hivemind",
+    "@deeplake/hivemind-codex",
+    "@activeloop/hivemind",
+    "@activeloop/hivemind-codex"
+  ]);
   let dir = bundleDir;
   for (let i = 0; i < 5; i++) {
     const candidate = join5(dir, "package.json");
     try {
       const pkg = JSON.parse(readFileSync4(candidate, "utf-8"));
-      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version)
+      if (HIVEMIND_PKG_NAMES.has(pkg.name) && pkg.version)
         return pkg.version;
     } catch {
     }

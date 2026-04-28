@@ -7,7 +7,7 @@
  *   hivemind_index   — list summaries with their dates and descriptions
  *
  * Transport: stdio. Spawned as a subprocess by the consuming MCP client
- * (Cline / Roo Code / Kilo Code / any MCP-aware agent).
+ * (Hermes today; reused by any future MCP-aware agent).
  *
  * Auth: loads ~/.deeplake/credentials.json. If credentials are missing,
  * tools return a clear "not authenticated" message rather than crashing.
@@ -19,8 +19,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { loadCredentials } from "../commands/auth.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr } from "../utils/sql.js";
+import { sqlStr, sqlLike } from "../utils/sql.js";
 import { searchDeeplakeTables, buildGrepSearchOptions, normalizeContent, type GrepMatchParams } from "../shell/grep-core.js";
+import { getVersion } from "../cli/version.js";
 
 interface ServerContext {
   api: DeeplakeApi;
@@ -47,7 +48,7 @@ function errorResult(text: string): { content: Array<{ type: "text"; text: strin
 
 const server = new McpServer({
   name: "hivemind",
-  version: "0.6.47",
+  version: getVersion(),
 });
 
 server.registerTool(
@@ -137,7 +138,13 @@ server.registerTool(
     const ctx = getContext();
     if ("error" in ctx) return errorResult(ctx.error);
 
-    const where = prefix ? `WHERE path LIKE '${sqlStr(prefix)}%'` : `WHERE path LIKE '/summaries/%'`;
+    // sqlLike escapes both quotes AND LIKE wildcards (% / _) so an
+    // LLM-supplied prefix can't bypass the filter (e.g. prefix='%' would
+    // match every row otherwise). ESCAPE '\\' tells the engine to honour
+    // the backslash escapes sqlLike inserts.
+    const where = prefix
+      ? `WHERE path LIKE '${sqlLike(prefix)}%' ESCAPE '\\'`
+      : `WHERE path LIKE '/summaries/%'`;
     const sql = `SELECT path, description, project, last_update_date FROM "${ctx.memoryTable}" ${where} ORDER BY last_update_date DESC LIMIT ${limit ?? 50}`;
 
     try {

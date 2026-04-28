@@ -142,7 +142,7 @@ function uninstallClaude() {
 }
 
 // dist/src/cli/install-codex.js
-import { existsSync as existsSync2, unlinkSync as unlinkSync2 } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync3, unlinkSync as unlinkSync2 } from "node:fs";
 import { execFileSync as execFileSync2 } from "node:child_process";
 import { join as join3 } from "node:path";
 
@@ -187,6 +187,42 @@ function buildHooksJson() {
     }
   };
 }
+function isHivemindHookEntry(entry) {
+  if (!entry || typeof entry !== "object")
+    return false;
+  const e = entry;
+  const hooks = Array.isArray(e.hooks) ? e.hooks : [];
+  return hooks.some((h) => {
+    if (!h || typeof h !== "object")
+      return false;
+    const cmd = h.command;
+    return typeof cmd === "string" && cmd.includes(`${PLUGIN_DIR}/bundle/`);
+  });
+}
+function mergeHooksJson(ours) {
+  let existing = {};
+  try {
+    if (existsSync2(HOOKS_PATH)) {
+      const parsed = JSON.parse(readFileSync3(HOOKS_PATH, "utf-8"));
+      if (parsed && typeof parsed === "object")
+        existing = parsed;
+    }
+  } catch {
+    warn(`  Codex          ${HOOKS_PATH} unparseable \u2014 ignoring prior content`);
+  }
+  const existingHooks = existing.hooks && typeof existing.hooks === "object" ? existing.hooks : {};
+  const ourHooks = ours.hooks;
+  const merged = {};
+  for (const [event, entries] of Object.entries(existingHooks)) {
+    const surviving = (entries ?? []).filter((e) => !isHivemindHookEntry(e));
+    if (surviving.length)
+      merged[event] = surviving;
+  }
+  for (const [event, entries] of Object.entries(ourHooks)) {
+    merged[event] = [...merged[event] ?? [], ...entries ?? []];
+  }
+  return { ...existing, hooks: merged };
+}
 function tryEnableCodexHooks() {
   try {
     execFileSync2("codex", ["features", "enable", "codex_hooks"], { stdio: "ignore" });
@@ -204,7 +240,7 @@ function installCodex() {
   if (existsSync2(srcSkills))
     copyDir(srcSkills, join3(PLUGIN_DIR, "skills"));
   tryEnableCodexHooks();
-  writeJson(HOOKS_PATH, buildHooksJson());
+  writeJson(HOOKS_PATH, mergeHooksJson(buildHooksJson()));
   ensureDir(AGENTS_SKILLS_DIR);
   const skillTarget = join3(PLUGIN_DIR, "skills", "deeplake-memory");
   if (existsSync2(skillTarget)) {
@@ -228,7 +264,7 @@ function uninstallCodex() {
 }
 
 // dist/src/cli/install-openclaw.js
-import { existsSync as existsSync3, rmSync } from "node:fs";
+import { existsSync as existsSync3, copyFileSync, rmSync } from "node:fs";
 import { join as join4 } from "node:path";
 var PLUGIN_DIR2 = join4(HOME, ".openclaw", "extensions", "hivemind");
 function installOpenclaw() {
@@ -242,9 +278,9 @@ function installOpenclaw() {
   ensureDir(PLUGIN_DIR2);
   copyDir(srcDist, join4(PLUGIN_DIR2, "dist"));
   if (existsSync3(srcManifest))
-    copyDir(srcManifest, join4(PLUGIN_DIR2, "openclaw.plugin.json"));
+    copyFileSync(srcManifest, join4(PLUGIN_DIR2, "openclaw.plugin.json"));
   if (existsSync3(srcPkg))
-    copyDir(srcPkg, join4(PLUGIN_DIR2, "package.json"));
+    copyFileSync(srcPkg, join4(PLUGIN_DIR2, "package.json"));
   if (existsSync3(srcSkills))
     copyDir(srcSkills, join4(PLUGIN_DIR2, "skills"));
   writeVersionStamp(PLUGIN_DIR2, getVersion());
@@ -351,7 +387,8 @@ function uninstallCursor() {
     return;
   }
   const stripped = stripHooksFromConfig(existing);
-  if (!stripped || Object.keys(stripped).length === 1 && stripped.version) {
+  const meaningfulKeys = stripped ? Object.keys(stripped).filter((k) => k !== "version").length : 0;
+  if (!stripped || meaningfulKeys === 0) {
     if (existsSync4(HOOKS_PATH2))
       unlinkSync3(HOOKS_PATH2);
   } else {
@@ -361,7 +398,7 @@ function uninstallCursor() {
 }
 
 // dist/src/cli/install-hermes.js
-import { existsSync as existsSync6, writeFileSync as writeFileSync2, readFileSync as readFileSync3, rmSync as rmSync2, unlinkSync as unlinkSync4 } from "node:fs";
+import { existsSync as existsSync6, writeFileSync as writeFileSync2, readFileSync as readFileSync4, rmSync as rmSync2, unlinkSync as unlinkSync4 } from "node:fs";
 import { join as join7 } from "node:path";
 
 // node_modules/js-yaml/dist/js-yaml.mjs
@@ -3078,7 +3115,7 @@ function readConfig() {
   if (!existsSync6(CONFIG_PATH))
     return {};
   try {
-    const raw = readFileSync3(CONFIG_PATH, "utf-8");
+    const raw = readFileSync4(CONFIG_PATH, "utf-8");
     const parsed = load(raw);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       return parsed;
@@ -3157,7 +3194,7 @@ function uninstallHermes() {
 }
 
 // dist/src/cli/install-pi.js
-import { existsSync as existsSync7, writeFileSync as writeFileSync3, rmSync as rmSync3, readFileSync as readFileSync4, copyFileSync } from "node:fs";
+import { existsSync as existsSync7, writeFileSync as writeFileSync3, rmSync as rmSync3, readFileSync as readFileSync5, copyFileSync as copyFileSync2 } from "node:fs";
 import { join as join8 } from "node:path";
 var PI_AGENT_DIR = join8(HOME, ".pi", "agent");
 var AGENTS_MD = join8(PI_AGENT_DIR, "AGENTS.md");
@@ -3235,7 +3272,7 @@ function installPi() {
   if (existsSync7(LEGACY_SKILL_DIR)) {
     rmSync3(LEGACY_SKILL_DIR, { recursive: true, force: true });
   }
-  const prior = existsSync7(AGENTS_MD) ? readFileSync4(AGENTS_MD, "utf-8") : null;
+  const prior = existsSync7(AGENTS_MD) ? readFileSync5(AGENTS_MD, "utf-8") : null;
   const next = upsertHivemindBlock(prior);
   writeFileSync3(AGENTS_MD, next);
   const srcExtension = join8(pkgRoot(), "pi", "extension-source", "hivemind.ts");
@@ -3243,7 +3280,7 @@ function installPi() {
     throw new Error(`pi extension source missing at ${srcExtension}. Reinstall the @deeplake/hivemind package.`);
   }
   ensureDir(EXTENSIONS_DIR);
-  copyFileSync(srcExtension, EXTENSION_PATH);
+  copyFileSync2(srcExtension, EXTENSION_PATH);
   ensureDir(VERSION_DIR);
   writeVersionStamp(VERSION_DIR, getVersion());
   log(`  pi             AGENTS.md updated -> ${AGENTS_MD}`);
@@ -3259,7 +3296,7 @@ function uninstallPi() {
     log(`  pi             removed extension ${EXTENSION_PATH}`);
   }
   if (existsSync7(AGENTS_MD)) {
-    const prior = readFileSync4(AGENTS_MD, "utf-8");
+    const prior = readFileSync5(AGENTS_MD, "utf-8");
     const stripped = stripHivemindBlock(prior);
     if (stripped.trim().length === 0) {
       rmSync3(AGENTS_MD, { force: true });
@@ -3279,7 +3316,7 @@ import { existsSync as existsSync9 } from "node:fs";
 import { join as join10 } from "node:path";
 
 // dist/src/commands/auth.js
-import { readFileSync as readFileSync5, writeFileSync as writeFileSync4, existsSync as existsSync8, mkdirSync as mkdirSync2, unlinkSync as unlinkSync5 } from "node:fs";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync4, existsSync as existsSync8, mkdirSync as mkdirSync2, unlinkSync as unlinkSync5 } from "node:fs";
 import { join as join9 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 import { execSync } from "node:child_process";
@@ -3290,7 +3327,7 @@ function loadCredentials() {
   if (!existsSync8(CREDS_PATH))
     return null;
   try {
-    return JSON.parse(readFileSync5(CREDS_PATH, "utf-8"));
+    return JSON.parse(readFileSync6(CREDS_PATH, "utf-8"));
   } catch {
     return null;
   }
@@ -3515,7 +3552,7 @@ async function maybeShowOrgChoice() {
 }
 
 // dist/src/config.js
-import { readFileSync as readFileSync6, existsSync as existsSync10 } from "node:fs";
+import { readFileSync as readFileSync7, existsSync as existsSync10 } from "node:fs";
 import { join as join11 } from "node:path";
 import { homedir as homedir3, userInfo } from "node:os";
 function loadConfig() {
@@ -3524,7 +3561,7 @@ function loadConfig() {
   let creds = null;
   if (existsSync10(credPath)) {
     try {
-      creds = JSON.parse(readFileSync6(credPath, "utf-8"));
+      creds = JSON.parse(readFileSync7(credPath, "utf-8"));
     } catch {
       return null;
     }
@@ -3548,7 +3585,7 @@ function loadConfig() {
 
 // dist/src/deeplake-api.js
 import { randomUUID } from "node:crypto";
-import { existsSync as existsSync11, mkdirSync as mkdirSync3, readFileSync as readFileSync7, writeFileSync as writeFileSync5 } from "node:fs";
+import { existsSync as existsSync11, mkdirSync as mkdirSync3, readFileSync as readFileSync8, writeFileSync as writeFileSync5 } from "node:fs";
 import { join as join13 } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -3790,7 +3827,7 @@ var DeeplakeApi = class {
     if (!existsSync11(markerPath))
       return false;
     try {
-      const raw = JSON.parse(readFileSync7(markerPath, "utf-8"));
+      const raw = JSON.parse(readFileSync8(markerPath, "utf-8"));
       const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
       if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS)
         return false;

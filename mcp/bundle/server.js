@@ -23943,6 +23943,41 @@ function buildContentFilter(column, likeOp, patterns) {
   return ` AND (${patterns.map((pattern) => `${column} ${likeOp} '%${pattern}%'`).join(" OR ")})`;
 }
 
+// dist/src/cli/version.js
+import { readFileSync as readFileSync5 } from "node:fs";
+import { join as join6 } from "node:path";
+
+// dist/src/cli/util.js
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3, cpSync, symlinkSync, unlinkSync as unlinkSync2, lstatSync } from "node:fs";
+import { join as join5, dirname } from "node:path";
+import { homedir as homedir4 } from "node:os";
+import { fileURLToPath } from "node:url";
+var HOME = homedir4();
+function pkgRoot() {
+  return fileURLToPath(new URL("..", import.meta.url));
+}
+var PLATFORM_MARKERS = [
+  { id: "claude", markerDir: join5(HOME, ".claude") },
+  { id: "codex", markerDir: join5(HOME, ".codex") },
+  { id: "claw", markerDir: join5(HOME, ".openclaw") },
+  { id: "cursor", markerDir: join5(HOME, ".cursor") },
+  { id: "hermes", markerDir: join5(HOME, ".hermes") },
+  // pi (badlogic/pi-mono coding-agent) — config at ~/.pi/agent/. pi exposes
+  // a rich extension event API (session_start / input / tool_call /
+  // tool_result / message_end / session_shutdown / etc.) — Tier 1 capable.
+  { id: "pi", markerDir: join5(HOME, ".pi") }
+];
+
+// dist/src/cli/version.js
+function getVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync5(join6(pkgRoot(), "package.json"), "utf-8"));
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
 // dist/src/mcp/server.js
 function getContext() {
   const creds = loadCredentials();
@@ -23961,7 +23996,7 @@ function errorResult(text) {
 }
 var server = new McpServer({
   name: "hivemind",
-  version: "0.6.47"
+  version: getVersion()
 });
 server.registerTool("hivemind_search", {
   description: "Search Hivemind shared memory (summaries + raw sessions) by keyword or multi-word phrase. Returns matching paths and snippets. Use this first when the user asks about prior work, conversations, or context that may exist in Hivemind. Different paths under /summaries/<username>/ are different users \u2014 do not merge them.",
@@ -24037,7 +24072,7 @@ server.registerTool("hivemind_index", {
   const ctx = getContext();
   if ("error" in ctx)
     return errorResult(ctx.error);
-  const where = prefix ? `WHERE path LIKE '${sqlStr(prefix)}%'` : `WHERE path LIKE '/summaries/%'`;
+  const where = prefix ? `WHERE path LIKE '${sqlLike(prefix)}%' ESCAPE '\\'` : `WHERE path LIKE '/summaries/%'`;
   const sql = `SELECT path, description, project, last_update_date FROM "${ctx.memoryTable}" ${where} ORDER BY last_update_date DESC LIMIT ${limit ?? 50}`;
   try {
     const rows = await ctx.api.query(sql);

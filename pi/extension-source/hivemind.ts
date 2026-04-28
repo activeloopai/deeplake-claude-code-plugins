@@ -72,6 +72,19 @@ function sqlStr(value: string): string {
     .replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 
+// LIKE-pattern escape: sqlStr only handles SQL string quoting, NOT LIKE
+// metacharacters. Without this, a tool arg containing `%` or `_` (which
+// the LLM controls via the tool schema) would bypass the intended path
+// filter — e.g. prefix='%' would match every row in the table. Wrap the
+// resulting LIKE clause with `ESCAPE '\\'` so the engine honours the
+// backslash escaping below.
+function sqlLike(value: string): string {
+  return sqlStr(value)
+    .replace(/\\/g, "\\\\")
+    .replace(/%/g, "\\%")
+    .replace(/_/g, "\\_");
+}
+
 // JSONB column escape — only single-quote doubling, preserves JSON escape sequences.
 function sqlJsonb(json: string): string {
   return json.replace(/'/g, "''");
@@ -129,9 +142,12 @@ async function writeSessionRow(
 // ---------- search primitive (used by hivemind_search) -------------------------
 
 async function searchTables(creds: Creds, query: string, limit: number): Promise<string> {
-  const pattern = sqlStr(query);
-  const memQuery = `SELECT path, summary::text AS content, 0 AS source_order FROM "${MEMORY_TABLE}" WHERE summary::text ILIKE '%${pattern}%' LIMIT ${limit}`;
-  const sessQuery = `SELECT path, message::text AS content, 1 AS source_order FROM "${SESSIONS_TABLE}" WHERE message::text ILIKE '%${pattern}%' LIMIT ${limit}`;
+  // ILIKE pattern: escape both SQL quotes AND LIKE wildcards. ESCAPE '\\'
+  // tells the engine to treat backslash as the escape character so our
+  // \% / \_ are matched literally instead of as wildcards.
+  const pattern = sqlLike(query);
+  const memQuery = `SELECT path, summary::text AS content, 0 AS source_order FROM "${MEMORY_TABLE}" WHERE summary::text ILIKE '%${pattern}%' ESCAPE '\\' LIMIT ${limit}`;
+  const sessQuery = `SELECT path, message::text AS content, 1 AS source_order FROM "${SESSIONS_TABLE}" WHERE message::text ILIKE '%${pattern}%' ESCAPE '\\' LIMIT ${limit}`;
   const sql = `SELECT path, content, source_order FROM ((${memQuery}) UNION ALL (${sessQuery})) AS combined ORDER BY path, source_order LIMIT ${limit}`;
   const rows = await dlQuery(creds, sql);
   if (rows.length === 0) return `No matches for "${query}".`;
@@ -224,7 +240,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
       const creds = loadCreds();
       if (!creds) return textResult("Hivemind: not authenticated.");
       const where = params.prefix
-        ? `WHERE path LIKE '${sqlStr(params.prefix)}%'`
+        ? `WHERE path LIKE '${sqlLike(params.prefix)}%' ESCAPE '\\'`
         : `WHERE path LIKE '/summaries/%'`;
       const sql = `SELECT path, description, project, last_update_date FROM "${MEMORY_TABLE}" ${where} ORDER BY last_update_date DESC LIMIT ${params.limit ?? 50}`;
       try {
