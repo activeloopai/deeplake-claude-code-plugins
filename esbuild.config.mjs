@@ -22,6 +22,7 @@ const ccShell = [
 
 const ccCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
+  { entry: "dist/src/commands/log-experiment.js", out: "commands/log-experiment" },
 ];
 
 const ccAll = [...ccHooks, ...ccShell, ...ccCommands];
