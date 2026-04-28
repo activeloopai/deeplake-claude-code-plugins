@@ -7,8 +7,7 @@
     "access": "public"
   },
   "bin": {
-    "hivemind": "bundle/cli.js",
-    "deeplake-shell": "bundle/deeplake-shell.js"
+    "hivemind": "bundle/cli.js"
   },
   "files": [
     "bundle",
