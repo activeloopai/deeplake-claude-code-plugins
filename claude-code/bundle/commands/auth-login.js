@@ -257,6 +257,10 @@ function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 
+// dist/src/embeddings/columns.js
+var SUMMARY_EMBEDDING_COL = "summary_embedding";
+var MESSAGE_EMBEDDING_COL = "message_embedding";
+
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
 function summarizeSql(sql, maxLen = 220) {
@@ -506,6 +510,54 @@ var DeeplakeApi = class {
       log2(`index "${indexName}" skipped: ${e.message}`);
     }
   }
+  /**
+   * Ensure a vector column exists on the given table.
+   *
+   * The previous implementation always issued `ALTER TABLE ADD COLUMN IF NOT
+   * EXISTS …` on every SessionStart. On a long-running workspace that's
+   * already migrated, every call returns 500 "Column already exists" — noisy
+   * in the log and a wasted round-trip. Worse, the very first call after the
+   * column is genuinely added triggers Deeplake's post-ALTER `vector::at`
+   * window (~30s) during which subsequent INSERTs fail; minimising the
+   * number of ALTER calls minimises exposure to that window.
+   *
+   * New flow:
+   *   1. Check the local marker file (mirrors ensureLookupIndex). If fresh,
+   *      return — zero network calls.
+   *   2. SELECT 1 FROM information_schema.columns WHERE table_name = T AND
+   *      column_name = C. Read-only, idempotent, can't tickle the post-ALTER
+   *      bug. If the column is present → mark + return.
+   *   3. Only if step 2 says the column is missing, fall back to ALTER ADD
+   *      COLUMN IF NOT EXISTS. Mark on success, also mark if Deeplake reports
+   *      "already exists" (race: another client added it between our SELECT
+   *      and ALTER).
+   *
+   * Marker uses the same dir / TTL as ensureLookupIndex so both schema
+   * caches share an opt-out (HIVEMIND_INDEX_MARKER_DIR) and a TTL knob.
+   */
+  async ensureEmbeddingColumn(table, column) {
+    if (this.hasFreshLookupIndexMarker(table, `col_${column}`))
+      return;
+    try {
+      const rows = await this.query(`SELECT 1 FROM information_schema.columns WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' LIMIT 1`);
+      if (rows.length > 0) {
+        this.markLookupIndexReady(table, `col_${column}`);
+        return;
+      }
+    } catch (e) {
+      log2(`schema check for ${table}.${column} fell through: ${e.message}`);
+    }
+    try {
+      await this.query(`ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS ${column} FLOAT4[]`);
+      this.markLookupIndexReady(table, `col_${column}`);
+    } catch (e) {
+      if (isDuplicateIndexError(e)) {
+        this.markLookupIndexReady(table, `col_${column}`);
+        return;
+      }
+      log2(`ALTER TABLE add ${column} skipped: ${e.message}`);
+    }
+  }
   /** List all tables in the workspace (with retry). */
   async listTables(forceRefresh = false) {
     if (!forceRefresh && this._tablesCache)
@@ -557,11 +609,7 @@ var DeeplakeApi = class {
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
     } else {
-      try {
-        await this.query(`ALTER TABLE "${tbl}" ADD COLUMN IF NOT EXISTS summary_embedding FLOAT4[]`);
-      } catch (e) {
-        log2(`ALTER TABLE add summary_embedding skipped: ${e.message}`);
-      }
+      await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
     }
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
@@ -574,11 +622,7 @@ var DeeplakeApi = class {
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
     } else {
-      try {
-        await this.query(`ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS message_embedding FLOAT4[]`);
-      } catch (e) {
-        log2(`ALTER TABLE add message_embedding skipped: ${e.message}`);
-      }
+      await this.ensureEmbeddingColumn(name, MESSAGE_EMBEDDING_COL);
     }
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }

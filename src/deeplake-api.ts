@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { log as _log } from "./utils/debug.js";
 import { sqlStr } from "./utils/sql.js";
+import { SUMMARY_EMBEDDING_COL, MESSAGE_EMBEDDING_COL } from "./embeddings/columns.js";
 
 const log = (msg: string) => _log("sdk", msg);
 
@@ -308,6 +309,60 @@ export class DeeplakeApi {
     }
   }
 
+  /**
+   * Ensure a vector column exists on the given table.
+   *
+   * The previous implementation always issued `ALTER TABLE ADD COLUMN IF NOT
+   * EXISTS …` on every SessionStart. On a long-running workspace that's
+   * already migrated, every call returns 500 "Column already exists" — noisy
+   * in the log and a wasted round-trip. Worse, the very first call after the
+   * column is genuinely added triggers Deeplake's post-ALTER `vector::at`
+   * window (~30s) during which subsequent INSERTs fail; minimising the
+   * number of ALTER calls minimises exposure to that window.
+   *
+   * New flow:
+   *   1. Check the local marker file (mirrors ensureLookupIndex). If fresh,
+   *      return — zero network calls.
+   *   2. SELECT 1 FROM information_schema.columns WHERE table_name = T AND
+   *      column_name = C. Read-only, idempotent, can't tickle the post-ALTER
+   *      bug. If the column is present → mark + return.
+   *   3. Only if step 2 says the column is missing, fall back to ALTER ADD
+   *      COLUMN IF NOT EXISTS. Mark on success, also mark if Deeplake reports
+   *      "already exists" (race: another client added it between our SELECT
+   *      and ALTER).
+   *
+   * Marker uses the same dir / TTL as ensureLookupIndex so both schema
+   * caches share an opt-out (HIVEMIND_INDEX_MARKER_DIR) and a TTL knob.
+   */
+  private async ensureEmbeddingColumn(table: string, column: string): Promise<void> {
+    if (this.hasFreshLookupIndexMarker(table, `col_${column}`)) return;
+
+    try {
+      const rows = await this.query(
+        `SELECT 1 FROM information_schema.columns ` +
+        `WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' LIMIT 1`,
+      );
+      if (rows.length > 0) {
+        this.markLookupIndexReady(table, `col_${column}`);
+        return;
+      }
+    } catch (e: any) {
+      // information_schema unsupported on this backend → fall through to ALTER.
+      log(`schema check for ${table}.${column} fell through: ${e.message}`);
+    }
+
+    try {
+      await this.query(`ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS ${column} FLOAT4[]`);
+      this.markLookupIndexReady(table, `col_${column}`);
+    } catch (e: any) {
+      if (isDuplicateIndexError(e)) {
+        this.markLookupIndexReady(table, `col_${column}`);
+        return;
+      }
+      log(`ALTER TABLE add ${column} skipped: ${e.message}`);
+    }
+  }
+
   /** List all tables in the workspace (with retry). */
   async listTables(forceRefresh = false): Promise<string[]> {
     if (!forceRefresh && this._tablesCache) return [...this._tablesCache];
@@ -376,17 +431,12 @@ export class DeeplakeApi {
       if (!tables.includes(tbl)) this._tablesCache = [...tables, tbl];
     } else {
       // Migrate older memory tables that were created before the embeddings
-      // feature landed. ADD COLUMN IF NOT EXISTS is idempotent on Postgres
-      // and Deeplake; we swallow errors because on backends that don't
-      // support it the column just stays absent and the embedding-column
-      // writes fall through to NULL (capture / flush tolerate that).
-      try {
-        await this.query(
-          `ALTER TABLE "${tbl}" ADD COLUMN IF NOT EXISTS summary_embedding FLOAT4[]`,
-        );
-      } catch (e: any) {
-        log(`ALTER TABLE add summary_embedding skipped: ${e.message}`);
-      }
+      // feature landed. ensureEmbeddingColumn does a SELECT against
+      // information_schema first and only ALTERs if the column is genuinely
+      // missing — keeps the steady-state SessionStart at 0 ALTER calls and
+      // avoids the post-ALTER `vector::at` bug window on already-migrated
+      // workspaces.
+      await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
     }
     // BM25 index disabled — CREATE INDEX causes intermittent oid errors on fresh tables.
     // See bm25-oid-bug.sh for reproduction. Re-enable once Deeplake fixes the oid invalidation.
@@ -423,13 +473,7 @@ export class DeeplakeApi {
       if (!tables.includes(name)) this._tablesCache = [...tables, name];
     } else {
       // Same rationale as ensureTable: migrate pre-embeddings sessions tables.
-      try {
-        await this.query(
-          `ALTER TABLE "${name}" ADD COLUMN IF NOT EXISTS message_embedding FLOAT4[]`,
-        );
-      } catch (e: any) {
-        log(`ALTER TABLE add message_embedding skipped: ${e.message}`);
-      }
+      await this.ensureEmbeddingColumn(name, MESSAGE_EMBEDDING_COL);
     }
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }

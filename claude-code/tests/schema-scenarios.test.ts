@@ -23,7 +23,10 @@ let markerDir: string;
 
 interface QueryRule {
   match: RegExp;
-  result: "ok" | { errorStatus: number; errorBody: string };
+  // "ok"  → returns [] (empty result set; e.g. SELECT info_schema MISS, INSERT/ALTER success)
+  // { rows: [...] } → returns those rows (e.g. SELECT info_schema PRESENT)
+  // { errorStatus, errorBody } → throws as if the API responded with that error
+  result: "ok" | { rows: Record<string, unknown>[] } | { errorStatus: number; errorBody: string };
 }
 
 function makeApi(rules: QueryRule[], existingTables: string[]) {
@@ -36,6 +39,7 @@ function makeApi(rules: QueryRule[], existingTables: string[]) {
     const rule = rules.find(r => r.match.test(sql));
     if (!rule) throw new Error(`unexpected SQL in test: ${sql}`);
     if (rule.result === "ok") return [];
+    if ("rows" in rule.result) return rule.result.rows;
     throw new Error(
       `Query failed: ${rule.result.errorStatus}: ${rule.result.errorBody}`,
     );
@@ -49,6 +53,14 @@ const ALTER_SESS    = /^ALTER TABLE "sessions" ADD COLUMN IF NOT EXISTS message_
 const CREATE_MEM    = /^CREATE TABLE IF NOT EXISTS "memory" .*summary_embedding FLOAT4\[\]/;
 const CREATE_SESS   = /^CREATE TABLE IF NOT EXISTS "sessions" .*message_embedding FLOAT4\[\]/;
 const CREATE_INDEX  = /^CREATE INDEX IF NOT EXISTS .* ON "sessions"/;
+// SELECT against information_schema is the new pre-ALTER probe in
+// ensureEmbeddingColumn(). Match each table+column combo separately so a
+// scenario can declare independent results for memory vs sessions.
+const SCHEMA_MEM    = /^SELECT 1 FROM information_schema\.columns WHERE table_name = 'memory' AND column_name = 'summary_embedding'/;
+const SCHEMA_SESS   = /^SELECT 1 FROM information_schema\.columns WHERE table_name = 'sessions' AND column_name = 'message_embedding'/;
+// "column present" SELECT result → length > 0 → ensureEmbeddingColumn skips ALTER.
+const PRESENT: { rows: Record<string, unknown>[] } = { rows: [{ "?column?": 1 }] };
+// "column missing" SELECT result → length 0 → falls through to ALTER. Use plain "ok".
 const ALREADY_EXISTS = (col: string) => ({
   errorStatus: 500,
   errorBody: `{"error":"Database error: Failed to add column '${col}' to deeplake dataset: Column '${col}' already exists","code":"QUERY_ERROR"}`,
@@ -99,10 +111,12 @@ describe("scenario 1 — GREENFIELD (memory missing, sessions missing)", () => {
 });
 
 describe("scenario 2 — FULL LEGACY (memory no-emb, sessions no-emb)", () => {
-  it("ALTERs both tables; both succeed, but the post-ALTER window applies to capture", async () => {
+  it("SELECTs info_schema for both, finds neither, ALTERs both", async () => {
     const { api, queryCalls } = makeApi(
       [
+        { match: SCHEMA_MEM,   result: "ok" },              // column missing
         { match: ALTER_MEM,    result: "ok" },
+        { match: SCHEMA_SESS,  result: "ok" },              // column missing
         { match: ALTER_SESS,   result: "ok" },
         { match: CREATE_INDEX, result: "ok" },
       ],
@@ -112,19 +126,21 @@ describe("scenario 2 — FULL LEGACY (memory no-emb, sessions no-emb)", () => {
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(queryCalls).toHaveLength(3);
-    expect(queryCalls[0]).toMatch(ALTER_MEM);
-    expect(queryCalls[1]).toMatch(ALTER_SESS);
-    expect(queryCalls[2]).toMatch(CREATE_INDEX);
-    // No CREATE on a table that already exists.
+    expect(queryCalls).toHaveLength(5);
+    expect(queryCalls[0]).toMatch(SCHEMA_MEM);
+    expect(queryCalls[1]).toMatch(ALTER_MEM);
+    expect(queryCalls[2]).toMatch(SCHEMA_SESS);
+    expect(queryCalls[3]).toMatch(ALTER_SESS);
+    expect(queryCalls[4]).toMatch(CREATE_INDEX);
     expect(queryCalls.some(s => /^CREATE TABLE/.test(s))).toBe(false);
   });
 });
 
 describe("scenario 3 — HALF LEGACY MEMORY (memory no-emb, sessions missing)", () => {
-  it("ALTERs memory, CREATEs sessions; capture INSERT immediately succeeds in the real run", async () => {
+  it("SELECT info_schema misses on memory → ALTER memory; sessions taken via CREATE branch (no SELECT)", async () => {
     const { api, queryCalls } = makeApi(
       [
+        { match: SCHEMA_MEM,   result: "ok" },              // missing → ALTER fires
         { match: ALTER_MEM,    result: "ok" },
         { match: CREATE_SESS,  result: "ok" },
         { match: CREATE_INDEX, result: "ok" },
@@ -135,18 +151,20 @@ describe("scenario 3 — HALF LEGACY MEMORY (memory no-emb, sessions missing)", 
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(queryCalls).toHaveLength(3);
-    expect(queryCalls[0]).toMatch(ALTER_MEM);
-    expect(queryCalls[1]).toMatch(CREATE_SESS);
-    expect(queryCalls[2]).toMatch(CREATE_INDEX);
+    expect(queryCalls).toHaveLength(4);
+    expect(queryCalls[0]).toMatch(SCHEMA_MEM);
+    expect(queryCalls[1]).toMatch(ALTER_MEM);
+    expect(queryCalls[2]).toMatch(CREATE_SESS);
+    expect(queryCalls[3]).toMatch(CREATE_INDEX);
   });
 });
 
 describe("scenario 4 — HALF LEGACY SESSIONS (memory missing, sessions no-emb)", () => {
-  it("CREATEs memory, ALTERs sessions — sessions ALTER triggers the real-world post-ALTER window", async () => {
+  it("memory taken via CREATE branch; SELECT info_schema misses on sessions → ALTER sessions", async () => {
     const { api, queryCalls } = makeApi(
       [
         { match: CREATE_MEM,   result: "ok" },
+        { match: SCHEMA_SESS,  result: "ok" },              // missing → ALTER fires
         { match: ALTER_SESS,   result: "ok" },
         { match: CREATE_INDEX, result: "ok" },
       ],
@@ -156,41 +174,44 @@ describe("scenario 4 — HALF LEGACY SESSIONS (memory missing, sessions no-emb)"
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(queryCalls).toHaveLength(3);
+    expect(queryCalls).toHaveLength(4);
     expect(queryCalls[0]).toMatch(CREATE_MEM);
-    expect(queryCalls[1]).toMatch(ALTER_SESS);
-    expect(queryCalls[2]).toMatch(CREATE_INDEX);
+    expect(queryCalls[1]).toMatch(SCHEMA_SESS);
+    expect(queryCalls[2]).toMatch(ALTER_SESS);
+    expect(queryCalls[3]).toMatch(CREATE_INDEX);
   });
 });
 
 describe("scenario 5 — FULLY MIGRATED (memory with-emb, sessions with-emb)", () => {
-  it("both ALTERs return 500 'already exists' and are swallowed by try/catch — fast-fail, no retries", async () => {
+  it("BIG WIN: SELECT info_schema returns row for both → NO ALTER fires anywhere", async () => {
     const { api, queryCalls } = makeApi(
       [
-        { match: ALTER_MEM,    result: ALREADY_EXISTS("summary_embedding") },
-        { match: ALTER_SESS,   result: ALREADY_EXISTS("message_embedding") },
+        { match: SCHEMA_MEM,   result: PRESENT },           // column present
+        { match: SCHEMA_SESS,  result: PRESENT },           // column present
         { match: CREATE_INDEX, result: "ok" },
       ],
       ["memory", "sessions"],
     );
 
-    // No throw despite both ALTERs failing — the swallowed-error path.
     await expect(api.ensureTable()).resolves.toBeUndefined();
     await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
 
     expect(queryCalls).toHaveLength(3);
-    // The fail-fast on "already exists" (commit 973dd34) means each ALTER is
-    // sent exactly once — no retries on the deterministic 500.
-    const alterCalls = queryCalls.filter(s => /^ALTER TABLE/.test(s));
-    expect(alterCalls).toHaveLength(2);
+    expect(queryCalls[0]).toMatch(SCHEMA_MEM);
+    expect(queryCalls[1]).toMatch(SCHEMA_SESS);
+    expect(queryCalls[2]).toMatch(CREATE_INDEX);
+    // Regression guard: pre-fix this scenario sent 2 wasted ALTER 500s on
+    // every SessionStart and tickled the post-ALTER vector::at window.
+    expect(queryCalls.some(s => /^ALTER TABLE/.test(s))).toBe(false);
   });
 });
 
 describe("scenario 6 — MIXED MEM-EMB (memory with-emb, sessions no-emb)", () => {
-  it("memory ALTER fast-fails on 'already exists'; sessions ALTER actually adds the column", async () => {
+  it("memory SELECT hits → no ALTER on memory; sessions SELECT misses → ALTER sessions", async () => {
     const { api, queryCalls } = makeApi(
       [
-        { match: ALTER_MEM,    result: ALREADY_EXISTS("summary_embedding") },
+        { match: SCHEMA_MEM,   result: PRESENT },           // present → skip ALTER
+        { match: SCHEMA_SESS,  result: "ok" },              // missing → ALTER fires
         { match: ALTER_SESS,   result: "ok" },
         { match: CREATE_INDEX, result: "ok" },
       ],
@@ -200,18 +221,22 @@ describe("scenario 6 — MIXED MEM-EMB (memory with-emb, sessions no-emb)", () =
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(queryCalls).toHaveLength(3);
-    expect(queryCalls[0]).toMatch(ALTER_MEM);
-    expect(queryCalls[1]).toMatch(ALTER_SESS);
+    expect(queryCalls).toHaveLength(4);
+    expect(queryCalls[0]).toMatch(SCHEMA_MEM);
+    expect(queryCalls[1]).toMatch(SCHEMA_SESS);
+    expect(queryCalls[2]).toMatch(ALTER_SESS);
+    expect(queryCalls[3]).toMatch(CREATE_INDEX);
+    expect(queryCalls.filter(s => /^ALTER TABLE/.test(s))).toHaveLength(1); // only sessions
   });
 });
 
 describe("scenario 7 — MIXED SESS-EMB (memory no-emb, sessions with-emb)", () => {
-  it("memory ALTER actually adds the column; sessions ALTER fast-fails on 'already exists'", async () => {
+  it("memory SELECT misses → ALTER memory; sessions SELECT hits → no ALTER on sessions", async () => {
     const { api, queryCalls } = makeApi(
       [
+        { match: SCHEMA_MEM,   result: "ok" },              // missing → ALTER fires
         { match: ALTER_MEM,    result: "ok" },
-        { match: ALTER_SESS,   result: ALREADY_EXISTS("message_embedding") },
+        { match: SCHEMA_SESS,  result: PRESENT },           // present → skip ALTER
         { match: CREATE_INDEX, result: "ok" },
       ],
       ["memory", "sessions"],
@@ -220,9 +245,12 @@ describe("scenario 7 — MIXED SESS-EMB (memory no-emb, sessions with-emb)", () 
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(queryCalls).toHaveLength(3);
-    expect(queryCalls[0]).toMatch(ALTER_MEM);
-    expect(queryCalls[1]).toMatch(ALTER_SESS);
+    expect(queryCalls).toHaveLength(4);
+    expect(queryCalls[0]).toMatch(SCHEMA_MEM);
+    expect(queryCalls[1]).toMatch(ALTER_MEM);
+    expect(queryCalls[2]).toMatch(SCHEMA_SESS);
+    expect(queryCalls[3]).toMatch(CREATE_INDEX);
+    expect(queryCalls.filter(s => /^ALTER TABLE/.test(s))).toHaveLength(1); // only memory
   });
 });
 
@@ -242,6 +270,9 @@ describe("schema scenarios — cross-cutting invariants", () => {
       vi.restoreAllMocks();
       const { api } = makeApi(
         [
+          // SELECT info_schema misses → fall through to ALTER (which then errors)
+          { match: SCHEMA_MEM,   result: "ok" },
+          { match: SCHEMA_SESS,  result: "ok" },
           { match: ALTER_MEM,    result: errorResult },
           { match: ALTER_SESS,   result: errorResult },
           { match: CREATE_INDEX, result: "ok" },
