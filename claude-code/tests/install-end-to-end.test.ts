@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -255,44 +255,12 @@ describe("installHermes / uninstallHermes", () => {
   });
 });
 
-// ─── OpenClaw ──────────────────────────────────────────────────────────────
-
-describe("installOpenclaw / uninstallOpenclaw", () => {
-  it("install drops dist + manifest + skill into ~/.openclaw/extensions/hivemind/", async () => {
-    const { installOpenclaw } = await freshImport<typeof import("../../src/cli/install-openclaw.js")>(
-      "../../src/cli/install-openclaw.js"
-    );
-    installOpenclaw();
-
-    expect(existsSync(join(fakeHome, ".openclaw/extensions/hivemind/dist/index.js"))).toBe(true);
-    expect(existsSync(join(fakeHome, ".openclaw/extensions/hivemind/openclaw.plugin.json"))).toBe(true);
-    expect(existsSync(join(fakeHome, ".openclaw/extensions/hivemind/package.json"))).toBe(true);
-    expect(existsSync(join(fakeHome, ".openclaw/extensions/hivemind/.hivemind_version"))).toBe(true);
-  });
-
-  it("manifest is a regular file not a directory (defends the copyDir->copyFileSync fix)", async () => {
-    const { installOpenclaw } = await freshImport<typeof import("../../src/cli/install-openclaw.js")>(
-      "../../src/cli/install-openclaw.js"
-    );
-    installOpenclaw();
-
-    const manifestPath = join(fakeHome, ".openclaw/extensions/hivemind/openclaw.plugin.json");
-    const stat = statSync(manifestPath);
-    // Negative pattern (CLAUDE.md rule 8): with the old copyDir() call this
-    // would have created a directory if the dest already existed as one.
-    expect(stat.isFile()).toBe(true);
-    expect(stat.isDirectory()).toBe(false);
-  });
-
-  it("uninstall removes the entire extension directory", async () => {
-    const cx = await freshImport<typeof import("../../src/cli/install-openclaw.js")>(
-      "../../src/cli/install-openclaw.js"
-    );
-    cx.installOpenclaw();
-    cx.uninstallOpenclaw();
-    expect(existsSync(join(fakeHome, ".openclaw/extensions/hivemind"))).toBe(false);
-  });
-});
+// OpenClaw tests intentionally omitted from this end-to-end file:
+// `openclaw/dist/` is gitignored (esbuild output, see .gitignore: dist/),
+// so it doesn't exist on a fresh CI checkout the way the committed
+// codex/cursor/hermes bundles do. The dedicated test file
+// `cli-install-openclaw.test.ts` covers OpenClaw via mock-pkgRoot →
+// fake-tmpdir pattern that doesn't depend on the real dist being present.
 
 // ─── pi ────────────────────────────────────────────────────────────────────
 
