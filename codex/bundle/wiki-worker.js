@@ -131,11 +131,8 @@ async function uploadSummary(query2, params) {
 
 // dist/src/utils/client-header.js
 function pluginVersion() {
-  try {
-    if ("0.6.45") {
-      return "0.6.45";
-    }
-  } catch {
+  if ("0.6.48") {
+    return "0.6.48";
   }
   return "dev";
 }
