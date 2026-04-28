@@ -17,6 +17,7 @@ import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
 import { getInstalledVersion, getLatestVersion, isNewer } from "../utils/version-check.js";
 import { makeWikiLogger } from "../utils/wiki-log.js";
+import { resolveVersionedPluginDir, snapshotPluginDir, restoreOrCleanup } from "../utils/plugin-cache.js";
 const log = (msg: string) => _log("session-setup", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -68,15 +69,26 @@ async function main(): Promise<void> {
       if (latest && isNewer(latest, current)) {
         if (autoupdate) {
           log(`autoupdate: updating ${current} → ${latest}`);
+          // Claude's installer deletes the old version directory, which
+          // invalidates the bundle paths baked into the *current* session's
+          // hook registry. Snapshot the dir first, restore it if the
+          // installer wiped it — so already-loaded hooks keep working
+          // until the session exits. Only applies to a real versioned
+          // install layout; a local --plugin-dir dev run is skipped.
+          const resolved = resolveVersionedPluginDir(__bundleDir);
+          const handle = resolved ? snapshotPluginDir(resolved.pluginDir) : null;
           try {
             const scopes = ["user", "project", "local", "managed"];
             const cmd = scopes
-              .map(s => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null`)
+              .map(s => `claude plugin update hivemind@hivemind --scope ${s} 2>/dev/null || true`)
               .join("; ");
             execSync(cmd, { stdio: "ignore", timeout: 60_000 });
+            const outcome = restoreOrCleanup(handle);
+            log(`autoupdate snapshot outcome: ${outcome}`);
             process.stderr.write(`✅ Hivemind auto-updated: ${current} → ${latest}. Run /reload-plugins to apply.\n`);
             log(`autoupdate succeeded: ${current} → ${latest}`);
           } catch (e: any) {
+            restoreOrCleanup(handle);
             process.stderr.write(`⬆️ Hivemind update available: ${current} → ${latest}. Auto-update failed — run /hivemind:update to upgrade manually.\n`);
             log(`autoupdate failed: ${e.message}`);
           }

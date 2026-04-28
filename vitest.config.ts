@@ -14,6 +14,7 @@ export default defineConfig({
     include: [
       "claude-code/tests/**/*.test.ts",
       "codex/tests/**/*.test.ts",
+      "openclaw/tests/**/*.test.ts",
     ],
     environment: "node",
     coverage: {
@@ -93,6 +94,32 @@ export default defineConfig({
           lines: 90,
         },
         "src/hooks/memory-path-utils.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        // fix/plugin-autoupdate-session-safety — snapshot-restore around
+        // claude-plugin update + SessionEnd GC. All four files at 90+.
+        "src/utils/plugin-cache.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/plugin-cache-gc.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/session-start.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/session-start-setup.ts": {
           statements: 90,
           branches: 90,
           functions: 90,

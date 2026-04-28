@@ -13,11 +13,12 @@
 declare const __HIVEMIND_VERSION__: string;
 
 function pluginVersion(): string {
-  try {
-    if (typeof __HIVEMIND_VERSION__ === "string" && __HIVEMIND_VERSION__) {
-      return __HIVEMIND_VERSION__;
-    }
-  } catch { /* reference error in unbundled dev → fall through */ }
+  // typeof on an undeclared identifier returns "undefined" (never throws),
+  // so unbundled dev runs (where esbuild's define hasn't run) fall through
+  // to the "dev" sentinel without needing an exception handler.
+  if (typeof __HIVEMIND_VERSION__ === "string" && __HIVEMIND_VERSION__) {
+    return __HIVEMIND_VERSION__;
+  }
   return "dev";
 }
 

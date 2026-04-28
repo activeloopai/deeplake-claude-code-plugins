@@ -654,7 +654,7 @@ async function main() {
       const sessionPath = buildSessionPath(config, sessionId);
       const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
       const filename = sessionPath.split("/").pop() ?? "";
-      const jsonForSql = sqlStr(line);
+      const jsonForSql = line.replace(/'/g, "''");
       const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', 'Stop', 'codex', '${ts}', '${ts}')`;
       await api.query(insertSql);
       log3("stop event captured");

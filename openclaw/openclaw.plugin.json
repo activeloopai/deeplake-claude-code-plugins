@@ -2,12 +2,39 @@
   "id": "hivemind",
   "name": "Hivemind",
   "description": "Cloud-backed shared memory powered by Deeplake — auto-capture and auto-recall across sessions, agents, and teammates",
+  "skills": [
+    "./skills"
+  ],
+  "contracts": {
+    "tools": [
+      "hivemind_search",
+      "hivemind_read",
+      "hivemind_index"
+    ],
+    "commands": [
+      "hivemind_login",
+      "hivemind_capture",
+      "hivemind_whoami",
+      "hivemind_orgs",
+      "hivemind_switch_org",
+      "hivemind_workspaces",
+      "hivemind_switch_workspace",
+      "hivemind_setup",
+      "hivemind_version",
+      "hivemind_update",
+      "hivemind_autoupdate"
+    ],
+    "memoryCorpusSupplements": true
+  },
   "uiHints": {
     "autoCapture": {
       "label": "Auto-Capture"
     },
     "autoRecall": {
       "label": "Auto-Recall"
+    },
+    "autoUpdate": {
+      "label": "Auto-Update"
     }
   },
   "configSchema": {
@@ -19,8 +46,11 @@
       },
       "autoRecall": {
         "type": "boolean"
+      },
+      "autoUpdate": {
+        "type": "boolean"
       }
     }
   },
-  "version": "0.6.45"
+  "version": "0.6.48"
 }

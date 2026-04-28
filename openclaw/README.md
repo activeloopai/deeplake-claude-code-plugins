@@ -30,13 +30,16 @@ Click the auth link, sign in, send another message. That's it.
 | Command | What it does |
 |---------|--------------|
 | `/hivemind_login` | Sign in via device flow |
+| `/hivemind_setup` | Add `hivemind` to OpenClaw's tool allowlist (one-time, after install) |
 | `/hivemind_capture` | Toggle conversation capture on/off |
 | `/hivemind_whoami` | Show current org and workspace |
 | `/hivemind_orgs` | List organizations |
 | `/hivemind_switch_org <name>` | Switch organization |
 | `/hivemind_workspaces` | List workspaces |
 | `/hivemind_switch_workspace <id>` | Switch workspace |
-| `/hivemind_update` | Check for plugin updates |
+| `/hivemind_version` | Show installed version and check ClawHub for a newer one |
+| `/hivemind_update` | Show how to install the latest version |
+| `/hivemind_autoupdate [on\|off]` | Toggle the agent-facing update nudge (on by default) |
 
 You can also just ask the agent naturally — "switch org to activeloop", "list my orgs", "invite alice@example.com as admin", etc.
 
@@ -44,11 +47,18 @@ You can also just ask the agent naturally — "switch org to activeloop", "list 
 
 - **What's captured**: every user message and assistant reply, sent to `api.deeplake.ai`.
 - **Where credentials live**: a long-lived API token at `~/.deeplake/credentials.json` (file permissions 0600).
-- **Where it sends data**: `api.deeplake.ai` (memory storage) and `raw.githubusercontent.com` (version check on session start and via `/hivemind_update`).
+- **Where it sends data**: `api.deeplake.ai` (memory storage) and `clawhub.ai` (version check on session start and via `/hivemind_version`).
 - **How to pause**: run `/hivemind_capture` to stop capture; run it again to resume.
 - **How to fully sign out**: delete `~/.deeplake/credentials.json` and revoke the token in the Deeplake dashboard.
 
-The plugin does **not** modify OpenClaw's configuration or replace the built-in memory plugin. It runs alongside `memory-core` via lifecycle hooks, so `memory-core`'s dreaming cron and other memory-slot jobs keep working.
+### OpenClaw config changes
+
+The plugin modifies `~/.openclaw/openclaw.json` in two places, both triggered by explicit user commands and both with timestamped backups:
+
+- `/hivemind_setup` appends `"hivemind"` to `tools.alsoAllow` so OpenClaw admits the plugin's agent tools. OpenClaw's default `coding` profile only exposes core tools (read/write/exec/etc.) to agents; plugin-registered tools are filtered out unless explicitly allowed.
+- `/hivemind_autoupdate [on|off]` sets `plugins.entries.hivemind.config.autoUpdate`. When on, the plugin adds a short line to the system prompt when a newer version is available on ClawHub; the actual install runs through the agent's existing `exec` tool or via `openclaw plugins update hivemind` in a terminal.
+
+The plugin does **not** replace the built-in memory plugin. It runs alongside `memory-core` via lifecycle hooks, so `memory-core`'s dreaming cron and other memory-slot jobs keep working.
 
 ## Troubleshooting
 
