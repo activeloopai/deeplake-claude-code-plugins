@@ -62,6 +62,19 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 var HOME = homedir();
 function pkgRoot() {
+  let dir = fileURLToPath(new URL(".", import.meta.url));
+  for (let i = 0; i < 8; i++) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
+      if (pkg.name === "@deeplake/hivemind" || pkg.name === "hivemind")
+        return dir;
+    } catch {
+    }
+    const parent = dirname(dir);
+    if (parent === dir)
+      break;
+    dir = parent;
+  }
   return fileURLToPath(new URL("..", import.meta.url));
 }
 function ensureDir(path, mode = 493) {

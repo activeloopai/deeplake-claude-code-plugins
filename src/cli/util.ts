@@ -5,7 +5,28 @@ import { fileURLToPath } from "node:url";
 
 export const HOME = homedir();
 
+// Walk up from this module's location to the package root. Robust across
+// three layouts:
+//   - source (src/cli/util.ts) → project root
+//   - local bundle (bundle/cli.js)              → project root
+//   - npm-installed (node_modules/@deeplake/hivemind/bundle/cli.js)
+//                                               → install dir
+// Without the walk-up, the source path resolved to `src/` (one dir up
+// from src/cli/util.ts), so unit tests importing the installers couldn't
+// find the per-agent bundles at project_root/<agent>/bundle/.
 export function pkgRoot(): string {
+  let dir = fileURLToPath(new URL(".", import.meta.url));
+  for (let i = 0; i < 8; i++) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
+      if (pkg.name === "@deeplake/hivemind" || pkg.name === "hivemind") return dir;
+    } catch { /* not here, keep walking */ }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  // Fallback: previous one-level-up behavior. Preserves backwards compat
+  // if package.json is unreachable for any reason (sandbox, packed asar, ...).
   return fileURLToPath(new URL("..", import.meta.url));
 }
 

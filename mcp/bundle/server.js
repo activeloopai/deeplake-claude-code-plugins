@@ -24015,6 +24015,19 @@ import { homedir as homedir4 } from "node:os";
 import { fileURLToPath } from "node:url";
 var HOME = homedir4();
 function pkgRoot() {
+  let dir = fileURLToPath(new URL(".", import.meta.url));
+  for (let i = 0; i < 8; i++) {
+    try {
+      const pkg = JSON.parse(readFileSync4(join5(dir, "package.json"), "utf-8"));
+      if (pkg.name === "@deeplake/hivemind" || pkg.name === "hivemind")
+        return dir;
+    } catch {
+    }
+    const parent = dirname(dir);
+    if (parent === dir)
+      break;
+    dir = parent;
+  }
   return fileURLToPath(new URL("..", import.meta.url));
 }
 var PLATFORM_MARKERS = [
