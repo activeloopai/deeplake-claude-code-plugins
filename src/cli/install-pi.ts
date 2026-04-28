@@ -54,7 +54,7 @@ Use only bash builtins (cat, ls, grep, jq, head, tail, sed, awk, wc, sort, find)
 rg/ripgrep, node, python, curl are not available there.
 ${HIVEMIND_BLOCK_END}`;
 
-function upsertHivemindBlock(existing: string | null): string {
+export function upsertHivemindBlock(existing: string | null): string {
   const block = HIVEMIND_BLOCK_BODY;
   if (!existing) return `${block}\n`;
   // Strip any pre-existing hivemind block, then re-append.
@@ -71,7 +71,7 @@ function upsertHivemindBlock(existing: string | null): string {
   return `${before ? before + "\n\n" : ""}${block}\n${rest}`;
 }
 
-function stripHivemindBlock(existing: string): string {
+export function stripHivemindBlock(existing: string): string {
   const startIdx = existing.indexOf(HIVEMIND_BLOCK_START);
   if (startIdx === -1) return existing;
   const endIdx = existing.indexOf(HIVEMIND_BLOCK_END, startIdx);

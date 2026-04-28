@@ -187,7 +187,7 @@ function buildHooksJson() {
     }
   };
 }
-function isHivemindHookEntry(entry) {
+function isHivemindHookEntry(entry, pluginDir = PLUGIN_DIR) {
   if (!entry || typeof entry !== "object")
     return false;
   const e = entry;
@@ -196,8 +196,22 @@ function isHivemindHookEntry(entry) {
     if (!h || typeof h !== "object")
       return false;
     const cmd = h.command;
-    return typeof cmd === "string" && cmd.includes(`${PLUGIN_DIR}/bundle/`);
+    return typeof cmd === "string" && cmd.includes(`${pluginDir}/bundle/`);
   });
+}
+function mergeHooks(existing, ours, pluginDir = PLUGIN_DIR) {
+  const existingHooks = existing.hooks && typeof existing.hooks === "object" ? existing.hooks : {};
+  const ourHooks = ours.hooks;
+  const merged = {};
+  for (const [event, entries] of Object.entries(existingHooks)) {
+    const surviving = (entries ?? []).filter((e) => !isHivemindHookEntry(e, pluginDir));
+    if (surviving.length)
+      merged[event] = surviving;
+  }
+  for (const [event, entries] of Object.entries(ourHooks)) {
+    merged[event] = [...merged[event] ?? [], ...entries ?? []];
+  }
+  return { ...existing, hooks: merged };
 }
 function mergeHooksJson(ours) {
   let existing = {};
@@ -210,18 +224,7 @@ function mergeHooksJson(ours) {
   } catch {
     warn(`  Codex          ${HOOKS_PATH} unparseable \u2014 ignoring prior content`);
   }
-  const existingHooks = existing.hooks && typeof existing.hooks === "object" ? existing.hooks : {};
-  const ourHooks = ours.hooks;
-  const merged = {};
-  for (const [event, entries] of Object.entries(existingHooks)) {
-    const surviving = (entries ?? []).filter((e) => !isHivemindHookEntry(e));
-    if (surviving.length)
-      merged[event] = surviving;
-  }
-  for (const [event, entries] of Object.entries(ourHooks)) {
-    merged[event] = [...merged[event] ?? [], ...entries ?? []];
-  }
-  return { ...existing, hooks: merged };
+  return mergeHooks(existing, ours);
 }
 function tryEnableCodexHooks() {
   try {
@@ -336,7 +339,7 @@ function isHivemindEntry(entry) {
   const cmd = entry.command;
   return typeof cmd === "string" && cmd.includes("/.cursor/hivemind/bundle/");
 }
-function mergeHooks(existing) {
+function mergeHooks2(existing) {
   const root = existing ?? { version: 1, hooks: {} };
   if (!root.version)
     root.version = 1;
@@ -375,7 +378,7 @@ function installCursor() {
   ensureDir(PLUGIN_DIR3);
   copyDir(srcBundle, join5(PLUGIN_DIR3, "bundle"));
   const existing = readJson(HOOKS_PATH2);
-  const merged = mergeHooks(existing);
+  const merged = mergeHooks2(existing);
   writeJson(HOOKS_PATH2, merged);
   writeVersionStamp(PLUGIN_DIR3, getVersion());
   log(`  Cursor         installed -> ${PLUGIN_DIR3}`);
@@ -3090,7 +3093,7 @@ function buildHooksBlock() {
     on_session_end: [buildHookEntry("session-end.js", 30)]
   };
 }
-function mergeHooks2(existing) {
+function mergeHooks3(existing) {
   const merged = { ...existing ?? {} };
   const ours = buildHooksBlock();
   for (const [event, entries] of Object.entries(ours)) {
@@ -3151,7 +3154,7 @@ function installHermes() {
     command: "node",
     args: [MCP_SERVER_PATH]
   };
-  cfg.hooks = mergeHooks2(cfg.hooks);
+  cfg.hooks = mergeHooks3(cfg.hooks);
   cfg.hooks_auto_accept = true;
   writeConfig(cfg);
   log(`  Hermes         config updated -> ${CONFIG_PATH} (mcp_servers + hooks + hooks_auto_accept)`);

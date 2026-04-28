@@ -55,7 +55,7 @@ function buildHookConfig(): Record<string, CursorHookEntry[]> {
   };
 }
 
-function isHivemindEntry(entry: unknown): boolean {
+export function isHivemindEntry(entry: unknown): boolean {
   if (!entry || typeof entry !== "object") return false;
   const cmd = (entry as { command?: string }).command;
   return typeof cmd === "string" && cmd.includes("/.cursor/hivemind/bundle/");
@@ -75,7 +75,7 @@ function mergeHooks(existing: Record<string, unknown> | null): Record<string, un
   return root as unknown as Record<string, unknown>;
 }
 
-function stripHooksFromConfig(existing: Record<string, unknown> | null): Record<string, unknown> | null {
+export function stripHooksFromConfig(existing: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!existing) return null;
   const root = existing as { hooks?: Record<string, unknown[]> };
   if (root.hooks) {

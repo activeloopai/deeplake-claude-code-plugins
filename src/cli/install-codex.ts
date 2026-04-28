@@ -35,27 +35,57 @@ function buildHooksJson(): Record<string, unknown> {
 }
 
 // True when `entry` is one of our hook blocks — i.e. a hook that points
-// at a node command living in PLUGIN_DIR/bundle/. We use this to strip
-// stale hivemind entries on re-install (so re-installing doesn't duplicate
-// our hooks) WITHOUT touching the user's own hook entries.
-function isHivemindHookEntry(entry: unknown): boolean {
+// at a node command living in `<pluginDir>/bundle/`. Used to strip stale
+// hivemind entries on re-install (so re-installing doesn't duplicate our
+// hooks) WITHOUT touching the user's own hook entries.
+//
+// Exported with an injectable `pluginDir` so unit tests can drive it
+// without depending on the real ~/.codex layout.
+export function isHivemindHookEntry(entry: unknown, pluginDir: string = PLUGIN_DIR): boolean {
   if (!entry || typeof entry !== "object") return false;
   const e = entry as Record<string, unknown>;
   const hooks = Array.isArray(e.hooks) ? (e.hooks as unknown[]) : [];
   return hooks.some(h => {
     if (!h || typeof h !== "object") return false;
     const cmd = (h as Record<string, unknown>).command;
-    return typeof cmd === "string" && cmd.includes(`${PLUGIN_DIR}/bundle/`);
+    return typeof cmd === "string" && cmd.includes(`${pluginDir}/bundle/`);
   });
 }
 
-// Merge our hooks into the existing hooks.json instead of overwriting it.
-// Without this, any user-defined hooks (custom PostToolUse, etc.) get
-// silently wiped on `hivemind codex install`. Behavior:
-//  - Strip any prior hivemind entries (matched by PLUGIN_DIR path) from
-//    each hook event so re-install doesn't duplicate our entries.
-//  - Append our entries to the user's surviving entries.
-//  - Preserve any non-hivemind hook events the user had configured.
+// Pure merge of two hooks-config shapes. Behavior:
+//   - Strip prior hivemind entries (matched via isHivemindHookEntry) from
+//     each event the user already had configured, so a re-install doesn't
+//     duplicate our hooks.
+//   - Drop events whose surviving (non-hivemind) entry list is empty.
+//   - Append our entries to each event we declare; preserve any other
+//     events the user had configured.
+//   - Preserve any non-hooks top-level fields from `existing`.
+//
+// Pure function — no filesystem reads. The wrapper `mergeHooksJson`
+// adds the disk read.
+export function mergeHooks(
+  existing: Record<string, unknown>,
+  ours: Record<string, unknown>,
+  pluginDir: string = PLUGIN_DIR,
+): Record<string, unknown> {
+  const existingHooks = (existing.hooks && typeof existing.hooks === "object")
+    ? existing.hooks as Record<string, unknown[]>
+    : {};
+  const ourHooks = ours.hooks as Record<string, unknown[]>;
+
+  const merged: Record<string, unknown[]> = {};
+  for (const [event, entries] of Object.entries(existingHooks)) {
+    const surviving = (entries ?? []).filter(e => !isHivemindHookEntry(e, pluginDir));
+    if (surviving.length) merged[event] = surviving;
+  }
+  for (const [event, entries] of Object.entries(ourHooks)) {
+    merged[event] = [...(merged[event] ?? []), ...(entries ?? [])];
+  }
+  return { ...existing, hooks: merged };
+}
+
+// Filesystem-bound wrapper: reads HOOKS_PATH (if present) and feeds the
+// parsed result to the pure mergeHooks. Catches malformed JSON and warns.
 function mergeHooksJson(ours: Record<string, unknown>): Record<string, unknown> {
   let existing: Record<string, unknown> = {};
   try {
@@ -66,22 +96,7 @@ function mergeHooksJson(ours: Record<string, unknown>): Record<string, unknown> 
   } catch {
     warn(`  Codex          ${HOOKS_PATH} unparseable — ignoring prior content`);
   }
-  const existingHooks = (existing.hooks && typeof existing.hooks === "object")
-    ? existing.hooks as Record<string, unknown[]>
-    : {};
-  const ourHooks = ours.hooks as Record<string, unknown[]>;
-
-  const merged: Record<string, unknown[]> = {};
-  // Start from every event the user has, with hivemind entries stripped.
-  for (const [event, entries] of Object.entries(existingHooks)) {
-    const surviving = (entries ?? []).filter(e => !isHivemindHookEntry(e));
-    if (surviving.length) merged[event] = surviving;
-  }
-  // Append our entries to each event we declare.
-  for (const [event, entries] of Object.entries(ourHooks)) {
-    merged[event] = [...(merged[event] ?? []), ...(entries ?? [])];
-  }
-  return { ...existing, hooks: merged };
+  return mergeHooks(existing, ours);
 }
 
 function tryEnableCodexHooks(): void {
