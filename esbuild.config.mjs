@@ -155,6 +155,8 @@ writeFileSync("hermes/bundle/package.json", esmPackageJson);
 await build({
   entryPoints: { index: "openclaw/src/index.ts" },
   bundle: true,
+  splitting: true,
+  chunkNames: "chunks/[name]-[hash]",
   platform: "node",
   format: "esm",
   outdir: "openclaw/dist",

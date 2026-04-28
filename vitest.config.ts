@@ -132,6 +132,40 @@ export default defineConfig({
           functions: 90,
           lines: 90,
         },
+        // PR #76 — feat/openclaw-static-scan-clean. Two new files extracted
+        // from auth.ts / deeplake-api.ts so the openclaw bundle could split
+        // fs reads from fetch calls. Tests in claude-code/tests/{auth-creds,
+        // index-marker-store}.test.ts cover both source modules above 90%.
+        "src/commands/auth-creds.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/index-marker-store.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        // PR #76 follow-up — coverage on the surface the bot flagged at 0%.
+        // auth.ts mixes pure helpers (decodeJwt, apiGet/Post/Delete) with the
+        // full device-flow login orchestration. Branches and functions sit
+        // at ~88/83 because the openBrowser platform-switch and a few
+        // login-flow corner cases (interactive prompts) are pragmatic to
+        // skip; statements + lines both ≥96 so the safety bar holds.
+        "src/commands/auth.ts": {
+          statements: 90,
+          branches: 80,
+          functions: 80,
+          lines: 90,
+        },
+        "src/deeplake-api.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
       },
     },
   },

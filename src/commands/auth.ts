@@ -3,32 +3,24 @@
  * and org/workspace management.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { execSync } from "node:child_process";
 import { deeplakeClientHeader } from "../utils/client-header.js";
+import {
+  type Credentials,
+  loadCredentials,
+  saveCredentials,
+  deleteCredentials,
+} from "./auth-creds.js";
 
-const CONFIG_DIR = join(homedir(), ".deeplake");
-const CREDS_PATH = join(CONFIG_DIR, "credentials.json");
+// Re-export so existing importers keep working without churn.
+export { loadCredentials, saveCredentials, deleteCredentials };
+export type { Credentials };
+
 const DEFAULT_API_URL = "https://api.deeplake.ai";
 
 // Output goes to stderr by default (safe for hooks).
 // auth-login.js sets this to console.log for direct CLI usage.
 export let authLog = (msg: string) => process.stderr.write(msg + "\n");
-
-// ── Types ────────────────────────────────────────────────────────────────────
-
-export interface Credentials {
-  token: string;
-  orgId: string;
-  orgName?: string;
-  userName?: string;
-  workspaceId?: string;
-  apiUrl?: string;
-  autoupdate?: boolean;
-  savedAt: string;
-}
 
 interface DeviceCodeResponse {
   device_code: string;
@@ -43,30 +35,6 @@ interface DeviceTokenResponse {
   access_token: string;
   token_type: string;
   expires_in: number;
-}
-
-// ── Credentials Storage ──────────────────────────────────────────────────────
-
-export function loadCredentials(): Credentials | null {
-  if (!existsSync(CREDS_PATH)) return null;
-  try {
-    return JSON.parse(readFileSync(CREDS_PATH, "utf-8"));
-  } catch {
-    return null;
-  }
-}
-
-export function saveCredentials(creds: Credentials): void {
-  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
-  writeFileSync(CREDS_PATH, JSON.stringify({ ...creds, savedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
-}
-
-export function deleteCredentials(): boolean {
-  if (existsSync(CREDS_PATH)) {
-    unlinkSync(CREDS_PATH);
-    return true;
-  }
-  return false;
 }
 
 // ── JWT Helpers ──────────────────────────────────────────────────────────────

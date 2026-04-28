@@ -1,10 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { log as _log } from "./utils/debug.js";
 import { sqlStr } from "./utils/sql.js";
 import { deeplakeClientHeader } from "./utils/client-header.js";
+
+// index-marker-store touches node:fs. Load it lazily so bundlers that split
+// chunks (e.g. the openclaw plugin build) can put fs operations in a separate
+// chunk from this file's network operations.
+type IndexMarkerStore = typeof import("./index-marker-store.js");
+let indexMarkerStorePromise: Promise<IndexMarkerStore> | null = null;
+function getIndexMarkerStore(): Promise<IndexMarkerStore> {
+  if (!indexMarkerStorePromise) indexMarkerStorePromise = import("./index-marker-store.js");
+  return indexMarkerStorePromise;
+}
 
 const log = (msg: string) => _log("sdk", msg);
 
@@ -34,7 +41,6 @@ const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 500;
 const MAX_CONCURRENCY = 5;
 const QUERY_TIMEOUT_MS = Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 10_000);
-const INDEX_MARKER_TTL_MS = Number(process.env.HIVEMIND_INDEX_MARKER_TTL_MS ?? 6 * 60 * 60_000);
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -66,10 +72,6 @@ function isTransientHtml403(text: string): boolean {
     body.includes("403 forbidden") ||
     body.includes("cloudflare") ||
     body.includes("nginx");
-}
-
-function getIndexMarkerDir(): string {
-  return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join(tmpdir(), "hivemind-deeplake-indexes");
 }
 
 class Semaphore {
@@ -258,47 +260,17 @@ export class DeeplakeApi {
     return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
   }
 
-  private getLookupIndexMarkerPath(table: string, suffix: string): string {
-    const markerKey = [
-      this.workspaceId,
-      this.orgId,
-      table,
-      suffix,
-    ].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
-    return join(getIndexMarkerDir(), `${markerKey}.json`);
-  }
-
-  private hasFreshLookupIndexMarker(table: string, suffix: string): boolean {
-    const markerPath = this.getLookupIndexMarkerPath(table, suffix);
-    if (!existsSync(markerPath)) return false;
-    try {
-      const raw = JSON.parse(readFileSync(markerPath, "utf-8")) as { updatedAt?: string };
-      const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
-      if (!Number.isFinite(updatedAt) || (Date.now() - updatedAt) > INDEX_MARKER_TTL_MS) return false;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private markLookupIndexReady(table: string, suffix: string): void {
-    mkdirSync(getIndexMarkerDir(), { recursive: true });
-    writeFileSync(
-      this.getLookupIndexMarkerPath(table, suffix),
-      JSON.stringify({ updatedAt: new Date().toISOString() }),
-      "utf-8",
-    );
-  }
-
   private async ensureLookupIndex(table: string, suffix: string, columnsSql: string): Promise<void> {
-    if (this.hasFreshLookupIndexMarker(table, suffix)) return;
+    const markers = await getIndexMarkerStore();
+    const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, suffix);
+    if (markers.hasFreshIndexMarker(markerPath)) return;
     const indexName = this.buildLookupIndexName(table, suffix);
     try {
       await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
-      this.markLookupIndexReady(table, suffix);
+      markers.writeIndexMarker(markerPath);
     } catch (e: any) {
       if (isDuplicateIndexError(e)) {
-        this.markLookupIndexReady(table, suffix);
+        markers.writeIndexMarker(markerPath);
         return;
       }
       log(`index "${indexName}" skipped: ${e.message}`);
@@ -347,13 +319,42 @@ export class DeeplakeApi {
     return { tables: [], cacheable: false };
   }
 
+  /**
+   * Run a `CREATE TABLE` with an extra outer retry budget. The base
+   * `query()` already retries 3 times on fetch errors (~3.5s total), but a
+   * failed CREATE is permanent corruption — every subsequent SELECT against
+   * the missing table fails. Wrapping in an outer loop with longer backoff
+   * (2s, 5s, then 10s) gives us ~17s of reach across transient network
+   * blips before giving up. Failures still propagate; getApi() resets its
+   * cache on init failure (openclaw plugin) so the next call retries the
+   * whole init flow.
+   */
+  private async createTableWithRetry(sql: string, label: string): Promise<void> {
+    const OUTER_BACKOFFS_MS = [2000, 5000, 10000];
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt <= OUTER_BACKOFFS_MS.length; attempt++) {
+      try {
+        await this.query(sql);
+        return;
+      } catch (err) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`CREATE TABLE "${label}" attempt ${attempt + 1}/${OUTER_BACKOFFS_MS.length + 1} failed: ${msg}`);
+        if (attempt < OUTER_BACKOFFS_MS.length) {
+          await sleep(OUTER_BACKOFFS_MS[attempt]);
+        }
+      }
+    }
+    throw lastErr;
+  }
+
   /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
   async ensureTable(name?: string): Promise<void> {
     const tbl = name ?? this.tableName;
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log(`table "${tbl}" not found, creating`);
-      await this.query(
+      await this.createTableWithRetry(
         `CREATE TABLE IF NOT EXISTS "${tbl}" (` +
           `id TEXT NOT NULL DEFAULT '', ` +
           `path TEXT NOT NULL DEFAULT '', ` +
@@ -368,6 +369,7 @@ export class DeeplakeApi {
           `creation_date TEXT NOT NULL DEFAULT '', ` +
           `last_update_date TEXT NOT NULL DEFAULT ''` +
         `) USING deeplake`,
+        tbl,
       );
       log(`table "${tbl}" created`);
       if (!tables.includes(tbl)) this._tablesCache = [...tables, tbl];
@@ -386,7 +388,7 @@ export class DeeplakeApi {
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log(`table "${name}" not found, creating`);
-      await this.query(
+      await this.createTableWithRetry(
         `CREATE TABLE IF NOT EXISTS "${name}" (` +
           `id TEXT NOT NULL DEFAULT '', ` +
           `path TEXT NOT NULL DEFAULT '', ` +
@@ -401,6 +403,7 @@ export class DeeplakeApi {
           `creation_date TEXT NOT NULL DEFAULT '', ` +
           `last_update_date TEXT NOT NULL DEFAULT ''` +
         `) USING deeplake`,
+        name,
       );
       log(`table "${name}" created`);
       if (!tables.includes(name)) this._tablesCache = [...tables, name];
