@@ -14,6 +14,7 @@ import { loadConfig } from "../../src/config.js";
 import { loadCredentials, saveCredentials, requestDeviceCode, pollForToken, listOrgs, switchOrg, listWorkspaces, switchWorkspace } from "../../src/commands/auth.js";
 import { DeeplakeApi } from "../../src/deeplake-api.js";
 import { sqlStr } from "../../src/utils/sql.js";
+import { deeplakeClientHeader } from "../../src/utils/client-header.js";
 // Memory-access primitives reused directly from the CC/Codex hooks so the
 // openclaw agent gets the same search + read semantics (multi-word across
 // memory ∪ sessions, path filters, JSONB normalization, virtual /index.md).
@@ -200,6 +201,7 @@ async function requestAuth(): Promise<string> {
                     Authorization: `Bearer ${token}`,
                     "Content-Type": "application/json",
                     "X-Activeloop-Org-Id": orgId,
+                    ...deeplakeClientHeader(),
                   },
                   body: JSON.stringify({ name: `hivemind-${new Date().toISOString().split("T")[0]}`, duration: 365 * 24 * 60 * 60, organization_id: orgId }),
                 });

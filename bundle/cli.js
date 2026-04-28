@@ -3323,6 +3323,17 @@ import { readFileSync as readFileSync6, writeFileSync as writeFileSync4, existsS
 import { join as join9 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 import { execSync } from "node:child_process";
+
+// dist/src/utils/client-header.js
+var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
+function deeplakeClientValue() {
+  return `hivemind/${__HIVEMIND_VERSION__}`;
+}
+function deeplakeClientHeader() {
+  return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
+}
+
+// dist/src/commands/auth.js
 var CONFIG_DIR = join9(homedir2(), ".deeplake");
 var CREDS_PATH = join9(CONFIG_DIR, "credentials.json");
 var DEFAULT_API_URL = "https://api.deeplake.ai";
@@ -3350,7 +3361,8 @@ function deleteCredentials() {
 async function apiGet(path, token, apiUrl, orgId) {
   const headers = {
     Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    ...deeplakeClientHeader()
   };
   if (orgId)
     headers["X-Activeloop-Org-Id"] = orgId;
@@ -3362,7 +3374,8 @@ async function apiGet(path, token, apiUrl, orgId) {
 async function apiPost(path, body, token, apiUrl, orgId) {
   const headers = {
     Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    ...deeplakeClientHeader()
   };
   if (orgId)
     headers["X-Activeloop-Org-Id"] = orgId;
@@ -3374,7 +3387,8 @@ async function apiPost(path, body, token, apiUrl, orgId) {
 async function apiDelete(path, token, apiUrl, orgId) {
   const headers = {
     Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    ...deeplakeClientHeader()
   };
   if (orgId)
     headers["X-Activeloop-Org-Id"] = orgId;
@@ -3385,7 +3399,7 @@ async function apiDelete(path, token, apiUrl, orgId) {
 async function requestDeviceCode(apiUrl = DEFAULT_API_URL) {
   const resp = await fetch(`${apiUrl}/auth/device/code`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" }
+    headers: { "Content-Type": "application/json", ...deeplakeClientHeader() }
   });
   if (!resp.ok)
     throw new Error(`Device flow unavailable: HTTP ${resp.status}`);
@@ -3394,7 +3408,7 @@ async function requestDeviceCode(apiUrl = DEFAULT_API_URL) {
 async function pollForToken(deviceCode, apiUrl = DEFAULT_API_URL) {
   const resp = await fetch(`${apiUrl}/auth/device/token`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...deeplakeClientHeader() },
     body: JSON.stringify({ device_code: deviceCode })
   });
   if (resp.ok)
@@ -3721,7 +3735,8 @@ var DeeplakeApi = class {
           headers: {
             Authorization: `Bearer ${this.token}`,
             "Content-Type": "application/json",
-            "X-Activeloop-Org-Id": this.orgId
+            "X-Activeloop-Org-Id": this.orgId,
+            ...deeplakeClientHeader()
           },
           signal,
           body: JSON.stringify({ query: sql })
@@ -3873,7 +3888,8 @@ var DeeplakeApi = class {
         const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
           headers: {
             Authorization: `Bearer ${this.token}`,
-            "X-Activeloop-Org-Id": this.orgId
+            "X-Activeloop-Org-Id": this.orgId,
+            ...deeplakeClientHeader()
           }
         });
         if (resp.ok) {

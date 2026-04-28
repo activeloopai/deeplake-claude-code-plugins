@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmS
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { utcTimestamp, log as _log } from "../utils/debug.js";
+import { deeplakeClientHeader } from "../utils/client-header.js";
 
 const dlog = (msg: string) => _log("wiki-worker", msg);
 import { finalizeSummary, releaseLock } from "./summary-state.js";
@@ -61,6 +62,7 @@ async function query(sql: string, retries = 4): Promise<Record<string, unknown>[
         Authorization: `Bearer ${cfg.token}`,
         "Content-Type": "application/json",
         "X-Activeloop-Org-Id": cfg.orgId,
+        ...deeplakeClientHeader(),
       },
       body: JSON.stringify({ query: sql }),
     });

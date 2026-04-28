@@ -71,6 +71,15 @@ function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 
+// dist/src/utils/client-header.js
+var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
+function deeplakeClientValue() {
+  return `hivemind/${__HIVEMIND_VERSION__}`;
+}
+function deeplakeClientHeader() {
+  return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
+}
+
 // dist/src/deeplake-api.js
 var log2 = (msg) => log("sdk", msg);
 function summarizeSql(sql, maxLen = 220) {
@@ -182,7 +191,8 @@ var DeeplakeApi = class {
           headers: {
             Authorization: `Bearer ${this.token}`,
             "Content-Type": "application/json",
-            "X-Activeloop-Org-Id": this.orgId
+            "X-Activeloop-Org-Id": this.orgId,
+            ...deeplakeClientHeader()
           },
           signal,
           body: JSON.stringify({ query: sql })
@@ -334,7 +344,8 @@ var DeeplakeApi = class {
         const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
           headers: {
             Authorization: `Bearer ${this.token}`,
-            "X-Activeloop-Org-Id": this.orgId
+            "X-Activeloop-Org-Id": this.orgId,
+            ...deeplakeClientHeader()
           }
         });
         if (resp.ok) {
