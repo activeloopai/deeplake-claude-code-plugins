@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  Persistent, cloud-backed shared memory for <b>Claude Code • OpenClaw • Codex</b> agents.<br>
+  Persistent, cloud-backed shared memory for <b>Claude Code • OpenClaw • Codex • Cursor • Hermes • pi</b> agents.<br>
 </p>
 
 > One session ends, everything important disappears. 
@@ -37,33 +37,39 @@ Hivemind automatically captures every prompt, tool call, decision, and file oper
 One command, all your agents:
 
 ```bash
-npx @activeloop/hivemind@latest install
+npx @deeplake/hivemind@latest install
 ```
 
-That's it. The installer detects every supported assistant on your machine (Claude Code, Codex, OpenClaw), wires up the hooks, and opens a browser once for login. Restart your assistants and they all share the same brain.
+That's it. The installer detects every supported assistant on your machine (Claude Code, Codex, OpenClaw, Cursor, Hermes Agent, pi), wires up the hooks, and opens a browser once for login. Restart your assistants and they all share the same brain.
 
 **Install for a specific assistant only:**
 
 ```bash
-npx @activeloop/hivemind@latest install --only claude
-npx @activeloop/hivemind@latest claude install    # equivalent
-npx @activeloop/hivemind@latest codex install
-npx @activeloop/hivemind@latest claw install
+npx @deeplake/hivemind@latest install --only claude
+npx @deeplake/hivemind@latest claude install    # equivalent
+npx @deeplake/hivemind@latest codex install
+npx @deeplake/hivemind@latest claw install
+npx @deeplake/hivemind@latest cursor install
+npx @deeplake/hivemind@latest hermes install
+npx @deeplake/hivemind@latest pi install
 ```
 
 **Check what's wired up:**
 
 ```bash
-npx @activeloop/hivemind@latest status
+npx @deeplake/hivemind@latest status
 ```
 
 **Supported assistants:**
 
-| Platform        | Status    |
-|-----------------|-----------|
-| **Claude Code** | ✅ Stable |
-| **OpenClaw**    | 🔧 Beta   |
-| **Codex**       | 🔧 Beta   |
+| Platform         | Integration                                      | Auto-capture | Auto-recall |
+|------------------|--------------------------------------------------|--------------|-------------|
+| **Claude Code**  | Marketplace plugin                               | ✅           | ✅          |
+| **OpenClaw**     | Native extension                                 | ✅           | ✅          |
+| **Codex**        | Hooks (`hooks.json`)                             | ✅           | ✅          |
+| **Cursor**       | Hooks (`hooks.json` 1.7+)                        | ✅           | ✅          |
+| **Hermes Agent** | Shell hooks (`config.yaml`) + skill + MCP server | ✅           | ✅          |
+| **pi**           | Extension API (`pi.on(...)`) + skill + AGENTS.md | ✅           | ✅          |
 
 ### Alternative install paths
 
@@ -138,11 +144,44 @@ git clone https://github.com/activeloopai/hivemind.git ~/.codex/hivemind
 Restart Codex to activate.
 </details>
 
+<details>
+  <summary><b>Cursor (1.7+)</b></summary>
+
+The unified installer wires six lifecycle events in `~/.cursor/hooks.json` — sessionStart, beforeSubmitPrompt, postToolUse, afterAgentResponse, stop, sessionEnd. Hooks fork a Node bundle at `~/.cursor/hivemind/bundle/` per event. Restart Cursor after install to load.
+
+```bash
+npx @deeplake/hivemind@latest cursor install
+```
+
+Auto-capture is enabled the same way as Claude Code / Codex / OpenClaw.
+</details>
+
+<details>
+  <summary><b>Hermes Agent</b></summary>
+
+Drops an `agentskills.io`-compatible skill at `~/.hermes/skills/hivemind-memory/`. Recall is via direct grep on `~/.deeplake/memory/`. Auto-capture is not yet supported (Hermes' lifecycle-hook surface isn't documented at the time of writing).
+
+```bash
+npx @deeplake/hivemind@latest hermes install
+```
+</details>
+
+<details>
+  <summary><b>pi (badlogic/pi-mono coding-agent)</b></summary>
+
+Drops `~/.pi/agent/AGENTS.md` (idempotent BEGIN/END marker block) plus a skill at `~/.pi/agent/skills/hivemind-memory/`. Recall is via direct grep on `~/.deeplake/memory/`.
+
+```bash
+npx @deeplake/hivemind@latest pi install
+```
+</details>
+
+
 ### Uninstall
 
 ```bash
-npx @activeloop/hivemind@latest uninstall              # remove from every detected assistant
-npx @activeloop/hivemind@latest codex uninstall        # remove from one
+npx @deeplake/hivemind@latest uninstall              # remove from every detected assistant
+npx @deeplake/hivemind@latest codex uninstall        # remove from one
 ```
 
 ## How it works
@@ -236,26 +275,32 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 
 ## Architecture
 
-### Hook lifecycle (Claude Code)
+### Integration model per agent
 
-| Hook                | Purpose                                          | Async |
-|---------------------|--------------------------------------------------|-------|
-| `SessionStart`      | Auth login, inject context, DATA NOTICE          | No    |
-| `UserPromptSubmit`  | Capture user message                             | No    |
-| `PreToolUse`        | Intercept and rewrite memory-targeting commands  | No    |
-| `PostToolUse`       | Capture tool call + response                     | Yes   |
-| `Stop`              | Capture assistant response                       | No    |
-| `SubagentStop`      | Capture subagent activity                        | Yes   |
-| `SessionEnd`        | Spawn wiki-worker for AI summary                 | No    |
+| Agent             | Mechanism                          | Hooks/tools wired                                                                       |
+|-------------------|------------------------------------|-----------------------------------------------------------------------------------------|
+| **Claude Code**   | Marketplace plugin                 | `SessionStart` · `UserPromptSubmit` · `PreToolUse` · `PostToolUse` · `Stop` · `SubagentStop` · `SessionEnd` |
+| **Codex**         | `~/.codex/hooks.json`              | `SessionStart` · `UserPromptSubmit` · `PreToolUse(Bash)` · `PostToolUse` · `Stop`        |
+| **OpenClaw**      | Native extension at `~/.openclaw/extensions/hivemind/` | `agent_end` capture · `before_agent_start` recall · contracted tools (`hivemind_search`/`read`/`index`) |
+| **Cursor (1.7+)** | `~/.cursor/hooks.json`             | `sessionStart` · `beforeSubmitPrompt` · `postToolUse` · `afterAgentResponse` · `stop` · `sessionEnd` |
+| **Hermes**        | Skill at `~/.hermes/skills/hivemind-memory/` | recall via grep on `~/.deeplake/memory/`                                                |
+| **pi**            | `~/.pi/agent/AGENTS.md` + skill    | recall via grep on `~/.deeplake/memory/`                                                |
 
 ### Monorepo structure
 
 ```
 hivemind/
 ├── src/                    ← shared core (API client, auth, config, SQL utils)
-├── claude-code/            ← Claude Code plugin (hooks, virtual FS, shell)
-├── openclaw/               ← OpenClaw plugin (auto-recall, auto-capture)
-└── codex/                  ← Codex CLI plugin (hooks, block+inject interception)
+│   ├── hooks/              ← Claude Code hooks
+│   ├── hooks/codex/        ← Codex hooks
+│   ├── hooks/cursor/       ← Cursor hooks
+│   ├── mcp/                ← MCP server (used by Hermes; available to any future MCP-aware client)
+│   └── cli/                ← unified `hivemind install` CLI + per-agent installers
+├── claude-code/            ← Claude Code plugin source (marketplace-distributed)
+├── openclaw/               ← OpenClaw plugin source
+├── codex/                  ← Codex plugin source
+├── cursor/                 ← Cursor plugin source
+└── mcp/                    ← MCP server build output
 ```
 
 ## Security
@@ -272,7 +317,7 @@ hivemind/
 git clone https://github.com/activeloopai/hivemind.git
 cd hivemind
 npm install
-npm run build     # tsc + esbuild → claude-code/bundle/ + codex/bundle/ + openclaw/dist/
+npm run build     # tsc + esbuild → claude-code/bundle/ + codex/bundle/ + cursor/bundle/ + openclaw/dist/ + mcp/bundle/ + bundle/cli.js
 npm test          # vitest
 ```
 

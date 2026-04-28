@@ -1,5 +1,5 @@
 {
-  "name": "@activeloop/hivemind",
+  "name": "@deeplake/hivemind",
   "version": "0.6.47",
   "description": "Cloud-backed persistent shared memory for AI agents powered by Deeplake",
   "type": "module",
@@ -15,6 +15,9 @@
     "codex/bundle",
     "codex/skills",
     "cursor/bundle",
+    "hermes/bundle",
+    "mcp/bundle",
+    "pi/extension-source",
     "openclaw/dist",
     "openclaw/skills",
     "openclaw/openclaw.plugin.json",
@@ -44,11 +47,15 @@
     "*.md": []
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "deeplake": "^0.3.30",
+    "js-yaml": "^4.1.1",
     "just-bash": "^2.14.0",
-    "yargs-parser": "^22.0.0"
+    "yargs-parser": "^22.0.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.0.0",
     "@types/yargs-parser": "^21.0.3",
     "@vitest/coverage-v8": "^4.1.3",

@@ -1,21 +1,12 @@
-#!/usr/bin/env node
-
 /**
- * Cursor sessionStart hook.
+ * Hermes on_session_start hook.
  *
- * Cursor 1.7+ docs: https://cursor.com/docs/agent/hooks
- *
- * Input (from common payload + sessionStart-specific):
- *   { session_id, is_background_agent, composer_mode,
- *     conversation_id, generation_id, model, hook_event_name,
- *     cursor_version, workspace_roots, user_email, transcript_path }
- *
- * Output (JSON to stdout):
- *   { additional_context: "string injected into agent context",
- *     env: { ... env vars exposed to subsequent hooks ... } }
- *
- * Cursor exit codes: 0 = success (use stdout JSON), 2 = block,
- * other = fail-open (proceed with action).
+ * Hermes hook spec (from agent/shell_hooks.py):
+ *   stdin  JSON: { hook_event_name, tool_name?, tool_input?, session_id, cwd, extra? }
+ *   stdout JSON: { context: "..." } injects context into pre_llm_call;
+ *                for on_session_start, the recommended shape is also { context }
+ *                — the docstring describes pre_llm_call but the same wire is
+ *                used for session start.
  */
 
 import { fileURLToPath } from "node:url";
@@ -27,7 +18,7 @@ import { sqlStr } from "../../utils/sql.js";
 import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
-const log = (msg: string) => _log("cursor-session-start", msg);
+const log = (msg: string) => _log("hermes-session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
 const AUTH_CMD = join(__bundleDir, "commands", "auth-login.js");
@@ -36,32 +27,15 @@ const context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ share
 
 Structure: index.md (start here) → summaries/*.md → sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
 Search: use \`grep\` (NOT \`rg\`/ripgrep). Example: grep -ri "keyword" ~/.deeplake/memory/
-IMPORTANT: Only use these bash builtins to interact with ~/.deeplake/memory/: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find. Do NOT use rg/ripgrep, python, python3, node, curl, or other interpreters — they may not be installed and the memory filesystem only supports the listed builtins.
+You also have hivemind MCP tools registered: hivemind_search, hivemind_read, hivemind_index. Prefer these — one tool call returns ranked hits across all summaries and sessions in a single SQL query.
+IMPORTANT: Only use these bash builtins to interact with ~/.deeplake/memory/: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find. Do NOT use rg/ripgrep, python, python3, node, curl, or other interpreters.
 Do NOT spawn subagents to read deeplake memory.`;
 
-interface CursorSessionStartInput {
-  session_id?: string;
-  conversation_id?: string;
+interface HermesSessionStartInput {
   hook_event_name?: string;
-  workspace_roots?: string[];
-  cursor_version?: string;
-  user_email?: string | null;
-  transcript_path?: string | null;
-  is_background_agent?: boolean;
-  composer_mode?: string;
-}
-
-/** Resolve the session id Cursor uses (sessionStart provides session_id; reuse conversation_id otherwise). */
-function resolveSessionId(input: CursorSessionStartInput): string {
-  return input.session_id ?? input.conversation_id ?? `cursor-${Date.now()}`;
-}
-
-function resolveCwd(input: CursorSessionStartInput): string {
-  const roots = input.workspace_roots;
-  if (Array.isArray(roots) && roots.length > 0 && typeof roots[0] === "string") {
-    return roots[0];
-  }
-  return process.cwd();
+  session_id?: string;
+  cwd?: string;
+  extra?: Record<string, unknown>;
 }
 
 async function createPlaceholder(
@@ -95,35 +69,25 @@ async function createPlaceholder(
   await api.query(
     `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'cursor', '${now}', '${now}')`,
+    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'hermes', '${now}', '${now}')`,
   );
 }
 
 async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
-
-  const input = await readStdin<CursorSessionStartInput>();
-  const sessionId = resolveSessionId(input);
-  const cwd = resolveCwd(input);
+  const input = await readStdin<HermesSessionStartInput>();
+  const sessionId = input.session_id ?? `hermes-${Date.now()}`;
+  const cwd = input.cwd ?? process.cwd();
 
   const creds = loadCredentials();
-  if (!creds?.token) {
-    log("no credentials found");
-  } else {
-    log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
-  }
-
   const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
+
   if (creds?.token && captureEnabled) {
     try {
       const config = loadConfig();
       if (config) {
-        const table = config.tableName;
-        const sessionsTable = config.sessionsTableName;
-        const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
-        await api.ensureTable();
-        await api.ensureSessionsTable(sessionsTable);
-        await createPlaceholder(api, table, sessionId, cwd, config.userName, config.orgName, config.workspaceId);
+        const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+        await createPlaceholder(api, config.tableName, sessionId, cwd, config.userName, config.orgName, config.workspaceId);
         log("placeholder created");
       }
     } catch (e: any) {
@@ -135,11 +99,12 @@ async function main(): Promise<void> {
   const current = getInstalledVersion(__bundleDir, ".claude-plugin");
   if (current) versionNotice = `\nHivemind v${current}`;
 
-  const additionalContext = creds?.token
+  const additional = creds?.token
     ? `${context}\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${versionNotice}`
     : `${context}\nNot logged in to Deeplake. Run: node "${AUTH_CMD}" login${versionNotice}`;
 
-  console.log(JSON.stringify({ additional_context: additionalContext }));
+  // Hermes expects { context: "..." } on stdout
+  console.log(JSON.stringify({ context: additional }));
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });

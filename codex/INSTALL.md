@@ -3,13 +3,13 @@
 The fastest path installs hivemind into every AI coding assistant on your machine (Claude Code, Codex, OpenClaw) with one command:
 
 ```bash
-npx @activeloop/hivemind@latest install
+npx @deeplake/hivemind@latest install
 ```
 
 Or install for Codex only:
 
 ```bash
-npx @activeloop/hivemind@latest codex install
+npx @deeplake/hivemind@latest codex install
 ```
 
 The installer:
@@ -38,7 +38,7 @@ ls ~/.codex/hivemind/bundle/
 ## Updating
 
 ```bash
-npx @activeloop/hivemind@latest codex install
+npx @deeplake/hivemind@latest codex install
 ```
 
 Re-running is idempotent — hooks and skills get replaced in place.
@@ -46,7 +46,7 @@ Re-running is idempotent — hooks and skills get replaced in place.
 ## Uninstalling
 
 ```bash
-npx @activeloop/hivemind@latest codex uninstall
+npx @deeplake/hivemind@latest codex uninstall
 ```
 
 Removes `~/.codex/hooks.json` and the skill symlink. Plugin files remain at `~/.codex/hivemind/` so a reinstall is cheap; delete the directory manually if you want a full cleanup.

@@ -32,10 +32,22 @@ function buildHookCmd(bundleFile: string, timeout: number): CursorHookEntry {
   };
 }
 
+function buildHookCmdShellMatcher(bundleFile: string, timeout: number): CursorHookEntry {
+  return {
+    type: "command",
+    command: `node "${join(PLUGIN_DIR, "bundle", bundleFile)}"`,
+    timeout,
+    matcher: "Shell",
+  };
+}
+
 function buildHookConfig(): Record<string, CursorHookEntry[]> {
   return {
     sessionStart: [buildHookCmd("session-start.js", 30)],
     beforeSubmitPrompt: [buildHookCmd("capture.js", 10)],
+    // preToolUse with Shell matcher rewrites grep/rg against ~/.deeplake/memory/
+    // into a single SQL fast-path call, matching Claude Code / Codex accuracy.
+    preToolUse: [buildHookCmdShellMatcher("pre-tool-use.js", 30)],
     postToolUse: [buildHookCmd("capture.js", 15)],
     afterAgentResponse: [buildHookCmd("capture.js", 15)],
     stop: [buildHookCmd("capture.js", 15)],
@@ -101,8 +113,14 @@ export function uninstallCursor(): void {
     return;
   }
   const stripped = stripHooksFromConfig(existing);
-  if (!stripped || (Object.keys(stripped).length === 1 && stripped.version)) {
-    // Nothing else in the file — remove it.
+  // Delete the file when nothing meaningful remains. The previous check
+  // missed two edge cases: an empty object `{}` (no version key at all)
+  // and a stripped object with `version: 0` (falsy → block fired wrong).
+  // Count keys ignoring `version` regardless of its value.
+  const meaningfulKeys = stripped
+    ? Object.keys(stripped).filter(k => k !== "version").length
+    : 0;
+  if (!stripped || meaningfulKeys === 0) {
     if (existsSync(HOOKS_PATH)) unlinkSync(HOOKS_PATH);
   } else {
     writeJson(HOOKS_PATH, stripped);

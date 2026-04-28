@@ -909,13 +909,16 @@ function parseBashGrep(cmd) {
   const first = splitFirstPipelineStage(cmd);
   if (!first)
     return null;
-  if (!/^(grep|egrep|fgrep)\b/.test(first))
+  const matchTool = first.match(/^(grep|egrep|fgrep|rg)\b/);
+  if (!matchTool)
     return null;
-  const isFixed = first.startsWith("fgrep");
+  const tool = matchTool[1];
+  const isFixed = tool === "fgrep";
+  const isRg = tool === "rg";
   const tokens = tokenizeGrepStage(first);
   if (!tokens || tokens.length === 0)
     return null;
-  let ignoreCase = false, wordMatch = false, filesOnly = false, countOnly = false, lineNumber = false, invertMatch = false, fixedString = isFixed;
+  let ignoreCase = false, wordMatch = false, filesOnly = false, countOnly = false, lineNumber = isRg, invertMatch = false, fixedString = isFixed;
   const explicitPatterns = [];
   let ti = 1;
   while (ti < tokens.length) {
@@ -928,6 +931,31 @@ function parseBashGrep(cmd) {
       break;
     if (token.startsWith("--")) {
       const [flag, inlineValue] = token.split("=", 2);
+      const rgValueLongs = /* @__PURE__ */ new Set([
+        "--type",
+        "--type-not",
+        "--type-add",
+        "--type-clear",
+        "--glob",
+        "--iglob",
+        "--threads",
+        "--max-columns",
+        "--max-depth",
+        "--max-filesize",
+        "--pre",
+        "--pre-glob",
+        "--replace",
+        "--encoding",
+        "--color",
+        "--colors",
+        "--sort",
+        "--sortr",
+        "--context-separator",
+        "--field-context-separator",
+        "--field-match-separator",
+        "--path-separator",
+        "--hostname-bin"
+      ]);
       const handlers = {
         "--ignore-case": () => {
           ignoreCase = true;
@@ -941,12 +969,26 @@ function parseBashGrep(cmd) {
           filesOnly = true;
           return false;
         },
+        // rg uses `--files` to list files (without searching). For our purposes
+        // it's similar enough to `-l` that we treat it as filesOnly.
+        "--files": () => {
+          filesOnly = true;
+          return false;
+        },
         "--count": () => {
+          countOnly = true;
+          return false;
+        },
+        "--count-matches": () => {
           countOnly = true;
           return false;
         },
         "--line-number": () => {
           lineNumber = true;
+          return false;
+        },
+        "--no-line-number": () => {
+          lineNumber = false;
           return false;
         },
         "--invert-match": () => {
@@ -969,7 +1011,10 @@ function parseBashGrep(cmd) {
           return true;
         }
       };
-      const consumeNext = handlers[flag]?.() ?? false;
+      let consumeNext = handlers[flag]?.() ?? false;
+      if (!consumeNext && isRg && rgValueLongs.has(flag) && inlineValue === void 0) {
+        consumeNext = true;
+      }
       if (consumeNext) {
         ti++;
         if (ti >= tokens.length)
@@ -980,7 +1025,9 @@ function parseBashGrep(cmd) {
       ti++;
       continue;
     }
+    const rgValueShorts = new Set(isRg ? ["t", "T", "g", "j", "M", "r", "E"] : []);
     const shortFlags = token.slice(1);
+    let consumedValueFlag = false;
     for (let i = 0; i < shortFlags.length; i++) {
       const flag = shortFlags[i];
       switch (flag) {
@@ -999,6 +1046,10 @@ function parseBashGrep(cmd) {
         case "n":
           lineNumber = true;
           break;
+        case "N":
+          lineNumber = false;
+          break;
+        // rg --no-line-number short form
         case "v":
           invertMatch = true;
           break;
@@ -1006,8 +1057,27 @@ function parseBashGrep(cmd) {
           fixedString = true;
           break;
         case "r":
+          if (isRg) {
+            if (i === shortFlags.length - 1) {
+              ti++;
+              if (ti >= tokens.length)
+                return null;
+            }
+            consumedValueFlag = true;
+            i = shortFlags.length;
+          }
+          break;
         case "R":
         case "E":
+          if (isRg && flag === "E") {
+            if (i === shortFlags.length - 1) {
+              ti++;
+              if (ti >= tokens.length)
+                return null;
+            }
+            consumedValueFlag = true;
+            i = shortFlags.length;
+          }
           break;
         case "A":
         case "B":
@@ -1034,9 +1104,19 @@ function parseBashGrep(cmd) {
           break;
         }
         default:
+          if (rgValueShorts.has(flag)) {
+            if (i === shortFlags.length - 1) {
+              ti++;
+              if (ti >= tokens.length)
+                return null;
+            }
+            consumedValueFlag = true;
+            i = shortFlags.length;
+          }
           break;
       }
     }
+    void consumedValueFlag;
     ti++;
   }
   const pattern = explicitPatterns.length > 0 ? explicitPatterns[0] : tokens[ti];
