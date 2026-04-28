@@ -48,22 +48,37 @@ export function readVersionStamp(dir: string): string | null {
   try { return readFileSync(p, "utf-8").trim(); } catch { return null; }
 }
 
+export type PlatformId = "claude" | "codex" | "claw" | "cursor" | "hermes" | "pi";
+
 export interface DetectedPlatform {
-  id: "claude" | "codex" | "claw";
+  id: PlatformId;
   markerDir: string;
 }
 
+// Hivemind's value is bidirectional shared memory — every supported agent
+// must capture (write) AND recall (read). Cline / Roo Code / Kilo Code were
+// dropped because their public API (src/exports/cline.d.ts) is control-only
+// (startNewTask / sendMessage / pressPrimary/SecondaryButton). No event
+// subscription, no listener, no observation API. Auto-capture would require
+// a fragile filesystem watcher on Cline's task storage. See the project
+// memory for the investigation that arrived at this decision.
 const PLATFORM_MARKERS: DetectedPlatform[] = [
   { id: "claude", markerDir: join(HOME, ".claude") },
   { id: "codex", markerDir: join(HOME, ".codex") },
   { id: "claw", markerDir: join(HOME, ".openclaw") },
+  { id: "cursor", markerDir: join(HOME, ".cursor") },
+  { id: "hermes", markerDir: join(HOME, ".hermes") },
+  // pi (badlogic/pi-mono coding-agent) — config at ~/.pi/agent/. pi exposes
+  // a rich extension event API (session_start / input / tool_call /
+  // tool_result / message_end / session_shutdown / etc.) — Tier 1 capable.
+  { id: "pi", markerDir: join(HOME, ".pi") },
 ];
 
 export function detectPlatforms(): DetectedPlatform[] {
   return PLATFORM_MARKERS.filter(p => existsSync(p.markerDir));
 }
 
-export function allPlatformIds(): Array<"claude" | "codex" | "claw"> {
+export function allPlatformIds(): PlatformId[] {
   return PLATFORM_MARKERS.map(p => p.id);
 }
 

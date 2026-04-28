@@ -1,4 +1,4 @@
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, copyFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { HOME, pkgRoot, ensureDir, copyDir, writeVersionStamp, log } from "./util.js";
 import { getVersion } from "./version.js";
@@ -17,8 +17,12 @@ export function installOpenclaw(): void {
 
   ensureDir(PLUGIN_DIR);
   copyDir(srcDist, join(PLUGIN_DIR, "dist"));
-  if (existsSync(srcManifest)) copyDir(srcManifest, join(PLUGIN_DIR, "openclaw.plugin.json"));
-  if (existsSync(srcPkg)) copyDir(srcPkg, join(PLUGIN_DIR, "package.json"));
+  // copyDir uses cpSync({ recursive: true }) and is for directories. It
+  // works on files today, but if a directory ever exists at the
+  // destination path the file lands inside it instead of replacing it.
+  // Use copyFileSync for individual files.
+  if (existsSync(srcManifest)) copyFileSync(srcManifest, join(PLUGIN_DIR, "openclaw.plugin.json"));
+  if (existsSync(srcPkg)) copyFileSync(srcPkg, join(PLUGIN_DIR, "package.json"));
   if (existsSync(srcSkills)) copyDir(srcSkills, join(PLUGIN_DIR, "skills"));
 
   writeVersionStamp(PLUGIN_DIR, getVersion());

@@ -25,8 +25,15 @@ import {
 } from "./auth.js";
 import { sessionPrune } from "./session-prune.js";
 
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+/**
+ * Dispatch one auth subcommand.
+ *
+ * Used both by this module's standalone main() (when run as a Node script)
+ * and by the unified `hivemind` CLI which re-exports these subcommands at
+ * its top level (`hivemind whoami`, `hivemind org list`, etc.) so users
+ * don't have to know about per-plugin bundle paths.
+ */
+export async function runAuthCommand(args: string[]): Promise<void> {
   const cmd = args[0] ?? "whoami";
 
   const creds = loadCredentials();
@@ -149,4 +156,11 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(e => { console.error(e.message); process.exit(1); });
+// Run as a standalone script only when invoked directly via Node — not when
+// imported (the unified CLI imports this file to dispatch its own subcommands).
+// Identify standalone mode by the bundled script's filename: per-agent bundles
+// land at `<plugin>/bundle/commands/auth-login.js`, while the unified CLI is
+// bundled into `bundle/cli.js`, which doesn't end with auth-login.js.
+if (process.argv[1] && process.argv[1].endsWith("auth-login.js")) {
+  runAuthCommand(process.argv.slice(2)).catch(e => { console.error(e.message); process.exit(1); });
+}

@@ -12,3 +12,7 @@ bench/
 CLAUDE.md
 RESULTS-fast-path-all-commands.md
 PLAN-fast-path-all-commands.md
+# Local-only test artifacts (npm pack tarballs, Bun lockfile, ad-hoc scripts)
+*.tgz
+bun.lock
+deploy-to-cache.sh
