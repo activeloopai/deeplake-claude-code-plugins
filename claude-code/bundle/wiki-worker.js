@@ -24,7 +24,7 @@ function log(tag, msg) {
 // dist/src/utils/client-header.js
 var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
 function deeplakeClientValue() {
-  return `hivemind/${"0.6.49"}`;
+  return `hivemind/${"0.6.50"}`;
 }
 function deeplakeClientHeader() {
   return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
