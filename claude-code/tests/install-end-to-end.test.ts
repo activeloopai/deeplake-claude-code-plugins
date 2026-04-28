@@ -116,7 +116,7 @@ describe("installCodex / uninstallCodex", () => {
     expect(hooks.hooks.PostToolUse).toHaveLength(1);
   });
 
-  it("uninstall removes hooks.json + skill link, keeps the plugin dir", async () => {
+  it("uninstall removes hooks.json + skill link when no user hooks remain (clean case)", async () => {
     const cx = await freshImport<typeof import("../../src/cli/install-codex.js")>(
       "../../src/cli/install-codex.js"
     );
@@ -124,10 +124,40 @@ describe("installCodex / uninstallCodex", () => {
     expect(existsSync(join(fakeHome, ".codex/hooks.json"))).toBe(true);
 
     cx.uninstallCodex();
+    // Without any pre-existing user hooks, every event was ours → file deleted.
     expect(existsSync(join(fakeHome, ".codex/hooks.json"))).toBe(false);
     expect(existsSync(join(fakeHome, ".agents/skills/hivemind-memory"))).toBe(false);
     // Plugin dir is intentionally retained — see install-codex.ts:81 comment.
     expect(existsSync(join(fakeHome, ".codex/hivemind"))).toBe(true);
+  });
+
+  it("uninstall PRESERVES a user-defined custom hook (data-loss fix)", async () => {
+    // CLAUDE.md rule 12 — failure-case-before-fix: the pre-fix uninstallCodex
+    // did `unlinkSync(HOOKS_PATH)` unconditionally, wiping any user hook
+    // that lived alongside ours. This test would FAIL on main pre-fix
+    // (file gone, custom Notification hook lost) and passes only on the
+    // strip-not-delete fix in src/cli/install-codex.ts:137.
+    const userHook = {
+      hooks: { Notification: [{ hooks: [{ type: "command", command: "/usr/local/bin/my-notify.sh", timeout: 5 }] }] },
+    };
+    mkdirSync(join(fakeHome, ".codex"), { recursive: true });
+    writeFileSync(join(fakeHome, ".codex/hooks.json"), JSON.stringify(userHook));
+
+    const cx = await freshImport<typeof import("../../src/cli/install-codex.js")>(
+      "../../src/cli/install-codex.js"
+    );
+    cx.installCodex();
+    cx.uninstallCodex();
+
+    expect(existsSync(join(fakeHome, ".codex/hooks.json"))).toBe(true);
+    const after = JSON.parse(readFileSync(join(fakeHome, ".codex/hooks.json"), "utf-8"));
+    // User's Notification hook intact + count is exact.
+    expect(after.hooks.Notification).toHaveLength(1);
+    expect(after.hooks.Notification[0].hooks[0].command).toBe("/usr/local/bin/my-notify.sh");
+    // Every hivemind event is stripped — none of the 5 we add must remain.
+    for (const ev of ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]) {
+      expect(after.hooks[ev]).toBeUndefined();
+    }
   });
 });
 
@@ -252,6 +282,33 @@ describe("installHermes / uninstallHermes", () => {
 
     hx.uninstallHermes();
     expect(existsSync(join(fakeHome, ".hermes/skills/hivemind-memory"))).toBe(false);
+  });
+
+  it("uninstall removes hooks_auto_accept (silent-auto-accept residual fix)", async () => {
+    // CLAUDE.md rule 12 — failure-case-before-fix: installHermes sets
+    // cfg.hooks_auto_accept = true so the hivemind hooks fire without a
+    // consent prompt. The pre-fix uninstallHermes never removed this flag,
+    // so any unrelated hook a user added later would silently auto-accept.
+    // This test would FAIL on main pre-fix (flag still true after uninstall)
+    // and passes only on the cleanup added to install-hermes.ts:230-237.
+    const hx = await freshImport<typeof import("../../src/cli/install-hermes.js")>(
+      "../../src/cli/install-hermes.js"
+    );
+    hx.installHermes();
+
+    // Sanity: install set the flag.
+    const afterInstall = readFileSync(join(fakeHome, ".hermes/config.yaml"), "utf-8");
+    expect(afterInstall).toMatch(/hooks_auto_accept:\s*true/);
+
+    hx.uninstallHermes();
+
+    // Either the file is gone (whole config was hivemind-only) or it
+    // exists without the flag. Negative pattern: under no circumstance
+    // should `hooks_auto_accept` survive uninstall.
+    if (existsSync(join(fakeHome, ".hermes/config.yaml"))) {
+      const afterUninstall = readFileSync(join(fakeHome, ".hermes/config.yaml"), "utf-8");
+      expect(afterUninstall).not.toMatch(/hooks_auto_accept:/);
+    }
   });
 });
 

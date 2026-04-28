@@ -145,13 +145,16 @@ describe("uninstallHermes", () => {
     uninstallHermes();
     expect(existsSync(join(tmpHome, ".hermes", "skills", "hivemind-memory"))).toBe(false);
     expect(existsSync(join(tmpHome, ".hermes", "hivemind"))).toBe(false);
-    // config.yaml may persist with the leftover `hooks_auto_accept: true`
-    // (installer writes it; uninstall does not remove it because the user
-    // may have wanted that toggle). Verify the *content* is hivemind-free.
+    // After uninstall: every hivemind-written field is stripped, including
+    // hooks_auto_accept (installer set it to true so the hivemind hooks
+    // fire silently — leaving it set after uninstall would silently
+    // auto-accept any unrelated hooks the user adds later). With nothing
+    // left in cfg, the uninstaller deletes config.yaml entirely.
     if (existsSync(join(tmpHome, ".hermes", "config.yaml"))) {
       const cfg = readConfig() ?? {};
       expect(cfg.mcp_servers).toBeUndefined();
       expect(cfg.hooks).toBeUndefined();
+      expect(cfg.hooks_auto_accept).toBeUndefined();
     }
   });
 

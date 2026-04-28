@@ -136,8 +136,34 @@ export function installCodex(): void {
 
 export function uninstallCodex(): void {
   if (existsSync(HOOKS_PATH)) {
-    unlinkSync(HOOKS_PATH);
-    log(`  Codex          removed ${HOOKS_PATH}`);
+    // Symmetric with install: strip ONLY our hivemind entries via mergeHooks.
+    // The pre-fix unconditional unlinkSync(HOOKS_PATH) destroyed any user-
+    // defined hooks (e.g. a custom Notification handler) that lived alongside
+    // ours. mergeHooks(existing, { hooks: {} }) preserves the user's events
+    // and removes only the ones whose command points into PLUGIN_DIR/bundle/.
+    let existing: Record<string, unknown> = {};
+    try {
+      const raw = JSON.parse(readFileSync(HOOKS_PATH, "utf-8"));
+      if (raw && typeof raw === "object") existing = raw as Record<string, unknown>;
+    } catch {
+      // Malformed JSON: fall back to deleting the file rather than guess at
+      // intent. Same behavior as pre-fix; user can recreate cleanly.
+      unlinkSync(HOOKS_PATH);
+      log(`  Codex          removed unparseable ${HOOKS_PATH}`);
+      existing = {};
+    }
+    if (Object.keys(existing).length > 0) {
+      const stripped = mergeHooks(existing, { hooks: {} });
+      const survivingHooks = (stripped.hooks ?? {}) as Record<string, unknown[]>;
+      const otherTopLevelKeys = Object.keys(stripped).filter(k => k !== "hooks");
+      if (Object.keys(survivingHooks).length === 0 && otherTopLevelKeys.length === 0) {
+        unlinkSync(HOOKS_PATH);
+        log(`  Codex          removed ${HOOKS_PATH}`);
+      } else {
+        writeJson(HOOKS_PATH, stripped);
+        log(`  Codex          stripped hivemind hooks from ${HOOKS_PATH}`);
+      }
+    }
   }
   if (existsSync(SKILL_LINK)) {
     unlinkSync(SKILL_LINK);

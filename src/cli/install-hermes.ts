@@ -232,6 +232,15 @@ export function uninstallHermes(): void {
       if (stripped) cfg.hooks = stripped; else delete cfg.hooks;
       touched = true;
     }
+    // installHermes unconditionally writes hooks_auto_accept: true so the
+    // hivemind hooks fire without a consent prompt. Leaving that flag set
+    // after uninstall would silently auto-accept any unrelated hook the
+    // user adds later. Always remove it on uninstall — if a user wanted
+    // hooks_auto_accept independently, they can re-add it.
+    if ("hooks_auto_accept" in cfg) {
+      delete cfg.hooks_auto_accept;
+      touched = true;
+    }
     if (touched) {
       if (Object.keys(cfg).length === 0) {
         unlinkSync(CONFIG_PATH);

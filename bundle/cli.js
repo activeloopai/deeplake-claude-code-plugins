@@ -321,8 +321,28 @@ function installCodex() {
 }
 function uninstallCodex() {
   if (existsSync2(HOOKS_PATH)) {
-    unlinkSync2(HOOKS_PATH);
-    log(`  Codex          removed ${HOOKS_PATH}`);
+    let existing = {};
+    try {
+      const raw = JSON.parse(readFileSync3(HOOKS_PATH, "utf-8"));
+      if (raw && typeof raw === "object")
+        existing = raw;
+    } catch {
+      unlinkSync2(HOOKS_PATH);
+      log(`  Codex          removed unparseable ${HOOKS_PATH}`);
+      existing = {};
+    }
+    if (Object.keys(existing).length > 0) {
+      const stripped = mergeHooks(existing, { hooks: {} });
+      const survivingHooks = stripped.hooks ?? {};
+      const otherTopLevelKeys = Object.keys(stripped).filter((k) => k !== "hooks");
+      if (Object.keys(survivingHooks).length === 0 && otherTopLevelKeys.length === 0) {
+        unlinkSync2(HOOKS_PATH);
+        log(`  Codex          removed ${HOOKS_PATH}`);
+      } else {
+        writeJson(HOOKS_PATH, stripped);
+        log(`  Codex          stripped hivemind hooks from ${HOOKS_PATH}`);
+      }
+    }
   }
   if (existsSync2(SKILL_LINK)) {
     unlinkSync2(SKILL_LINK);
@@ -3248,6 +3268,10 @@ function uninstallHermes() {
         cfg.hooks = stripped;
       else
         delete cfg.hooks;
+      touched = true;
+    }
+    if ("hooks_auto_accept" in cfg) {
+      delete cfg.hooks_auto_accept;
       touched = true;
     }
     if (touched) {
