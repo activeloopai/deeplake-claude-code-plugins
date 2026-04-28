@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { log as _log } from "./utils/debug.js";
 import { sqlStr } from "./utils/sql.js";
+import { deeplakeClientHeader } from "./utils/client-header.js";
 
 const log = (msg: string) => _log("sdk", msg);
 
@@ -146,6 +147,7 @@ export class DeeplakeApi {
             Authorization: `Bearer ${this.token}`,
             "Content-Type": "application/json",
             "X-Activeloop-Org-Id": this.orgId,
+            ...deeplakeClientHeader(),
           },
           signal,
           body: JSON.stringify({ query: sql }),
@@ -319,6 +321,7 @@ export class DeeplakeApi {
           headers: {
             Authorization: `Bearer ${this.token}`,
             "X-Activeloop-Org-Id": this.orgId,
+            ...deeplakeClientHeader(),
           },
         });
         if (resp.ok) {
