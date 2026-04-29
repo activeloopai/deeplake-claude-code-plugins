@@ -1,22 +1,43 @@
 {
-  "name": "hivemind",
+  "name": "@deeplake/hivemind",
   "version": "0.7.0",
   "description": "Cloud-backed persistent shared memory for AI agents powered by Deeplake",
   "type": "module",
-  "bin": {
-    "deeplake-shell": "bundle/deeplake-shell.js"
+  "publishConfig": {
+    "access": "public"
   },
+  "bin": {
+    "hivemind": "bundle/cli.js"
+  },
+  "files": [
+    "bundle",
+    "codex/bundle",
+    "codex/skills",
+    "cursor/bundle",
+    "hermes/bundle",
+    "mcp/bundle",
+    "pi/extension-source",
+    "openclaw/dist",
+    "openclaw/skills",
+    "openclaw/openclaw.plugin.json",
+    "openclaw/package.json",
+    ".claude-plugin",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc && node esbuild.config.mjs",
     "bundle": "node esbuild.config.mjs",
     "dev": "tsc --watch",
     "shell": "tsx src/shell/deeplake-shell.ts",
+    "cli": "tsx src/cli/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "dup": "jscpd src",
     "audit:openclaw": "node scripts/audit-openclaw-bundle.mjs",
     "ci": "npm run typecheck && npm run dup && npm test",
-    "prepare": "husky"
+    "prepare": "husky",
+    "prepublishOnly": "npm run build"
   },
   "lint-staged": {
     "*.ts": [
@@ -26,11 +47,15 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "deeplake": "^0.3.30",
+    "js-yaml": "^4.1.1",
     "just-bash": "^2.14.0",
-    "yargs-parser": "^22.0.0"
+    "yargs-parser": "^22.0.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.0.0",
     "@types/yargs-parser": "^21.0.3",
     "@vitest/coverage-v8": "^4.1.3",

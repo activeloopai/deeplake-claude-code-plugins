@@ -3,31 +3,24 @@
  * and org/workspace management.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { execSync } from "node:child_process";
+import { deeplakeClientHeader } from "../utils/client-header.js";
+import {
+  type Credentials,
+  loadCredentials,
+  saveCredentials,
+  deleteCredentials,
+} from "./auth-creds.js";
 
-const CONFIG_DIR = join(homedir(), ".deeplake");
-const CREDS_PATH = join(CONFIG_DIR, "credentials.json");
+// Re-export so existing importers keep working without churn.
+export { loadCredentials, saveCredentials, deleteCredentials };
+export type { Credentials };
+
 const DEFAULT_API_URL = "https://api.deeplake.ai";
 
 // Output goes to stderr by default (safe for hooks).
 // auth-login.js sets this to console.log for direct CLI usage.
 export let authLog = (msg: string) => process.stderr.write(msg + "\n");
-
-// ── Types ────────────────────────────────────────────────────────────────────
-
-export interface Credentials {
-  token: string;
-  orgId: string;
-  orgName?: string;
-  userName?: string;
-  workspaceId?: string;
-  apiUrl?: string;
-  autoupdate?: boolean;
-  savedAt: string;
-}
 
 interface DeviceCodeResponse {
   device_code: string;
@@ -42,30 +35,6 @@ interface DeviceTokenResponse {
   access_token: string;
   token_type: string;
   expires_in: number;
-}
-
-// ── Credentials Storage ──────────────────────────────────────────────────────
-
-export function loadCredentials(): Credentials | null {
-  if (!existsSync(CREDS_PATH)) return null;
-  try {
-    return JSON.parse(readFileSync(CREDS_PATH, "utf-8"));
-  } catch {
-    return null;
-  }
-}
-
-export function saveCredentials(creds: Credentials): void {
-  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
-  writeFileSync(CREDS_PATH, JSON.stringify({ ...creds, savedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
-}
-
-export function deleteCredentials(): boolean {
-  if (existsSync(CREDS_PATH)) {
-    unlinkSync(CREDS_PATH);
-    return true;
-  }
-  return false;
 }
 
 // ── JWT Helpers ──────────────────────────────────────────────────────────────
@@ -88,6 +57,7 @@ async function apiGet(path: string, token: string, apiUrl: string, orgId?: strin
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
+    ...deeplakeClientHeader(),
   };
   if (orgId) headers["X-Activeloop-Org-Id"] = orgId;
   const resp = await fetch(`${apiUrl}${path}`, { headers });
@@ -99,6 +69,7 @@ async function apiPost(path: string, body: unknown, token: string, apiUrl: strin
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
+    ...deeplakeClientHeader(),
   };
   if (orgId) headers["X-Activeloop-Org-Id"] = orgId;
   const resp = await fetch(`${apiUrl}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
@@ -110,6 +81,7 @@ async function apiDelete(path: string, token: string, apiUrl: string, orgId?: st
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
+    ...deeplakeClientHeader(),
   };
   if (orgId) headers["X-Activeloop-Org-Id"] = orgId;
   const resp = await fetch(`${apiUrl}${path}`, { method: "DELETE", headers });
@@ -121,7 +93,7 @@ async function apiDelete(path: string, token: string, apiUrl: string, orgId?: st
 export async function requestDeviceCode(apiUrl = DEFAULT_API_URL): Promise<DeviceCodeResponse> {
   const resp = await fetch(`${apiUrl}/auth/device/code`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...deeplakeClientHeader() },
   });
   if (!resp.ok) throw new Error(`Device flow unavailable: HTTP ${resp.status}`);
   return resp.json() as Promise<DeviceCodeResponse>;
@@ -130,7 +102,7 @@ export async function requestDeviceCode(apiUrl = DEFAULT_API_URL): Promise<Devic
 export async function pollForToken(deviceCode: string, apiUrl = DEFAULT_API_URL): Promise<DeviceTokenResponse | null> {
   const resp = await fetch(`${apiUrl}/auth/device/token`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...deeplakeClientHeader() },
     body: JSON.stringify({ device_code: deviceCode }),
   });
   if (resp.ok) return resp.json() as Promise<DeviceTokenResponse>;

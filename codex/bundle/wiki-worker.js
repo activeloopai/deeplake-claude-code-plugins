@@ -394,6 +394,15 @@ function embeddingsDisabled() {
   return embeddingsStatus() !== "enabled";
 }
 
+// dist/src/utils/client-header.js
+var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
+function deeplakeClientValue() {
+  return `hivemind/${"0.7.0"}`;
+}
+function deeplakeClientHeader() {
+  return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
+}
+
 // dist/src/hooks/codex/wiki-worker.js
 var dlog2 = (msg) => log("codex-wiki-worker", msg);
 var cfg = JSON.parse(readFileSync3(process.argv[2], "utf-8"));
@@ -418,7 +427,8 @@ async function query(sql, retries = 4) {
       headers: {
         Authorization: `Bearer ${cfg.token}`,
         "Content-Type": "application/json",
-        "X-Activeloop-Org-Id": cfg.orgId
+        "X-Activeloop-Org-Id": cfg.orgId,
+        ...deeplakeClientHeader()
       },
       body: JSON.stringify({ query: sql })
     });

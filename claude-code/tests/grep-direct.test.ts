@@ -347,3 +347,152 @@ describe("parseBashGrep", () => {
     expect(r!.targetPath).toBe("/dir");
   });
 });
+
+// ─── rg (ripgrep) ──────────────────────────────────────────────────────────
+//
+// Modern coding agents reach for `rg` by default for directory searches.
+// We treat rg invocations as grep equivalents and route them through the
+// same SQL fast-path. The branches below cover the rg-specific value-taking
+// flags so their values aren't misparsed as the search pattern — which was
+// the bug class that motivated rg support in the first place.
+
+describe("parseBashGrep: rg (ripgrep)", () => {
+  it("parses bare rg", () => {
+    const r = parseBashGrep("rg 'sasun' /summaries");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("sasun");
+    expect(r!.targetPath).toBe("/summaries");
+    // rg defaults: line numbers on (we mirror that).
+    expect(r!.lineNumber).toBe(true);
+  });
+
+  it("rg short flags reuse the grep handlers", () => {
+    const r = parseBashGrep("rg -F -i foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.fixedString).toBe(true);
+    expect(r!.ignoreCase).toBe(true);
+  });
+
+  it("rg --files lists files (mapped to filesOnly)", () => {
+    // The --files handler sets filesOnly. rg's --files mode doesn't take a
+    // pattern; parseBashGrep treats the next positional as the pattern, so
+    // here `/x` becomes the pattern. The branch we care about for coverage
+    // is the --files handler firing — assert filesOnly to prove it did.
+    const r = parseBashGrep("rg --files /x");
+    expect(r).not.toBeNull();
+    expect(r!.filesOnly).toBe(true);
+  });
+
+  it("rg --count-matches sets countOnly", () => {
+    const r = parseBashGrep("rg --count-matches foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.countOnly).toBe(true);
+  });
+
+  it("rg --no-line-number turns off line numbers", () => {
+    const r = parseBashGrep("rg --no-line-number foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.lineNumber).toBe(false);
+  });
+
+  it("rg -N short form turns off line numbers", () => {
+    const r = parseBashGrep("rg -N foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.lineNumber).toBe(false);
+  });
+
+  it("rg -t ts consumes the next token as a type filter, not the pattern", () => {
+    const r = parseBashGrep("rg -t ts foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+    expect(r!.targetPath).toBe("/x");
+  });
+
+  it("rg -g '*.md' consumes the glob value, not the pattern", () => {
+    const r = parseBashGrep("rg -g '*.md' foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+    expect(r!.targetPath).toBe("/x");
+  });
+
+  it("rg -j 4 consumes the threads value", () => {
+    const r = parseBashGrep("rg -j 4 foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+  });
+
+  it("rg -r REPLACE consumes the replacement value (not grep's recursive flag)", () => {
+    const r = parseBashGrep("rg -r BAR foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+    expect(r!.targetPath).toBe("/x");
+  });
+
+  it("rg -E ENCODING consumes the value (not grep's extended-regex)", () => {
+    const r = parseBashGrep("rg -E utf-8 foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+    expect(r!.targetPath).toBe("/x");
+  });
+
+  it("rg --type ts consumes the type value", () => {
+    const r = parseBashGrep("rg --type ts foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+    expect(r!.targetPath).toBe("/x");
+  });
+
+  it("rg --type=ts inline value", () => {
+    const r = parseBashGrep("rg --type=ts foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+  });
+
+  it("rg --glob '*.md' consumes the glob", () => {
+    const r = parseBashGrep("rg --glob '*.md' foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+  });
+
+  it("rg --max-depth 3 consumes the depth value", () => {
+    const r = parseBashGrep("rg --max-depth 3 foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+  });
+
+  it("rg --replace BAR consumes the replacement value", () => {
+    const r = parseBashGrep("rg --replace BAR foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+  });
+
+  it("rg short value-flag at end of cluster consumes the next token", () => {
+    // -it ts → -i + -t ts; -t is value-taking, last in cluster, consumes "ts".
+    const r = parseBashGrep("rg -it ts foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.ignoreCase).toBe(true);
+    expect(r!.pattern).toBe("foo");
+  });
+
+  it("returns null when an rg value-short is missing its value", () => {
+    expect(parseBashGrep("rg -t")).toBeNull();
+  });
+
+  it("returns null when an rg value-long is missing its value", () => {
+    expect(parseBashGrep("rg --type")).toBeNull();
+  });
+
+  it("returns null when rg -r is missing its replace value", () => {
+    expect(parseBashGrep("rg -r")).toBeNull();
+  });
+
+  it("returns null when rg -E is missing its encoding value", () => {
+    expect(parseBashGrep("rg -E")).toBeNull();
+  });
+
+  it("rg unknown short flag is a no-op (does not crash)", () => {
+    const r = parseBashGrep("rg -Z foo /x");
+    expect(r).not.toBeNull();
+    expect(r!.pattern).toBe("foo");
+  });
+});

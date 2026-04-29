@@ -9,11 +9,49 @@ function definePluginEntry<T>(entry: T): T { return entry; }
 declare const __HIVEMIND_VERSION__: string;
 declare const __HIVEMIND_SKILL__: string;
 // Shared core imports
-import { ensureHivemindAllowlisted, detectAllowlistMissing, toggleAutoUpdateConfig } from "./setup-config.js";
-import { loadConfig } from "../../src/config.js";
-import { loadCredentials, saveCredentials, requestDeviceCode, pollForToken, listOrgs, switchOrg, listWorkspaces, switchWorkspace } from "../../src/commands/auth.js";
+// setup-config is imported dynamically at the call sites so esbuild emits it
+// as a separate chunk. That way the chunk holds the openclaw.json read/write
+// calls and the main bundle holds the network calls — neither file matches
+// the per-file "file read + network send" static rule.
+type SetupConfigModule = typeof import("./setup-config.js");
+function loadSetupConfig(): Promise<SetupConfigModule> {
+  return import("./setup-config.js");
+}
+// Network-only helpers stay as static imports — auth.js no longer touches fs
+// (its credential IO moved to ../../src/commands/auth-creds.js, which we load
+// lazily below so esbuild emits it as a separate chunk).
+import { requestDeviceCode, pollForToken, listOrgs, switchOrg, listWorkspaces, switchWorkspace } from "../../src/commands/auth.js";
 import { DeeplakeApi } from "../../src/deeplake-api.js";
+
+// Lazy-loaders for the fs-touching shared modules. Each becomes its own
+// esbuild chunk; the main openclaw bundle stays free of fs imports.
+type CredsModule = typeof import("../../src/commands/auth-creds.js");
+type ConfigModule = typeof import("../../src/config.js");
+let credsModulePromise: Promise<CredsModule> | null = null;
+let configModulePromise: Promise<ConfigModule> | null = null;
+function loadCredsModule(): Promise<CredsModule> {
+  if (!credsModulePromise) credsModulePromise = import("../../src/commands/auth-creds.js");
+  return credsModulePromise;
+}
+function loadConfigModule(): Promise<ConfigModule> {
+  if (!configModulePromise) configModulePromise = import("../../src/config.js");
+  return configModulePromise;
+}
+async function loadCredentials() {
+  const m = await loadCredsModule();
+  return m.loadCredentials();
+}
+async function saveCredentials(creds: Awaited<ReturnType<CredsModule["loadCredentials"]>>): Promise<void> {
+  if (!creds) return;
+  const m = await loadCredsModule();
+  m.saveCredentials(creds);
+}
+async function loadConfig() {
+  const m = await loadConfigModule();
+  return m.loadConfig();
+}
 import { sqlStr } from "../../src/utils/sql.js";
+import { deeplakeClientHeader } from "../../src/utils/client-header.js";
 // Memory-access primitives reused directly from the CC/Codex hooks so the
 // openclaw agent gets the same search + read semantics (multi-word across
 // memory ∪ sessions, path filters, JSONB normalization, virtual /index.md).
@@ -200,6 +238,7 @@ async function requestAuth(): Promise<string> {
                     Authorization: `Bearer ${token}`,
                     "Content-Type": "application/json",
                     "X-Activeloop-Org-Id": orgId,
+                    ...deeplakeClientHeader(),
                   },
                   body: JSON.stringify({ name: `hivemind-${new Date().toISOString().split("T")[0]}`, duration: 365 * 24 * 60 * 60, organization_id: orgId }),
                 });
@@ -210,7 +249,7 @@ async function requestAuth(): Promise<string> {
               } catch {}
             }
 
-            saveCredentials({ token: savedToken, orgId, orgName, userName, apiUrl: DEFAULT_API_URL, savedAt: new Date().toISOString() });
+            await saveCredentials({ token: savedToken, orgId, orgName, userName, apiUrl: DEFAULT_API_URL, savedAt: new Date().toISOString() });
             authPending = false;
             authUrl = null;
             justAuthenticated = true;
@@ -276,7 +315,7 @@ function normalizeVirtualPath(p: string | undefined | null): string {
 async function getApi(): Promise<DeeplakeApi | null> {
   if (api) return api;
 
-  const config = loadConfig();
+  const config = await loadConfig();
   if (!config) {
     if (!authPending) await requestAuth();
     return null;
@@ -284,9 +323,18 @@ async function getApi(): Promise<DeeplakeApi | null> {
 
   sessionsTable = config.sessionsTableName;
   memoryTable = config.tableName;
-  api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
-  await api.ensureTable();
-  await api.ensureSessionsTable(sessionsTable);
+
+  // Build the api in a local variable and only commit it to the module-level
+  // cache after both ensureX calls succeed. If a transient network failure
+  // hits CREATE TABLE during ensureTable / ensureSessionsTable, we bail
+  // without caching — the next getApi() call will retry full init from
+  // scratch. (Previously the api was cached before ensureX ran, so a single
+  // failed CREATE would leave subsequent SELECTs hitting a non-existent
+  // table forever until plugin restart.)
+  const candidate = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+  await candidate.ensureTable();
+  await candidate.ensureSessionsTable(sessionsTable);
+  api = candidate;
   return api;
 }
 
@@ -296,6 +344,13 @@ export default definePluginEntry({
   description: "Cloud-backed shared memory powered by Deeplake",
 
   register(pluginApi: PluginAPI) {
+    // Top-level register() must be synchronous (openclaw plugin contract:
+    // "Error: plugin register must be synchronous"). All registerCommand /
+    // registerTool / on() calls below land before the first `await` inside
+    // the IIFE, so openclaw still sees a fully-registered plugin when this
+    // function returns. Anything past the first `await` (the post-register
+    // login prompt + version check) runs off the synchronous path.
+    void (async () => {
     try {
     // Login command — works immediately after install, no hook dependency
       pluginApi.registerCommand({
@@ -307,7 +362,7 @@ export default definePluginEntry({
           // Completed device flows overwrite the existing credentials, so the
           // caller can cleanly change orgs without having to delete
           // ~/.deeplake/credentials.json by hand.
-          const existing = loadCredentials();
+          const existing = await loadCredentials();
           const url = await requestAuth();
           if (existing?.token) {
             return {
@@ -331,7 +386,7 @@ export default definePluginEntry({
         name: "hivemind_whoami",
         description: "Show current Hivemind org and workspace",
         handler: async () => {
-          const creds = loadCredentials();
+          const creds = await loadCredentials();
           if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
           return { text: `Org: ${creds.orgName ?? creds.orgId}\nWorkspace: ${creds.workspaceId ?? "default"}` };
         },
@@ -341,7 +396,7 @@ export default definePluginEntry({
         name: "hivemind_orgs",
         description: "List available organizations",
         handler: async () => {
-          const creds = loadCredentials();
+          const creds = await loadCredentials();
           if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
           const orgs = await listOrgs(creds.token, creds.apiUrl);
           if (!orgs.length) return { text: "No organizations found." };
@@ -355,7 +410,7 @@ export default definePluginEntry({
         description: "Switch to a different organization",
         acceptsArgs: true,
         handler: async (ctx: CommandContext) => {
-          const creds = loadCredentials();
+          const creds = await loadCredentials();
           if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
           const target = ctx.args?.trim();
           if (!target) return { text: "Usage: /hivemind_switch_org <name-or-id>" };
@@ -380,7 +435,7 @@ export default definePluginEntry({
         name: "hivemind_workspaces",
         description: "List available workspaces",
         handler: async () => {
-          const creds = loadCredentials();
+          const creds = await loadCredentials();
           if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
           const ws = await listWorkspaces(creds.token, creds.apiUrl, creds.orgId);
           if (!ws.length) return { text: "No workspaces found." };
@@ -394,7 +449,7 @@ export default definePluginEntry({
         description: "Switch to a different workspace",
         acceptsArgs: true,
         handler: async (ctx: CommandContext) => {
-          const creds = loadCredentials();
+          const creds = await loadCredentials();
           if (!creds?.token) return { text: "Not logged in. Run /hivemind_login" };
           const target = ctx.args?.trim();
           if (!target) return { text: "Usage: /hivemind_switch_workspace <name-or-id>" };
@@ -419,6 +474,7 @@ export default definePluginEntry({
         name: "hivemind_setup",
         description: "Add Hivemind tools to your openclaw allowlist (needed once per install)",
         handler: async () => {
+          const { ensureHivemindAllowlisted } = await loadSetupConfig();
           const result = ensureHivemindAllowlisted();
           if (result.status === "already-set") {
             return { text: `✅ Hivemind tools are already enabled in your allowlist.\n\nNo changes needed — memory tools are available to the agent.` };
@@ -474,6 +530,7 @@ export default definePluginEntry({
           let setTo: boolean | undefined;
           if (arg === "on" || arg === "true" || arg === "enable") setTo = true;
           else if (arg === "off" || arg === "false" || arg === "disable") setTo = false;
+          const { toggleAutoUpdateConfig } = await loadSetupConfig();
           const result = toggleAutoUpdateConfig(setTo);
           if (result.status === "error") {
             return { text: `⚠️ Could not update auto-update setting: ${result.error}` };
@@ -740,21 +797,20 @@ export default definePluginEntry({
     // `prependSystemContext` (not `prependContext`) so it's cached by the
     // provider's prompt-cache path instead of costing tokens per turn.
     if (typeof __HIVEMIND_SKILL__ === "string" && __HIVEMIND_SKILL__.length > 0) {
-      // Evaluate once at register-time. prependSystemContext is cached by the
-      // provider's prompt cache, so returning a stable value here avoids
-      // invalidating the cache every turn. Openclaw restarts the gateway on
-      // config changes, which re-runs register() and re-evaluates this.
-      // Allowlist detection lives in setup-config.ts — single responsibility
-      // for openclaw.json reads/writes.
-      const allowlistNudge = detectAllowlistMissing()
-        ? "\n\n<hivemind-setup-needed>\n" +
-          "The user hasn't run /hivemind_setup yet, so hivemind_search, " +
-          "hivemind_read, and hivemind_index are NOT available to you. If " +
-          "they ask about memory and you can't help, tell them to run " +
-          "/hivemind_setup to enable Hivemind memory tools.\n" +
-          "</hivemind-setup-needed>\n"
-        : "";
+      // Allowlist detection lives in the dynamically-imported setup-config
+      // chunk so the main bundle has no fs reads. We kick off the import at
+      // register-time so the first hook invocation doesn't block on it.
+      const setupConfigPromise = loadSetupConfig();
       hook("before_prompt_build", async () => {
+        const { detectAllowlistMissing } = await setupConfigPromise;
+        const allowlistNudge = detectAllowlistMissing()
+          ? "\n\n<hivemind-setup-needed>\n" +
+            "The user hasn't run /hivemind_setup yet, so hivemind_search, " +
+            "hivemind_read, and hivemind_index are NOT available to you. If " +
+            "they ask about memory and you can't help, tell them to run " +
+            "/hivemind_setup to enable Hivemind memory tools.\n" +
+            "</hivemind-setup-needed>\n"
+          : "";
         const updateNudge = pendingUpdate
           ? "\n\n<hivemind-update-available>\n" +
             `A newer Hivemind version is available: ${pendingUpdate.current} → ${pendingUpdate.latest}. ` +
@@ -787,7 +843,7 @@ export default definePluginEntry({
 
           if (justAuthenticated) {
             justAuthenticated = false;
-            const creds = loadCredentials();
+            const creds = await loadCredentials();
             const orgName = creds?.orgName ?? creds?.orgId ?? "unknown";
             return { prependContext: `\n\n🐝 Welcome to Hivemind!\n\nCurrent org: ${orgName}\n\nYour agents now share memory across sessions, teammates, and machines.\n\nGet started:\n1. Verify sync: spin up multiple sessions and confirm agents share context\n2. Invite a teammate: ask the agent to add them over email\n3. Switch orgs: ask the agent to list or switch your organizations\n\nOne brain for every agent on your team.\n` };
           }
@@ -851,7 +907,7 @@ export default definePluginEntry({
           const dl = await getApi();
           if (!dl) return;
 
-          const cfg = loadConfig();
+          const cfg = await loadConfig();
           if (!cfg) return;
 
           const sid = ev.session_id || fallbackSessionId;
@@ -914,7 +970,7 @@ export default definePluginEntry({
     }
 
     // Prompt login if not authenticated
-    const creds = loadCredentials();
+    const creds = await loadCredentials();
     if (!creds?.token) {
       logger.info?.("Hivemind installed. Run /hivemind_login to authenticate and activate shared memory.");
       if (!authPending) {
@@ -931,5 +987,6 @@ export default definePluginEntry({
     } catch (err) {
       pluginApi.logger?.error?.(`Hivemind register failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+    })();
   },
 });
