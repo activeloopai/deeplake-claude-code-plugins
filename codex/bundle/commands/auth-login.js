@@ -58,7 +58,7 @@ import { execSync } from "node:child_process";
 // dist/src/utils/client-header.js
 var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
 function deeplakeClientValue() {
-  return `hivemind/${"0.6.49"}`;
+  return `hivemind/${"0.6.50"}`;
 }
 function deeplakeClientHeader() {
   return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
@@ -779,8 +779,7 @@ To delete, use: --all, --before <date>, or --session-id <id>`);
 }
 
 // dist/src/commands/auth-login.js
-async function main() {
-  const args = process.argv.slice(2);
+async function runAuthCommand(args) {
   const cmd = args[0] ?? "whoami";
   const creds = loadCredentials();
   const apiUrl = creds?.apiUrl ?? "https://api.deeplake.ai";
@@ -928,7 +927,12 @@ async function main() {
       console.log("Commands: login, logout, whoami, org list, org switch, workspaces, workspace, sessions prune, invite, members, remove, autoupdate");
   }
 }
-main().catch((e) => {
-  console.error(e.message);
-  process.exit(1);
-});
+if (process.argv[1] && process.argv[1].endsWith("auth-login.js")) {
+  runAuthCommand(process.argv.slice(2)).catch((e) => {
+    console.error(e.message);
+    process.exit(1);
+  });
+}
+export {
+  runAuthCommand
+};

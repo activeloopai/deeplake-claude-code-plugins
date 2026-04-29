@@ -15,11 +15,18 @@ const GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/
 /**
  * Read the installed plugin version.
  *
- * Tries `<bundle>/..<pluginManifestDir>/plugin.json` first (both the
- * cache layout and the marketplace layout pin the version there), then
- * walks up from the bundle dir looking for a `package.json` whose name
- * is `hivemind` or `hivemind-codex`. Returns null if nothing is found
- * — callers treat that as "skip the update check".
+ * Tries three sources, in order:
+ *   1. `<bundle>/..<pluginManifestDir>/plugin.json` — claude-code and
+ *      codex marketplace/cache layouts pin the version there.
+ *   2. `<bundle>/../.hivemind_version` — every agent installer that uses
+ *      writeVersionStamp() (cursor / hermes / pi / openclaw / mcp) drops
+ *      this plain-text file in PLUGIN_DIR. Without this fallback the
+ *      version notice is silently empty for those agents.
+ *   3. Walk up from the bundle dir looking for a `package.json` whose
+ *      name matches one of HIVEMIND_PKG_NAMES.
+ *
+ * Returns null if nothing is found — callers treat that as "skip the
+ * update check".
  */
 export function getInstalledVersion(bundleDir: string, pluginManifestDir: string): string | null {
   try {
@@ -27,12 +34,29 @@ export function getInstalledVersion(bundleDir: string, pluginManifestDir: string
     const plugin = JSON.parse(readFileSync(pluginJson, "utf-8"));
     if (plugin.version) return plugin.version;
   } catch { /* fall through */ }
+  try {
+    const stamp = readFileSync(join(bundleDir, "..", ".hivemind_version"), "utf-8").trim();
+    if (stamp) return stamp;
+  } catch { /* fall through */ }
+  // Walk up from bundleDir looking for our package's package.json.
+  // Recognized names — if you publish under another scope, add it here.
+  // The npm rename @activeloop/hivemind → @deeplake/hivemind silently
+  // broke the version check (returned null → version block skipped) until
+  // these scoped names were added.
+  const HIVEMIND_PKG_NAMES = new Set([
+    "hivemind",
+    "hivemind-codex",
+    "@deeplake/hivemind",
+    "@deeplake/hivemind-codex",
+    "@activeloop/hivemind",
+    "@activeloop/hivemind-codex",
+  ]);
   let dir = bundleDir;
   for (let i = 0; i < 5; i++) {
     const candidate = join(dir, "package.json");
     try {
       const pkg = JSON.parse(readFileSync(candidate, "utf-8"));
-      if ((pkg.name === "hivemind" || pkg.name === "hivemind-codex") && pkg.version) return pkg.version;
+      if (HIVEMIND_PKG_NAMES.has(pkg.name) && pkg.version) return pkg.version;
     } catch { /* not here, keep looking */ }
     const parent = dirname(dir);
     if (parent === dir) break;

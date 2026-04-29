@@ -97,19 +97,32 @@ function tokenizeGrepStage(input: string): string[] | null {
   return tokens;
 }
 
-/** Parse a bash grep/egrep/fgrep command string into GrepParams. */
+/** Parse a bash grep/egrep/fgrep/rg command string into GrepParams.
+ *
+ * `rg` (ripgrep) is supported because modern coding agents reach for it by
+ * default when asked to search a directory, even when the user hasn't
+ * installed it. Treating rg invocations as grep equivalents lets us route
+ * them through the same SQL fast-path as grep. rg-specific flags that take
+ * a value (--type, --glob, --threads, --replace, --max-depth, --encoding,
+ * etc.) are recognized so their values aren't misparsed as the pattern. */
 export function parseBashGrep(cmd: string): GrepParams | null {
   const first = splitFirstPipelineStage(cmd);
   if (!first) return null;
-  if (!/^(grep|egrep|fgrep)\b/.test(first)) return null;
+  const matchTool = first.match(/^(grep|egrep|fgrep|rg)\b/);
+  if (!matchTool) return null;
+  const tool = matchTool[1];
 
-  const isFixed = first.startsWith("fgrep");
+  const isFixed = tool === "fgrep";
+  const isRg = tool === "rg";
 
   const tokens = tokenizeGrepStage(first);
   if (!tokens || tokens.length === 0) return null;
 
+  // rg defaults: recursive, line numbers on. Both are no-ops for our SQL
+  // backend (it always traverses both tables and doesn't render line numbers
+  // unless asked) but tracking lineNumber matches grep's semantics.
   let ignoreCase = false, wordMatch = false, filesOnly = false, countOnly = false,
-      lineNumber = false, invertMatch = false, fixedString = isFixed;
+      lineNumber = isRg, invertMatch = false, fixedString = isFixed;
   const explicitPatterns: string[] = [];
 
   let ti = 1;
@@ -123,12 +136,27 @@ export function parseBashGrep(cmd: string): GrepParams | null {
 
     if (token.startsWith("--")) {
       const [flag, inlineValue] = token.split("=", 2);
+      // rg long flags that take a value (consume next token if no inline =).
+      const rgValueLongs = new Set([
+        "--type", "--type-not", "--type-add", "--type-clear",
+        "--glob", "--iglob",
+        "--threads", "--max-columns", "--max-depth", "--max-filesize",
+        "--pre", "--pre-glob", "--replace", "--encoding",
+        "--color", "--colors", "--sort", "--sortr",
+        "--context-separator", "--field-context-separator", "--field-match-separator",
+        "--path-separator", "--hostname-bin",
+      ]);
       const handlers: Record<string, () => boolean> = {
         "--ignore-case": () => { ignoreCase = true; return false; },
         "--word-regexp": () => { wordMatch = true; return false; },
         "--files-with-matches": () => { filesOnly = true; return false; },
+        // rg uses `--files` to list files (without searching). For our purposes
+        // it's similar enough to `-l` that we treat it as filesOnly.
+        "--files": () => { filesOnly = true; return false; },
         "--count": () => { countOnly = true; return false; },
+        "--count-matches": () => { countOnly = true; return false; },
         "--line-number": () => { lineNumber = true; return false; },
+        "--no-line-number": () => { lineNumber = false; return false; },
         "--invert-match": () => { invertMatch = true; return false; },
         "--fixed-strings": () => { fixedString = true; return false; },
         "--after-context": () => inlineValue === undefined,
@@ -143,7 +171,11 @@ export function parseBashGrep(cmd: string): GrepParams | null {
           return true;
         },
       };
-      const consumeNext = handlers[flag]?.() ?? false;
+      let consumeNext = handlers[flag]?.() ?? false;
+      // Catch-all for rg-specific value-taking long flags not in handlers.
+      if (!consumeNext && isRg && rgValueLongs.has(flag) && inlineValue === undefined) {
+        consumeNext = true;
+      }
       if (consumeNext) {
         ti++;
         if (ti >= tokens.length) return null;
@@ -153,7 +185,10 @@ export function parseBashGrep(cmd: string): GrepParams | null {
       continue;
     }
 
+    // rg-specific short flags that take a value.
+    const rgValueShorts = new Set(isRg ? ["t", "T", "g", "j", "M", "r", "E"] : []);
     const shortFlags = token.slice(1);
+    let consumedValueFlag = false;
     for (let i = 0; i < shortFlags.length; i++) {
       const flag = shortFlags[i];
       switch (flag) {
@@ -162,11 +197,31 @@ export function parseBashGrep(cmd: string): GrepParams | null {
         case "l": filesOnly = true; break;
         case "c": countOnly = true; break;
         case "n": lineNumber = true; break;
+        case "N": lineNumber = false; break; // rg --no-line-number short form
         case "v": invertMatch = true; break;
         case "F": fixedString = true; break;
         case "r":
+          // grep -r: recursive (no-op). rg -r REPLACE: replace pattern (takes value).
+          if (isRg) {
+            if (i === shortFlags.length - 1) {
+              ti++;
+              if (ti >= tokens.length) return null;
+            }
+            consumedValueFlag = true;
+            i = shortFlags.length;
+          }
+          break;
         case "R":
         case "E":
+          // grep -E: extended-regex. rg -E ENCODING: takes value.
+          if (isRg && flag === "E") {
+            if (i === shortFlags.length - 1) {
+              ti++;
+              if (ti >= tokens.length) return null;
+            }
+            consumedValueFlag = true;
+            i = shortFlags.length;
+          }
           break;
         case "A":
         case "B":
@@ -191,9 +246,19 @@ export function parseBashGrep(cmd: string): GrepParams | null {
           break;
         }
         default:
+          // rg-specific value-taking shorts (e.g. -t ts, -g '*.md').
+          if (rgValueShorts.has(flag)) {
+            if (i === shortFlags.length - 1) {
+              ti++;
+              if (ti >= tokens.length) return null;
+            }
+            consumedValueFlag = true;
+            i = shortFlags.length;
+          }
           break;
       }
     }
+    void consumedValueFlag; // documented intent; not otherwise used
     ti++;
   }
 
