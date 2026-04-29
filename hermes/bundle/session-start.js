@@ -397,25 +397,23 @@ var DeeplakeApi = class {
     const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, `col_${column}`);
     if (markers.hasFreshIndexMarker(markerPath))
       return;
-    try {
-      const rows = await this.query(`SELECT 1 FROM information_schema.columns WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' LIMIT 1`);
-      if (rows.length > 0) {
-        markers.writeIndexMarker(markerPath);
-        return;
-      }
-    } catch (e) {
-      log2(`schema check for ${table}.${column} fell through: ${e.message}`);
-    }
-    try {
-      await this.query(`ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS ${column} FLOAT4[]`);
+    const colCheck = `SELECT 1 FROM information_schema.columns WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' LIMIT 1`;
+    const rows = await this.query(colCheck);
+    if (rows.length > 0) {
       markers.writeIndexMarker(markerPath);
-    } catch (e) {
-      if (isDuplicateIndexError(e)) {
-        markers.writeIndexMarker(markerPath);
-        return;
-      }
-      log2(`ALTER TABLE add ${column} skipped: ${e.message}`);
+      return;
     }
+    try {
+      await this.query(`ALTER TABLE "${table}" ADD COLUMN ${column} FLOAT4[]`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/already exists/i.test(msg))
+        throw e;
+      const recheck = await this.query(colCheck);
+      if (recheck.length === 0)
+        throw e;
+    }
+    markers.writeIndexMarker(markerPath);
   }
   /** List all tables in the workspace (with retry). */
   async listTables(forceRefresh = false) {
@@ -496,9 +494,8 @@ var DeeplakeApi = class {
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
-    } else {
-      await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
     }
+    await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
   async ensureSessionsTable(name) {
@@ -509,9 +506,8 @@ var DeeplakeApi = class {
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
-    } else {
-      await this.ensureEmbeddingColumn(name, MESSAGE_EMBEDDING_COL);
     }
+    await this.ensureEmbeddingColumn(name, MESSAGE_EMBEDDING_COL);
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
 };

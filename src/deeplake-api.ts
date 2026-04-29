@@ -314,30 +314,28 @@ export class DeeplakeApi {
     const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, `col_${column}`);
     if (markers.hasFreshIndexMarker(markerPath)) return;
 
-    try {
-      const rows = await this.query(
-        `SELECT 1 FROM information_schema.columns ` +
-        `WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' LIMIT 1`,
-      );
-      if (rows.length > 0) {
-        markers.writeIndexMarker(markerPath);
-        return;
-      }
-    } catch (e: any) {
-      // information_schema unsupported on this backend → fall through to ALTER.
-      log(`schema check for ${table}.${column} fell through: ${e.message}`);
+    const colCheck = `SELECT 1 FROM information_schema.columns ` +
+      `WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' LIMIT 1`;
+
+    const rows = await this.query(colCheck);
+    if (rows.length > 0) {
+      markers.writeIndexMarker(markerPath);
+      return;
     }
 
+    // Column confirmed missing: ALTER without IF NOT EXISTS so any failure is
+    // surfaced. The single tolerated exception is a race with another writer
+    // that adds the column between our SELECT and our ALTER — re-SELECT to
+    // confirm and treat as success. Everything else propagates.
     try {
-      await this.query(`ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS ${column} FLOAT4[]`);
-      markers.writeIndexMarker(markerPath);
-    } catch (e: any) {
-      if (isDuplicateIndexError(e)) {
-        markers.writeIndexMarker(markerPath);
-        return;
-      }
-      log(`ALTER TABLE add ${column} skipped: ${e.message}`);
+      await this.query(`ALTER TABLE "${table}" ADD COLUMN ${column} FLOAT4[]`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/already exists/i.test(msg)) throw e;
+      const recheck = await this.query(colCheck);
+      if (recheck.length === 0) throw e;
     }
+    markers.writeIndexMarker(markerPath);
   }
 
   /** List all tables in the workspace (with retry). */
@@ -437,15 +435,14 @@ export class DeeplakeApi {
       );
       log(`table "${tbl}" created`);
       if (!tables.includes(tbl)) this._tablesCache = [...tables, tbl];
-    } else {
-      // Migrate older memory tables that were created before the embeddings
-      // feature landed. ensureEmbeddingColumn does a SELECT against
-      // information_schema first and only ALTERs if the column is genuinely
-      // missing — keeps the steady-state SessionStart at 0 ALTER calls and
-      // avoids the post-ALTER `vector::at` bug window on already-migrated
-      // workspaces.
-      await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
     }
+    // Always verify the embedding column is present, regardless of who created
+    // the table. CREATE TABLE may have raced with another plugin's CREATE that
+    // used an older schema without summary_embedding (e.g. a stale bundle of
+    // a sibling plugin sharing the same memory table). ensureEmbeddingColumn
+    // is idempotent and steady-state-cheap: SELECT info_schema, ALTER only if
+    // the column is genuinely missing.
+    await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
     // BM25 index disabled — CREATE INDEX causes intermittent oid errors on fresh tables.
     // See bm25-oid-bug.sh for reproduction. Re-enable once Deeplake fixes the oid invalidation.
     // try {
@@ -480,10 +477,9 @@ export class DeeplakeApi {
       );
       log(`table "${name}" created`);
       if (!tables.includes(name)) this._tablesCache = [...tables, name];
-    } else {
-      // Same rationale as ensureTable: migrate pre-embeddings sessions tables.
-      await this.ensureEmbeddingColumn(name, MESSAGE_EMBEDDING_COL);
     }
+    // Always verify message_embedding is present (same rationale as ensureTable).
+    await this.ensureEmbeddingColumn(name, MESSAGE_EMBEDDING_COL);
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
 }
