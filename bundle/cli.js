@@ -252,6 +252,14 @@ function buildHooksJson() {
     }
   };
 }
+var HIVEMIND_BUNDLE_FILES = [
+  "session-start.js",
+  "session-start-setup.js",
+  "capture.js",
+  "pre-tool-use.js",
+  "stop.js",
+  "wiki-worker.js"
+];
 function isHivemindHookEntry(entry, pluginDir = PLUGIN_DIR) {
   if (!entry || typeof entry !== "object")
     return false;
@@ -261,7 +269,25 @@ function isHivemindHookEntry(entry, pluginDir = PLUGIN_DIR) {
     if (!h || typeof h !== "object")
       return false;
     const cmd = h.command;
-    return typeof cmd === "string" && cmd.includes(`${pluginDir}/bundle/`);
+    if (typeof cmd !== "string")
+      return false;
+    if (cmd.includes(`${pluginDir}/bundle/`))
+      return true;
+    return HIVEMIND_BUNDLE_FILES.some((f) => cmd.includes(`/bundle/${f}`));
+  });
+}
+function isForeignHivemindHookEntry(entry, pluginDir = PLUGIN_DIR) {
+  if (!isHivemindHookEntry(entry, pluginDir))
+    return false;
+  const e = entry;
+  const hooks = Array.isArray(e.hooks) ? e.hooks : [];
+  return hooks.every((h) => {
+    if (!h || typeof h !== "object")
+      return false;
+    const cmd = h.command;
+    if (typeof cmd !== "string")
+      return false;
+    return !cmd.includes(`${pluginDir}/bundle/`);
   });
 }
 function mergeHooks(existing, ours, pluginDir = PLUGIN_DIR) {
@@ -289,7 +315,30 @@ function mergeHooksJson(ours) {
   } catch {
     warn(`  Codex          ${HOOKS_PATH} unparseable \u2014 ignoring prior content`);
   }
+  reportForeignHivemindHooks(existing);
   return mergeHooks(existing, ours);
+}
+function reportForeignHivemindHooks(existing) {
+  const existingHooks = existing.hooks && typeof existing.hooks === "object" ? existing.hooks : {};
+  const foreign = /* @__PURE__ */ new Set();
+  for (const entries of Object.values(existingHooks)) {
+    for (const e of entries ?? []) {
+      if (!isForeignHivemindHookEntry(e))
+        continue;
+      const hooks = Array.isArray(e.hooks) ? e.hooks : [];
+      for (const h of hooks) {
+        const cmd = h?.command;
+        if (typeof cmd === "string")
+          foreign.add(cmd);
+      }
+    }
+  }
+  if (foreign.size === 0)
+    return;
+  warn(`  Codex          stripping ${foreign.size} hivemind hook(s) from a non-canonical path:`);
+  for (const cmd of foreign)
+    warn(`                   ${cmd}`);
+  warn(`                 (these were probably leftover from a local dev clone \u2014 re-add them manually if intentional)`);
 }
 function tryEnableCodexHooks() {
   try {
