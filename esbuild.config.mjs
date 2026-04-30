@@ -2,6 +2,7 @@ import { build } from "esbuild";
 import { chmodSync, writeFileSync, readFileSync } from "node:fs";
 
 const esmPackageJson = '{"type":"module"}\n';
+const hivemindVersion = JSON.parse(readFileSync("package.json", "utf-8")).version;
 const openclawVersion = JSON.parse(readFileSync("openclaw/package.json", "utf-8")).version;
 const openclawSkillBody = readFileSync("openclaw/skills/SKILL.md", "utf-8");
 
@@ -34,6 +35,9 @@ await build({
   format: "esm",
   outdir: "claude-code/bundle",
   external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  define: {
+    __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
+  },
 });
 
 for (const h of ccAll) {
@@ -68,12 +72,80 @@ await build({
   format: "esm",
   outdir: "codex/bundle",
   external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  define: {
+    __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
+  },
 });
 
 for (const h of codexAll) {
   chmodSync(`codex/bundle/${h.out}.js`, 0o755);
 }
 writeFileSync("codex/bundle/package.json", esmPackageJson);
+
+// Cursor plugin (1.7+ hooks API). Same shell + commands as the other agents.
+const cursorHooks = [
+  { entry: "dist/src/hooks/cursor/session-start.js", out: "session-start" },
+  { entry: "dist/src/hooks/cursor/capture.js", out: "capture" },
+  { entry: "dist/src/hooks/cursor/session-end.js", out: "session-end" },
+  { entry: "dist/src/hooks/cursor/pre-tool-use.js", out: "pre-tool-use" },
+];
+
+// Hermes Agent shell-hook bundles (matches Claude Code's wire protocol; see
+// agent/shell_hooks.py in NousResearch/hermes-agent).
+const hermesHooks = [
+  { entry: "dist/src/hooks/hermes/session-start.js", out: "session-start" },
+  { entry: "dist/src/hooks/hermes/capture.js", out: "capture" },
+  { entry: "dist/src/hooks/hermes/session-end.js", out: "session-end" },
+  { entry: "dist/src/hooks/hermes/pre-tool-use.js", out: "pre-tool-use" },
+];
+
+const cursorShell = [
+  { entry: "dist/src/shell/deeplake-shell.js", out: "shell/deeplake-shell" },
+];
+
+const cursorCommands = [
+  { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
+];
+
+const cursorAll = [...cursorHooks, ...cursorShell, ...cursorCommands];
+
+await build({
+  entryPoints: Object.fromEntries(cursorAll.map(h => [h.out, h.entry])),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "cursor/bundle",
+  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+});
+
+for (const h of cursorAll) {
+  chmodSync(`cursor/bundle/${h.out}.js`, 0o755);
+}
+writeFileSync("cursor/bundle/package.json", esmPackageJson);
+
+// Hermes Agent bundle (auto-capture via on_session_start / pre_llm_call /
+// post_tool_call / post_llm_call / on_session_end).
+const hermesShell = [
+  { entry: "dist/src/shell/deeplake-shell.js", out: "shell/deeplake-shell" },
+];
+const hermesCommands = [
+  { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
+];
+const hermesAll = [...hermesHooks, ...hermesShell, ...hermesCommands];
+
+await build({
+  entryPoints: Object.fromEntries(hermesAll.map(h => [h.out, h.entry])),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "hermes/bundle",
+  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+});
+
+for (const h of hermesAll) {
+  chmodSync(`hermes/bundle/${h.out}.js`, 0o755);
+}
+writeFileSync("hermes/bundle/package.json", esmPackageJson);
 
 // OpenClaw plugin bundle. The shared CC/Codex source modules reference a
 // handful of HIVEMIND_* env vars for dev-only overrides. Those env paths are
@@ -84,6 +156,8 @@ writeFileSync("codex/bundle/package.json", esmPackageJson);
 await build({
   entryPoints: { index: "openclaw/src/index.ts" },
   bundle: true,
+  splitting: true,
+  chunkNames: "chunks/[name]-[hash]",
   platform: "node",
   format: "esm",
   outdir: "openclaw/dist",
@@ -131,4 +205,30 @@ await build({
 });
 writeFileSync("openclaw/dist/package.json", esmPackageJson);
 
-console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + 1 OpenClaw bundles`);
+// Hivemind MCP server (stdio). Reused by Cline / Roo / Kilo / any MCP-aware
+// agent. Lives at ~/.hivemind/mcp/server.js after install.
+await build({
+  entryPoints: { server: "dist/src/mcp/server.js" },
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "mcp/bundle",
+  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  banner: { js: "#!/usr/bin/env node" },
+});
+chmodSync("mcp/bundle/server.js", 0o755);
+writeFileSync("mcp/bundle/package.json", esmPackageJson);
+
+// Unified CLI (`npx hivemind install` … single entrypoint for all assistants)
+await build({
+  entryPoints: { cli: "dist/src/cli/index.js" },
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "bundle",
+  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  banner: { js: "#!/usr/bin/env node" },
+});
+chmodSync("bundle/cli.js", 0o755);
+
+console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + ${cursorAll.length} Cursor + ${hermesAll.length} Hermes + 1 OpenClaw + 1 MCP + 1 CLI bundle`);

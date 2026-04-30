@@ -1,4 +1,56 @@
 #!/usr/bin/env node
+var __defProp = Object.defineProperty;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+
+// dist/src/index-marker-store.js
+var index_marker_store_exports = {};
+__export(index_marker_store_exports, {
+  buildIndexMarkerPath: () => buildIndexMarkerPath,
+  getIndexMarkerDir: () => getIndexMarkerDir,
+  hasFreshIndexMarker: () => hasFreshIndexMarker,
+  writeIndexMarker: () => writeIndexMarker
+});
+import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "node:fs";
+import { join as join3 } from "node:path";
+import { tmpdir } from "node:os";
+function getIndexMarkerDir() {
+  return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join3(tmpdir(), "hivemind-deeplake-indexes");
+}
+function buildIndexMarkerPath(workspaceId, orgId, table, suffix) {
+  const markerKey = [workspaceId, orgId, table, suffix].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
+  return join3(getIndexMarkerDir(), `${markerKey}.json`);
+}
+function hasFreshIndexMarker(markerPath) {
+  if (!existsSync2(markerPath))
+    return false;
+  try {
+    const raw = JSON.parse(readFileSync2(markerPath, "utf-8"));
+    const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
+    if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS)
+      return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+function writeIndexMarker(markerPath) {
+  mkdirSync(getIndexMarkerDir(), { recursive: true });
+  writeFileSync(markerPath, JSON.stringify({ updatedAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf-8");
+}
+var INDEX_MARKER_TTL_MS;
+var init_index_marker_store = __esm({
+  "dist/src/index-marker-store.js"() {
+    "use strict";
+    INDEX_MARKER_TTL_MS = Number(process.env.HIVEMIND_INDEX_MARKER_TTL_MS ?? 6 * 60 * 6e4);
+  }
+});
 
 // dist/src/hooks/codex/pre-tool-use.js
 import { execFileSync } from "node:child_process";
@@ -57,9 +109,6 @@ function loadConfig() {
 
 // dist/src/deeplake-api.js
 import { randomUUID } from "node:crypto";
-import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "node:fs";
-import { join as join3 } from "node:path";
-import { tmpdir } from "node:os";
 
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
@@ -82,7 +131,22 @@ function sqlLike(value) {
   return sqlStr(value).replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 
+// dist/src/utils/client-header.js
+var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
+function deeplakeClientValue() {
+  return `hivemind/${"0.6.50"}`;
+}
+function deeplakeClientHeader() {
+  return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
+}
+
 // dist/src/deeplake-api.js
+var indexMarkerStorePromise = null;
+function getIndexMarkerStore() {
+  if (!indexMarkerStorePromise)
+    indexMarkerStorePromise = Promise.resolve().then(() => (init_index_marker_store(), index_marker_store_exports));
+  return indexMarkerStorePromise;
+}
 var log2 = (msg) => log("sdk", msg);
 function summarizeSql(sql, maxLen = 220) {
   const compact = sql.replace(/\s+/g, " ").trim();
@@ -102,7 +166,6 @@ var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
 var QUERY_TIMEOUT_MS = Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 1e4);
-var INDEX_MARKER_TTL_MS = Number(process.env.HIVEMIND_INDEX_MARKER_TTL_MS ?? 6 * 60 * 6e4);
 function sleep(ms) {
   return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
@@ -121,9 +184,6 @@ function isSessionInsertQuery(sql) {
 function isTransientHtml403(text) {
   const body = text.toLowerCase();
   return body.includes("<html") || body.includes("403 forbidden") || body.includes("cloudflare") || body.includes("nginx");
-}
-function getIndexMarkerDir() {
-  return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join3(tmpdir(), "hivemind-deeplake-indexes");
 }
 var Semaphore = class {
   max;
@@ -193,7 +253,8 @@ var DeeplakeApi = class {
           headers: {
             Authorization: `Bearer ${this.token}`,
             "Content-Type": "application/json",
-            "X-Activeloop-Org-Id": this.orgId
+            "X-Activeloop-Org-Id": this.orgId,
+            ...deeplakeClientHeader()
           },
           signal,
           body: JSON.stringify({ query: sql })
@@ -288,43 +349,18 @@ var DeeplakeApi = class {
   buildLookupIndexName(table, suffix) {
     return `idx_${table}_${suffix}`.replace(/[^a-zA-Z0-9_]/g, "_");
   }
-  getLookupIndexMarkerPath(table, suffix) {
-    const markerKey = [
-      this.workspaceId,
-      this.orgId,
-      table,
-      suffix
-    ].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
-    return join3(getIndexMarkerDir(), `${markerKey}.json`);
-  }
-  hasFreshLookupIndexMarker(table, suffix) {
-    const markerPath = this.getLookupIndexMarkerPath(table, suffix);
-    if (!existsSync2(markerPath))
-      return false;
-    try {
-      const raw = JSON.parse(readFileSync2(markerPath, "utf-8"));
-      const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).getTime() : NaN;
-      if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > INDEX_MARKER_TTL_MS)
-        return false;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  markLookupIndexReady(table, suffix) {
-    mkdirSync(getIndexMarkerDir(), { recursive: true });
-    writeFileSync(this.getLookupIndexMarkerPath(table, suffix), JSON.stringify({ updatedAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf-8");
-  }
   async ensureLookupIndex(table, suffix, columnsSql) {
-    if (this.hasFreshLookupIndexMarker(table, suffix))
+    const markers = await getIndexMarkerStore();
+    const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, suffix);
+    if (markers.hasFreshIndexMarker(markerPath))
       return;
     const indexName = this.buildLookupIndexName(table, suffix);
     try {
       await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
-      this.markLookupIndexReady(table, suffix);
+      markers.writeIndexMarker(markerPath);
     } catch (e) {
       if (isDuplicateIndexError(e)) {
-        this.markLookupIndexReady(table, suffix);
+        markers.writeIndexMarker(markerPath);
         return;
       }
       log2(`index "${indexName}" skipped: ${e.message}`);
@@ -345,7 +381,8 @@ var DeeplakeApi = class {
         const resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables`, {
           headers: {
             Authorization: `Bearer ${this.token}`,
-            "X-Activeloop-Org-Id": this.orgId
+            "X-Activeloop-Org-Id": this.orgId,
+            ...deeplakeClientHeader()
           }
         });
         if (resp.ok) {
@@ -370,13 +407,41 @@ var DeeplakeApi = class {
     }
     return { tables: [], cacheable: false };
   }
+  /**
+   * Run a `CREATE TABLE` with an extra outer retry budget. The base
+   * `query()` already retries 3 times on fetch errors (~3.5s total), but a
+   * failed CREATE is permanent corruption — every subsequent SELECT against
+   * the missing table fails. Wrapping in an outer loop with longer backoff
+   * (2s, 5s, then 10s) gives us ~17s of reach across transient network
+   * blips before giving up. Failures still propagate; getApi() resets its
+   * cache on init failure (openclaw plugin) so the next call retries the
+   * whole init flow.
+   */
+  async createTableWithRetry(sql, label) {
+    const OUTER_BACKOFFS_MS = [2e3, 5e3, 1e4];
+    let lastErr = null;
+    for (let attempt = 0; attempt <= OUTER_BACKOFFS_MS.length; attempt++) {
+      try {
+        await this.query(sql);
+        return;
+      } catch (err) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        log2(`CREATE TABLE "${label}" attempt ${attempt + 1}/${OUTER_BACKOFFS_MS.length + 1} failed: ${msg}`);
+        if (attempt < OUTER_BACKOFFS_MS.length) {
+          await sleep(OUTER_BACKOFFS_MS[attempt]);
+        }
+      }
+    }
+    throw lastErr;
+  }
   /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
   async ensureTable(name) {
     const tbl = name ?? this.tableName;
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, tbl);
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
@@ -387,7 +452,7 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.query(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`);
+      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, name);
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
@@ -895,13 +960,16 @@ function parseBashGrep(cmd) {
   const first = splitFirstPipelineStage(cmd);
   if (!first)
     return null;
-  if (!/^(grep|egrep|fgrep)\b/.test(first))
+  const matchTool = first.match(/^(grep|egrep|fgrep|rg)\b/);
+  if (!matchTool)
     return null;
-  const isFixed = first.startsWith("fgrep");
+  const tool = matchTool[1];
+  const isFixed = tool === "fgrep";
+  const isRg = tool === "rg";
   const tokens = tokenizeGrepStage(first);
   if (!tokens || tokens.length === 0)
     return null;
-  let ignoreCase = false, wordMatch = false, filesOnly = false, countOnly = false, lineNumber = false, invertMatch = false, fixedString = isFixed;
+  let ignoreCase = false, wordMatch = false, filesOnly = false, countOnly = false, lineNumber = isRg, invertMatch = false, fixedString = isFixed;
   const explicitPatterns = [];
   let ti = 1;
   while (ti < tokens.length) {
@@ -914,6 +982,31 @@ function parseBashGrep(cmd) {
       break;
     if (token.startsWith("--")) {
       const [flag, inlineValue] = token.split("=", 2);
+      const rgValueLongs = /* @__PURE__ */ new Set([
+        "--type",
+        "--type-not",
+        "--type-add",
+        "--type-clear",
+        "--glob",
+        "--iglob",
+        "--threads",
+        "--max-columns",
+        "--max-depth",
+        "--max-filesize",
+        "--pre",
+        "--pre-glob",
+        "--replace",
+        "--encoding",
+        "--color",
+        "--colors",
+        "--sort",
+        "--sortr",
+        "--context-separator",
+        "--field-context-separator",
+        "--field-match-separator",
+        "--path-separator",
+        "--hostname-bin"
+      ]);
       const handlers = {
         "--ignore-case": () => {
           ignoreCase = true;
@@ -927,12 +1020,26 @@ function parseBashGrep(cmd) {
           filesOnly = true;
           return false;
         },
+        // rg uses `--files` to list files (without searching). For our purposes
+        // it's similar enough to `-l` that we treat it as filesOnly.
+        "--files": () => {
+          filesOnly = true;
+          return false;
+        },
         "--count": () => {
+          countOnly = true;
+          return false;
+        },
+        "--count-matches": () => {
           countOnly = true;
           return false;
         },
         "--line-number": () => {
           lineNumber = true;
+          return false;
+        },
+        "--no-line-number": () => {
+          lineNumber = false;
           return false;
         },
         "--invert-match": () => {
@@ -955,7 +1062,10 @@ function parseBashGrep(cmd) {
           return true;
         }
       };
-      const consumeNext = handlers[flag]?.() ?? false;
+      let consumeNext = handlers[flag]?.() ?? false;
+      if (!consumeNext && isRg && rgValueLongs.has(flag) && inlineValue === void 0) {
+        consumeNext = true;
+      }
       if (consumeNext) {
         ti++;
         if (ti >= tokens.length)
@@ -966,7 +1076,9 @@ function parseBashGrep(cmd) {
       ti++;
       continue;
     }
+    const rgValueShorts = new Set(isRg ? ["t", "T", "g", "j", "M", "r", "E"] : []);
     const shortFlags = token.slice(1);
+    let consumedValueFlag = false;
     for (let i = 0; i < shortFlags.length; i++) {
       const flag = shortFlags[i];
       switch (flag) {
@@ -985,6 +1097,10 @@ function parseBashGrep(cmd) {
         case "n":
           lineNumber = true;
           break;
+        case "N":
+          lineNumber = false;
+          break;
+        // rg --no-line-number short form
         case "v":
           invertMatch = true;
           break;
@@ -992,8 +1108,27 @@ function parseBashGrep(cmd) {
           fixedString = true;
           break;
         case "r":
+          if (isRg) {
+            if (i === shortFlags.length - 1) {
+              ti++;
+              if (ti >= tokens.length)
+                return null;
+            }
+            consumedValueFlag = true;
+            i = shortFlags.length;
+          }
+          break;
         case "R":
         case "E":
+          if (isRg && flag === "E") {
+            if (i === shortFlags.length - 1) {
+              ti++;
+              if (ti >= tokens.length)
+                return null;
+            }
+            consumedValueFlag = true;
+            i = shortFlags.length;
+          }
           break;
         case "A":
         case "B":
@@ -1020,9 +1155,19 @@ function parseBashGrep(cmd) {
           break;
         }
         default:
+          if (rgValueShorts.has(flag)) {
+            if (i === shortFlags.length - 1) {
+              ti++;
+              if (ti >= tokens.length)
+                return null;
+            }
+            consumedValueFlag = true;
+            i = shortFlags.length;
+          }
           break;
       }
     }
+    void consumedValueFlag;
     ti++;
   }
   const pattern = explicitPatterns.length > 0 ? explicitPatterns[0] : tokens[ti];

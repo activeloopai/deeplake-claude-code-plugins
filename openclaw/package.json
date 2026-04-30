@@ -1,6 +1,6 @@
 {
-  "name": "hivemind",
-  "version": "0.6.48",
+  "name": "@deeplake/hivemind",
+  "version": "0.6.51",
   "type": "module",
   "description": "Hivemind — cloud-backed persistent shared memory for AI agents, powered by DeepLake",
   "license": "Apache-2.0",
@@ -9,7 +9,7 @@
       "./dist/index.js"
     ],
     "install": {
-      "npmSpec": "hivemind",
+      "npmSpec": "@deeplake/hivemind",
       "minHostVersion": ">=2026.3.22"
     },
     "compat": {

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { finalizeSummary, releaseLock } from "../summary-state.js";
 import { uploadSummary } from "../upload-summary.js";
 import { log as _log } from "../../utils/debug.js";
+import { deeplakeClientHeader } from "../../utils/client-header.js";
 
 const dlog = (msg: string) => _log("codex-wiki-worker", msg);
 
@@ -60,6 +61,7 @@ async function query(sql: string, retries = 4): Promise<Record<string, unknown>[
         Authorization: `Bearer ${cfg.token}`,
         "Content-Type": "application/json",
         "X-Activeloop-Org-Id": cfg.orgId,
+        ...deeplakeClientHeader(),
       },
       body: JSON.stringify({ query: sql }),
     });

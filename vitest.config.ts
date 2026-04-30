@@ -10,6 +10,13 @@ import { defineConfig } from "vitest/config";
 // that hides regressions in new code.
 
 export default defineConfig({
+  // Match esbuild's `define` for __HIVEMIND_VERSION__ so source files that
+  // read it directly (e.g. src/utils/client-header.ts) don't need a typeof
+  // guard for tests. Bundled builds substitute the real version; tests get
+  // the "dev" sentinel.
+  define: {
+    __HIVEMIND_VERSION__: JSON.stringify("dev"),
+  },
   test: {
     include: [
       "claude-code/tests/**/*.test.ts",
@@ -125,6 +132,65 @@ export default defineConfig({
           functions: 90,
           lines: 90,
         },
+        // PR #76 — feat/openclaw-static-scan-clean. Two new files extracted
+        // from auth.ts / deeplake-api.ts so the openclaw bundle could split
+        // fs reads from fetch calls. Tests in claude-code/tests/{auth-creds,
+        // index-marker-store}.test.ts cover both source modules above 90%.
+        "src/commands/auth-creds.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/index-marker-store.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        // PR #76 follow-up — coverage on the surface the bot flagged at 0%.
+        // auth.ts mixes pure helpers (decodeJwt, apiGet/Post/Delete) with the
+        // full device-flow login orchestration. Branches and functions sit
+        // at ~88/83 because the openBrowser platform-switch and a few
+        // login-flow corner cases (interactive prompts) are pragmatic to
+        // skip; statements + lines both ≥96 so the safety bar holds.
+        "src/commands/auth.ts": {
+          statements: 90,
+          branches: 80,
+          functions: 80,
+          lines: 90,
+        },
+        "src/deeplake-api.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        // feat/unified-npx-installer — unified `hivemind` CLI + cursor /
+        // hermes hook bundles + MCP server + utils/version-check helper.
+        // Each new file held at the project-wide 80/80/80/80 bar.
+        "src/cli/util.ts":              { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/cli/version.ts":           { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/cli/auth.ts":              { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/cli/index.ts":             { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/cli/install-claude.ts":    { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/cli/install-codex.ts":     { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/cli/install-cursor.ts":    { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/cli/install-hermes.ts":    { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/cli/install-mcp-shared.ts": { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/cli/install-openclaw.ts":  { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/cli/install-pi.ts":        { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/commands/auth-login.ts":   { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/hooks/cursor/capture.ts":      { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/hooks/cursor/pre-tool-use.ts": { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/hooks/cursor/session-end.ts":  { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/hooks/cursor/session-start.ts": { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/hooks/hermes/capture.ts":      { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/hooks/hermes/pre-tool-use.ts": { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/hooks/hermes/session-end.ts":  { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/hooks/hermes/session-start.ts": { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/mcp/server.ts":            { statements: 80, branches: 80, functions: 80, lines: 80 },
+        "src/utils/version-check.ts":   { statements: 80, branches: 80, functions: 80, lines: 80 },
       },
     },
   },
