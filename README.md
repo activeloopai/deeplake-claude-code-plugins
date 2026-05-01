@@ -385,6 +385,9 @@ prevents two workers from running concurrently for the same session.
 |------------------------------------|----------------|-----------------------------------------------------|
 | `HIVEMIND_SUMMARY_EVERY_N_MSGS`    | `50`           | Trigger periodic when messages-since-last ≥ this    |
 | `HIVEMIND_SUMMARY_EVERY_HOURS`     | `2`            | Trigger periodic after this many hours, with ≥1 msg |
+| `HIVEMIND_CURSOR_MODEL`            | `auto`         | (cursor only) model passed to `cursor-agent --print --model` |
+| `HIVEMIND_HERMES_PROVIDER`         | `openrouter`   | (hermes only) provider passed to `hermes -z --provider` |
+| `HIVEMIND_HERMES_MODEL`            | `anthropic/claude-haiku-4-5` | (hermes only) model passed to `hermes -z -m` |
 | `HIVEMIND_PI_PROVIDER`             | `google`       | (pi only) provider passed to `pi --print --provider`|
 | `HIVEMIND_PI_MODEL`                | `gemini-2.5-flash` | (pi only) model passed to `pi --print --model` |
 | `HIVEMIND_CAPTURE=false`           | unset          | Disable both capture and summary generation         |
