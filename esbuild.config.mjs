@@ -197,6 +197,38 @@ await build({
 for (const h of hermesAll) {
   chmodSync(`hermes/bundle/${h.out}.js`, 0o755);
 }
+
+// Pi (badlogic/pi-mono) — only ships a wiki-worker bundle. The pi extension
+// itself is raw .ts at pi/extension-source/hivemind.ts; we don't bundle it
+// because pi's runtime compiles + loads the .ts file directly. Embed daemon
+// reuses the canonical ~/.hivemind/embed-deps/embed-daemon.js — no per-pi
+// embed bundle needed.
+const piWorker = [
+  { entry: "dist/src/hooks/pi/wiki-worker.js", out: "wiki-worker" },
+];
+await build({
+  entryPoints: Object.fromEntries(piWorker.map(h => [h.out, h.entry])),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "pi/bundle",
+  external: [
+    "node:*",
+    "node-liblzma",
+    "@mongodb-js/zstd",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+    "onnxruntime-common",
+    "sharp",
+  ],
+  define: {
+    __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
+  },
+});
+for (const h of piWorker) {
+  chmodSync(`pi/bundle/${h.out}.js`, 0o755);
+}
+writeFileSync("pi/bundle/package.json", esmPackageJson);
 writeFileSync("hermes/bundle/package.json", esmPackageJson);
 
 // OpenClaw plugin bundle. The shared CC/Codex source modules reference a
