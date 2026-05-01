@@ -58,7 +58,7 @@ import { execSync } from "node:child_process";
 // dist/src/utils/client-header.js
 var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
 function deeplakeClientValue() {
-  return `hivemind/${"0.6.50"}`;
+  return `hivemind/${"0.6.52"}`;
 }
 function deeplakeClientHeader() {
   return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
