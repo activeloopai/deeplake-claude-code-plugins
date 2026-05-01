@@ -11,6 +11,14 @@ vi.mock("../../src/embeddings/client.js", () => {
   }
   return { EmbedClient: MockEmbedClient };
 });
+// Force semantic mode on. The real `embeddingsDisabled()` walks the
+// filesystem for @huggingface/transformers, which is no longer pre-installed
+// in this repo's node_modules; without this mock the interceptor's
+// SEMANTIC_ENABLED gate flips false and the embed mock is never invoked.
+vi.mock("../../src/embeddings/disable.js", () => ({
+  embeddingsDisabled: () => false,
+  embeddingsStatus: () => "enabled",
+}));
 
 import { createGrepCommand } from "../../src/shell/grep-interceptor.js";
 import { DeeplakeFs } from "../../src/shell/deeplake-fs.js";

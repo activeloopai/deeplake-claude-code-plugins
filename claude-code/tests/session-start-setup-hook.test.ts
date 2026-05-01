@@ -44,6 +44,18 @@ vi.mock("../../src/embeddings/client.js", () => ({
     async warmup() { return embedWarmupMock(); }
   },
 }));
+// `embeddingsDisabled()` walks the real filesystem looking for
+// @huggingface/transformers, which is no longer in this repo's node_modules
+// (it's installed once into ~/.hivemind/embed-deps via `hivemind embeddings
+// install`). Without this mock the warmup branch is never reached and every
+// assertion below would land on the "skipped: no-transformers" log line. We
+// still respect HIVEMIND_EMBEDDINGS=false so the master-flag branch test below
+// behaves like production.
+vi.mock("../../src/embeddings/disable.js", () => ({
+  embeddingsDisabled: () => process.env.HIVEMIND_EMBEDDINGS === "false",
+  embeddingsStatus: () =>
+    process.env.HIVEMIND_EMBEDDINGS === "false" ? "disabled-by-env" : "enabled",
+}));
 
 // We also need to control global.fetch for the GitHub version lookup.
 const originalFetch = global.fetch;
