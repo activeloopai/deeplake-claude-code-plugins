@@ -9,14 +9,12 @@ import { dirname as dirname2, join as join4 } from "node:path";
 import { execSync } from "node:child_process";
 
 // dist/src/commands/auth-creds.js
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 var CONFIG_DIR = join(homedir(), ".deeplake");
 var CREDS_PATH = join(CONFIG_DIR, "credentials.json");
 function loadCredentials() {
-  if (!existsSync(CREDS_PATH))
-    return null;
   try {
     return JSON.parse(readFileSync(CREDS_PATH, "utf-8"));
   } catch {

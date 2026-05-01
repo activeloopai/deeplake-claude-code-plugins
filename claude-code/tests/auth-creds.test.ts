@@ -134,4 +134,19 @@ describe("deleteCredentials", () => {
     expect(existsSync(CREDS_PATH)).toBe(false);
     expect(deleteCredentials()).toBe(false);
   });
+
+  it("rethrows non-ENOENT errors (the catch's else branch)", async () => {
+    // CONTRACT: only "file already gone" maps to false; genuine fs errors
+    // (permission denied, EBUSY, EISDIR, …) propagate so the caller can
+    // surface them. To exercise this without mocking node:fs, place a
+    // directory at CREDS_PATH — unlinkSync on a directory throws EISDIR,
+    // which is not ENOENT, so the catch's `throw err` path fires.
+    const { deleteCredentials, CONFIG_DIR, CREDS_PATH } = await importAuthCreds();
+    mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+    mkdirSync(CREDS_PATH, { recursive: true, mode: 0o700 });
+    expect(() => deleteCredentials()).toThrow();
+    // The directory we created is still there — deleteCredentials surfaced
+    // the error rather than masking it as a successful "no, didn't delete."
+    expect(existsSync(CREDS_PATH)).toBe(true);
+  });
 });

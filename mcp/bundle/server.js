@@ -6809,7 +6809,7 @@ __export(index_marker_store_exports, {
   hasFreshIndexMarker: () => hasFreshIndexMarker,
   writeIndexMarker: () => writeIndexMarker
 });
-import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { join as join4 } from "node:path";
 import { tmpdir } from "node:os";
 function getIndexMarkerDir() {
@@ -6820,7 +6820,7 @@ function buildIndexMarkerPath(workspaceId, orgId, table, suffix) {
   return join4(getIndexMarkerDir(), `${markerKey}.json`);
 }
 function hasFreshIndexMarker(markerPath) {
-  if (!existsSync3(markerPath))
+  if (!existsSync2(markerPath))
     return false;
   try {
     const raw = JSON.parse(readFileSync3(markerPath, "utf-8"));
@@ -23278,14 +23278,12 @@ function deeplakeClientHeader() {
 }
 
 // dist/src/commands/auth-creds.js
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 var CONFIG_DIR = join(homedir(), ".deeplake");
 var CREDS_PATH = join(CONFIG_DIR, "credentials.json");
 function loadCredentials() {
-  if (!existsSync(CREDS_PATH))
-    return null;
   try {
     return JSON.parse(readFileSync(CREDS_PATH, "utf-8"));
   } catch {
@@ -23294,14 +23292,14 @@ function loadCredentials() {
 }
 
 // dist/src/config.js
-import { readFileSync as readFileSync2, existsSync as existsSync2 } from "node:fs";
+import { readFileSync as readFileSync2, existsSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir2, userInfo } from "node:os";
 function loadConfig() {
   const home = homedir2();
   const credPath = join2(home, ".deeplake", "credentials.json");
   let creds = null;
-  if (existsSync2(credPath)) {
+  if (existsSync(credPath)) {
     try {
       creds = JSON.parse(readFileSync2(credPath, "utf-8"));
     } catch {
@@ -24009,7 +24007,7 @@ import { readFileSync as readFileSync5 } from "node:fs";
 import { join as join6 } from "node:path";
 
 // dist/src/cli/util.js
-import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3, cpSync, symlinkSync, unlinkSync as unlinkSync2, lstatSync } from "node:fs";
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3, cpSync, symlinkSync, unlinkSync as unlinkSync2, lstatSync } from "node:fs";
 import { join as join5, dirname } from "node:path";
 import { homedir as homedir4 } from "node:os";
 import { fileURLToPath } from "node:url";

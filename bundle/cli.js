@@ -17,7 +17,7 @@ __export(index_marker_store_exports, {
   hasFreshIndexMarker: () => hasFreshIndexMarker,
   writeIndexMarker: () => writeIndexMarker
 });
-import { existsSync as existsSync11, mkdirSync as mkdirSync3, readFileSync as readFileSync8, writeFileSync as writeFileSync5 } from "node:fs";
+import { existsSync as existsSync10, mkdirSync as mkdirSync3, readFileSync as readFileSync8, writeFileSync as writeFileSync5 } from "node:fs";
 import { join as join13 } from "node:path";
 import { tmpdir } from "node:os";
 function getIndexMarkerDir() {
@@ -28,7 +28,7 @@ function buildIndexMarkerPath(workspaceId, orgId, table, suffix) {
   return join13(getIndexMarkerDir(), `${markerKey}.json`);
 }
 function hasFreshIndexMarker(markerPath) {
-  if (!existsSync11(markerPath))
+  if (!existsSync10(markerPath))
     return false;
   try {
     const raw = JSON.parse(readFileSync8(markerPath, "utf-8"));
@@ -3404,7 +3404,7 @@ function uninstallPi() {
 }
 
 // dist/src/cli/auth.js
-import { existsSync as existsSync9 } from "node:fs";
+import { existsSync as existsSync8 } from "node:fs";
 import { join as join10 } from "node:path";
 
 // dist/src/commands/auth.js
@@ -3420,14 +3420,12 @@ function deeplakeClientHeader() {
 }
 
 // dist/src/commands/auth-creds.js
-import { readFileSync as readFileSync6, writeFileSync as writeFileSync4, existsSync as existsSync8, mkdirSync as mkdirSync2, unlinkSync as unlinkSync5 } from "node:fs";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync4, mkdirSync as mkdirSync2, unlinkSync as unlinkSync5 } from "node:fs";
 import { join as join9 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 var CONFIG_DIR = join9(homedir2(), ".deeplake");
 var CREDS_PATH = join9(CONFIG_DIR, "credentials.json");
 function loadCredentials() {
-  if (!existsSync8(CREDS_PATH))
-    return null;
   try {
     return JSON.parse(readFileSync6(CREDS_PATH, "utf-8"));
   } catch {
@@ -3435,16 +3433,18 @@ function loadCredentials() {
   }
 }
 function saveCredentials(creds) {
-  if (!existsSync8(CONFIG_DIR))
-    mkdirSync2(CONFIG_DIR, { recursive: true, mode: 448 });
+  mkdirSync2(CONFIG_DIR, { recursive: true, mode: 448 });
   writeFileSync4(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
 }
 function deleteCredentials() {
-  if (existsSync8(CREDS_PATH)) {
+  try {
     unlinkSync5(CREDS_PATH);
     return true;
+  } catch (err) {
+    if (err?.code === "ENOENT")
+      return false;
+    throw err;
   }
-  return false;
 }
 
 // dist/src/commands/auth.js
@@ -3627,7 +3627,7 @@ Using: ${orgName}
 // dist/src/cli/auth.js
 var CREDS_PATH2 = join10(HOME, ".deeplake", "credentials.json");
 function isLoggedIn() {
-  return existsSync9(CREDS_PATH2) && loadCredentials() !== null;
+  return existsSync8(CREDS_PATH2) && loadCredentials() !== null;
 }
 async function ensureLoggedIn() {
   if (isLoggedIn())
@@ -3660,14 +3660,14 @@ async function maybeShowOrgChoice() {
 }
 
 // dist/src/config.js
-import { readFileSync as readFileSync7, existsSync as existsSync10 } from "node:fs";
+import { readFileSync as readFileSync7, existsSync as existsSync9 } from "node:fs";
 import { join as join11 } from "node:path";
 import { homedir as homedir3, userInfo } from "node:os";
 function loadConfig() {
   const home = homedir3();
   const credPath = join11(home, ".deeplake", "credentials.json");
   let creds = null;
-  if (existsSync10(credPath)) {
+  if (existsSync9(credPath)) {
     try {
       creds = JSON.parse(readFileSync7(credPath, "utf-8"));
     } catch {
