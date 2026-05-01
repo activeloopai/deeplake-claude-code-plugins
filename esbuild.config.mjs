@@ -130,7 +130,11 @@ const cursorCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
 ];
 
-const cursorAll = [...cursorHooks, ...cursorShell, ...cursorCommands];
+const cursorEmbed = [
+  { entry: "dist/src/embeddings/daemon.js", out: "embeddings/embed-daemon" },
+];
+
+const cursorAll = [...cursorHooks, ...cursorShell, ...cursorCommands, ...cursorEmbed];
 
 await build({
   entryPoints: Object.fromEntries(cursorAll.map(h => [h.out, h.entry])),
@@ -138,7 +142,15 @@ await build({
   platform: "node",
   format: "esm",
   outdir: "cursor/bundle",
-  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  external: [
+    "node:*",
+    "node-liblzma",
+    "@mongodb-js/zstd",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+    "onnxruntime-common",
+    "sharp",
+  ],
 });
 
 for (const h of cursorAll) {
@@ -154,7 +166,10 @@ const hermesShell = [
 const hermesCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
 ];
-const hermesAll = [...hermesHooks, ...hermesShell, ...hermesCommands];
+const hermesEmbed = [
+  { entry: "dist/src/embeddings/daemon.js", out: "embeddings/embed-daemon" },
+];
+const hermesAll = [...hermesHooks, ...hermesShell, ...hermesCommands, ...hermesEmbed];
 
 await build({
   entryPoints: Object.fromEntries(hermesAll.map(h => [h.out, h.entry])),
@@ -162,7 +177,15 @@ await build({
   platform: "node",
   format: "esm",
   outdir: "hermes/bundle",
-  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  external: [
+    "node:*",
+    "node-liblzma",
+    "@mongodb-js/zstd",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+    "onnxruntime-common",
+    "sharp",
+  ],
 });
 
 for (const h of hermesAll) {

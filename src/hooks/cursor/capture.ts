@@ -19,7 +19,16 @@ import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { log as _log } from "../../utils/debug.js";
 import { buildSessionPath } from "../../utils/session-path.js";
+import { EmbedClient } from "../../embeddings/client.js";
+import { embeddingSqlLiteral } from "../../embeddings/sql.js";
+import { embeddingsDisabled } from "../../embeddings/disable.js";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 const log = (msg: string) => _log("cursor-capture", msg);
+
+function resolveEmbedDaemonPath(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
+}
 
 interface CursorCaptureInput {
   conversation_id?: string;
@@ -119,9 +128,16 @@ async function main(): Promise<void> {
   // sqlStr() would also escape backslashes and corrupt the JSON.
   const jsonForSql = line.replace(/'/g, "''");
 
+  // Best-effort embed: if the daemon is unavailable (no @huggingface/transformers
+  // or HIVEMIND_EMBEDDINGS=false), embed() returns null and the column lands NULL.
+  const embedding = embeddingsDisabled()
+    ? null
+    : await new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() }).embed(line, "document");
+  const embeddingSql = embeddingSqlLiteral(embedding);
+
   const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ` +
+    `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ` +
     `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', 'cursor', '${ts}', '${ts}')`;
 
   try {

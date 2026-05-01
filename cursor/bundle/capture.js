@@ -513,8 +513,274 @@ function buildSessionPath(config, sessionId) {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${workspace}_${sessionId}.jsonl`;
 }
 
+// dist/src/embeddings/client.js
+import { connect } from "node:net";
+import { spawn } from "node:child_process";
+import { openSync, closeSync, writeSync, unlinkSync, existsSync as existsSync3, readFileSync as readFileSync3 } from "node:fs";
+
+// dist/src/embeddings/protocol.js
+var DEFAULT_SOCKET_DIR = "/tmp";
+var DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_CLIENT_TIMEOUT_MS = 2e3;
+function socketPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
+  return `${dir}/hivemind-embed-${uid}.sock`;
+}
+function pidPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
+  return `${dir}/hivemind-embed-${uid}.pid`;
+}
+
+// dist/src/embeddings/client.js
+var log3 = (m) => log("embed-client", m);
+function getUid() {
+  const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
+  return uid !== void 0 ? String(uid) : process.env.USER ?? "default";
+}
+var EmbedClient = class {
+  socketPath;
+  pidPath;
+  timeoutMs;
+  daemonEntry;
+  autoSpawn;
+  spawnWaitMs;
+  nextId = 0;
+  constructor(opts = {}) {
+    const uid = getUid();
+    const dir = opts.socketDir ?? "/tmp";
+    this.socketPath = socketPathFor(uid, dir);
+    this.pidPath = pidPathFor(uid, dir);
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS;
+    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON;
+    this.autoSpawn = opts.autoSpawn ?? true;
+    this.spawnWaitMs = opts.spawnWaitMs ?? 5e3;
+  }
+  /**
+   * Returns an embedding vector, or null on timeout/failure. Hooks MUST treat
+   * null as "skip embedding column" — never block the write path on us.
+   *
+   * Fire-and-forget spawn on miss: if the daemon isn't up, this call returns
+   * null AND kicks off a background spawn. The next call finds a ready daemon.
+   */
+  async embed(text, kind = "document") {
+    let sock;
+    try {
+      sock = await this.connectOnce();
+    } catch {
+      if (this.autoSpawn)
+        this.trySpawnDaemon();
+      return null;
+    }
+    try {
+      const id = String(++this.nextId);
+      const req = { op: "embed", id, kind, text };
+      const resp = await this.sendAndWait(sock, req);
+      if (resp.error || !("embedding" in resp) || !resp.embedding) {
+        log3(`embed err: ${resp.error ?? "no embedding"}`);
+        return null;
+      }
+      return resp.embedding;
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      log3(`embed failed: ${err}`);
+      return null;
+    } finally {
+      try {
+        sock.end();
+      } catch {
+      }
+    }
+  }
+  /**
+   * Wait up to spawnWaitMs for the daemon to accept connections, spawning if
+   * necessary. Meant for SessionStart / long-running batches — not the hot path.
+   */
+  async warmup() {
+    try {
+      const s = await this.connectOnce();
+      s.end();
+      return true;
+    } catch {
+      if (!this.autoSpawn)
+        return false;
+      this.trySpawnDaemon();
+      try {
+        const s = await this.waitForSocket();
+        s.end();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+  connectOnce() {
+    return new Promise((resolve, reject) => {
+      const sock = connect(this.socketPath);
+      const to = setTimeout(() => {
+        sock.destroy();
+        reject(new Error("connect timeout"));
+      }, this.timeoutMs);
+      sock.once("connect", () => {
+        clearTimeout(to);
+        resolve(sock);
+      });
+      sock.once("error", (e) => {
+        clearTimeout(to);
+        reject(e);
+      });
+    });
+  }
+  trySpawnDaemon() {
+    let fd;
+    try {
+      fd = openSync(this.pidPath, "wx", 384);
+      writeSync(fd, String(process.pid));
+    } catch (e) {
+      if (this.isPidFileStale()) {
+        try {
+          unlinkSync(this.pidPath);
+        } catch {
+        }
+        try {
+          fd = openSync(this.pidPath, "wx", 384);
+          writeSync(fd, String(process.pid));
+        } catch {
+          return;
+        }
+      } else {
+        return;
+      }
+    }
+    if (!this.daemonEntry || !existsSync3(this.daemonEntry)) {
+      log3(`daemonEntry not configured or missing: ${this.daemonEntry}`);
+      try {
+        closeSync(fd);
+        unlinkSync(this.pidPath);
+      } catch {
+      }
+      return;
+    }
+    try {
+      const child = spawn(process.execPath, [this.daemonEntry], {
+        detached: true,
+        stdio: "ignore",
+        env: process.env
+      });
+      child.unref();
+      log3(`spawned daemon pid=${child.pid}`);
+    } finally {
+      closeSync(fd);
+    }
+  }
+  isPidFileStale() {
+    try {
+      const raw = readFileSync3(this.pidPath, "utf-8").trim();
+      const pid = Number(raw);
+      if (!pid || Number.isNaN(pid))
+        return true;
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+  }
+  async waitForSocket() {
+    const deadline = Date.now() + this.spawnWaitMs;
+    let delay = 30;
+    while (Date.now() < deadline) {
+      await sleep2(delay);
+      delay = Math.min(delay * 1.5, 300);
+      if (!existsSync3(this.socketPath))
+        continue;
+      try {
+        return await this.connectOnce();
+      } catch {
+      }
+    }
+    throw new Error("daemon did not become ready within spawnWaitMs");
+  }
+  sendAndWait(sock, req) {
+    return new Promise((resolve, reject) => {
+      let buf = "";
+      const to = setTimeout(() => {
+        sock.destroy();
+        reject(new Error("request timeout"));
+      }, this.timeoutMs);
+      sock.setEncoding("utf-8");
+      sock.on("data", (chunk) => {
+        buf += chunk;
+        const nl = buf.indexOf("\n");
+        if (nl === -1)
+          return;
+        const line = buf.slice(0, nl);
+        clearTimeout(to);
+        try {
+          resolve(JSON.parse(line));
+        } catch (e) {
+          reject(e);
+        }
+      });
+      sock.on("error", (e) => {
+        clearTimeout(to);
+        reject(e);
+      });
+      sock.write(JSON.stringify(req) + "\n");
+    });
+  }
+};
+function sleep2(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// dist/src/embeddings/sql.js
+function embeddingSqlLiteral(vec) {
+  if (!vec || vec.length === 0)
+    return "NULL";
+  const parts = [];
+  for (const v of vec) {
+    if (!Number.isFinite(v))
+      return "NULL";
+    parts.push(String(v));
+  }
+  return `ARRAY[${parts.join(",")}]::float4[]`;
+}
+
+// dist/src/embeddings/disable.js
+import { createRequire } from "node:module";
+var cachedStatus = null;
+function defaultResolveTransformers() {
+  createRequire(import.meta.url).resolve("@huggingface/transformers");
+}
+var _resolve = defaultResolveTransformers;
+function detectStatus() {
+  if (process.env.HIVEMIND_EMBEDDINGS === "false")
+    return "env-disabled";
+  try {
+    _resolve();
+    return "enabled";
+  } catch {
+    return "no-transformers";
+  }
+}
+function embeddingsStatus() {
+  if (cachedStatus !== null)
+    return cachedStatus;
+  cachedStatus = detectStatus();
+  return cachedStatus;
+}
+function embeddingsDisabled() {
+  return embeddingsStatus() !== "enabled";
+}
+
 // dist/src/hooks/cursor/capture.js
-var log3 = (msg) => log("cursor-capture", msg);
+import { fileURLToPath } from "node:url";
+import { dirname, join as join4 } from "node:path";
+var log4 = (msg) => log("cursor-capture", msg);
+function resolveEmbedDaemonPath() {
+  return join4(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
+}
 var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 function resolveCwd(input) {
   if (typeof input.cwd === "string" && input.cwd)
@@ -530,7 +796,7 @@ async function main() {
   const input = await readStdin();
   const config = loadConfig();
   if (!config) {
-    log3("no config");
+    log4("no config");
     return;
   }
   const sessionId = input.conversation_id ?? `cursor-${Date.now()}`;
@@ -549,10 +815,10 @@ async function main() {
   };
   let entry = null;
   if (event === "beforeSubmitPrompt" && typeof input.prompt === "string") {
-    log3(`user session=${sessionId}`);
+    log4(`user session=${sessionId}`);
     entry = { id: crypto.randomUUID(), ...meta, type: "user_message", content: input.prompt };
   } else if (event === "postToolUse" && typeof input.tool_name === "string") {
-    log3(`tool=${input.tool_name} session=${sessionId}`);
+    log4(`tool=${input.tool_name} session=${sessionId}`);
     entry = {
       id: crypto.randomUUID(),
       ...meta,
@@ -564,10 +830,10 @@ async function main() {
       tool_response: typeof input.tool_output === "string" ? input.tool_output : JSON.stringify(input.tool_output)
     };
   } else if (event === "afterAgentResponse" && typeof input.text === "string") {
-    log3(`assistant session=${sessionId}`);
+    log4(`assistant session=${sessionId}`);
     entry = { id: crypto.randomUUID(), ...meta, type: "assistant_message", content: input.text };
   } else if (event === "stop") {
-    log3(`stop session=${sessionId} status=${input.status ?? "unknown"}`);
+    log4(`stop session=${sessionId} status=${input.status ?? "unknown"}`);
     entry = {
       id: crypto.randomUUID(),
       ...meta,
@@ -576,30 +842,32 @@ async function main() {
       loop_count: input.loop_count
     };
   } else {
-    log3(`unknown event: ${event}, skipping`);
+    log4(`unknown event: ${event}, skipping`);
     return;
   }
   const sessionPath = buildSessionPath(config, sessionId);
   const line = JSON.stringify(entry);
-  log3(`writing to ${sessionPath}`);
+  log4(`writing to ${sessionPath}`);
   const projectName = cwd.split("/").pop() || "unknown";
   const filename = sessionPath.split("/").pop() ?? "";
   const jsonForSql = line.replace(/'/g, "''");
-  const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', 'cursor', '${ts}', '${ts}')`;
+  const embedding = embeddingsDisabled() ? null : await new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() }).embed(line, "document");
+  const embeddingSql = embeddingSqlLiteral(embedding);
+  const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', 'cursor', '${ts}', '${ts}')`;
   try {
     await api.query(insertSql);
   } catch (e) {
     if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
-      log3("table missing, creating and retrying");
+      log4("table missing, creating and retrying");
       await api.ensureSessionsTable(sessionsTable);
       await api.query(insertSql);
     } else {
       throw e;
     }
   }
-  log3("capture ok \u2192 cloud");
+  log4("capture ok \u2192 cloud");
 }
 main().catch((e) => {
-  log3(`fatal: ${e.message}`);
+  log4(`fatal: ${e.message}`);
   process.exit(0);
 });

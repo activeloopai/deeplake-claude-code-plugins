@@ -17,18 +17,18 @@ __export(index_marker_store_exports, {
   hasFreshIndexMarker: () => hasFreshIndexMarker,
   writeIndexMarker: () => writeIndexMarker
 });
-import { existsSync as existsSync11, mkdirSync as mkdirSync3, readFileSync as readFileSync8, writeFileSync as writeFileSync5 } from "node:fs";
-import { join as join13 } from "node:path";
+import { existsSync as existsSync12, mkdirSync as mkdirSync3, readFileSync as readFileSync8, writeFileSync as writeFileSync5 } from "node:fs";
+import { join as join14 } from "node:path";
 import { tmpdir } from "node:os";
 function getIndexMarkerDir() {
-  return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join13(tmpdir(), "hivemind-deeplake-indexes");
+  return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join14(tmpdir(), "hivemind-deeplake-indexes");
 }
 function buildIndexMarkerPath(workspaceId, orgId, table, suffix) {
   const markerKey = [workspaceId, orgId, table, suffix].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
-  return join13(getIndexMarkerDir(), `${markerKey}.json`);
+  return join14(getIndexMarkerDir(), `${markerKey}.json`);
 }
 function hasFreshIndexMarker(markerPath) {
-  if (!existsSync11(markerPath))
+  if (!existsSync12(markerPath))
     return false;
   try {
     const raw = JSON.parse(readFileSync8(markerPath, "utf-8"));
@@ -3452,9 +3452,168 @@ function uninstallPi() {
   }
 }
 
+// dist/src/cli/embeddings.js
+import { existsSync as existsSync8, lstatSync as lstatSync2, readdirSync, readlinkSync, rmSync as rmSync4, statSync, unlinkSync as unlinkSync5 } from "node:fs";
+import { execFileSync as execFileSync3 } from "node:child_process";
+import { join as join9 } from "node:path";
+var SHARED_DIR = join9(HOME, ".hivemind", "embed-deps");
+var SHARED_NODE_MODULES = join9(SHARED_DIR, "node_modules");
+var TRANSFORMERS_PKG = "@huggingface/transformers";
+var TRANSFORMERS_RANGE = "^3.0.0";
+function findHivemindInstalls(home = HOME) {
+  const out = [];
+  const fixed = [
+    { id: "codex", pluginDir: join9(home, ".codex", "hivemind") },
+    { id: "cursor", pluginDir: join9(home, ".cursor", "hivemind") },
+    { id: "hermes", pluginDir: join9(home, ".hermes", "hivemind") }
+  ];
+  for (const inst of fixed) {
+    if (existsSync8(join9(inst.pluginDir, "bundle")))
+      out.push(inst);
+  }
+  const ccCache = join9(home, ".claude", "plugins", "cache", "hivemind", "hivemind");
+  if (existsSync8(ccCache)) {
+    let entries = [];
+    try {
+      entries = readdirSync(ccCache);
+    } catch {
+    }
+    for (const ver of entries) {
+      const dir = join9(ccCache, ver);
+      try {
+        if (!statSync(dir).isDirectory())
+          continue;
+      } catch {
+        continue;
+      }
+      const candidates = [join9(dir, "bundle"), join9(dir, "claude-code", "bundle")];
+      if (candidates.some((p) => existsSync8(p))) {
+        out.push({ id: `claude (${ver})`, pluginDir: dir });
+      }
+    }
+  }
+  return out;
+}
+function isSharedDepsInstalled(sharedNodeModules = SHARED_NODE_MODULES) {
+  return existsSync8(join9(sharedNodeModules, TRANSFORMERS_PKG));
+}
+function isSymlinkToSharedDeps(linkPath, sharedNodeModules) {
+  if (!existsSync8(linkPath))
+    return false;
+  try {
+    if (!lstatSync2(linkPath).isSymbolicLink())
+      return false;
+    return readlinkSync(linkPath) === sharedNodeModules;
+  } catch {
+    return false;
+  }
+}
+function linkStateFor(install, sharedNodeModules = SHARED_NODE_MODULES) {
+  const link = join9(install.pluginDir, "node_modules");
+  if (!existsSync8(link) && !isSymbolicLink(link))
+    return { kind: "no-node-modules" };
+  try {
+    if (lstatSync2(link).isSymbolicLink()) {
+      const target = readlinkSync(link);
+      return target === sharedNodeModules ? { kind: "linked-to-shared" } : { kind: "linked-elsewhere", target };
+    }
+  } catch {
+    return { kind: "no-node-modules" };
+  }
+  return { kind: "owns-own-node-modules" };
+}
+function isSymbolicLink(path) {
+  try {
+    return lstatSync2(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+function ensureSharedDeps() {
+  if (isSharedDepsInstalled()) {
+    log(`  Embeddings     shared deps already present at ${SHARED_DIR}`);
+    return;
+  }
+  log(`  Embeddings     installing ${TRANSFORMERS_PKG}@${TRANSFORMERS_RANGE} into ${SHARED_DIR}`);
+  log(`                 (~600 MB; first install only \u2014 every agent will share this)`);
+  ensureDir(SHARED_DIR);
+  writeJson(join9(SHARED_DIR, "package.json"), {
+    name: "hivemind-embed-deps",
+    version: "1.0.0",
+    private: true,
+    dependencies: { [TRANSFORMERS_PKG]: TRANSFORMERS_RANGE }
+  });
+  execFileSync3("npm", ["install", "--omit=dev", "--no-package-lock", "--no-audit", "--no-fund"], {
+    cwd: SHARED_DIR,
+    stdio: "inherit"
+  });
+}
+function linkAgent(install) {
+  const link = join9(install.pluginDir, "node_modules");
+  symlinkForce(SHARED_NODE_MODULES, link);
+  log(`  Embeddings     linked ${install.id.padEnd(20)} -> shared deps`);
+}
+function enableEmbeddings() {
+  ensureSharedDeps();
+  const installs = findHivemindInstalls();
+  if (installs.length === 0) {
+    warn("  Embeddings     no hivemind installs detected \u2014 run `hivemind install` first");
+    warn("                 (the shared deps are in place; subsequent agent installs will pick them up if you re-run `hivemind embeddings install`)");
+    return;
+  }
+  for (const inst of installs)
+    linkAgent(inst);
+  log(`  Embeddings     enabled. Restart your agents to pick up.`);
+}
+function disableEmbeddings(opts) {
+  const installs = findHivemindInstalls();
+  for (const inst of installs) {
+    const link = join9(inst.pluginDir, "node_modules");
+    if (isSymlinkToSharedDeps(link, SHARED_NODE_MODULES)) {
+      unlinkSync5(link);
+      log(`  Embeddings     unlinked ${inst.id}`);
+    }
+  }
+  if (opts?.prune && existsSync8(SHARED_DIR)) {
+    rmSync4(SHARED_DIR, { recursive: true, force: true });
+    log(`  Embeddings     pruned ${SHARED_DIR}`);
+  }
+}
+function statusEmbeddings() {
+  log(`Shared deps:   ${SHARED_DIR}`);
+  log(`Installed:     ${isSharedDepsInstalled() ? "yes" : "no"}`);
+  log("");
+  log(`Agent installs:`);
+  const installs = findHivemindInstalls();
+  if (installs.length === 0) {
+    log(`  (none detected)`);
+    return;
+  }
+  for (const inst of installs) {
+    const state = linkStateFor(inst);
+    let label;
+    switch (state.kind) {
+      case "linked-to-shared":
+        label = "\u2713 linked \u2192 shared";
+        break;
+      case "no-node-modules":
+        label = "\u2717 not linked (embeddings disabled)";
+        break;
+      case "owns-own-node-modules":
+        label = "\u25B3 has its own node_modules (not shared)";
+        break;
+      case "linked-elsewhere":
+        label = `\u25B3 linked \u2192 ${state.target}`;
+        break;
+    }
+    log(`  ${inst.id.padEnd(20)} ${label}`);
+    log(`  ${" ".repeat(20)}   ${inst.pluginDir}`);
+  }
+}
+
 // dist/src/cli/auth.js
-import { existsSync as existsSync9 } from "node:fs";
-import { join as join10 } from "node:path";
+import { existsSync as existsSync10 } from "node:fs";
+import { join as join11 } from "node:path";
 
 // dist/src/commands/auth.js
 import { execSync } from "node:child_process";
@@ -3469,13 +3628,13 @@ function deeplakeClientHeader() {
 }
 
 // dist/src/commands/auth-creds.js
-import { readFileSync as readFileSync6, writeFileSync as writeFileSync4, existsSync as existsSync8, mkdirSync as mkdirSync2, unlinkSync as unlinkSync5 } from "node:fs";
-import { join as join9 } from "node:path";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync4, existsSync as existsSync9, mkdirSync as mkdirSync2, unlinkSync as unlinkSync6 } from "node:fs";
+import { join as join10 } from "node:path";
 import { homedir as homedir2 } from "node:os";
-var CONFIG_DIR = join9(homedir2(), ".deeplake");
-var CREDS_PATH = join9(CONFIG_DIR, "credentials.json");
+var CONFIG_DIR = join10(homedir2(), ".deeplake");
+var CREDS_PATH = join10(CONFIG_DIR, "credentials.json");
 function loadCredentials() {
-  if (!existsSync8(CREDS_PATH))
+  if (!existsSync9(CREDS_PATH))
     return null;
   try {
     return JSON.parse(readFileSync6(CREDS_PATH, "utf-8"));
@@ -3484,13 +3643,13 @@ function loadCredentials() {
   }
 }
 function saveCredentials(creds) {
-  if (!existsSync8(CONFIG_DIR))
+  if (!existsSync9(CONFIG_DIR))
     mkdirSync2(CONFIG_DIR, { recursive: true, mode: 448 });
   writeFileSync4(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
 }
 function deleteCredentials() {
-  if (existsSync8(CREDS_PATH)) {
-    unlinkSync5(CREDS_PATH);
+  if (existsSync9(CREDS_PATH)) {
+    unlinkSync6(CREDS_PATH);
     return true;
   }
   return false;
@@ -3674,9 +3833,9 @@ Using: ${orgName}
 }
 
 // dist/src/cli/auth.js
-var CREDS_PATH2 = join10(HOME, ".deeplake", "credentials.json");
+var CREDS_PATH2 = join11(HOME, ".deeplake", "credentials.json");
 function isLoggedIn() {
-  return existsSync9(CREDS_PATH2) && loadCredentials() !== null;
+  return existsSync10(CREDS_PATH2) && loadCredentials() !== null;
 }
 async function ensureLoggedIn() {
   if (isLoggedIn())
@@ -3709,14 +3868,14 @@ async function maybeShowOrgChoice() {
 }
 
 // dist/src/config.js
-import { readFileSync as readFileSync7, existsSync as existsSync10 } from "node:fs";
-import { join as join11 } from "node:path";
+import { readFileSync as readFileSync7, existsSync as existsSync11 } from "node:fs";
+import { join as join12 } from "node:path";
 import { homedir as homedir3, userInfo } from "node:os";
 function loadConfig() {
   const home = homedir3();
-  const credPath = join11(home, ".deeplake", "credentials.json");
+  const credPath = join12(home, ".deeplake", "credentials.json");
   let creds = null;
-  if (existsSync10(credPath)) {
+  if (existsSync11(credPath)) {
     try {
       creds = JSON.parse(readFileSync7(credPath, "utf-8"));
     } catch {
@@ -3736,7 +3895,7 @@ function loadConfig() {
     apiUrl: process.env.HIVEMIND_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.HIVEMIND_TABLE ?? "memory",
     sessionsTableName: process.env.HIVEMIND_SESSIONS_TABLE ?? "sessions",
-    memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? join11(home, ".deeplake", "memory")
+    memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? join12(home, ".deeplake", "memory")
   };
 }
 
@@ -3745,10 +3904,10 @@ import { randomUUID } from "node:crypto";
 
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
-import { join as join12 } from "node:path";
+import { join as join13 } from "node:path";
 import { homedir as homedir4 } from "node:os";
 var DEBUG = process.env.HIVEMIND_DEBUG === "1";
-var LOG = join12(homedir4(), ".deeplake", "hook-debug.log");
+var LOG = join13(homedir4(), ".deeplake", "hook-debug.log");
 function log2(tag, msg) {
   if (!DEBUG)
     return;
@@ -4464,6 +4623,18 @@ Usage:
   hivemind login            Run device-flow login (open browser).
   hivemind status           Show which assistants are wired up.
 
+Semantic search (embeddings):
+  hivemind embeddings install                Download @huggingface/transformers
+                                             once (~600 MB) into a shared dir
+                                             and symlink every detected agent
+                                             plugin to it. Idempotent.
+  hivemind embeddings uninstall [--prune]    Remove the per-agent symlinks.
+                                             --prune also deletes the shared dir.
+  hivemind embeddings status                 Show shared-deps + per-agent state.
+
+  Add --with-embeddings to "hivemind install" (or "hivemind <agent> install")
+  to run "embeddings install" automatically after installing the agent(s).
+
 Account / org / workspace:
   hivemind whoami                          Show current user, org, workspace.
   hivemind logout                          Remove credentials.
@@ -4504,6 +4675,7 @@ function hasFlag(args, flag) {
 async function runInstallAll(args) {
   const only = parseOnly(args);
   const skipAuth = hasFlag(args, "--skip-auth");
+  const withEmbeddings = hasFlag(args, "--with-embeddings");
   const targets = only ?? detectPlatforms().map((p) => p.id);
   if (targets.length === 0) {
     log("No supported assistants detected.");
@@ -4522,6 +4694,10 @@ async function runInstallAll(args) {
   }
   for (const id of targets)
     runSingleInstall(id);
+  if (withEmbeddings) {
+    log("");
+    enableEmbeddings();
+  }
   await maybeShowOrgChoice();
   log("");
   log("Done. Restart each assistant to activate hooks.");
@@ -4603,6 +4779,23 @@ async function main() {
     runStatus();
     return;
   }
+  if (cmd === "embeddings") {
+    const sub = args[1];
+    if (sub === "install" || sub === "enable") {
+      enableEmbeddings();
+      return;
+    }
+    if (sub === "uninstall" || sub === "disable") {
+      disableEmbeddings({ prune: hasFlag(args.slice(2), "--prune") });
+      return;
+    }
+    if (sub === "status") {
+      statusEmbeddings();
+      return;
+    }
+    warn("Usage: hivemind embeddings install | uninstall [--prune] | status");
+    process.exit(1);
+  }
   if (AUTH_SUBCOMMANDS.has(cmd)) {
     await runAuthCommand(args);
     return;
@@ -4610,12 +4803,16 @@ async function main() {
   const platformCmds = ["claude", "codex", "claw", "cursor", "hermes", "pi"];
   if (platformCmds.includes(cmd)) {
     const sub = args[1];
-    if (sub === "install")
+    if (sub === "install") {
       runSingleInstall(cmd);
-    else if (sub === "uninstall")
+      if (hasFlag(args.slice(2), "--with-embeddings")) {
+        log("");
+        enableEmbeddings();
+      }
+    } else if (sub === "uninstall")
       runSingleUninstall(cmd);
     else {
-      warn(`Usage: hivemind ${cmd} install|uninstall`);
+      warn(`Usage: hivemind ${cmd} install [--with-embeddings] | uninstall`);
       process.exit(1);
     }
     return;

@@ -285,25 +285,44 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 Hivemind can run a local embedding daemon (nomic-embed-text-v1.5, ~130 MB)
 so that `Grep` over `~/.deeplake/memory/` uses hybrid semantic + lexical
 ranking instead of pure BM25. This is **off by default** — the daemon
-depends on `@huggingface/transformers`, which has native bindings that
-can't be bundled into the plugin and is therefore not shipped with the
-marketplace install.
+depends on `@huggingface/transformers`, which pulls onnxruntime-node and
+sharp (~600 MB total with native binaries). Shipping that with every agent
+install would 60× the install size for a feature most users don't need.
 
-To enable:
+To enable, run the bundled command:
 
 ```bash
-# Install the dependency inside the plugin's cache directory.
-cd ~/.claude/plugins/cache/hivemind/hivemind/<version>
-npm install @huggingface/transformers@^3.0.0
+hivemind embeddings install
 ```
 
-Restart Claude Code afterwards. From the next session, captured messages
-and AI-generated summaries will include a 768-dim embedding, and
-semantic recall queries will route through the local daemon (the model
-is downloaded on first use and cached in `~/.cache/huggingface/`).
+This installs `@huggingface/transformers` **once** into a shared directory
+(`~/.hivemind/embed-deps/`) and symlinks every detected agent's plugin to
+it, so the 600 MB cost is paid one time regardless of how many agents you
+have wired up. Re-run the same command after installing a new agent and
+the new symlink is added (the npm install is skipped because it's cached).
 
-If `@huggingface/transformers` is **not** present (or `npm` is unavailable
-on your system), Hivemind silently degrades to lexical-only mode:
+Or do it in one shot at install time:
+
+```bash
+hivemind install --with-embeddings           # all detected agents
+hivemind <agent> install --with-embeddings   # a single agent
+```
+
+Other commands:
+
+```bash
+hivemind embeddings status              # show shared deps + per-agent state
+hivemind embeddings uninstall           # remove the per-agent symlinks
+hivemind embeddings uninstall --prune   # also delete the shared dir (~600 MB)
+```
+
+Restart your agents after enabling. From the next session, captured
+messages and AI-generated summaries will include a 768-dim embedding,
+and semantic recall queries will route through the local daemon (the
+nomic model is downloaded on first use and cached in `~/.cache/huggingface/`).
+
+If `@huggingface/transformers` is **not** present, Hivemind silently
+degrades to lexical-only mode:
 
 - ✅ Capture continues; rows still land in Deeplake.
 - ✅ `Grep` still works via BM25 / `ILIKE` matching on text columns.
