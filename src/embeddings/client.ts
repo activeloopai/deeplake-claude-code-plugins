@@ -5,6 +5,8 @@
 import { connect, type Socket } from "node:net";
 import { spawn } from "node:child_process";
 import { openSync, closeSync, writeSync, unlinkSync, existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   DEFAULT_CLIENT_TIMEOUT_MS,
   pidPathFor,
@@ -14,6 +16,13 @@ import {
   type EmbedRequest,
 } from "./protocol.js";
 import { log as _log } from "../utils/debug.js";
+
+// Canonical location for the standalone daemon bundle, deposited by
+// `hivemind embeddings install`. Used as the auto-spawn fallback when
+// neither opts.daemonEntry nor HIVEMIND_EMBED_DAEMON is set — so any
+// agent (including pi, which has no bundled daemon of its own) can spawn
+// the same shared daemon process.
+const SHARED_DAEMON_PATH = join(homedir(), ".hivemind", "embed-deps", "embed-daemon.js");
 
 const log = (m: string) => _log("embed-client", m);
 
@@ -45,7 +54,14 @@ export class EmbedClient {
     this.socketPath = socketPathFor(uid, dir);
     this.pidPath = pidPathFor(uid, dir);
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS;
-    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON;
+    // Resolution order: explicit opt → env override → canonical shared
+    // location (set up by `hivemind embeddings install`). The shared path
+    // is checked at use-time, not here, so a missing file just means
+    // "no auto-spawn" without preventing socket-only connects when
+    // another agent has already spawned the daemon.
+    this.daemonEntry = opts.daemonEntry
+      ?? process.env.HIVEMIND_EMBED_DAEMON
+      ?? (existsSync(SHARED_DAEMON_PATH) ? SHARED_DAEMON_PATH : undefined);
     this.autoSpawn = opts.autoSpawn ?? true;
     this.spawnWaitMs = opts.spawnWaitMs ?? 5000;
   }

@@ -46081,14 +46081,14 @@ var require_turndown_cjs = __commonJS({
         } else if (node.nodeType === 1) {
           replacement = replacementForNode.call(self2, node);
         }
-        return join9(output, replacement);
+        return join11(output, replacement);
       }, "");
     }
     function postProcess(output) {
       var self2 = this;
       this.rules.forEach(function(rule) {
         if (typeof rule.append === "function") {
-          output = join9(output, rule.append(self2.options));
+          output = join11(output, rule.append(self2.options));
         }
       });
       return output.replace(/^[\t\r\n]+/, "").replace(/[\t\r\n\s]+$/, "");
@@ -46100,7 +46100,7 @@ var require_turndown_cjs = __commonJS({
       if (whitespace.leading || whitespace.trailing) content = content.trim();
       return whitespace.leading + rule.replacement(content, node, this.options) + whitespace.trailing;
     }
-    function join9(output, replacement) {
+    function join11(output, replacement) {
       var s12 = trimTrailingNewlines(output);
       var s22 = trimLeadingNewlines(replacement);
       var nls = Math.max(output.length - s12.length, replacement.length - s22.length);
@@ -67208,7 +67208,7 @@ var DeeplakeApi = class {
 import { basename as basename4, posix } from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { dirname as dirname4, join as join7 } from "node:path";
+import { dirname as dirname4, join as join9 } from "node:path";
 
 // dist/src/shell/grep-core.js
 var TOOL_INPUT_FIELDS = [
@@ -67650,10 +67650,12 @@ function refineGrepMatches(rows, params, forceMultiFilePrefix) {
 import { connect } from "node:net";
 import { spawn } from "node:child_process";
 import { openSync, closeSync, writeSync, unlinkSync, existsSync as existsSync4, readFileSync as readFileSync3 } from "node:fs";
+import { homedir as homedir3 } from "node:os";
+import { join as join7 } from "node:path";
 
 // dist/src/embeddings/protocol.js
 var DEFAULT_SOCKET_DIR = "/tmp";
-var DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1e3;
 var DEFAULT_CLIENT_TIMEOUT_MS = 2e3;
 function socketPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
   return `${dir}/hivemind-embed-${uid}.sock`;
@@ -67663,6 +67665,7 @@ function pidPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
 }
 
 // dist/src/embeddings/client.js
+var SHARED_DAEMON_PATH = join7(homedir3(), ".hivemind", "embed-deps", "embed-daemon.js");
 var log3 = (m26) => log("embed-client", m26);
 function getUid() {
   const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
@@ -67682,7 +67685,7 @@ var EmbedClient = class {
     this.socketPath = socketPathFor(uid, dir);
     this.pidPath = pidPathFor(uid, dir);
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS;
-    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON;
+    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON ?? (existsSync4(SHARED_DAEMON_PATH) ? SHARED_DAEMON_PATH : void 0);
     this.autoSpawn = opts.autoSpawn ?? true;
     this.spawnWaitMs = opts.spawnWaitMs ?? 5e3;
   }
@@ -67882,9 +67885,18 @@ function embeddingSqlLiteral(vec) {
 
 // dist/src/embeddings/disable.js
 import { createRequire } from "node:module";
+import { homedir as homedir4 } from "node:os";
+import { join as join8 } from "node:path";
+import { pathToFileURL } from "node:url";
 var cachedStatus = null;
 function defaultResolveTransformers() {
-  createRequire(import.meta.url).resolve("@huggingface/transformers");
+  try {
+    createRequire(import.meta.url).resolve("@huggingface/transformers");
+    return;
+  } catch {
+  }
+  const sharedDir = join8(homedir4(), ".hivemind", "embed-deps");
+  createRequire(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
 }
 var _resolve = defaultResolveTransformers;
 function detectStatus() {
@@ -67936,7 +67948,7 @@ function normalizeSessionMessage(path2, message) {
   return normalizeContent(path2, raw);
 }
 function resolveEmbedDaemonPath() {
-  return join7(dirname4(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
+  return join9(dirname4(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
 }
 function joinSessionMessages(path2, messages) {
   return messages.map((message) => normalizeSessionMessage(path2, message)).join("\n");
@@ -69548,11 +69560,11 @@ var lib_default = yargsParser;
 
 // dist/src/shell/grep-interceptor.js
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-import { dirname as dirname5, join as join8 } from "node:path";
+import { dirname as dirname5, join as join10 } from "node:path";
 var SEMANTIC_SEARCH_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false" && !embeddingsDisabled();
 var SEMANTIC_EMBED_TIMEOUT_MS = Number(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS ?? "500");
 function resolveGrepEmbedDaemonPath() {
-  return join8(dirname5(fileURLToPath2(import.meta.url)), "..", "embeddings", "embed-daemon.js");
+  return join10(dirname5(fileURLToPath2(import.meta.url)), "..", "embeddings", "embed-daemon.js");
 }
 var sharedGrepEmbedClient = null;
 function getGrepEmbedClient() {

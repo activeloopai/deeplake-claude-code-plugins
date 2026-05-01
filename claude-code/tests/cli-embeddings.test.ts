@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, lstatSync, readlinkSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findHivemindInstalls, isSharedDepsInstalled, linkStateFor, SHARED_NODE_MODULES, TRANSFORMERS_PKG } from "../../src/cli/embeddings.js";
+import { findHivemindInstalls, isSharedDepsInstalled, linkStateFor, SHARED_DAEMON_PATH, SHARED_NODE_MODULES, TRANSFORMERS_PKG } from "../../src/cli/embeddings.js";
 
 /**
  * Tests for the shared-deps embeddings installer's pure helpers. The
@@ -91,6 +91,14 @@ describe("isSharedDepsInstalled", () => {
     const sharedNm = join(tmpHome, "embed-deps", "node_modules");
     mkDir(join(sharedNm, TRANSFORMERS_PKG));
     expect(isSharedDepsInstalled(sharedNm)).toBe(true);
+  });
+});
+
+// ── SHARED_DAEMON_PATH ────────────────────────────────────────────────────
+
+describe("SHARED_DAEMON_PATH", () => {
+  it("points at embed-daemon.js inside the shared-deps dir (canonical location agents use)", () => {
+    expect(SHARED_DAEMON_PATH.endsWith("/embed-deps/embed-daemon.js")).toBe(true);
   });
 });
 

@@ -516,10 +516,12 @@ function buildSessionPath(config, sessionId) {
 import { connect } from "node:net";
 import { spawn } from "node:child_process";
 import { openSync, closeSync, writeSync, unlinkSync, existsSync as existsSync3, readFileSync as readFileSync3 } from "node:fs";
+import { homedir as homedir3 } from "node:os";
+import { join as join4 } from "node:path";
 
 // dist/src/embeddings/protocol.js
 var DEFAULT_SOCKET_DIR = "/tmp";
-var DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1e3;
 var DEFAULT_CLIENT_TIMEOUT_MS = 2e3;
 function socketPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
   return `${dir}/hivemind-embed-${uid}.sock`;
@@ -529,6 +531,7 @@ function pidPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
 }
 
 // dist/src/embeddings/client.js
+var SHARED_DAEMON_PATH = join4(homedir3(), ".hivemind", "embed-deps", "embed-daemon.js");
 var log3 = (m) => log("embed-client", m);
 function getUid() {
   const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
@@ -548,7 +551,7 @@ var EmbedClient = class {
     this.socketPath = socketPathFor(uid, dir);
     this.pidPath = pidPathFor(uid, dir);
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS;
-    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON;
+    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON ?? (existsSync3(SHARED_DAEMON_PATH) ? SHARED_DAEMON_PATH : void 0);
     this.autoSpawn = opts.autoSpawn ?? true;
     this.spawnWaitMs = opts.spawnWaitMs ?? 5e3;
   }
@@ -748,9 +751,18 @@ function embeddingSqlLiteral(vec) {
 
 // dist/src/embeddings/disable.js
 import { createRequire } from "node:module";
+import { homedir as homedir4 } from "node:os";
+import { join as join5 } from "node:path";
+import { pathToFileURL } from "node:url";
 var cachedStatus = null;
 function defaultResolveTransformers() {
-  createRequire(import.meta.url).resolve("@huggingface/transformers");
+  try {
+    createRequire(import.meta.url).resolve("@huggingface/transformers");
+    return;
+  } catch {
+  }
+  const sharedDir = join5(homedir4(), ".hivemind", "embed-deps");
+  createRequire(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
 }
 var _resolve = defaultResolveTransformers;
 function detectStatus() {
@@ -775,10 +787,10 @@ function embeddingsDisabled() {
 
 // dist/src/hooks/hermes/capture.js
 import { fileURLToPath } from "node:url";
-import { dirname, join as join4 } from "node:path";
+import { dirname, join as join6 } from "node:path";
 var log4 = (msg) => log("hermes-capture", msg);
 function resolveEmbedDaemonPath() {
-  return join4(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
+  return join6(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
 }
 var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 function pickString(...candidates) {

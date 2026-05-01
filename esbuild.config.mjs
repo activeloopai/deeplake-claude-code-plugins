@@ -283,4 +283,27 @@ await build({
 });
 chmodSync("bundle/cli.js", 0o755);
 
-console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + ${cursorAll.length} Cursor + ${hermesAll.length} Hermes + 1 OpenClaw + 1 MCP + 1 CLI bundle`);
+// Standalone embed daemon bundle. `hivemind embeddings install` deposits
+// this at ~/.hivemind/embed-deps/embed-daemon.js so every agent (including
+// pi, which can't ship per-agent bundles) spawns the same canonical
+// daemon. Externals match the per-agent daemon bundles — the daemon
+// resolves them from its sibling node_modules (the shared deps dir).
+await build({
+  entryPoints: { "embed-daemon": "dist/src/embeddings/daemon.js" },
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "embeddings",
+  external: [
+    "node:*",
+    "node-liblzma",
+    "@mongodb-js/zstd",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+    "onnxruntime-common",
+    "sharp",
+  ],
+});
+chmodSync("embeddings/embed-daemon.js", 0o755);
+
+console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + ${cursorAll.length} Cursor + ${hermesAll.length} Hermes + 1 OpenClaw + 1 MCP + 1 CLI + 1 standalone-daemon bundle`);

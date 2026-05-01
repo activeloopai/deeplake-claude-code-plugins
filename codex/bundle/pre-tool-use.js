@@ -55,7 +55,7 @@ var init_index_marker_store = __esm({
 // dist/src/hooks/codex/pre-tool-use.js
 import { execFileSync } from "node:child_process";
 import { existsSync as existsSync4 } from "node:fs";
-import { join as join7, dirname as dirname2 } from "node:path";
+import { join as join9, dirname as dirname2 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // dist/src/utils/stdin.js
@@ -1010,10 +1010,12 @@ function capOutputForClaude(output, options = {}) {
 import { connect } from "node:net";
 import { spawn } from "node:child_process";
 import { openSync, closeSync, writeSync, unlinkSync, existsSync as existsSync3, readFileSync as readFileSync3 } from "node:fs";
+import { homedir as homedir3 } from "node:os";
+import { join as join4 } from "node:path";
 
 // dist/src/embeddings/protocol.js
 var DEFAULT_SOCKET_DIR = "/tmp";
-var DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1e3;
 var DEFAULT_CLIENT_TIMEOUT_MS = 2e3;
 function socketPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
   return `${dir}/hivemind-embed-${uid}.sock`;
@@ -1023,6 +1025,7 @@ function pidPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
 }
 
 // dist/src/embeddings/client.js
+var SHARED_DAEMON_PATH = join4(homedir3(), ".hivemind", "embed-deps", "embed-daemon.js");
 var log3 = (m) => log("embed-client", m);
 function getUid() {
   const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
@@ -1042,7 +1045,7 @@ var EmbedClient = class {
     this.socketPath = socketPathFor(uid, dir);
     this.pidPath = pidPathFor(uid, dir);
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS;
-    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON;
+    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON ?? (existsSync3(SHARED_DAEMON_PATH) ? SHARED_DAEMON_PATH : void 0);
     this.autoSpawn = opts.autoSpawn ?? true;
     this.spawnWaitMs = opts.spawnWaitMs ?? 5e3;
   }
@@ -1229,9 +1232,18 @@ function sleep2(ms) {
 
 // dist/src/embeddings/disable.js
 import { createRequire } from "node:module";
+import { homedir as homedir4 } from "node:os";
+import { join as join5 } from "node:path";
+import { pathToFileURL } from "node:url";
 var cachedStatus = null;
 function defaultResolveTransformers() {
-  createRequire(import.meta.url).resolve("@huggingface/transformers");
+  try {
+    createRequire(import.meta.url).resolve("@huggingface/transformers");
+    return;
+  } catch {
+  }
+  const sharedDir = join5(homedir4(), ".hivemind", "embed-deps");
+  createRequire(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
 }
 var _resolve = defaultResolveTransformers;
 function detectStatus() {
@@ -1256,11 +1268,11 @@ function embeddingsDisabled() {
 
 // dist/src/hooks/grep-direct.js
 import { fileURLToPath } from "node:url";
-import { dirname, join as join4 } from "node:path";
+import { dirname, join as join6 } from "node:path";
 var SEMANTIC_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false" && !embeddingsDisabled();
 var SEMANTIC_TIMEOUT_MS = Number(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS ?? "500");
 function resolveDaemonPath() {
-  return join4(dirname(fileURLToPath(import.meta.url)), "..", "embeddings", "embed-daemon.js");
+  return join6(dirname(fileURLToPath(import.meta.url)), "..", "embeddings", "embed-daemon.js");
 }
 var sharedEmbedClient = null;
 function getEmbedClient() {
@@ -2229,19 +2241,19 @@ async function executeCompiledBashCommand(api, memoryTable, sessionsTable, cmd, 
 
 // dist/src/hooks/query-cache.js
 import { mkdirSync as mkdirSync2, readFileSync as readFileSync4, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join5 } from "node:path";
-import { homedir as homedir3 } from "node:os";
+import { join as join7 } from "node:path";
+import { homedir as homedir5 } from "node:os";
 var log4 = (msg) => log("query-cache", msg);
-var DEFAULT_CACHE_ROOT = join5(homedir3(), ".deeplake", "query-cache");
+var DEFAULT_CACHE_ROOT = join7(homedir5(), ".deeplake", "query-cache");
 var INDEX_CACHE_FILE = "index.md";
 function getSessionQueryCacheDir(sessionId, deps = {}) {
   const { cacheRoot = DEFAULT_CACHE_ROOT } = deps;
-  return join5(cacheRoot, sessionId);
+  return join7(cacheRoot, sessionId);
 }
 function readCachedIndexContent(sessionId, deps = {}) {
   const { logFn = log4 } = deps;
   try {
-    return readFileSync4(join5(getSessionQueryCacheDir(sessionId, deps), INDEX_CACHE_FILE), "utf-8");
+    return readFileSync4(join7(getSessionQueryCacheDir(sessionId, deps), INDEX_CACHE_FILE), "utf-8");
   } catch (e) {
     if (e?.code === "ENOENT")
       return null;
@@ -2254,7 +2266,7 @@ function writeCachedIndexContent(sessionId, content, deps = {}) {
   try {
     const dir = getSessionQueryCacheDir(sessionId, deps);
     mkdirSync2(dir, { recursive: true });
-    writeFileSync2(join5(dir, INDEX_CACHE_FILE), content, "utf-8");
+    writeFileSync2(join7(dir, INDEX_CACHE_FILE), content, "utf-8");
   } catch (e) {
     logFn(`write failed for session=${sessionId}: ${e.message}`);
   }
@@ -2275,9 +2287,9 @@ function isDirectRun(metaUrl) {
 }
 
 // dist/src/hooks/memory-path-utils.js
-import { homedir as homedir4 } from "node:os";
-import { join as join6 } from "node:path";
-var MEMORY_PATH = join6(homedir4(), ".deeplake", "memory");
+import { homedir as homedir6 } from "node:os";
+import { join as join8 } from "node:path";
+var MEMORY_PATH = join8(homedir6(), ".deeplake", "memory");
 var TILDE_PATH = "~/.deeplake/memory";
 var HOME_VAR_PATH = "$HOME/.deeplake/memory";
 var SAFE_BUILTINS = /* @__PURE__ */ new Set([
@@ -2395,7 +2407,7 @@ function rewritePaths(cmd) {
 // dist/src/hooks/codex/pre-tool-use.js
 var log5 = (msg) => log("codex-pre", msg);
 var __bundleDir = dirname2(fileURLToPath3(import.meta.url));
-var SHELL_BUNDLE = existsSync4(join7(__bundleDir, "shell", "deeplake-shell.js")) ? join7(__bundleDir, "shell", "deeplake-shell.js") : join7(__bundleDir, "..", "shell", "deeplake-shell.js");
+var SHELL_BUNDLE = existsSync4(join9(__bundleDir, "shell", "deeplake-shell.js")) ? join9(__bundleDir, "shell", "deeplake-shell.js") : join9(__bundleDir, "..", "shell", "deeplake-shell.js");
 function buildUnsupportedGuidance() {
   return "This command is not supported for ~/.deeplake/memory/ operations. Only bash builtins are available: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. Do NOT use python, python3, node, curl, or other interpreters. Rewrite your command using only bash tools and retry.";
 }

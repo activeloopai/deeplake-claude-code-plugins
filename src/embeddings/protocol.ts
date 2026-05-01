@@ -36,7 +36,7 @@ export const DEFAULT_SOCKET_DIR = "/tmp";
 export const DEFAULT_MODEL_REPO = "nomic-ai/nomic-embed-text-v1.5";
 export const DEFAULT_DTYPE = "q8";
 export const DEFAULT_DIMS = 768;
-export const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+export const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 // Generous enough that the first embed after a daemon spawn — when the nomic
 // pipeline is still warming up — does not silently time out. A 200ms cap was
 // short enough that any not-yet-warm daemon returned null and the row landed

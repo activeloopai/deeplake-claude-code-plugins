@@ -3343,6 +3343,8 @@ var LEGACY_SKILL_DIR = join8(PI_AGENT_DIR, "skills", "hivemind-memory");
 var EXTENSIONS_DIR = join8(PI_AGENT_DIR, "extensions");
 var EXTENSION_PATH = join8(EXTENSIONS_DIR, "hivemind.ts");
 var VERSION_DIR = join8(PI_AGENT_DIR, ".hivemind");
+var WIKI_WORKER_DIR = join8(PI_AGENT_DIR, "hivemind");
+var WIKI_WORKER_PATH = join8(WIKI_WORKER_DIR, "wiki-worker.js");
 var HIVEMIND_BLOCK_START = "<!-- BEGIN hivemind-memory -->";
 var HIVEMIND_BLOCK_END = "<!-- END hivemind-memory -->";
 var HIVEMIND_BLOCK_BODY = `${HIVEMIND_BLOCK_START}
@@ -3422,10 +3424,18 @@ function installPi() {
   }
   ensureDir(EXTENSIONS_DIR);
   copyFileSync2(srcExtension, EXTENSION_PATH);
+  const srcWorker = join8(pkgRoot(), "pi", "bundle", "wiki-worker.js");
+  if (existsSync7(srcWorker)) {
+    ensureDir(WIKI_WORKER_DIR);
+    copyFileSync2(srcWorker, WIKI_WORKER_PATH);
+  }
   ensureDir(VERSION_DIR);
   writeVersionStamp(VERSION_DIR, getVersion());
   log(`  pi             AGENTS.md updated -> ${AGENTS_MD}`);
   log(`  pi             extension installed -> ${EXTENSION_PATH}`);
+  if (existsSync7(WIKI_WORKER_PATH)) {
+    log(`  pi             wiki-worker installed -> ${WIKI_WORKER_PATH}`);
+  }
 }
 function uninstallPi() {
   if (existsSync7(LEGACY_SKILL_DIR)) {
@@ -3435,6 +3445,10 @@ function uninstallPi() {
   if (existsSync7(EXTENSION_PATH)) {
     rmSync3(EXTENSION_PATH, { force: true });
     log(`  pi             removed extension ${EXTENSION_PATH}`);
+  }
+  if (existsSync7(WIKI_WORKER_DIR)) {
+    rmSync3(WIKI_WORKER_DIR, { recursive: true, force: true });
+    log(`  pi             removed wiki-worker dir ${WIKI_WORKER_DIR}`);
   }
   if (existsSync7(AGENTS_MD)) {
     const prior = readFileSync5(AGENTS_MD, "utf-8");
@@ -3453,11 +3467,12 @@ function uninstallPi() {
 }
 
 // dist/src/cli/embeddings.js
-import { existsSync as existsSync8, lstatSync as lstatSync2, readdirSync, readlinkSync, rmSync as rmSync4, statSync, unlinkSync as unlinkSync5 } from "node:fs";
+import { copyFileSync as copyFileSync3, chmodSync, existsSync as existsSync8, lstatSync as lstatSync2, readdirSync, readlinkSync, rmSync as rmSync4, statSync, unlinkSync as unlinkSync5 } from "node:fs";
 import { execFileSync as execFileSync3 } from "node:child_process";
 import { join as join9 } from "node:path";
 var SHARED_DIR = join9(HOME, ".hivemind", "embed-deps");
 var SHARED_NODE_MODULES = join9(SHARED_DIR, "node_modules");
+var SHARED_DAEMON_PATH = join9(SHARED_DIR, "embed-daemon.js");
 var TRANSFORMERS_PKG = "@huggingface/transformers";
 var TRANSFORMERS_RANGE = "^3.0.0";
 function findHivemindInstalls(home = HOME) {
@@ -3530,23 +3545,31 @@ function isSymbolicLink(path) {
   }
 }
 function ensureSharedDeps() {
-  if (isSharedDepsInstalled()) {
+  if (!isSharedDepsInstalled()) {
+    log(`  Embeddings     installing ${TRANSFORMERS_PKG}@${TRANSFORMERS_RANGE} into ${SHARED_DIR}`);
+    log(`                 (~600 MB; first install only \u2014 every agent will share this)`);
+    ensureDir(SHARED_DIR);
+    writeJson(join9(SHARED_DIR, "package.json"), {
+      name: "hivemind-embed-deps",
+      version: "1.0.0",
+      private: true,
+      dependencies: { [TRANSFORMERS_PKG]: TRANSFORMERS_RANGE }
+    });
+    execFileSync3("npm", ["install", "--omit=dev", "--no-package-lock", "--no-audit", "--no-fund"], {
+      cwd: SHARED_DIR,
+      stdio: "inherit"
+    });
+  } else {
     log(`  Embeddings     shared deps already present at ${SHARED_DIR}`);
-    return;
   }
-  log(`  Embeddings     installing ${TRANSFORMERS_PKG}@${TRANSFORMERS_RANGE} into ${SHARED_DIR}`);
-  log(`                 (~600 MB; first install only \u2014 every agent will share this)`);
   ensureDir(SHARED_DIR);
-  writeJson(join9(SHARED_DIR, "package.json"), {
-    name: "hivemind-embed-deps",
-    version: "1.0.0",
-    private: true,
-    dependencies: { [TRANSFORMERS_PKG]: TRANSFORMERS_RANGE }
-  });
-  execFileSync3("npm", ["install", "--omit=dev", "--no-package-lock", "--no-audit", "--no-fund"], {
-    cwd: SHARED_DIR,
-    stdio: "inherit"
-  });
+  const src = join9(pkgRoot(), "embeddings", "embed-daemon.js");
+  if (existsSync8(src)) {
+    copyFileSync3(src, SHARED_DAEMON_PATH);
+    chmodSync(SHARED_DAEMON_PATH, 493);
+  } else {
+    warn(`  Embeddings     standalone daemon bundle missing at ${src} (run 'npm run build' first)`);
+  }
 }
 function linkAgent(install) {
   const link = join9(install.pluginDir, "node_modules");
@@ -3582,6 +3605,7 @@ function disableEmbeddings(opts) {
 function statusEmbeddings() {
   log(`Shared deps:   ${SHARED_DIR}`);
   log(`Installed:     ${isSharedDepsInstalled() ? "yes" : "no"}`);
+  log(`Daemon:        ${existsSync8(SHARED_DAEMON_PATH) ? SHARED_DAEMON_PATH : "(not present)"}`);
   log("");
   log(`Agent installs:`);
   const installs = findHivemindInstalls();

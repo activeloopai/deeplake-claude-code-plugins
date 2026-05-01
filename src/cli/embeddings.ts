@@ -1,7 +1,7 @@
-import { existsSync, lstatSync, readdirSync, readlinkSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { copyFileSync, chmodSync, existsSync, lstatSync, readdirSync, readlinkSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { HOME, ensureDir, log, symlinkForce, warn, writeJson } from "./util.js";
+import { HOME, ensureDir, log, pkgRoot, symlinkForce, warn, writeJson } from "./util.js";
 
 /**
  * Shared-deps location for the embedding daemon's runtime dependencies.
@@ -14,6 +14,7 @@ import { HOME, ensureDir, log, symlinkForce, warn, writeJson } from "./util.js";
  */
 export const SHARED_DIR = join(HOME, ".hivemind", "embed-deps");
 export const SHARED_NODE_MODULES = join(SHARED_DIR, "node_modules");
+export const SHARED_DAEMON_PATH = join(SHARED_DIR, "embed-daemon.js");
 export const TRANSFORMERS_PKG = "@huggingface/transformers";
 export const TRANSFORMERS_RANGE = "^3.0.0";
 
@@ -99,23 +100,35 @@ function isSymbolicLink(path: string): boolean {
 }
 
 function ensureSharedDeps(): void {
-  if (isSharedDepsInstalled()) {
+  if (!isSharedDepsInstalled()) {
+    log(`  Embeddings     installing ${TRANSFORMERS_PKG}@${TRANSFORMERS_RANGE} into ${SHARED_DIR}`);
+    log(`                 (~600 MB; first install only — every agent will share this)`);
+    ensureDir(SHARED_DIR);
+    writeJson(join(SHARED_DIR, "package.json"), {
+      name: "hivemind-embed-deps",
+      version: "1.0.0",
+      private: true,
+      dependencies: { [TRANSFORMERS_PKG]: TRANSFORMERS_RANGE },
+    });
+    execFileSync("npm", ["install", "--omit=dev", "--no-package-lock", "--no-audit", "--no-fund"], {
+      cwd: SHARED_DIR,
+      stdio: "inherit",
+    });
+  } else {
     log(`  Embeddings     shared deps already present at ${SHARED_DIR}`);
-    return;
   }
-  log(`  Embeddings     installing ${TRANSFORMERS_PKG}@${TRANSFORMERS_RANGE} into ${SHARED_DIR}`);
-  log(`                 (~600 MB; first install only — every agent will share this)`);
+  // Always (re)deposit the canonical embed-daemon.js. Cheap copy; keeps the
+  // daemon up-to-date when the user reinstalls hivemind without re-installing
+  // the deps. Pi (and any agent that doesn't ship its own bundle) launches
+  // this exact file.
   ensureDir(SHARED_DIR);
-  writeJson(join(SHARED_DIR, "package.json"), {
-    name: "hivemind-embed-deps",
-    version: "1.0.0",
-    private: true,
-    dependencies: { [TRANSFORMERS_PKG]: TRANSFORMERS_RANGE },
-  });
-  execFileSync("npm", ["install", "--omit=dev", "--no-package-lock", "--no-audit", "--no-fund"], {
-    cwd: SHARED_DIR,
-    stdio: "inherit",
-  });
+  const src = join(pkgRoot(), "embeddings", "embed-daemon.js");
+  if (existsSync(src)) {
+    copyFileSync(src, SHARED_DAEMON_PATH);
+    chmodSync(SHARED_DAEMON_PATH, 0o755);
+  } else {
+    warn(`  Embeddings     standalone daemon bundle missing at ${src} (run 'npm run build' first)`);
+  }
 }
 
 function linkAgent(install: AgentInstall): void {
@@ -163,6 +176,7 @@ export function disableEmbeddings(opts?: { prune?: boolean }): void {
 export function statusEmbeddings(): void {
   log(`Shared deps:   ${SHARED_DIR}`);
   log(`Installed:     ${isSharedDepsInstalled() ? "yes" : "no"}`);
+  log(`Daemon:        ${existsSync(SHARED_DAEMON_PATH) ? SHARED_DAEMON_PATH : "(not present)"}`);
   log("");
   log(`Agent installs:`);
   const installs = findHivemindInstalls();

@@ -520,10 +520,12 @@ function buildSessionPath(config, sessionId) {
 import { connect } from "node:net";
 import { spawn } from "node:child_process";
 import { openSync, closeSync, writeSync, unlinkSync, existsSync as existsSync3, readFileSync as readFileSync3 } from "node:fs";
+import { homedir as homedir3 } from "node:os";
+import { join as join4 } from "node:path";
 
 // dist/src/embeddings/protocol.js
 var DEFAULT_SOCKET_DIR = "/tmp";
-var DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1e3;
 var DEFAULT_CLIENT_TIMEOUT_MS = 2e3;
 function socketPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
   return `${dir}/hivemind-embed-${uid}.sock`;
@@ -533,6 +535,7 @@ function pidPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
 }
 
 // dist/src/embeddings/client.js
+var SHARED_DAEMON_PATH = join4(homedir3(), ".hivemind", "embed-deps", "embed-daemon.js");
 var log3 = (m) => log("embed-client", m);
 function getUid() {
   const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
@@ -552,7 +555,7 @@ var EmbedClient = class {
     this.socketPath = socketPathFor(uid, dir);
     this.pidPath = pidPathFor(uid, dir);
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS;
-    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON;
+    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON ?? (existsSync3(SHARED_DAEMON_PATH) ? SHARED_DAEMON_PATH : void 0);
     this.autoSpawn = opts.autoSpawn ?? true;
     this.spawnWaitMs = opts.spawnWaitMs ?? 5e3;
   }
@@ -752,9 +755,18 @@ function embeddingSqlLiteral(vec) {
 
 // dist/src/embeddings/disable.js
 import { createRequire } from "node:module";
+import { homedir as homedir4 } from "node:os";
+import { join as join5 } from "node:path";
+import { pathToFileURL } from "node:url";
 var cachedStatus = null;
 function defaultResolveTransformers() {
-  createRequire(import.meta.url).resolve("@huggingface/transformers");
+  try {
+    createRequire(import.meta.url).resolve("@huggingface/transformers");
+    return;
+  } catch {
+  }
+  const sharedDir = join5(homedir4(), ".hivemind", "embed-deps");
+  createRequire(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
 }
 var _resolve = defaultResolveTransformers;
 function detectStatus() {
@@ -779,20 +791,20 @@ function embeddingsDisabled() {
 
 // dist/src/hooks/codex/capture.js
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-import { dirname as dirname2, join as join7 } from "node:path";
+import { dirname as dirname2, join as join9 } from "node:path";
 
 // dist/src/hooks/summary-state.js
 import { readFileSync as readFileSync4, writeFileSync as writeFileSync2, writeSync as writeSync2, mkdirSync as mkdirSync2, renameSync, existsSync as existsSync4, unlinkSync as unlinkSync2, openSync as openSync2, closeSync as closeSync2 } from "node:fs";
-import { homedir as homedir3 } from "node:os";
-import { join as join4 } from "node:path";
+import { homedir as homedir5 } from "node:os";
+import { join as join6 } from "node:path";
 var dlog = (msg) => log("summary-state", msg);
-var STATE_DIR = join4(homedir3(), ".claude", "hooks", "summary-state");
+var STATE_DIR = join6(homedir5(), ".claude", "hooks", "summary-state");
 var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
 function statePath(sessionId) {
-  return join4(STATE_DIR, `${sessionId}.json`);
+  return join6(STATE_DIR, `${sessionId}.json`);
 }
 function lockPath(sessionId) {
-  return join4(STATE_DIR, `${sessionId}.lock`);
+  return join6(STATE_DIR, `${sessionId}.lock`);
 }
 function readState(sessionId) {
   const p = statePath(sessionId);
@@ -918,15 +930,15 @@ function releaseLock(sessionId) {
 // dist/src/hooks/codex/spawn-wiki-worker.js
 import { spawn as spawn2, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join as join6 } from "node:path";
+import { dirname, join as join8 } from "node:path";
 import { writeFileSync as writeFileSync3, mkdirSync as mkdirSync4 } from "node:fs";
-import { homedir as homedir4, tmpdir as tmpdir2 } from "node:os";
+import { homedir as homedir6, tmpdir as tmpdir2 } from "node:os";
 
 // dist/src/utils/wiki-log.js
 import { mkdirSync as mkdirSync3, appendFileSync as appendFileSync2 } from "node:fs";
-import { join as join5 } from "node:path";
+import { join as join7 } from "node:path";
 function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
-  const path = join5(hooksDir, filename);
+  const path = join7(hooksDir, filename);
   return {
     path,
     log(msg) {
@@ -941,8 +953,8 @@ function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
 }
 
 // dist/src/hooks/codex/spawn-wiki-worker.js
-var HOME = homedir4();
-var wikiLogger = makeWikiLogger(join6(HOME, ".codex", "hooks"));
+var HOME = homedir6();
+var wikiLogger = makeWikiLogger(join8(HOME, ".codex", "hooks"));
 var WIKI_LOG = wikiLogger.path;
 var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry.
 
@@ -1004,9 +1016,9 @@ function findCodexBin() {
 function spawnCodexWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
   const projectName = cwd.split("/").pop() || "unknown";
-  const tmpDir = join6(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  const tmpDir = join8(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
   mkdirSync4(tmpDir, { recursive: true });
-  const configFile = join6(tmpDir, "config.json");
+  const configFile = join8(tmpDir, "config.json");
   writeFileSync3(configFile, JSON.stringify({
     apiUrl: config.apiUrl,
     token: config.token,
@@ -1020,11 +1032,11 @@ function spawnCodexWikiWorker(opts) {
     tmpDir,
     codexBin: findCodexBin(),
     wikiLog: WIKI_LOG,
-    hooksDir: join6(HOME, ".codex", "hooks"),
+    hooksDir: join8(HOME, ".codex", "hooks"),
     promptTemplate: WIKI_PROMPT_TEMPLATE
   }));
   wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
-  const workerPath = join6(bundleDir, "wiki-worker.js");
+  const workerPath = join8(bundleDir, "wiki-worker.js");
   spawn2("nohup", ["node", workerPath, configFile], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"]
@@ -1038,7 +1050,7 @@ function bundleDirFromImportMeta(importMetaUrl) {
 // dist/src/hooks/codex/capture.js
 var log4 = (msg) => log("codex-capture", msg);
 function resolveEmbedDaemonPath() {
-  return join7(dirname2(fileURLToPath2(import.meta.url)), "embeddings", "embed-daemon.js");
+  return join9(dirname2(fileURLToPath2(import.meta.url)), "embeddings", "embed-daemon.js");
 }
 var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 async function main() {

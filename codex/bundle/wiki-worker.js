@@ -3,7 +3,7 @@
 // dist/src/hooks/codex/wiki-worker.js
 import { readFileSync as readFileSync3, writeFileSync as writeFileSync2, existsSync as existsSync3, appendFileSync as appendFileSync2, mkdirSync as mkdirSync2, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, join as join3 } from "node:path";
+import { dirname, join as join5 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // dist/src/hooks/summary-state.js
@@ -150,10 +150,12 @@ async function uploadSummary(query2, params) {
 import { connect } from "node:net";
 import { spawn } from "node:child_process";
 import { openSync as openSync2, closeSync as closeSync2, writeSync as writeSync2, unlinkSync as unlinkSync2, existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
+import { homedir as homedir3 } from "node:os";
+import { join as join3 } from "node:path";
 
 // dist/src/embeddings/protocol.js
 var DEFAULT_SOCKET_DIR = "/tmp";
-var DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1e3;
 var DEFAULT_CLIENT_TIMEOUT_MS = 2e3;
 function socketPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
   return `${dir}/hivemind-embed-${uid}.sock`;
@@ -163,6 +165,7 @@ function pidPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
 }
 
 // dist/src/embeddings/client.js
+var SHARED_DAEMON_PATH = join3(homedir3(), ".hivemind", "embed-deps", "embed-daemon.js");
 var log2 = (m) => log("embed-client", m);
 function getUid() {
   const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
@@ -182,7 +185,7 @@ var EmbedClient = class {
     this.socketPath = socketPathFor(uid, dir);
     this.pidPath = pidPathFor(uid, dir);
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS;
-    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON;
+    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON ?? (existsSync2(SHARED_DAEMON_PATH) ? SHARED_DAEMON_PATH : void 0);
     this.autoSpawn = opts.autoSpawn ?? true;
     this.spawnWaitMs = opts.spawnWaitMs ?? 5e3;
   }
@@ -369,9 +372,18 @@ function sleep(ms) {
 
 // dist/src/embeddings/disable.js
 import { createRequire } from "node:module";
+import { homedir as homedir4 } from "node:os";
+import { join as join4 } from "node:path";
+import { pathToFileURL } from "node:url";
 var cachedStatus = null;
 function defaultResolveTransformers() {
-  createRequire(import.meta.url).resolve("@huggingface/transformers");
+  try {
+    createRequire(import.meta.url).resolve("@huggingface/transformers");
+    return;
+  } catch {
+  }
+  const sharedDir = join4(homedir4(), ".hivemind", "embed-deps");
+  createRequire(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
 }
 var _resolve = defaultResolveTransformers;
 function detectStatus() {
@@ -407,8 +419,8 @@ function deeplakeClientHeader() {
 var dlog2 = (msg) => log("codex-wiki-worker", msg);
 var cfg = JSON.parse(readFileSync3(process.argv[2], "utf-8"));
 var tmpDir = cfg.tmpDir;
-var tmpJsonl = join3(tmpDir, "session.jsonl");
-var tmpSummary = join3(tmpDir, "summary.md");
+var tmpJsonl = join5(tmpDir, "session.jsonl");
+var tmpSummary = join5(tmpDir, "summary.md");
 function wlog(msg) {
   try {
     mkdirSync2(cfg.hooksDir, { recursive: true });
@@ -508,7 +520,7 @@ async function main() {
         let embedding = null;
         if (!embeddingsDisabled()) {
           try {
-            const daemonEntry = join3(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
+            const daemonEntry = join5(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
             embedding = await new EmbedClient({ daemonEntry }).embed(text, "document");
           } catch (e) {
             wlog(`summary embedding failed, writing NULL: ${e.message}`);

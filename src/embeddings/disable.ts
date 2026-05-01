@@ -1,4 +1,7 @@
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 /**
  * Master opt-out for the embedding feature.
@@ -32,8 +35,19 @@ let cachedStatus: EmbeddingsStatus | null = null;
 function defaultResolveTransformers(): void {
   // Resolve from this module's location — the same node_modules walk Node
   // would do for the spawned daemon, since the daemon lives in the same
-  // bundle dir tree.
-  createRequire(import.meta.url).resolve("@huggingface/transformers");
+  // bundle dir tree (true for CC/codex/cursor/hermes which symlink their
+  // plugin's node_modules to the shared deps).
+  try {
+    createRequire(import.meta.url).resolve("@huggingface/transformers");
+    return;
+  } catch { /* fall through */ }
+  // Fall back to the canonical shared deps location. Pi (and any future
+  // agent that doesn't ship a per-agent bundle adjacent to a node_modules)
+  // lands here: the shared deps at ~/.hivemind/embed-deps/node_modules
+  // are populated by `hivemind embeddings install`, and the daemon spawn
+  // resolves transformers via that exact dir.
+  const sharedDir = join(homedir(), ".hivemind", "embed-deps");
+  createRequire(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
 }
 
 let _resolve: () => void = defaultResolveTransformers;
