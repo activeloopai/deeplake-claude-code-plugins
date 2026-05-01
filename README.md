@@ -37,7 +37,7 @@ Hivemind automatically captures every prompt, tool call, decision, and file oper
 One command, all your agents:
 
 ```bash
-npx @deeplake/hivemind@latest install
+npm -g install @deeplake/hivemind && hivemind install
 ```
 
 That's it. The installer detects every supported assistant on your machine (Claude Code, Codex, OpenClaw, Cursor, Hermes Agent, pi), wires up the hooks, and opens a browser once for login. Restart your assistants and they all share the same brain.
