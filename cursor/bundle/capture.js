@@ -110,6 +110,9 @@ import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 var DEBUG = process.env.HIVEMIND_DEBUG === "1";
 var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
+function utcTimestamp(d = /* @__PURE__ */ new Date()) {
+  return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
+}
 function log(tag, msg) {
   if (!DEBUG)
     return;
@@ -787,11 +790,268 @@ function embeddingsDisabled() {
 }
 
 // dist/src/hooks/cursor/capture.js
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { dirname as dirname2, join as join9 } from "node:path";
+
+// dist/src/hooks/summary-state.js
+import { readFileSync as readFileSync4, writeFileSync as writeFileSync2, writeSync as writeSync2, mkdirSync as mkdirSync2, renameSync, existsSync as existsSync4, unlinkSync as unlinkSync2, openSync as openSync2, closeSync as closeSync2 } from "node:fs";
+import { homedir as homedir5 } from "node:os";
+import { join as join6 } from "node:path";
+var dlog = (msg) => log("summary-state", msg);
+var STATE_DIR = join6(homedir5(), ".claude", "hooks", "summary-state");
+var YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
+function statePath(sessionId) {
+  return join6(STATE_DIR, `${sessionId}.json`);
+}
+function lockPath(sessionId) {
+  return join6(STATE_DIR, `${sessionId}.lock`);
+}
+function readState(sessionId) {
+  const p = statePath(sessionId);
+  if (!existsSync4(p))
+    return null;
+  try {
+    return JSON.parse(readFileSync4(p, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+function writeState(sessionId, state) {
+  mkdirSync2(STATE_DIR, { recursive: true });
+  const p = statePath(sessionId);
+  const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync2(tmp, JSON.stringify(state));
+  renameSync(tmp, p);
+}
+function withRmwLock(sessionId, fn) {
+  mkdirSync2(STATE_DIR, { recursive: true });
+  const rmwLock = statePath(sessionId) + ".rmw";
+  const deadline = Date.now() + 2e3;
+  let fd = null;
+  while (fd === null) {
+    try {
+      fd = openSync2(rmwLock, "wx");
+    } catch (e) {
+      if (e.code !== "EEXIST")
+        throw e;
+      if (Date.now() > deadline) {
+        dlog(`rmw lock deadline exceeded for ${sessionId}, reclaiming stale lock`);
+        try {
+          unlinkSync2(rmwLock);
+        } catch (unlinkErr) {
+          dlog(`stale rmw lock unlink failed for ${sessionId}: ${unlinkErr.message}`);
+        }
+        continue;
+      }
+      Atomics.wait(YIELD_BUF, 0, 0, 10);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    closeSync2(fd);
+    try {
+      unlinkSync2(rmwLock);
+    } catch (unlinkErr) {
+      dlog(`rmw lock cleanup failed for ${sessionId}: ${unlinkErr.message}`);
+    }
+  }
+}
+function bumpTotalCount(sessionId) {
+  return withRmwLock(sessionId, () => {
+    const now = Date.now();
+    const existing = readState(sessionId);
+    const next = existing ? { ...existing, totalCount: existing.totalCount + 1 } : { lastSummaryAt: now, lastSummaryCount: 0, totalCount: 1 };
+    writeState(sessionId, next);
+    return next;
+  });
+}
+function loadTriggerConfig() {
+  const n = Number(process.env.HIVEMIND_SUMMARY_EVERY_N_MSGS ?? "");
+  const h = Number(process.env.HIVEMIND_SUMMARY_EVERY_HOURS ?? "");
+  return {
+    everyNMessages: Number.isInteger(n) && n > 0 ? n : 50,
+    everyHours: Number.isFinite(h) && h > 0 ? h : 2
+  };
+}
+var FIRST_SUMMARY_AT = 10;
+function shouldTrigger(state, cfg, now = Date.now()) {
+  const msgsSince = state.totalCount - state.lastSummaryCount;
+  if (state.lastSummaryCount === 0 && state.totalCount >= FIRST_SUMMARY_AT)
+    return true;
+  if (msgsSince >= cfg.everyNMessages)
+    return true;
+  if (msgsSince > 0 && now - state.lastSummaryAt >= cfg.everyHours * 3600 * 1e3)
+    return true;
+  return false;
+}
+function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
+  mkdirSync2(STATE_DIR, { recursive: true });
+  const p = lockPath(sessionId);
+  if (existsSync4(p)) {
+    try {
+      const ageMs = Date.now() - parseInt(readFileSync4(p, "utf-8"), 10);
+      if (Number.isFinite(ageMs) && ageMs < maxAgeMs)
+        return false;
+    } catch (readErr) {
+      dlog(`lock file unreadable for ${sessionId}, treating as stale: ${readErr.message}`);
+    }
+    try {
+      unlinkSync2(p);
+    } catch (unlinkErr) {
+      dlog(`could not unlink stale lock for ${sessionId}: ${unlinkErr.message}`);
+      return false;
+    }
+  }
+  try {
+    const fd = openSync2(p, "wx");
+    try {
+      writeSync2(fd, String(Date.now()));
+    } finally {
+      closeSync2(fd);
+    }
+    return true;
+  } catch (e) {
+    if (e.code === "EEXIST")
+      return false;
+    throw e;
+  }
+}
+function releaseLock(sessionId) {
+  try {
+    unlinkSync2(lockPath(sessionId));
+  } catch (e) {
+    if (e?.code !== "ENOENT") {
+      dlog(`releaseLock unlink failed for ${sessionId}: ${e.message}`);
+    }
+  }
+}
+
+// dist/src/hooks/cursor/spawn-wiki-worker.js
+import { spawn as spawn2, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join as join6 } from "node:path";
+import { dirname, join as join8 } from "node:path";
+import { writeFileSync as writeFileSync3, mkdirSync as mkdirSync4 } from "node:fs";
+import { homedir as homedir6, tmpdir as tmpdir2 } from "node:os";
+
+// dist/src/utils/wiki-log.js
+import { mkdirSync as mkdirSync3, appendFileSync as appendFileSync2 } from "node:fs";
+import { join as join7 } from "node:path";
+function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
+  const path = join7(hooksDir, filename);
+  return {
+    path,
+    log(msg) {
+      try {
+        mkdirSync3(hooksDir, { recursive: true });
+        appendFileSync2(path, `[${utcTimestamp()}] ${msg}
+`);
+      } catch {
+      }
+    }
+  };
+}
+
+// dist/src/hooks/cursor/spawn-wiki-worker.js
+var HOME = homedir6();
+var wikiLogger = makeWikiLogger(join8(HOME, ".cursor", "hooks"));
+var WIKI_LOG = wikiLogger.path;
+var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry.
+
+SESSION JSONL path: __JSONL__
+SUMMARY FILE to write: __SUMMARY__
+SESSION ID: __SESSION_ID__
+PROJECT: __PROJECT__
+PREVIOUS JSONL OFFSET (lines already processed): __PREV_OFFSET__
+CURRENT JSONL LINES: __JSONL_LINES__
+
+Steps:
+1. Read the session JSONL at the path above.
+   - If PREVIOUS JSONL OFFSET > 0, this is a resumed session. Read the existing summary file first,
+     then focus on lines AFTER the offset for new content. Merge new facts into the existing summary.
+   - If offset is 0, generate from scratch.
+
+2. Write the summary file at the path above with this EXACT format:
+
+# Session __SESSION_ID__
+- **Source**: __JSONL_SERVER_PATH__
+- **Started**: <extract from JSONL>
+- **Ended**: <now>
+- **Project**: __PROJECT__
+- **JSONL offset**: __JSONL_LINES__
+
+## What Happened
+<2-3 dense sentences. What was the goal, what was accomplished, what's left.>
+
+## People
+<For each person mentioned: name, role, what they did/said. Format: **Name** \u2014 role \u2014 action>
+
+## Entities
+<Every named thing: repos, branches, files, APIs, tools, services, tables, features, bugs.
+Format: **entity** (type) \u2014 what was done with it, its current state>
+
+## Decisions & Reasoning
+<Every decision made and WHY.>
+
+## Key Facts
+<Bullet list of atomic facts that could answer future questions.>
+
+## Files Modified
+<bullet list: path (new/modified/deleted) \u2014 what changed>
+
+## Open Questions / TODO
+<Anything unresolved, blocked, or explicitly deferred>
+
+IMPORTANT: Be exhaustive. Extract EVERY entity, decision, and fact.
+PRIVACY: Never include absolute filesystem paths in the summary.
+LENGTH LIMIT: Keep the total summary under 4000 characters.`;
+var wikiLog = wikiLogger.log;
+function findCursorBin() {
+  try {
+    return execSync("which cursor-agent 2>/dev/null", { encoding: "utf-8" }).trim() || "cursor-agent";
+  } catch {
+    return "cursor-agent";
+  }
+}
+function spawnCursorWikiWorker(opts) {
+  const { config, sessionId, cwd, bundleDir, reason } = opts;
+  const projectName = cwd.split("/").pop() || "unknown";
+  const tmpDir = join8(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  mkdirSync4(tmpDir, { recursive: true });
+  const configFile = join8(tmpDir, "config.json");
+  writeFileSync3(configFile, JSON.stringify({
+    apiUrl: config.apiUrl,
+    token: config.token,
+    orgId: config.orgId,
+    workspaceId: config.workspaceId,
+    memoryTable: config.tableName,
+    sessionsTable: config.sessionsTableName,
+    sessionId,
+    userName: config.userName,
+    project: projectName,
+    tmpDir,
+    cursorBin: findCursorBin(),
+    cursorModel: process.env.HIVEMIND_CURSOR_MODEL ?? "auto",
+    wikiLog: WIKI_LOG,
+    hooksDir: join8(HOME, ".cursor", "hooks"),
+    promptTemplate: WIKI_PROMPT_TEMPLATE
+  }));
+  wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
+  const workerPath = join8(bundleDir, "wiki-worker.js");
+  spawn2("nohup", ["node", workerPath, configFile], {
+    detached: true,
+    stdio: ["ignore", "ignore", "ignore"]
+  }).unref();
+  wikiLog(`${reason}: spawned summary worker for ${sessionId}`);
+}
+function bundleDirFromImportMeta(importMetaUrl) {
+  return dirname(fileURLToPath(importMetaUrl));
+}
+
+// dist/src/hooks/cursor/capture.js
 var log4 = (msg) => log("cursor-capture", msg);
 function resolveEmbedDaemonPath() {
-  return join6(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
+  return join9(dirname2(fileURLToPath2(import.meta.url)), "embeddings", "embed-daemon.js");
 }
 var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 function resolveCwd(input) {
@@ -878,6 +1138,39 @@ async function main() {
     }
   }
   log4("capture ok \u2192 cloud");
+  maybeTriggerPeriodicSummary(sessionId, cwd, config);
+}
+function maybeTriggerPeriodicSummary(sessionId, cwd, config) {
+  if (process.env.HIVEMIND_WIKI_WORKER === "1")
+    return;
+  try {
+    const state = bumpTotalCount(sessionId);
+    const cfg = loadTriggerConfig();
+    if (!shouldTrigger(state, cfg))
+      return;
+    if (!tryAcquireLock(sessionId)) {
+      log4(`periodic trigger suppressed (lock held) session=${sessionId}`);
+      return;
+    }
+    wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
+    try {
+      spawnCursorWikiWorker({
+        config,
+        sessionId,
+        cwd,
+        bundleDir: bundleDirFromImportMeta(import.meta.url),
+        reason: "Periodic"
+      });
+    } catch (e) {
+      log4(`periodic spawn failed: ${e.message}`);
+      try {
+        releaseLock(sessionId);
+      } catch {
+      }
+    }
+  } catch (e) {
+    log4(`periodic trigger error: ${e.message}`);
+  }
 }
 main().catch((e) => {
   log4(`fatal: ${e.message}`);

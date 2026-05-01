@@ -111,6 +111,7 @@ const cursorHooks = [
   { entry: "dist/src/hooks/cursor/capture.js", out: "capture" },
   { entry: "dist/src/hooks/cursor/session-end.js", out: "session-end" },
   { entry: "dist/src/hooks/cursor/pre-tool-use.js", out: "pre-tool-use" },
+  { entry: "dist/src/hooks/cursor/wiki-worker.js", out: "wiki-worker" },
 ];
 
 // Hermes Agent shell-hook bundles (matches Claude Code's wire protocol; see
@@ -120,6 +121,7 @@ const hermesHooks = [
   { entry: "dist/src/hooks/hermes/capture.js", out: "capture" },
   { entry: "dist/src/hooks/hermes/session-end.js", out: "session-end" },
   { entry: "dist/src/hooks/hermes/pre-tool-use.js", out: "pre-tool-use" },
+  { entry: "dist/src/hooks/hermes/wiki-worker.js", out: "wiki-worker" },
 ];
 
 const cursorShell = [
