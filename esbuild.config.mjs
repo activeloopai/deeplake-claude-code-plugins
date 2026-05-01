@@ -151,6 +151,9 @@ await build({
     "onnxruntime-common",
     "sharp",
   ],
+  define: {
+    __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
+  },
 });
 
 for (const h of cursorAll) {
@@ -186,6 +189,9 @@ await build({
     "onnxruntime-common",
     "sharp",
   ],
+  define: {
+    __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
+  },
 });
 
 for (const h of hermesAll) {
