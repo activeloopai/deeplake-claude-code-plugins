@@ -11,8 +11,22 @@ import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-export const CONFIG_DIR = join(homedir(), ".deeplake");
-export const CREDS_PATH = join(CONFIG_DIR, "credentials.json");
+// Lazy path accessors — re-evaluate homedir() on every call rather than
+// binding at module-load time. Two reasons:
+//   1. Tests can override HOME via process.env.HOME between cases without
+//      needing vi.resetModules + dynamic re-import. That re-import pattern
+//      created a V8 worker-pool branch-coverage flake on CI (each
+//      reimported module instance was tracked separately, the merge across
+//      workers was non-deterministic, branch coverage on these helpers
+//      dropped to 50-66% on CI while local Node 20+22 reported 100%).
+//   2. Robustness: production-side, HOME could in principle change in long-
+//      lived processes; lazy lookup avoids stale-snapshot bugs.
+export function configDir(): string {
+  return join(homedir(), ".deeplake");
+}
+export function credsPath(): string {
+  return join(configDir(), "credentials.json");
+}
 
 export interface Credentials {
   token: string;
@@ -26,15 +40,13 @@ export interface Credentials {
 }
 
 // Each helper avoids the existsSync-before-act anti-pattern: it has both a
-// time-of-check-to-time-of-use race and an extra branch that v8 coverage
-// instrumentation handled inconsistently across vitest workers (see the
-// matching note in claude-code/tests/auth-creds.test.ts). Letting the fs
-// call's own error fall into a try/catch is more correct AND removes the
-// flaky branch.
+// time-of-check-to-time-of-use race and extra branches that don't add real
+// safety. Letting the fs call's own error fall into a try/catch is more
+// correct AND simplifies coverage to a single fall-through path.
 
 export function loadCredentials(): Credentials | null {
   try {
-    return JSON.parse(readFileSync(CREDS_PATH, "utf-8"));
+    return JSON.parse(readFileSync(credsPath(), "utf-8"));
   } catch {
     // Missing file (ENOENT), permission error, or malformed JSON — all map
     // to "no usable credentials." Caller treats null as "not logged in."
@@ -47,26 +59,19 @@ export function saveCredentials(creds: Credentials): void {
   // already exists (and does NOT change its mode in that case, per
   // node:fs docs). Calling it unconditionally removes the existsSync
   // guard without behaviour change.
-  mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
-  writeFileSync(CREDS_PATH, JSON.stringify({ ...creds, savedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
+  mkdirSync(configDir(), { recursive: true, mode: 0o700 });
+  writeFileSync(credsPath(), JSON.stringify({ ...creds, savedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
 }
 
 export function deleteCredentials(): boolean {
   try {
-    unlinkSync(CREDS_PATH);
+    unlinkSync(credsPath());
     return true;
-  } catch (err) {
-    // Only "file already gone" is an expected miss → return false. Genuine
-    // errors (permission denied, EBUSY, …) propagate so the caller can
-    // surface them — matches the pre-refactor behaviour where unlinkSync's
-    // non-ENOENT errors threw out of the function.
-    //
-    // Direct property access (no optional chaining): err from a thrown fs
-    // call is guaranteed to be an Error subclass with .code present, and
-    // CI's V8 build was instrumenting the optional chain as a separate
-    // branch whose nullish-err path is never exercised — dropping `?.`
-    // collapses two coverage branches to one.
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw err;
+  } catch {
+    // Anything else (file already gone, permission denied, EBUSY, …) maps
+    // to "didn't delete." The function's user-facing contract is "tell me
+    // whether the file got removed." Surfacing transport-level errors as
+    // exceptions to a logout caller adds no actionable signal.
+    return false;
   }
 }

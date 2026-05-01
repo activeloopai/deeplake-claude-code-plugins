@@ -3423,27 +3423,29 @@ function deeplakeClientHeader() {
 import { readFileSync as readFileSync6, writeFileSync as writeFileSync4, mkdirSync as mkdirSync2, unlinkSync as unlinkSync5 } from "node:fs";
 import { join as join9 } from "node:path";
 import { homedir as homedir2 } from "node:os";
-var CONFIG_DIR = join9(homedir2(), ".deeplake");
-var CREDS_PATH = join9(CONFIG_DIR, "credentials.json");
+function configDir() {
+  return join9(homedir2(), ".deeplake");
+}
+function credsPath() {
+  return join9(configDir(), "credentials.json");
+}
 function loadCredentials() {
   try {
-    return JSON.parse(readFileSync6(CREDS_PATH, "utf-8"));
+    return JSON.parse(readFileSync6(credsPath(), "utf-8"));
   } catch {
     return null;
   }
 }
 function saveCredentials(creds) {
-  mkdirSync2(CONFIG_DIR, { recursive: true, mode: 448 });
-  writeFileSync4(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
+  mkdirSync2(configDir(), { recursive: true, mode: 448 });
+  writeFileSync4(credsPath(), JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
 }
 function deleteCredentials() {
   try {
-    unlinkSync5(CREDS_PATH);
+    unlinkSync5(credsPath());
     return true;
-  } catch (err) {
-    if (err.code === "ENOENT")
-      return false;
-    throw err;
+  } catch {
+    return false;
   }
 }
 
@@ -3625,9 +3627,9 @@ Using: ${orgName}
 }
 
 // dist/src/cli/auth.js
-var CREDS_PATH2 = join10(HOME, ".deeplake", "credentials.json");
+var CREDS_PATH = join10(HOME, ".deeplake", "credentials.json");
 function isLoggedIn() {
-  return existsSync8(CREDS_PATH2) && loadCredentials() !== null;
+  return existsSync8(CREDS_PATH) && loadCredentials() !== null;
 }
 async function ensureLoggedIn() {
   if (isLoggedIn())

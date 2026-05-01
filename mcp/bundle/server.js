@@ -23281,11 +23281,15 @@ function deeplakeClientHeader() {
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-var CONFIG_DIR = join(homedir(), ".deeplake");
-var CREDS_PATH = join(CONFIG_DIR, "credentials.json");
+function configDir() {
+  return join(homedir(), ".deeplake");
+}
+function credsPath() {
+  return join(configDir(), "credentials.json");
+}
 function loadCredentials() {
   try {
-    return JSON.parse(readFileSync(CREDS_PATH, "utf-8"));
+    return JSON.parse(readFileSync(credsPath(), "utf-8"));
   } catch {
     return null;
   }
