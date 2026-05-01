@@ -86,7 +86,7 @@ function deleteCredentials() {
     unlinkSync(CREDS_PATH);
     return true;
   } catch (err) {
-    if (err?.code === "ENOENT")
+    if (err.code === "ENOENT")
       return false;
     throw err;
   }

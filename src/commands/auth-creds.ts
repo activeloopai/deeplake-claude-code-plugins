@@ -60,7 +60,13 @@ export function deleteCredentials(): boolean {
     // errors (permission denied, EBUSY, …) propagate so the caller can
     // surface them — matches the pre-refactor behaviour where unlinkSync's
     // non-ENOENT errors threw out of the function.
-    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+    //
+    // Direct property access (no optional chaining): err from a thrown fs
+    // call is guaranteed to be an Error subclass with .code present, and
+    // CI's V8 build was instrumenting the optional chain as a separate
+    // branch whose nullish-err path is never exercised — dropping `?.`
+    // collapses two coverage branches to one.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw err;
   }
 }
