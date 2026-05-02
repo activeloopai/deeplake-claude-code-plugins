@@ -37,7 +37,7 @@ Hivemind automatically captures every prompt, tool call, decision, and file oper
 One command, all your agents:
 
 ```bash
-npx @deeplake/hivemind@latest install
+npm -g install @deeplake/hivemind && hivemind install
 ```
 
 Or, if you prefer a global install:
