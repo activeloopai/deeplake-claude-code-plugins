@@ -17,7 +17,7 @@ __export(index_marker_store_exports, {
   hasFreshIndexMarker: () => hasFreshIndexMarker,
   writeIndexMarker: () => writeIndexMarker
 });
-import { existsSync as existsSync12, mkdirSync as mkdirSync3, readFileSync as readFileSync8, writeFileSync as writeFileSync5 } from "node:fs";
+import { existsSync as existsSync11, mkdirSync as mkdirSync3, readFileSync as readFileSync8, writeFileSync as writeFileSync5 } from "node:fs";
 import { join as join14 } from "node:path";
 import { tmpdir } from "node:os";
 function getIndexMarkerDir() {
@@ -28,7 +28,7 @@ function buildIndexMarkerPath(workspaceId, orgId, table, suffix) {
   return join14(getIndexMarkerDir(), `${markerKey}.json`);
 }
 function hasFreshIndexMarker(markerPath) {
-  if (!existsSync12(markerPath))
+  if (!existsSync11(markerPath))
     return false;
   try {
     const raw = JSON.parse(readFileSync8(markerPath, "utf-8"));
@@ -3636,7 +3636,7 @@ function statusEmbeddings() {
 }
 
 // dist/src/cli/auth.js
-import { existsSync as existsSync10 } from "node:fs";
+import { existsSync as existsSync9 } from "node:fs";
 import { join as join11 } from "node:path";
 
 // dist/src/commands/auth.js
@@ -3645,38 +3645,40 @@ import { execSync } from "node:child_process";
 // dist/src/utils/client-header.js
 var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
 function deeplakeClientValue() {
-  return `hivemind/${__HIVEMIND_VERSION__}`;
+  return "hivemind";
 }
 function deeplakeClientHeader() {
   return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
 }
 
 // dist/src/commands/auth-creds.js
-import { readFileSync as readFileSync6, writeFileSync as writeFileSync4, existsSync as existsSync9, mkdirSync as mkdirSync2, unlinkSync as unlinkSync6 } from "node:fs";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync4, mkdirSync as mkdirSync2, unlinkSync as unlinkSync6 } from "node:fs";
 import { join as join10 } from "node:path";
 import { homedir as homedir2 } from "node:os";
-var CONFIG_DIR = join10(homedir2(), ".deeplake");
-var CREDS_PATH = join10(CONFIG_DIR, "credentials.json");
+function configDir() {
+  return join10(homedir2(), ".deeplake");
+}
+function credsPath() {
+  return join10(configDir(), "credentials.json");
+}
 function loadCredentials() {
-  if (!existsSync9(CREDS_PATH))
-    return null;
   try {
-    return JSON.parse(readFileSync6(CREDS_PATH, "utf-8"));
+    return JSON.parse(readFileSync6(credsPath(), "utf-8"));
   } catch {
     return null;
   }
 }
 function saveCredentials(creds) {
-  if (!existsSync9(CONFIG_DIR))
-    mkdirSync2(CONFIG_DIR, { recursive: true, mode: 448 });
-  writeFileSync4(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
+  mkdirSync2(configDir(), { recursive: true, mode: 448 });
+  writeFileSync4(credsPath(), JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
 }
 function deleteCredentials() {
-  if (existsSync9(CREDS_PATH)) {
-    unlinkSync6(CREDS_PATH);
+  try {
+    unlinkSync6(credsPath());
     return true;
+  } catch {
+    return false;
   }
-  return false;
 }
 
 // dist/src/commands/auth.js
@@ -3857,9 +3859,9 @@ Using: ${orgName}
 }
 
 // dist/src/cli/auth.js
-var CREDS_PATH2 = join11(HOME, ".deeplake", "credentials.json");
+var CREDS_PATH = join11(HOME, ".deeplake", "credentials.json");
 function isLoggedIn() {
-  return existsSync10(CREDS_PATH2) && loadCredentials() !== null;
+  return existsSync9(CREDS_PATH) && loadCredentials() !== null;
 }
 async function ensureLoggedIn() {
   if (isLoggedIn())
@@ -3892,14 +3894,14 @@ async function maybeShowOrgChoice() {
 }
 
 // dist/src/config.js
-import { readFileSync as readFileSync7, existsSync as existsSync11 } from "node:fs";
+import { readFileSync as readFileSync7, existsSync as existsSync10 } from "node:fs";
 import { join as join12 } from "node:path";
 import { homedir as homedir3, userInfo } from "node:os";
 function loadConfig() {
   const home = homedir3();
   const credPath = join12(home, ".deeplake", "credentials.json");
   let creds = null;
-  if (existsSync11(credPath)) {
+  if (existsSync10(credPath)) {
     try {
       creds = JSON.parse(readFileSync7(credPath, "utf-8"));
     } catch {

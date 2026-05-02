@@ -1,26 +1,28 @@
 /**
  * X-Deeplake-Client header helper.
  *
- * The deeplake-api backend reads X-Deeplake-Client to attribute traffic
- * (analytics source + engagement metrics). Every outbound request to
- * deeplake-api should carry this header; without it, hivemind traffic
- * looks indistinguishable from the activeloop-cli / device-code flow.
+ * The deeplake-api backend reads X-Deeplake-Client to attribute traffic by
+ * client family (distinguishes hivemind traffic from activeloop-cli /
+ * device-code-flow traffic). Every outbound request to deeplake-api carries
+ * this header.
  *
- * __HIVEMIND_VERSION__ is replaced at build/test time:
- *   - production bundles: esbuild.config.mjs sets it to the real package.json version
- *   - vitest:             vitest.config.ts sets it to "dev"
- * Source code therefore reads it directly, no runtime guard needed.
+ * Static "hivemind" — no version dimension. The version part used to be
+ * baked in via esbuild's `define: { __HIVEMIND_VERSION__: ... }`, but
+ * keeping every per-bundle build step in sync was a recurring source of
+ * bugs (cursor / hermes / mcp / unified CLI all shipped with the literal
+ * unsubstituted at one point), and the backend doesn't actively use the
+ * version dimension. If version-level attribution becomes useful again,
+ * re-introduce the define on every build step that ships a bundle hitting
+ * deeplake-api.
  */
-declare const __HIVEMIND_VERSION__: string;
-
 export const DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
 
-/** Returns "hivemind/<version>" — the value for the X-Deeplake-Client header. */
+/** Returns "hivemind" — the value for the X-Deeplake-Client header. */
 export function deeplakeClientValue(): string {
-  return `hivemind/${__HIVEMIND_VERSION__}`;
+  return "hivemind";
 }
 
-/** Returns { "X-Deeplake-Client": "hivemind/<version>" } for spreading into a headers object. */
+/** Returns { "X-Deeplake-Client": "hivemind" } for spreading into a headers object. */
 export function deeplakeClientHeader(): Record<string, string> {
   return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
 }
