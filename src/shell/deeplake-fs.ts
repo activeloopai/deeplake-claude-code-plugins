@@ -11,6 +11,7 @@ import { normalizeContent } from "./grep-core.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingSqlLiteral } from "../embeddings/sql.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
+import { buildVirtualIndexContent, INDEX_LIMIT_PER_SECTION } from "../hooks/virtual-table-query.js";
 
 interface ReadFileOptions { encoding?: BufferEncoding }
 interface WriteFileOptions { encoding?: BufferEncoding }
@@ -281,31 +282,26 @@ export class DeeplakeFs implements IFileSystem {
   // ── Virtual index.md generation ────────────────────────────────────────────
 
   private async generateVirtualIndex(): Promise<string> {
-    // Cap per section. A fully populated index (272 summaries + 272 sessions
-    // in the locomo benchmark workspace) renders to ~83 KB / ~32 k tokens,
-    // which trips Claude Code's Read tool output limit (fails with
-    // "File content (N tokens) exceeds maximum allowed tokens"). 50 most
-    // recent entries per section stays comfortably under the limit while
-    // covering the common "what happened recently" use case; older rows
-    // remain reachable via Grep on the memory path.
-    const INDEX_LIMIT_PER_SECTION = 50;
-
-    // Memory (summaries) section — high-level wikipage per session.
+    // Memory (summaries) section — high-level wikipage per session. Fetch
+    // one extra row beyond the cap so the renderer can emit the "showing N
+    // most-recent of many" notice.
+    const fetchLimit = INDEX_LIMIT_PER_SECTION + 1;
     const summaryRows = await this.client.query(
       `SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" ` +
-      `WHERE path LIKE '${esc("/summaries/")}%' ORDER BY last_update_date DESC LIMIT ${INDEX_LIMIT_PER_SECTION + 1}`
+      `WHERE path LIKE '${esc("/summaries/")}%' ORDER BY last_update_date DESC LIMIT ${fetchLimit}`
     );
 
     // Sessions section — raw session records (dialogue / events). Pulled
     // directly from the sessions table so the index is never empty just
-    // because memory has no summaries yet.
+    // because memory has no summaries yet. GROUP BY path collapses the
+    // many-rows-per-conversation shape of the sessions table.
     let sessionRows: Record<string, unknown>[] = [];
     if (this.sessionsTable) {
       try {
         sessionRows = await this.client.query(
           `SELECT path, MAX(description) AS description, MIN(creation_date) AS creation_date, MAX(last_update_date) AS last_update_date ` +
           `FROM "${this.sessionsTable}" WHERE path LIKE '${esc("/sessions/")}%' ` +
-          `GROUP BY path ORDER BY MAX(last_update_date) DESC LIMIT ${INDEX_LIMIT_PER_SECTION + 1}`
+          `GROUP BY path ORDER BY MAX(last_update_date) DESC LIMIT ${fetchLimit}`
         );
       } catch {
         // sessions table absent or schema mismatch — leave empty, emit memory-only index.
@@ -313,77 +309,13 @@ export class DeeplakeFs implements IFileSystem {
       }
     }
 
-    // Slice the N+1 fetched rows to N and detect if more exist for the footer.
     const summaryTruncated = summaryRows.length > INDEX_LIMIT_PER_SECTION;
     const sessionTruncated = sessionRows.length > INDEX_LIMIT_PER_SECTION;
-    const summaryVisible = summaryRows.slice(0, INDEX_LIMIT_PER_SECTION);
-    const sessionVisible = sessionRows.slice(0, INDEX_LIMIT_PER_SECTION);
-
-    const lines: string[] = [
-      "# Session Index",
-      "",
-      "Two sources are available. Consult the section relevant to the question.",
-      "",
-    ];
-
-    // ── ## memory ────────────────────────────────────────────────────────────
-    lines.push("## memory");
-    lines.push("");
-    if (summaryRows.length === 0) {
-      lines.push("_(empty — no summaries ingested yet)_");
-    } else {
-      lines.push("AI-generated summaries per session. Read these first for topic-level overviews.");
-      lines.push("");
-      if (summaryTruncated) {
-        lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many — older summaries reachable via \`Grep pattern=\"...\" path=\"~/.deeplake/memory\"\`._`);
-        lines.push("");
-      }
-      lines.push("| Session | Created | Last Updated | Project | Description |");
-      lines.push("|---------|---------|--------------|---------|-------------|");
-      for (const row of summaryVisible) {
-        const p = row["path"] as string;
-        const match = p.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
-        if (!match) continue;
-        const summaryUser = match[1];
-        const sessionId = match[2];
-        const relPath = `summaries/${summaryUser}/${sessionId}.md`;
-        const project = (row["project"] as string) || "";
-        const description = (row["description"] as string) || "";
-        const creationDate = (row["creation_date"] as string) || "";
-        const lastUpdateDate = (row["last_update_date"] as string) || "";
-        lines.push(`| [${sessionId}](${relPath}) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
-      }
-    }
-    lines.push("");
-
-    // ── ## sessions ─────────────────────────────────────────────────────────
-    lines.push("## sessions");
-    lines.push("");
-    if (sessionRows.length === 0) {
-      lines.push("_(empty — no session records ingested yet)_");
-    } else {
-      lines.push("Raw session records (dialogue, tool calls). Read for exact detail / quotes.");
-      lines.push("");
-      if (sessionTruncated) {
-        lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many — older sessions reachable via \`Grep pattern=\"...\" path=\"~/.deeplake/memory\"\`._`);
-        lines.push("");
-      }
-      lines.push("| Session | Created | Last Updated | Description |");
-      lines.push("|---------|---------|--------------|-------------|");
-      for (const row of sessionVisible) {
-        const p = (row["path"] as string) || "";
-        // Show the path relative to /sessions/ so the table stays compact.
-        const rel = p.startsWith("/") ? p.slice(1) : p;
-        const filename = p.split("/").pop() ?? p;
-        const description = (row["description"] as string) || "";
-        const creationDate = (row["creation_date"] as string) || "";
-        const lastUpdateDate = (row["last_update_date"] as string) || "";
-        lines.push(`| [${filename}](${rel}) | ${creationDate} | ${lastUpdateDate} | ${description} |`);
-      }
-    }
-    lines.push("");
-
-    return lines.join("\n");
+    return buildVirtualIndexContent(
+      summaryRows.slice(0, INDEX_LIMIT_PER_SECTION),
+      sessionRows.slice(0, INDEX_LIMIT_PER_SECTION),
+      { summaryTruncated, sessionTruncated },
+    );
   }
 
   // ── batch prefetch ────────────────────────────────────────────────────────
