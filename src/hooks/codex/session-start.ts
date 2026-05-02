@@ -24,21 +24,21 @@ const AUTH_CMD = join(__bundleDir, "commands", "auth-login.js");
 
 const context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
 
-Deeplake memory has TWO tiers — search them IN THIS ORDER:
-1. ~/.deeplake/memory/summaries/ — condensed wiki summaries (~3 KB each). START HERE: the answer to recall questions is usually in a summary.
-2. ~/.deeplake/memory/sessions/  — raw full-dialogue JSONL (~5 KB each). Use as FALLBACK only if no summary matches.
-3. ~/.deeplake/memory/index.md   — skip (too large).
+Deeplake memory has THREE tiers — pick the right one for the question:
+1. ~/.deeplake/memory/index.md   — auto-generated index, top 50 most-recently-updated entries with Created + Last Updated + Project + Description columns. ~5 KB. **For "what's recent / who did X this week / since <date>" queries, START HERE** and trust the Last Updated column over any "Started:" line in summary bodies.
+2. ~/.deeplake/memory/summaries/ — condensed wiki summaries per session (~3 KB each). For keyword/topic recall, search these.
+3. ~/.deeplake/memory/sessions/  — raw full-dialogue JSONL (~5 KB each). FALLBACK only — use when summaries don't contain the exact quote/turn you need.
 
-Recall workflow:
-1. grep -r "keyword" ~/.deeplake/memory/summaries/   ← FIRST
-2. cat the top-matching summary(ies)
-3. Only if no summary matches: grep -r "keyword" ~/.deeplake/memory/sessions/
+Search workflow:
+- Time-based ("last week", "today", "since X"): cat ~/.deeplake/memory/index.md and read the most-recent rows.
+- Keyword/topic recall: grep -r "keyword" ~/.deeplake/memory/summaries/ (the shell hook routes this through hybrid lexical+semantic search — synonyms match too). Then cat the top-matching summary.
+- Raw transcript fallback only: grep -r "keyword" ~/.deeplake/memory/sessions/ (use sparingly — JSONL is verbose).
 
 ✅ grep -r "keyword" ~/.deeplake/memory/summaries/
 ❌ grep without a summaries/ or sessions/ suffix — too noisy
 
 IMPORTANT: Only use bash builtins (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) on ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem.
-Do NOT spawn subagents to read deeplake memory. Never read index.md.`;
+Do NOT spawn subagents to read deeplake memory.`;
 
 interface CodexSessionStartInput {
   session_id: string;

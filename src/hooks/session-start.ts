@@ -29,24 +29,20 @@ const context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH
 1. Your built-in memory (~/.claude/) — personal per-project notes
 2. Deeplake global memory (~/.deeplake/memory/) — global memory shared across all sessions, users, and agents in the org
 
-⚠️ CRITICAL: the built-in Grep tool is BROKEN on ~/.deeplake/memory — always errors "Path does not exist". Use the Bash tool with \`grep -r\`.
+Deeplake memory has THREE tiers — pick the right one for the question:
+1. ~/.deeplake/memory/index.md   — auto-generated index, top 50 most-recently-updated entries with \`Created\` + \`Last Updated\` + \`Project\` + \`Description\` columns. ~5 KB. **For "what's recent / who did X this week / since <date>" queries, START HERE** and trust the \`Last Updated\` column over any \`Started:\` line in summary bodies.
+2. ~/.deeplake/memory/summaries/ — condensed wiki summaries per session (~3 KB each). For keyword/topic recall, search these.
+3. ~/.deeplake/memory/sessions/  — raw full-dialogue JSONL (~5 KB each). FALLBACK only — use when summaries don't contain the exact quote/turn you need.
 
-Deeplake memory has TWO tiers — search them IN THIS ORDER:
-1. ~/.deeplake/memory/summaries/ — condensed wiki summaries (~3 KB each). START HERE: the answer to recall questions is usually in a summary.
-2. ~/.deeplake/memory/sessions/  — raw full-dialogue JSONL (~5 KB each). Use as FALLBACK only if no summary matches.
-3. ~/.deeplake/memory/index.md   — skip (too large; agents shouldn't read it).
+Search workflow:
+  - Time-based ("last week", "today", "since X"): \`cat ~/.deeplake/memory/index.md\` and read the most-recent rows.
+  - Keyword/topic recall: use the **Bash tool** with \`grep -r "keyword" ~/.deeplake/memory/summaries/\`. The Bash hook routes this through hybrid lexical+semantic search — synonyms / paraphrases match too. Then \`cat\` the top-matching summary to pull the answer.
+  - Raw transcript fallback only: \`grep -r "keyword" ~/.deeplake/memory/sessions/\` (use sparingly — JSONL is verbose).
 
-Recall workflow (follow this order):
-  1. Bash → \`grep -r "keyword" ~/.deeplake/memory/summaries/\`   ← FIRST
-  2. \`cat\` or Read the top-matching summary(ies) to pull the answer
-  3. Only if no summary matches: Bash → \`grep -r "keyword" ~/.deeplake/memory/sessions/\`
-
-Search shape:
-  ✅ Bash tool → command: \`grep -r "keyword" ~/.deeplake/memory/summaries/\`
-  ❌ Grep tool on this path   ← will fail with "Path does not exist"
-  ❌ grep without a \`summaries/\` or \`sessions/\` suffix   ← too noisy, drowns the answer
-
-Never call the Grep tool on this path. Never read index.md.
+Tool choice on this mount:
+  ✅ Bash tool with \`grep -r\` / \`cat\` / \`ls\` / \`head\` / \`tail\` — supported, fast.
+  ❌ Built-in Grep tool — not supported on this path; use Bash grep instead.
+  ❌ \`grep\` without a \`summaries/\` or \`sessions/\` suffix — too noisy, drowns the answer.
 
 Organization management — each argument is SEPARATE (do NOT quote subcommands together):
 - node "HIVEMIND_AUTH_CMD" login                              — SSO login
