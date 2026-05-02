@@ -310,6 +310,19 @@ export class DeeplakeApi {
    * caches share an opt-out (HIVEMIND_INDEX_MARKER_DIR) and a TTL knob.
    */
   private async ensureEmbeddingColumn(table: string, column: string): Promise<void> {
+    await this.ensureColumn(table, column, "FLOAT4[]");
+  }
+
+  /**
+   * Generic marker-gated column migration. Same SELECT-then-ALTER flow as
+   * ensureEmbeddingColumn, parameterized by SQL type so it can patch up any
+   * column that was added to the schema after the table was originally
+   * created. Used today for `summary_embedding`, `message_embedding`, and
+   * the `agent` column (added 2026-04-11) — the latter has no fallback if
+   * a user upgraded over a pre-2026-04-11 table, so every INSERT fails
+   * with `column "agent" does not exist`.
+   */
+  private async ensureColumn(table: string, column: string, sqlType: string): Promise<void> {
     const markers = await getIndexMarkerStore();
     const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, `col_${column}`);
     if (markers.hasFreshIndexMarker(markerPath)) return;
@@ -328,7 +341,7 @@ export class DeeplakeApi {
     // that adds the column between our SELECT and our ALTER — re-SELECT to
     // confirm and treat as success. Everything else propagates.
     try {
-      await this.query(`ALTER TABLE "${table}" ADD COLUMN ${column} FLOAT4[]`);
+      await this.query(`ALTER TABLE "${table}" ADD COLUMN ${column} ${sqlType}`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       if (!/already exists/i.test(msg)) throw e;
@@ -443,6 +456,10 @@ export class DeeplakeApi {
     // is idempotent and steady-state-cheap: SELECT info_schema, ALTER only if
     // the column is genuinely missing.
     await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
+    // Same fallback for the `agent` column (added 2026-04-11). Pre-2026-04-11
+    // tables don't have it; without this ALTER, every INSERT fails with
+    // `column "agent" does not exist` after upgrading over an old schema.
+    await this.ensureColumn(tbl, "agent", "TEXT NOT NULL DEFAULT ''");
     // BM25 index disabled — CREATE INDEX causes intermittent oid errors on fresh tables.
     // See bm25-oid-bug.sh for reproduction. Re-enable once Deeplake fixes the oid invalidation.
     // try {
@@ -480,6 +497,8 @@ export class DeeplakeApi {
     }
     // Always verify message_embedding is present (same rationale as ensureTable).
     await this.ensureEmbeddingColumn(name, MESSAGE_EMBEDDING_COL);
+    // Same fallback for the `agent` column (see ensureTable for rationale).
+    await this.ensureColumn(name, "agent", "TEXT NOT NULL DEFAULT ''");
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
 }

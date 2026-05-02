@@ -50,6 +50,8 @@ function makeApi(rules: QueryRule[], existingTables: string[]) {
 
 const ALTER_MEM     = /^ALTER TABLE "memory" ADD COLUMN summary_embedding FLOAT4\[\]$/;
 const ALTER_SESS    = /^ALTER TABLE "sessions" ADD COLUMN message_embedding FLOAT4\[\]$/;
+const ALTER_AGENT_MEM  = /^ALTER TABLE "memory" ADD COLUMN agent TEXT NOT NULL DEFAULT ''$/;
+const ALTER_AGENT_SESS = /^ALTER TABLE "sessions" ADD COLUMN agent TEXT NOT NULL DEFAULT ''$/;
 const CREATE_MEM    = /^CREATE TABLE IF NOT EXISTS "memory" .*summary_embedding FLOAT4\[\]/;
 const CREATE_SESS   = /^CREATE TABLE IF NOT EXISTS "sessions" .*message_embedding FLOAT4\[\]/;
 const CREATE_INDEX  = /^CREATE INDEX IF NOT EXISTS .* ON "sessions"/;
@@ -58,6 +60,8 @@ const CREATE_INDEX  = /^CREATE INDEX IF NOT EXISTS .* ON "sessions"/;
 // scenario can declare independent results for memory vs sessions.
 const SCHEMA_MEM    = /^SELECT 1 FROM information_schema\.columns WHERE table_name = 'memory' AND column_name = 'summary_embedding'/;
 const SCHEMA_SESS   = /^SELECT 1 FROM information_schema\.columns WHERE table_name = 'sessions' AND column_name = 'message_embedding'/;
+const SCHEMA_AGENT_MEM  = /^SELECT 1 FROM information_schema\.columns WHERE table_name = 'memory' AND column_name = 'agent'/;
+const SCHEMA_AGENT_SESS = /^SELECT 1 FROM information_schema\.columns WHERE table_name = 'sessions' AND column_name = 'agent'/;
 // "column present" SELECT result → length > 0 → ensureEmbeddingColumn skips ALTER.
 const PRESENT: { rows: Record<string, unknown>[] } = { rows: [{ "?column?": 1 }] };
 // "column missing" SELECT result → length 0 → falls through to ALTER. Use plain "ok".
@@ -89,11 +93,13 @@ describe("scenario 1 — GREENFIELD (memory missing, sessions missing)", () => {
   it("CREATEs both tables embedding-ready, post-CREATE info_schema check confirms columns, no ALTER", async () => {
     const { api, queryCalls } = makeApi(
       [
-        { match: CREATE_MEM,   result: "ok" },
-        { match: SCHEMA_MEM,   result: PRESENT },         // CREATE landed embedding-ready
-        { match: CREATE_SESS,  result: "ok" },
-        { match: SCHEMA_SESS,  result: PRESENT },
-        { match: CREATE_INDEX, result: "ok" },
+        { match: CREATE_MEM,        result: "ok" },
+        { match: SCHEMA_MEM,        result: PRESENT },         // CREATE landed embedding-ready
+        { match: SCHEMA_AGENT_MEM,  result: PRESENT },         // CREATE included agent column
+        { match: CREATE_SESS,       result: "ok" },
+        { match: SCHEMA_SESS,       result: PRESENT },
+        { match: SCHEMA_AGENT_SESS, result: PRESENT },
+        { match: CREATE_INDEX,      result: "ok" },
       ],
       [], // listTables: nothing exists
     );
@@ -101,14 +107,16 @@ describe("scenario 1 — GREENFIELD (memory missing, sessions missing)", () => {
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    // After CREATE, ensureEmbeddingColumn always SELECTs info_schema; column
-    // is present (CREATE included it) → no ALTER fires.
-    expect(queryCalls).toHaveLength(5);
+    // After CREATE, both ensureColumn calls SELECT info_schema; both columns
+    // are present (CREATE included them) → no ALTER fires.
+    expect(queryCalls).toHaveLength(7);
     expect(queryCalls[0]).toMatch(CREATE_MEM);
     expect(queryCalls[1]).toMatch(SCHEMA_MEM);
-    expect(queryCalls[2]).toMatch(CREATE_SESS);
-    expect(queryCalls[3]).toMatch(SCHEMA_SESS);
-    expect(queryCalls[4]).toMatch(CREATE_INDEX);
+    expect(queryCalls[2]).toMatch(SCHEMA_AGENT_MEM);
+    expect(queryCalls[3]).toMatch(CREATE_SESS);
+    expect(queryCalls[4]).toMatch(SCHEMA_SESS);
+    expect(queryCalls[5]).toMatch(SCHEMA_AGENT_SESS);
+    expect(queryCalls[6]).toMatch(CREATE_INDEX);
     // No ALTER attempted on a fresh table → no post-ALTER vector::at window.
     expect(queryCalls.some(s => /^ALTER TABLE/.test(s))).toBe(false);
   });
@@ -118,11 +126,15 @@ describe("scenario 2 — FULL LEGACY (memory no-emb, sessions no-emb)", () => {
   it("SELECTs info_schema for both, finds neither, ALTERs both", async () => {
     const { api, queryCalls } = makeApi(
       [
-        { match: SCHEMA_MEM,   result: "ok" },              // column missing
-        { match: ALTER_MEM,    result: "ok" },
-        { match: SCHEMA_SESS,  result: "ok" },              // column missing
-        { match: ALTER_SESS,   result: "ok" },
-        { match: CREATE_INDEX, result: "ok" },
+        { match: SCHEMA_MEM,        result: "ok" },              // embedding column missing
+        { match: ALTER_MEM,         result: "ok" },
+        { match: SCHEMA_AGENT_MEM,  result: "ok" },              // agent column missing
+        { match: ALTER_AGENT_MEM,   result: "ok" },
+        { match: SCHEMA_SESS,       result: "ok" },              // embedding column missing
+        { match: ALTER_SESS,        result: "ok" },
+        { match: SCHEMA_AGENT_SESS, result: "ok" },              // agent column missing
+        { match: ALTER_AGENT_SESS,  result: "ok" },
+        { match: CREATE_INDEX,      result: "ok" },
       ],
       ["memory", "sessions"], // both legacy tables already present
     );
@@ -130,12 +142,16 @@ describe("scenario 2 — FULL LEGACY (memory no-emb, sessions no-emb)", () => {
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(queryCalls).toHaveLength(5);
+    expect(queryCalls).toHaveLength(9);
     expect(queryCalls[0]).toMatch(SCHEMA_MEM);
     expect(queryCalls[1]).toMatch(ALTER_MEM);
-    expect(queryCalls[2]).toMatch(SCHEMA_SESS);
-    expect(queryCalls[3]).toMatch(ALTER_SESS);
-    expect(queryCalls[4]).toMatch(CREATE_INDEX);
+    expect(queryCalls[2]).toMatch(SCHEMA_AGENT_MEM);
+    expect(queryCalls[3]).toMatch(ALTER_AGENT_MEM);
+    expect(queryCalls[4]).toMatch(SCHEMA_SESS);
+    expect(queryCalls[5]).toMatch(ALTER_SESS);
+    expect(queryCalls[6]).toMatch(SCHEMA_AGENT_SESS);
+    expect(queryCalls[7]).toMatch(ALTER_AGENT_SESS);
+    expect(queryCalls[8]).toMatch(CREATE_INDEX);
     expect(queryCalls.some(s => /^CREATE TABLE/.test(s))).toBe(false);
   });
 });
@@ -144,11 +160,14 @@ describe("scenario 3 — HALF LEGACY MEMORY (memory no-emb, sessions missing)", 
   it("SELECT info_schema misses on memory → ALTER memory; sessions CREATEd then info_schema PRESENT confirms", async () => {
     const { api, queryCalls } = makeApi(
       [
-        { match: SCHEMA_MEM,   result: "ok" },              // missing → ALTER fires
-        { match: ALTER_MEM,    result: "ok" },
-        { match: CREATE_SESS,  result: "ok" },
-        { match: SCHEMA_SESS,  result: PRESENT },           // CREATE landed embedding-ready
-        { match: CREATE_INDEX, result: "ok" },
+        { match: SCHEMA_MEM,        result: "ok" },              // missing → ALTER fires
+        { match: ALTER_MEM,         result: "ok" },
+        { match: SCHEMA_AGENT_MEM,  result: "ok" },              // legacy memory: also missing agent
+        { match: ALTER_AGENT_MEM,   result: "ok" },
+        { match: CREATE_SESS,       result: "ok" },
+        { match: SCHEMA_SESS,       result: PRESENT },           // CREATE landed embedding-ready
+        { match: SCHEMA_AGENT_SESS, result: PRESENT },           // CREATE included agent column
+        { match: CREATE_INDEX,      result: "ok" },
       ],
       ["memory"],
     );
@@ -156,12 +175,15 @@ describe("scenario 3 — HALF LEGACY MEMORY (memory no-emb, sessions missing)", 
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(queryCalls).toHaveLength(5);
+    expect(queryCalls).toHaveLength(8);
     expect(queryCalls[0]).toMatch(SCHEMA_MEM);
     expect(queryCalls[1]).toMatch(ALTER_MEM);
-    expect(queryCalls[2]).toMatch(CREATE_SESS);
-    expect(queryCalls[3]).toMatch(SCHEMA_SESS);
-    expect(queryCalls[4]).toMatch(CREATE_INDEX);
+    expect(queryCalls[2]).toMatch(SCHEMA_AGENT_MEM);
+    expect(queryCalls[3]).toMatch(ALTER_AGENT_MEM);
+    expect(queryCalls[4]).toMatch(CREATE_SESS);
+    expect(queryCalls[5]).toMatch(SCHEMA_SESS);
+    expect(queryCalls[6]).toMatch(SCHEMA_AGENT_SESS);
+    expect(queryCalls[7]).toMatch(CREATE_INDEX);
   });
 });
 
@@ -169,11 +191,14 @@ describe("scenario 4 — HALF LEGACY SESSIONS (memory missing, sessions no-emb)"
   it("memory CREATEd then info_schema PRESENT; sessions SELECT misses → ALTER sessions", async () => {
     const { api, queryCalls } = makeApi(
       [
-        { match: CREATE_MEM,   result: "ok" },
-        { match: SCHEMA_MEM,   result: PRESENT },
-        { match: SCHEMA_SESS,  result: "ok" },              // missing → ALTER fires
-        { match: ALTER_SESS,   result: "ok" },
-        { match: CREATE_INDEX, result: "ok" },
+        { match: CREATE_MEM,        result: "ok" },
+        { match: SCHEMA_MEM,        result: PRESENT },
+        { match: SCHEMA_AGENT_MEM,  result: PRESENT },           // CREATE included agent column
+        { match: SCHEMA_SESS,       result: "ok" },              // missing → ALTER fires
+        { match: ALTER_SESS,        result: "ok" },
+        { match: SCHEMA_AGENT_SESS, result: "ok" },              // legacy sessions: also missing agent
+        { match: ALTER_AGENT_SESS,  result: "ok" },
+        { match: CREATE_INDEX,      result: "ok" },
       ],
       ["sessions"],
     );
@@ -181,12 +206,15 @@ describe("scenario 4 — HALF LEGACY SESSIONS (memory missing, sessions no-emb)"
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(queryCalls).toHaveLength(5);
+    expect(queryCalls).toHaveLength(8);
     expect(queryCalls[0]).toMatch(CREATE_MEM);
     expect(queryCalls[1]).toMatch(SCHEMA_MEM);
-    expect(queryCalls[2]).toMatch(SCHEMA_SESS);
-    expect(queryCalls[3]).toMatch(ALTER_SESS);
-    expect(queryCalls[4]).toMatch(CREATE_INDEX);
+    expect(queryCalls[2]).toMatch(SCHEMA_AGENT_MEM);
+    expect(queryCalls[3]).toMatch(SCHEMA_SESS);
+    expect(queryCalls[4]).toMatch(ALTER_SESS);
+    expect(queryCalls[5]).toMatch(SCHEMA_AGENT_SESS);
+    expect(queryCalls[6]).toMatch(ALTER_AGENT_SESS);
+    expect(queryCalls[7]).toMatch(CREATE_INDEX);
   });
 });
 
@@ -194,9 +222,11 @@ describe("scenario 5 — FULLY MIGRATED (memory with-emb, sessions with-emb)", (
   it("BIG WIN: SELECT info_schema returns row for both → NO ALTER fires anywhere", async () => {
     const { api, queryCalls } = makeApi(
       [
-        { match: SCHEMA_MEM,   result: PRESENT },           // column present
-        { match: SCHEMA_SESS,  result: PRESENT },           // column present
-        { match: CREATE_INDEX, result: "ok" },
+        { match: SCHEMA_MEM,        result: PRESENT },           // embedding present
+        { match: SCHEMA_AGENT_MEM,  result: PRESENT },           // agent present
+        { match: SCHEMA_SESS,       result: PRESENT },           // embedding present
+        { match: SCHEMA_AGENT_SESS, result: PRESENT },           // agent present
+        { match: CREATE_INDEX,      result: "ok" },
       ],
       ["memory", "sessions"],
     );
@@ -204,10 +234,12 @@ describe("scenario 5 — FULLY MIGRATED (memory with-emb, sessions with-emb)", (
     await expect(api.ensureTable()).resolves.toBeUndefined();
     await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
 
-    expect(queryCalls).toHaveLength(3);
+    expect(queryCalls).toHaveLength(5);
     expect(queryCalls[0]).toMatch(SCHEMA_MEM);
-    expect(queryCalls[1]).toMatch(SCHEMA_SESS);
-    expect(queryCalls[2]).toMatch(CREATE_INDEX);
+    expect(queryCalls[1]).toMatch(SCHEMA_AGENT_MEM);
+    expect(queryCalls[2]).toMatch(SCHEMA_SESS);
+    expect(queryCalls[3]).toMatch(SCHEMA_AGENT_SESS);
+    expect(queryCalls[4]).toMatch(CREATE_INDEX);
     // Regression guard: pre-fix this scenario sent 2 wasted ALTER 500s on
     // every SessionStart and tickled the post-ALTER vector::at window.
     expect(queryCalls.some(s => /^ALTER TABLE/.test(s))).toBe(false);
@@ -218,10 +250,13 @@ describe("scenario 6 — MIXED MEM-EMB (memory with-emb, sessions no-emb)", () =
   it("memory SELECT hits → no ALTER on memory; sessions SELECT misses → ALTER sessions", async () => {
     const { api, queryCalls } = makeApi(
       [
-        { match: SCHEMA_MEM,   result: PRESENT },           // present → skip ALTER
-        { match: SCHEMA_SESS,  result: "ok" },              // missing → ALTER fires
-        { match: ALTER_SESS,   result: "ok" },
-        { match: CREATE_INDEX, result: "ok" },
+        { match: SCHEMA_MEM,        result: PRESENT },           // embedding present → skip ALTER
+        { match: SCHEMA_AGENT_MEM,  result: PRESENT },           // agent present (post-feature memory)
+        { match: SCHEMA_SESS,       result: "ok" },              // missing → ALTER fires
+        { match: ALTER_SESS,        result: "ok" },
+        { match: SCHEMA_AGENT_SESS, result: "ok" },              // legacy sessions: also missing agent
+        { match: ALTER_AGENT_SESS,  result: "ok" },
+        { match: CREATE_INDEX,      result: "ok" },
       ],
       ["memory", "sessions"],
     );
@@ -229,12 +264,15 @@ describe("scenario 6 — MIXED MEM-EMB (memory with-emb, sessions no-emb)", () =
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(queryCalls).toHaveLength(4);
+    expect(queryCalls).toHaveLength(7);
     expect(queryCalls[0]).toMatch(SCHEMA_MEM);
-    expect(queryCalls[1]).toMatch(SCHEMA_SESS);
-    expect(queryCalls[2]).toMatch(ALTER_SESS);
-    expect(queryCalls[3]).toMatch(CREATE_INDEX);
-    expect(queryCalls.filter(s => /^ALTER TABLE/.test(s))).toHaveLength(1); // only sessions
+    expect(queryCalls[1]).toMatch(SCHEMA_AGENT_MEM);
+    expect(queryCalls[2]).toMatch(SCHEMA_SESS);
+    expect(queryCalls[3]).toMatch(ALTER_SESS);
+    expect(queryCalls[4]).toMatch(SCHEMA_AGENT_SESS);
+    expect(queryCalls[5]).toMatch(ALTER_AGENT_SESS);
+    expect(queryCalls[6]).toMatch(CREATE_INDEX);
+    expect(queryCalls.filter(s => /^ALTER TABLE/.test(s))).toHaveLength(2); // sessions: embedding + agent
   });
 });
 
@@ -242,10 +280,13 @@ describe("scenario 7 — MIXED SESS-EMB (memory no-emb, sessions with-emb)", () 
   it("memory SELECT misses → ALTER memory; sessions SELECT hits → no ALTER on sessions", async () => {
     const { api, queryCalls } = makeApi(
       [
-        { match: SCHEMA_MEM,   result: "ok" },              // missing → ALTER fires
-        { match: ALTER_MEM,    result: "ok" },
-        { match: SCHEMA_SESS,  result: PRESENT },           // present → skip ALTER
-        { match: CREATE_INDEX, result: "ok" },
+        { match: SCHEMA_MEM,        result: "ok" },              // missing → ALTER fires
+        { match: ALTER_MEM,         result: "ok" },
+        { match: SCHEMA_AGENT_MEM,  result: "ok" },              // legacy memory: also missing agent
+        { match: ALTER_AGENT_MEM,   result: "ok" },
+        { match: SCHEMA_SESS,       result: PRESENT },           // embedding present → skip ALTER
+        { match: SCHEMA_AGENT_SESS, result: PRESENT },           // agent present (post-feature sessions)
+        { match: CREATE_INDEX,      result: "ok" },
       ],
       ["memory", "sessions"],
     );
@@ -253,12 +294,15 @@ describe("scenario 7 — MIXED SESS-EMB (memory no-emb, sessions with-emb)", () 
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(queryCalls).toHaveLength(4);
+    expect(queryCalls).toHaveLength(7);
     expect(queryCalls[0]).toMatch(SCHEMA_MEM);
     expect(queryCalls[1]).toMatch(ALTER_MEM);
-    expect(queryCalls[2]).toMatch(SCHEMA_SESS);
-    expect(queryCalls[3]).toMatch(CREATE_INDEX);
-    expect(queryCalls.filter(s => /^ALTER TABLE/.test(s))).toHaveLength(1); // only memory
+    expect(queryCalls[2]).toMatch(SCHEMA_AGENT_MEM);
+    expect(queryCalls[3]).toMatch(ALTER_AGENT_MEM);
+    expect(queryCalls[4]).toMatch(SCHEMA_SESS);
+    expect(queryCalls[5]).toMatch(SCHEMA_AGENT_SESS);
+    expect(queryCalls[6]).toMatch(CREATE_INDEX);
+    expect(queryCalls.filter(s => /^ALTER TABLE/.test(s))).toHaveLength(2); // memory: embedding + agent
   });
 });
 
@@ -282,7 +326,9 @@ describe("schema scenarios — cross-cutting invariants", () => {
       if (ALTER_MEM.test(sql)) {
         throw new Error(`Query failed: ${ALREADY_EXISTS("summary_embedding").errorStatus}: ${ALREADY_EXISTS("summary_embedding").errorBody}`);
       }
+      if (SCHEMA_AGENT_MEM.test(sql)) return PRESENT.rows;
       if (SCHEMA_SESS.test(sql)) return PRESENT.rows;
+      if (SCHEMA_AGENT_SESS.test(sql)) return PRESENT.rows;
       if (CREATE_INDEX.test(sql)) return [];
       throw new Error(`unexpected SQL in test: ${sql}`);
     });
@@ -333,5 +379,36 @@ describe("schema scenarios — cross-cutting invariants", () => {
     await expect(
       api.query(`INSERT INTO "sessions" (id, message_embedding) VALUES ('x', NULL)`),
     ).rejects.toThrow(/vector::at out of range/);
+  });
+
+  // Regression guard for the gap in the prior fallback: pre-2026-04-11
+  // tables have neither summary_embedding/message_embedding nor agent.
+  // Embedding ALTER was already covered, but agent had no fallback at all
+  // — every INSERT after upgrade failed with `column "agent" does not
+  // exist`. ensureColumn now patches up agent the same way.
+  it("legacy table missing agent (post-2026-04-11 schema): SELECT misses → ALTER ADD COLUMN agent fires", async () => {
+    const { api, queryCalls } = makeApi(
+      [
+        { match: SCHEMA_MEM,        result: PRESENT },              // embedding column already there
+        { match: SCHEMA_AGENT_MEM,  result: "ok" },                 // agent missing
+        { match: ALTER_AGENT_MEM,   result: "ok" },                 // ALTER fires
+        { match: SCHEMA_SESS,       result: PRESENT },
+        { match: SCHEMA_AGENT_SESS, result: "ok" },                 // agent missing
+        { match: ALTER_AGENT_SESS,  result: "ok" },                 // ALTER fires
+        { match: CREATE_INDEX,      result: "ok" },
+      ],
+      ["memory", "sessions"],
+    );
+
+    await api.ensureTable();
+    await api.ensureSessionsTable("sessions");
+
+    expect(queryCalls).toHaveLength(7);
+    expect(queryCalls).toContainEqual(expect.stringMatching(ALTER_AGENT_MEM));
+    expect(queryCalls).toContainEqual(expect.stringMatching(ALTER_AGENT_SESS));
+    // Only the agent-column ALTERs should fire; embedding ALTER must NOT.
+    expect(queryCalls.filter(s => /^ALTER TABLE.*summary_embedding/.test(s))).toHaveLength(0);
+    expect(queryCalls.filter(s => /^ALTER TABLE.*message_embedding/.test(s))).toHaveLength(0);
+    expect(queryCalls.filter(s => /^ALTER TABLE.*ADD COLUMN agent/.test(s))).toHaveLength(2);
   });
 });

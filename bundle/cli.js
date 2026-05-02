@@ -4201,6 +4201,18 @@ var DeeplakeApi = class {
    * caches share an opt-out (HIVEMIND_INDEX_MARKER_DIR) and a TTL knob.
    */
   async ensureEmbeddingColumn(table, column) {
+    await this.ensureColumn(table, column, "FLOAT4[]");
+  }
+  /**
+   * Generic marker-gated column migration. Same SELECT-then-ALTER flow as
+   * ensureEmbeddingColumn, parameterized by SQL type so it can patch up any
+   * column that was added to the schema after the table was originally
+   * created. Used today for `summary_embedding`, `message_embedding`, and
+   * the `agent` column (added 2026-04-11) — the latter has no fallback if
+   * a user upgraded over a pre-2026-04-11 table, so every INSERT fails
+   * with `column "agent" does not exist`.
+   */
+  async ensureColumn(table, column, sqlType) {
     const markers = await getIndexMarkerStore();
     const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, `col_${column}`);
     if (markers.hasFreshIndexMarker(markerPath))
@@ -4212,7 +4224,7 @@ var DeeplakeApi = class {
       return;
     }
     try {
-      await this.query(`ALTER TABLE "${table}" ADD COLUMN ${column} FLOAT4[]`);
+      await this.query(`ALTER TABLE "${table}" ADD COLUMN ${column} ${sqlType}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (!/already exists/i.test(msg))
@@ -4304,6 +4316,7 @@ var DeeplakeApi = class {
         this._tablesCache = [...tables, tbl];
     }
     await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
+    await this.ensureColumn(tbl, "agent", "TEXT NOT NULL DEFAULT ''");
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
   async ensureSessionsTable(name) {
@@ -4316,6 +4329,7 @@ var DeeplakeApi = class {
         this._tablesCache = [...tables, name];
     }
     await this.ensureEmbeddingColumn(name, MESSAGE_EMBEDDING_COL);
+    await this.ensureColumn(name, "agent", "TEXT NOT NULL DEFAULT ''");
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
 };
