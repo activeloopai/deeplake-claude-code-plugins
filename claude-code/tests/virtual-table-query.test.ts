@@ -304,6 +304,38 @@ describe("virtual-table-query", () => {
       expect(content).toContain("_(empty — no summaries ingested yet)_");
       expect(content).toContain("_(empty — no session records ingested yet)_");
     });
+
+    it("emits the truncation notice when summary or session rows exceed the cap", () => {
+      // Synthesise rows just to confirm the truncated:true branch in opts is
+      // honoured by the renderer. The numbers don't matter; the notice text
+      // is the regression guard.
+      const content = buildVirtualIndexContent(
+        [{ path: "/summaries/alice/s1.md", project: "p", description: "d", creation_date: "2026-01-01", last_update_date: "2026-01-02" }],
+        [{ path: "/sessions/alice/x.jsonl", description: "d", creation_date: "2026-01-01", last_update_date: "2026-01-02" }],
+        { summaryTruncated: true, sessionTruncated: true },
+      );
+      // Both sections show the "showing N most-recent of many" notice.
+      const truncationNotices = (content.match(/most-recent of many/g) ?? []);
+      expect(truncationNotices.length).toBe(2);
+    });
+
+    it("skips summary rows whose path doesn't match the /summaries/<user>/<id>.md shape", () => {
+      // Defense-in-depth: if a row sneaks in with a malformed path (e.g. an
+      // older write that stored the wrong shape), the renderer must skip
+      // it rather than crash or emit a broken markdown link. Locks the
+      // `if (!match) continue;` branch in the loop.
+      const content = buildVirtualIndexContent(
+        [
+          { path: "/summaries/alice/good.md", project: "p", description: "d", creation_date: "2026-01-01", last_update_date: "2026-01-02" },
+          { path: "/summaries/bad-shape-no-user", project: "p", description: "d", creation_date: "2026-01-01", last_update_date: "2026-01-02" },
+          { path: "/totally/unrelated/path.md",  project: "p", description: "d", creation_date: "2026-01-01", last_update_date: "2026-01-02" },
+        ],
+        [],
+      );
+      expect(content).toContain("[good](summaries/alice/good.md)");
+      expect(content).not.toContain("bad-shape-no-user");
+      expect(content).not.toContain("totally/unrelated");
+    });
   });
 
   describe("readVirtualPathContents: /index.md fallback queries both tables", () => {
