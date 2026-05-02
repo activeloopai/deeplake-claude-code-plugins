@@ -58,10 +58,10 @@ const CREATE_INDEX  = /^CREATE INDEX IF NOT EXISTS .* ON "sessions"/;
 // SELECT against information_schema is the new pre-ALTER probe in
 // ensureEmbeddingColumn(). Match each table+column combo separately so a
 // scenario can declare independent results for memory vs sessions.
-const SCHEMA_MEM    = /^SELECT 1 FROM information_schema\.columns WHERE table_name = 'memory' AND column_name = 'summary_embedding'/;
-const SCHEMA_SESS   = /^SELECT 1 FROM information_schema\.columns WHERE table_name = 'sessions' AND column_name = 'message_embedding'/;
-const SCHEMA_AGENT_MEM  = /^SELECT 1 FROM information_schema\.columns WHERE table_name = 'memory' AND column_name = 'agent'/;
-const SCHEMA_AGENT_SESS = /^SELECT 1 FROM information_schema\.columns WHERE table_name = 'sessions' AND column_name = 'agent'/;
+const SCHEMA_MEM    = /^SELECT 1 FROM information_schema\.columns WHERE table_name = 'memory' AND column_name = 'summary_embedding' AND table_schema = 'ws'/;
+const SCHEMA_SESS   = /^SELECT 1 FROM information_schema\.columns WHERE table_name = 'sessions' AND column_name = 'message_embedding' AND table_schema = 'ws'/;
+const SCHEMA_AGENT_MEM  = /^SELECT 1 FROM information_schema\.columns WHERE table_name = 'memory' AND column_name = 'agent' AND table_schema = 'ws'/;
+const SCHEMA_AGENT_SESS = /^SELECT 1 FROM information_schema\.columns WHERE table_name = 'sessions' AND column_name = 'agent' AND table_schema = 'ws'/;
 // "column present" SELECT result → length > 0 → ensureEmbeddingColumn skips ALTER.
 const PRESENT: { rows: Record<string, unknown>[] } = { rows: [{ "?column?": 1 }] };
 // "column missing" SELECT result → length 0 → falls through to ALTER. Use plain "ok".

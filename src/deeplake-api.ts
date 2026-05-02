@@ -327,8 +327,12 @@ export class DeeplakeApi {
     const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, `col_${column}`);
     if (markers.hasFreshIndexMarker(markerPath)) return;
 
+    // Include table_schema = workspaceId to disambiguate across tenants — Deeplake's
+    // information_schema.columns is multi-workspace, so a same-named table in another
+    // workspace that already has the column would otherwise produce a false-positive
+    // PRESENT and skip the ALTER on this workspace's actual table.
     const colCheck = `SELECT 1 FROM information_schema.columns ` +
-      `WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' LIMIT 1`;
+      `WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' AND table_schema = '${sqlStr(this.workspaceId)}' LIMIT 1`;
 
     const rows = await this.query(colCheck);
     if (rows.length > 0) {
