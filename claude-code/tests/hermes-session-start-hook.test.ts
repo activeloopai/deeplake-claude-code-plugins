@@ -16,8 +16,14 @@ vi.mock("../../src/utils/version-check.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/utils/version-check.js")>();
   return { ...actual, getInstalledVersion: (...a: unknown[]) => getInstalledVersionMock(...a) };
 });
+const ensureTableMock = vi.fn();
+const ensureSessionsTableMock = vi.fn();
 vi.mock("../../src/deeplake-api.js", () => ({
-  DeeplakeApi: class { query(sql: string) { return queryMock(sql); } },
+  DeeplakeApi: class {
+    query(sql: string) { return queryMock(sql); }
+    ensureTable(...a: unknown[]) { return ensureTableMock(...a); }
+    ensureSessionsTable(...a: unknown[]) { return ensureSessionsTableMock(...a); }
+  },
 }));
 
 const validConfig = {
@@ -45,6 +51,8 @@ beforeEach(() => {
   loadCredentialsMock.mockReset().mockReturnValue({ token: "t", orgName: "acme", workspaceId: "default" });
   debugLogMock.mockReset();
   queryMock.mockReset().mockResolvedValue([]);
+  ensureTableMock.mockReset().mockResolvedValue(undefined);
+  ensureSessionsTableMock.mockReset().mockResolvedValue(undefined);
   consoleLogMock.mockReset();
   getInstalledVersionMock.mockReset().mockReturnValue("0.7.0");
   vi.spyOn(console, "log").mockImplementation(((s: string) => { consoleLogMock(s); }) as any);

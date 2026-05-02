@@ -133,6 +133,65 @@ describe("uploadSummary — Deeplake single-UPDATE invariant", () => {
   });
 });
 
+describe("uploadSummary — summary_embedding column", () => {
+  it("INSERT path includes summary_embedding as ARRAY[...]::float4[] when an embedding is supplied", async () => {
+    const { fn, calls } = makeSpyQuery([[]]);
+    await uploadSummary(fn, {
+      ...BASE,
+      text: TEXT_WITH_WHAT_HAPPENED,
+      embedding: [0.1, -0.2, 0.3],
+    });
+    const insert = calls.find(c => /^INSERT INTO/i.test(c))!;
+    expect(insert).toContain("summary_embedding");
+    expect(insert).toContain("ARRAY[0.1,-0.2,0.3]::float4[]");
+  });
+
+  it("UPDATE path sets summary_embedding in the same statement as summary", async () => {
+    const { fn, calls } = makeSpyQuery([[{ path: BASE.vpath }]]);
+    await uploadSummary(fn, {
+      ...BASE,
+      text: TEXT_WITH_WHAT_HAPPENED,
+      embedding: [0.5, 0.25],
+    });
+    const update = calls.find(c => /^UPDATE/i.test(c))!;
+    expect(update).toContain("summary = E'");
+    expect(update).toContain("summary_embedding = ARRAY[0.5,0.25]::float4[]");
+  });
+
+  it("writes SQL NULL for summary_embedding when the caller omits the embedding", async () => {
+    const { fn, calls } = makeSpyQuery([[]]);
+    await uploadSummary(fn, { ...BASE, text: TEXT_WITH_WHAT_HAPPENED });
+    const insert = calls.find(c => /^INSERT INTO/i.test(c))!;
+    expect(insert).toContain("summary_embedding");
+    // The literal token must be the bare SQL NULL, not the string 'NULL'.
+    expect(insert).not.toContain("'NULL'");
+    expect(insert).toContain(", NULL, "); // bare NULL between surrounding values in VALUES (...)
+  });
+
+  it("writes SQL NULL when the caller explicitly passes embedding: null", async () => {
+    const { fn, calls } = makeSpyQuery([[{ path: BASE.vpath }]]);
+    await uploadSummary(fn, {
+      ...BASE,
+      text: TEXT_WITH_WHAT_HAPPENED,
+      embedding: null,
+    });
+    const update = calls.find(c => /^UPDATE/i.test(c))!;
+    expect(update).toContain("summary_embedding = NULL");
+  });
+
+  it("writes SQL NULL for an empty embedding array (daemon returned invalid)", async () => {
+    const { fn, calls } = makeSpyQuery([[]]);
+    await uploadSummary(fn, {
+      ...BASE,
+      text: TEXT_WITH_WHAT_HAPPENED,
+      embedding: [],
+    });
+    const insert = calls.find(c => /^INSERT INTO/i.test(c))!;
+    expect(insert).not.toContain("'NULL'");
+    expect(insert).toContain(", NULL, ");
+  });
+});
+
 describe("extractDescription", () => {
   it("extracts the What Happened section trimmed to 300 chars", () => {
     const d = extractDescription(TEXT_WITH_WHAT_HAPPENED);

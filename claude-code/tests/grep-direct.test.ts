@@ -1,4 +1,19 @@
 import { describe, it, expect, vi } from "vitest";
+
+// The tests in this file exercise the *lexical* path of handleGrepDirect.
+// Without this mock, the real EmbedClient would try to spawn / reach the
+// nomic embed daemon over a Unix socket. If the daemon happens to be up
+// (e.g. from a previous benchmark run), the semantic branch fires and
+// returns a different shape, breaking every line-oriented assertion here.
+// The mock forces queryEmbedding to stay null so the lexical refine path
+// runs deterministically.
+vi.mock("../../src/embeddings/client.js", () => ({
+  EmbedClient: class {
+    async embed() { return null; }
+    async warmup() { return false; }
+  },
+}));
+
 import { parseBashGrep, handleGrepDirect, type GrepParams } from "../../src/hooks/grep-direct.js";
 
 describe("handleGrepDirect", () => {

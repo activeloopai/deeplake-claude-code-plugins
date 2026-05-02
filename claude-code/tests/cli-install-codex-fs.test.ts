@@ -181,4 +181,15 @@ describe("uninstallCodex", () => {
     const { uninstallCodex } = await importInstaller();
     expect(() => uninstallCodex()).not.toThrow();
   });
+
+  it("uninstall on a malformed hooks.json deletes the file rather than crashing", async () => {
+    // Lock the catch path inside uninstallCodex that handles unparseable
+    // JSON: we'd rather drop the file than guess at intent (the user can
+    // re-install cleanly).
+    const { uninstallCodex } = await importInstaller();
+    const hooksPath = join(tmpHome, ".codex", "hooks.json");
+    writeFileSync(hooksPath, "{ this is not valid json");
+    expect(() => uninstallCodex()).not.toThrow();
+    expect(existsSync(hooksPath)).toBe(false);
+  });
 });

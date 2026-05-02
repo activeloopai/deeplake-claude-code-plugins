@@ -8,33 +8,96 @@ function normalizeSessionPart(path: string, content: string): string {
   return normalizeContent(path, content);
 }
 
-export function buildVirtualIndexContent(summaryRows: Row[], sessionRows: Row[] = []): string {
-  const total = summaryRows.length + sessionRows.length;
-  const lines = [
-    "# Memory Index",
+/**
+ * Cap on rows rendered per section. A fully-populated workspace memory + a
+ * fully-populated sessions table can produce tens of thousands of rows; the
+ * resulting markdown blew past the Read-tool token budget (and the SQL ORDER
+ * BY without LIMIT pulled the whole sessions table — ~MB-scale traffic per
+ * SessionStart). 50 most-recent per section keeps the rendered file in
+ * single-digit KB while covering the "what's recent" use case; older rows
+ * remain reachable via Grep.
+ */
+export const INDEX_LIMIT_PER_SECTION = 50;
+
+/**
+ * Pure renderer for the virtual /index.md. Single source of truth shared by
+ * the deeplake-shell REPL (src/shell/deeplake-fs.ts) and the pre-tool-use
+ * hook path (readVirtualPathContents below). Both fetch their rows
+ * separately — the shell from its DeeplakeFs cache flow, the hook one-shot
+ * stateless — and pass them into this function for formatting.
+ *
+ * Each input row is expected to carry: path, project (memory only),
+ * description, creation_date, last_update_date. Rows are rendered IN ORDER,
+ * so the caller is responsible for the recency sort. `truncated*` flags
+ * control whether the per-section "showing N most-recent of many" notice
+ * is emitted above the table.
+ */
+export function buildVirtualIndexContent(
+  summaryRows: Row[],
+  sessionRows: Row[] = [],
+  opts: { summaryTruncated?: boolean; sessionTruncated?: boolean } = {},
+): string {
+  const lines: string[] = [
+    "# Session Index",
     "",
-    `${total} entries (${summaryRows.length} summaries, ${sessionRows.length} sessions):`,
+    "Two sources are available. Consult the section relevant to the question.",
     "",
   ];
-  if (summaryRows.length > 0) {
-    lines.push("## Summaries", "");
-    for (const row of summaryRows) {
-      const path = row["path"] as string;
-      const project = row["project"] as string || "";
-      const description = (row["description"] as string || "").slice(0, 120);
-      const date = (row["creation_date"] as string || "").slice(0, 10);
-      lines.push(`- [${path}](${path}) ${date} ${project ? `[${project}]` : ""} ${description}`);
-    }
+
+  // ── ## memory ──────────────────────────────────────────────────────────────
+  lines.push("## memory", "");
+  if (summaryRows.length === 0) {
+    lines.push("_(empty — no summaries ingested yet)_");
+  } else {
+    lines.push("AI-generated summaries per session. Read these first for topic-level overviews.");
     lines.push("");
-  }
-  if (sessionRows.length > 0) {
-    lines.push("## Sessions", "");
-    for (const row of sessionRows) {
-      const path = row["path"] as string;
-      const description = (row["description"] as string || "").slice(0, 120);
-      lines.push(`- [${path}](${path}) ${description}`);
+    if (opts.summaryTruncated) {
+      lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many — older summaries reachable via \`Grep pattern=\"...\" path=\"~/.deeplake/memory\"\`._`);
+      lines.push("");
+    }
+    lines.push("| Session | Created | Last Updated | Project | Description |");
+    lines.push("|---------|---------|--------------|---------|-------------|");
+    for (const row of summaryRows) {
+      const p = (row["path"] as string) || "";
+      const match = p.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
+      if (!match) continue;
+      const summaryUser = match[1];
+      const sessionId = match[2];
+      const relPath = `summaries/${summaryUser}/${sessionId}.md`;
+      const project = (row["project"] as string) || "";
+      const description = (row["description"] as string) || "";
+      const creationDate = (row["creation_date"] as string) || "";
+      const lastUpdateDate = (row["last_update_date"] as string) || "";
+      lines.push(`| [${sessionId}](${relPath}) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
     }
   }
+  lines.push("");
+
+  // ── ## sessions ────────────────────────────────────────────────────────────
+  lines.push("## sessions", "");
+  if (sessionRows.length === 0) {
+    lines.push("_(empty — no session records ingested yet)_");
+  } else {
+    lines.push("Raw session records (dialogue, tool calls). Read for exact detail / quotes.");
+    lines.push("");
+    if (opts.sessionTruncated) {
+      lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many — older sessions reachable via \`Grep pattern=\"...\" path=\"~/.deeplake/memory\"\`._`);
+      lines.push("");
+    }
+    lines.push("| Session | Created | Last Updated | Description |");
+    lines.push("|---------|---------|--------------|-------------|");
+    for (const row of sessionRows) {
+      const p = (row["path"] as string) || "";
+      const rel = p.startsWith("/") ? p.slice(1) : p;
+      const filename = p.split("/").pop() ?? p;
+      const description = (row["description"] as string) || "";
+      const creationDate = (row["creation_date"] as string) || "";
+      const lastUpdateDate = (row["last_update_date"] as string) || "";
+      lines.push(`| [${filename}](${rel}) | ${creationDate} | ${lastUpdateDate} | ${description} |`);
+    }
+  }
+  lines.push("");
+
   return lines.join("\n");
 }
 
@@ -119,15 +182,35 @@ export async function readVirtualPathContents(
   }
 
   if (result.get("/index.md") === null && uniquePaths.includes("/index.md")) {
+    // Fetch one extra row beyond the cap so we can detect "more available"
+    // and emit the truncation note. ORDER BY last_update_date DESC pulls the
+    // most-recently-touched rows first; LIMIT bounds both DB cost and the
+    // markdown size we hand back to CC's Read tool. The sessions query
+    // aggregates per path because the sessions table stores one row per
+    // event — without GROUP BY a single conversation appeared dozens of
+    // times in the index.
+    const fetchLimit = INDEX_LIMIT_PER_SECTION + 1;
     const [summaryRows, sessionRows] = await Promise.all([
       api.query(
-        `SELECT path, project, description, creation_date FROM "${memoryTable}" WHERE path LIKE '/summaries/%' ORDER BY creation_date DESC`
+        `SELECT path, project, description, creation_date, last_update_date FROM "${memoryTable}" ` +
+        `WHERE path LIKE '/summaries/%' ORDER BY last_update_date DESC LIMIT ${fetchLimit}`
       ).catch(() => [] as Row[]),
       api.query(
-        `SELECT path, description FROM "${sessionsTable}" WHERE path LIKE '/sessions/%' ORDER BY path`
+        `SELECT path, MAX(description) AS description, MIN(creation_date) AS creation_date, MAX(last_update_date) AS last_update_date ` +
+        `FROM "${sessionsTable}" WHERE path LIKE '/sessions/%' ` +
+        `GROUP BY path ORDER BY MAX(last_update_date) DESC LIMIT ${fetchLimit}`
       ).catch(() => [] as Row[]),
     ]);
-    result.set("/index.md", buildVirtualIndexContent(summaryRows, sessionRows));
+    const summaryTruncated = summaryRows.length > INDEX_LIMIT_PER_SECTION;
+    const sessionTruncated = sessionRows.length > INDEX_LIMIT_PER_SECTION;
+    result.set(
+      "/index.md",
+      buildVirtualIndexContent(
+        summaryRows.slice(0, INDEX_LIMIT_PER_SECTION),
+        sessionRows.slice(0, INDEX_LIMIT_PER_SECTION),
+        { summaryTruncated, sessionTruncated },
+      ),
+    );
   }
 
   return result;

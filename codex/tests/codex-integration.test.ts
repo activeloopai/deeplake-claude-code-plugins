@@ -106,14 +106,15 @@ describe("codex integration: session-start", () => {
     expect(raw).toContain("Do NOT spawn subagents");
   });
 
-  it("context includes JSONL warning", () => {
+  it("context steers recall to summaries first, sessions as fallback", () => {
     const raw = runHook("session-start.js", {
       session_id: "test-session-004",
       cwd: "/tmp",
       hook_event_name: "SessionStart",
       model: "gpt-5.2",
     });
-    expect(raw).toContain("Do NOT jump straight to JSONL");
+    expect(raw).toContain("summaries/");
+    expect(raw).toContain("FALLBACK");
   });
 });
 

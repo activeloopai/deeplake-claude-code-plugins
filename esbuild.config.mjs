@@ -25,7 +25,11 @@ const ccCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
 ];
 
-const ccAll = [...ccHooks, ...ccShell, ...ccCommands];
+const ccEmbed = [
+  { entry: "dist/src/embeddings/daemon.js", out: "embeddings/embed-daemon" },
+];
+
+const ccAll = [...ccHooks, ...ccShell, ...ccCommands, ...ccEmbed];
 
 await build({
   entryPoints: Object.fromEntries(ccAll.map(h => [h.out, h.entry])),
@@ -33,7 +37,15 @@ await build({
   platform: "node",
   format: "esm",
   outdir: "claude-code/bundle",
-  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  external: [
+    "node:*",
+    "node-liblzma",
+    "@mongodb-js/zstd",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+    "onnxruntime-common",
+    "sharp",
+  ],
   define: {
     __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
   },
@@ -62,7 +74,11 @@ const codexCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
 ];
 
-const codexAll = [...codexHooks, ...codexShell, ...codexCommands];
+const codexEmbed = [
+  { entry: "dist/src/embeddings/daemon.js", out: "embeddings/embed-daemon" },
+];
+
+const codexAll = [...codexHooks, ...codexShell, ...codexCommands, ...codexEmbed];
 
 await build({
   entryPoints: Object.fromEntries(codexAll.map(h => [h.out, h.entry])),
@@ -70,7 +86,15 @@ await build({
   platform: "node",
   format: "esm",
   outdir: "codex/bundle",
-  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  external: [
+    "node:*",
+    "node-liblzma",
+    "@mongodb-js/zstd",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+    "onnxruntime-common",
+    "sharp",
+  ],
   define: {
     __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
   },
@@ -87,6 +111,7 @@ const cursorHooks = [
   { entry: "dist/src/hooks/cursor/capture.js", out: "capture" },
   { entry: "dist/src/hooks/cursor/session-end.js", out: "session-end" },
   { entry: "dist/src/hooks/cursor/pre-tool-use.js", out: "pre-tool-use" },
+  { entry: "dist/src/hooks/cursor/wiki-worker.js", out: "wiki-worker" },
 ];
 
 // Hermes Agent shell-hook bundles (matches Claude Code's wire protocol; see
@@ -96,6 +121,7 @@ const hermesHooks = [
   { entry: "dist/src/hooks/hermes/capture.js", out: "capture" },
   { entry: "dist/src/hooks/hermes/session-end.js", out: "session-end" },
   { entry: "dist/src/hooks/hermes/pre-tool-use.js", out: "pre-tool-use" },
+  { entry: "dist/src/hooks/hermes/wiki-worker.js", out: "wiki-worker" },
 ];
 
 const cursorShell = [
@@ -106,7 +132,11 @@ const cursorCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
 ];
 
-const cursorAll = [...cursorHooks, ...cursorShell, ...cursorCommands];
+const cursorEmbed = [
+  { entry: "dist/src/embeddings/daemon.js", out: "embeddings/embed-daemon" },
+];
+
+const cursorAll = [...cursorHooks, ...cursorShell, ...cursorCommands, ...cursorEmbed];
 
 await build({
   entryPoints: Object.fromEntries(cursorAll.map(h => [h.out, h.entry])),
@@ -114,7 +144,18 @@ await build({
   platform: "node",
   format: "esm",
   outdir: "cursor/bundle",
-  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  external: [
+    "node:*",
+    "node-liblzma",
+    "@mongodb-js/zstd",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+    "onnxruntime-common",
+    "sharp",
+  ],
+  define: {
+    __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
+  },
 });
 
 for (const h of cursorAll) {
@@ -130,7 +171,10 @@ const hermesShell = [
 const hermesCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
 ];
-const hermesAll = [...hermesHooks, ...hermesShell, ...hermesCommands];
+const hermesEmbed = [
+  { entry: "dist/src/embeddings/daemon.js", out: "embeddings/embed-daemon" },
+];
+const hermesAll = [...hermesHooks, ...hermesShell, ...hermesCommands, ...hermesEmbed];
 
 await build({
   entryPoints: Object.fromEntries(hermesAll.map(h => [h.out, h.entry])),
@@ -138,12 +182,55 @@ await build({
   platform: "node",
   format: "esm",
   outdir: "hermes/bundle",
-  external: ["node:*", "node-liblzma", "@mongodb-js/zstd"],
+  external: [
+    "node:*",
+    "node-liblzma",
+    "@mongodb-js/zstd",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+    "onnxruntime-common",
+    "sharp",
+  ],
+  define: {
+    __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
+  },
 });
 
 for (const h of hermesAll) {
   chmodSync(`hermes/bundle/${h.out}.js`, 0o755);
 }
+
+// Pi (badlogic/pi-mono) — only ships a wiki-worker bundle. The pi extension
+// itself is raw .ts at pi/extension-source/hivemind.ts; we don't bundle it
+// because pi's runtime compiles + loads the .ts file directly. Embed daemon
+// reuses the canonical ~/.hivemind/embed-deps/embed-daemon.js — no per-pi
+// embed bundle needed.
+const piWorker = [
+  { entry: "dist/src/hooks/pi/wiki-worker.js", out: "wiki-worker" },
+];
+await build({
+  entryPoints: Object.fromEntries(piWorker.map(h => [h.out, h.entry])),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "pi/bundle",
+  external: [
+    "node:*",
+    "node-liblzma",
+    "@mongodb-js/zstd",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+    "onnxruntime-common",
+    "sharp",
+  ],
+  define: {
+    __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
+  },
+});
+for (const h of piWorker) {
+  chmodSync(`pi/bundle/${h.out}.js`, 0o755);
+}
+writeFileSync("pi/bundle/package.json", esmPackageJson);
 writeFileSync("hermes/bundle/package.json", esmPackageJson);
 
 // OpenClaw plugin bundle. The shared CC/Codex source modules reference a
@@ -230,4 +317,27 @@ await build({
 });
 chmodSync("bundle/cli.js", 0o755);
 
-console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + ${cursorAll.length} Cursor + ${hermesAll.length} Hermes + 1 OpenClaw + 1 MCP + 1 CLI bundle`);
+// Standalone embed daemon bundle. `hivemind embeddings install` deposits
+// this at ~/.hivemind/embed-deps/embed-daemon.js so every agent (including
+// pi, which can't ship per-agent bundles) spawns the same canonical
+// daemon. Externals match the per-agent daemon bundles — the daemon
+// resolves them from its sibling node_modules (the shared deps dir).
+await build({
+  entryPoints: { "embed-daemon": "dist/src/embeddings/daemon.js" },
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "embeddings",
+  external: [
+    "node:*",
+    "node-liblzma",
+    "@mongodb-js/zstd",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+    "onnxruntime-common",
+    "sharp",
+  ],
+});
+chmodSync("embeddings/embed-daemon.js", 0o755);
+
+console.log(`Built: ${ccAll.length} CC + ${codexAll.length} Codex + ${cursorAll.length} Cursor + ${hermesAll.length} Hermes + 1 OpenClaw + 1 MCP + 1 CLI + 1 standalone-daemon bundle`);

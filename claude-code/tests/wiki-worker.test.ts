@@ -27,6 +27,7 @@ const finalizeSummaryMock = vi.fn();
 const releaseLockMock = vi.fn();
 const uploadSummaryMock = vi.fn();
 const execFileSyncMock = vi.fn();
+const embedSummaryMock = vi.fn();
 
 vi.mock("../../src/hooks/summary-state.js", () => ({
   finalizeSummary: (...a: any[]) => finalizeSummaryMock(...a),
@@ -34,6 +35,11 @@ vi.mock("../../src/hooks/summary-state.js", () => ({
 }));
 vi.mock("../../src/hooks/upload-summary.js", () => ({
   uploadSummary: (...a: any[]) => uploadSummaryMock(...a),
+}));
+vi.mock("../../src/embeddings/client.js", () => ({
+  EmbedClient: class {
+    async embed(text: string, kind: string) { return embedSummaryMock(text, kind); }
+  },
 }));
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -107,6 +113,7 @@ beforeEach(() => {
   finalizeSummaryMock.mockReset();
   releaseLockMock.mockReset();
   uploadSummaryMock.mockReset().mockResolvedValue({ path: "insert", summaryLength: 100, descLength: 20, sql: "..." });
+  embedSummaryMock.mockReset().mockResolvedValue([0.1, 0.2, 0.3]);
   execFileSyncMock.mockReset();
 });
 

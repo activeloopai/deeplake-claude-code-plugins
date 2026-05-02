@@ -25,6 +25,12 @@ vi.mock("../../src/deeplake-api.js", () => ({
     ensureSessionsTable(t: string) { return ensureSessionsTableMock(t); }
   },
 }));
+vi.mock("../../src/embeddings/client.js", () => ({
+  EmbedClient: class {
+    embed(_text: string, _kind?: string) { return Promise.resolve(null); }
+    warmup() { return Promise.resolve(false); }
+  },
+}));
 vi.mock("../../src/utils/session-path.js", () => ({
   buildSessionPath: (...a: unknown[]) => buildSessionPathMock(...a),
 }));
@@ -231,5 +237,44 @@ describe("hermes capture hook — unknown / failure paths", () => {
     await runHook();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("fatal: stdin gone"));
     expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+});
+
+describe("hermes capture hook — message_embedding column", () => {
+  it("INSERT carries the message_embedding column in the column list", async () => {
+    stdinMock.mockResolvedValue({
+      hook_event_name: "pre_llm_call",
+      session_id: "sid-emb-1",
+      cwd: "/work/proj",
+      extra: { prompt: "embed me" },
+    });
+    await runHook();
+    const sql = queryMock.mock.calls[0][0] as string;
+    expect(sql).toMatch(/\(id, path, filename, message, message_embedding,/);
+  });
+
+  it("emits NULL for the embedding value when EmbedClient returns null", async () => {
+    stdinMock.mockResolvedValue({
+      hook_event_name: "pre_llm_call",
+      session_id: "sid-emb-2",
+      cwd: "/work/proj",
+      extra: { prompt: "no daemon" },
+    });
+    await runHook();
+    const sql = queryMock.mock.calls[0][0] as string;
+    expect(sql).toContain("'::jsonb, NULL,");
+  });
+
+  it("HIVEMIND_EMBEDDINGS=false short-circuits to NULL without invoking EmbedClient", async () => {
+    stdinMock.mockResolvedValue({
+      hook_event_name: "pre_llm_call",
+      session_id: "sid-emb-3",
+      cwd: "/work/proj",
+      extra: { prompt: "disabled" },
+    });
+    await runHook({ HIVEMIND_EMBEDDINGS: "false" });
+    const sql = queryMock.mock.calls[0][0] as string;
+    expect(sql).toContain("'::jsonb, NULL,");
+    expect(sql).toMatch(/, message_embedding,/);
   });
 });

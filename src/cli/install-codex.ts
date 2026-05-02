@@ -34,10 +34,31 @@ function buildHooksJson(): Record<string, unknown> {
   };
 }
 
-// True when `entry` is one of our hook blocks — i.e. a hook that points
-// at a node command living in `<pluginDir>/bundle/`. Used to strip stale
-// hivemind entries on re-install (so re-installing doesn't duplicate our
-// hooks) WITHOUT touching the user's own hook entries.
+// Hivemind's codex bundle entry-points. A `command` whose path ends in
+// `bundle/<one of these>.js` is almost certainly hivemind regardless of
+// where on disk it lives — no other plugin we know of ships this exact
+// filename set under a `bundle/` directory.
+const HIVEMIND_BUNDLE_FILES = [
+  "session-start.js",
+  "session-start-setup.js",
+  "capture.js",
+  "pre-tool-use.js",
+  "stop.js",
+  "wiki-worker.js",
+] as const;
+
+// True when `entry` is one of our hook blocks. Two ways to recognise it:
+//   1. It points into the canonical install dir `<pluginDir>/bundle/`.
+//   2. It points at a path matching `bundle/<known-hivemind-file>.js`,
+//      regardless of the parent directory. This catches dual-install
+//      scenarios — e.g. a user kept a local dev clone of hivemind wired in
+//      under a different path (`/path/to/my-clone/codex/bundle/...`) and
+//      then ran `hivemind install`, which previously left the dev clone's
+//      hooks alongside ours and they raced on every codex session.
+//
+// Used to strip stale hivemind entries on re-install (so re-installing
+// doesn't duplicate our hooks) WITHOUT touching the user's own hook
+// entries that happen to share an event.
 //
 // Exported with an injectable `pluginDir` so unit tests can drive it
 // without depending on the real ~/.codex layout.
@@ -48,7 +69,26 @@ export function isHivemindHookEntry(entry: unknown, pluginDir: string = PLUGIN_D
   return hooks.some(h => {
     if (!h || typeof h !== "object") return false;
     const cmd = (h as Record<string, unknown>).command;
-    return typeof cmd === "string" && cmd.includes(`${pluginDir}/bundle/`);
+    if (typeof cmd !== "string") return false;
+    if (cmd.includes(`${pluginDir}/bundle/`)) return true;
+    return HIVEMIND_BUNDLE_FILES.some(f => cmd.includes(`/bundle/${f}`));
+  });
+}
+
+// Like isHivemindHookEntry, but only matches entries that point OUTSIDE
+// the canonical install dir. Used to surface a warning when re-install
+// strips a sibling hivemind clone — those are usually accidental dev-loop
+// leftovers, but a user who genuinely wants two installs side-by-side
+// needs to see what got removed.
+function isForeignHivemindHookEntry(entry: unknown, pluginDir: string = PLUGIN_DIR): boolean {
+  if (!isHivemindHookEntry(entry, pluginDir)) return false;
+  const e = entry as Record<string, unknown>;
+  const hooks = Array.isArray(e.hooks) ? (e.hooks as unknown[]) : [];
+  return hooks.every(h => {
+    if (!h || typeof h !== "object") return false;
+    const cmd = (h as Record<string, unknown>).command;
+    if (typeof cmd !== "string") return false;
+    return !cmd.includes(`${pluginDir}/bundle/`);
   });
 }
 
@@ -86,6 +126,8 @@ export function mergeHooks(
 
 // Filesystem-bound wrapper: reads HOOKS_PATH (if present) and feeds the
 // parsed result to the pure mergeHooks. Catches malformed JSON and warns.
+// Also surfaces a warning listing any foreign-path hivemind entries
+// stripped (e.g. a dev clone wired in under a different directory).
 function mergeHooksJson(ours: Record<string, unknown>): Record<string, unknown> {
   let existing: Record<string, unknown> = {};
   try {
@@ -96,7 +138,31 @@ function mergeHooksJson(ours: Record<string, unknown>): Record<string, unknown> 
   } catch {
     warn(`  Codex          ${HOOKS_PATH} unparseable — ignoring prior content`);
   }
+  reportForeignHivemindHooks(existing);
   return mergeHooks(existing, ours);
+}
+
+function reportForeignHivemindHooks(existing: Record<string, unknown>): void {
+  const existingHooks = (existing.hooks && typeof existing.hooks === "object")
+    ? existing.hooks as Record<string, unknown[]>
+    : {};
+  const foreign = new Set<string>();
+  for (const entries of Object.values(existingHooks)) {
+    for (const e of entries ?? []) {
+      if (!isForeignHivemindHookEntry(e)) continue;
+      const hooks = Array.isArray((e as Record<string, unknown>).hooks)
+        ? ((e as Record<string, unknown>).hooks as unknown[])
+        : [];
+      for (const h of hooks) {
+        const cmd = (h as Record<string, unknown> | null)?.command;
+        if (typeof cmd === "string") foreign.add(cmd);
+      }
+    }
+  }
+  if (foreign.size === 0) return;
+  warn(`  Codex          stripping ${foreign.size} hivemind hook(s) from a non-canonical path:`);
+  for (const cmd of foreign) warn(`                   ${cmd}`);
+  warn(`                 (these were probably leftover from a local dev clone — re-add them manually if intentional)`);
 }
 
 function tryEnableCodexHooks(): void {
