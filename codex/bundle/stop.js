@@ -412,7 +412,7 @@ var DeeplakeApi = class {
     const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, `col_${column}`);
     if (markers.hasFreshIndexMarker(markerPath))
       return;
-    const colCheck = `SELECT 1 FROM information_schema.columns WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' LIMIT 1`;
+    const colCheck = `SELECT 1 FROM information_schema.columns WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' AND table_schema = '${sqlStr(this.workspaceId)}' LIMIT 1`;
     const rows = await this.query(colCheck);
     if (rows.length > 0) {
       markers.writeIndexMarker(markerPath);
