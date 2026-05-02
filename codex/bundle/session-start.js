@@ -102,21 +102,21 @@ var __bundleDir = dirname2(fileURLToPath(import.meta.url));
 var AUTH_CMD = join4(__bundleDir, "commands", "auth-login.js");
 var context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
 
-Deeplake memory has TWO tiers \u2014 search them IN THIS ORDER:
-1. ~/.deeplake/memory/summaries/ \u2014 condensed wiki summaries (~3 KB each). START HERE: the answer to recall questions is usually in a summary.
-2. ~/.deeplake/memory/sessions/  \u2014 raw full-dialogue JSONL (~5 KB each). Use as FALLBACK only if no summary matches.
-3. ~/.deeplake/memory/index.md   \u2014 skip (too large).
+Deeplake memory has THREE tiers \u2014 pick the right one for the question:
+1. ~/.deeplake/memory/index.md   \u2014 auto-generated index, top 50 most-recently-updated entries with Created + Last Updated + Project + Description columns. ~5 KB. **For "what's recent / who did X this week / since <date>" queries, START HERE** and trust the Last Updated column over any "Started:" line in summary bodies.
+2. ~/.deeplake/memory/summaries/ \u2014 condensed wiki summaries per session (~3 KB each). For keyword/topic recall, search these.
+3. ~/.deeplake/memory/sessions/  \u2014 raw full-dialogue JSONL (~5 KB each). FALLBACK only \u2014 use when summaries don't contain the exact quote/turn you need.
 
-Recall workflow:
-1. grep -r "keyword" ~/.deeplake/memory/summaries/   \u2190 FIRST
-2. cat the top-matching summary(ies)
-3. Only if no summary matches: grep -r "keyword" ~/.deeplake/memory/sessions/
+Search workflow:
+- Time-based ("last week", "today", "since X"): cat ~/.deeplake/memory/index.md and read the most-recent rows.
+- Keyword/topic recall: grep -r "keyword" ~/.deeplake/memory/summaries/ (the shell hook routes this through hybrid lexical+semantic search \u2014 synonyms match too). Then cat the top-matching summary.
+- Raw transcript fallback only: grep -r "keyword" ~/.deeplake/memory/sessions/ (use sparingly \u2014 JSONL is verbose).
 
 \u2705 grep -r "keyword" ~/.deeplake/memory/summaries/
 \u274C grep without a summaries/ or sessions/ suffix \u2014 too noisy
 
 IMPORTANT: Only use bash builtins (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) on ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem.
-Do NOT spawn subagents to read deeplake memory. Never read index.md.`;
+Do NOT spawn subagents to read deeplake memory.`;
 async function main() {
   if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;

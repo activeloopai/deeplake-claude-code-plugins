@@ -67933,6 +67933,69 @@ function embeddingsDisabled() {
   return embeddingsStatus() !== "enabled";
 }
 
+// dist/src/hooks/virtual-table-query.js
+var INDEX_LIMIT_PER_SECTION = 50;
+function buildVirtualIndexContent(summaryRows, sessionRows = [], opts = {}) {
+  const lines = [
+    "# Session Index",
+    "",
+    "Two sources are available. Consult the section relevant to the question.",
+    ""
+  ];
+  lines.push("## memory", "");
+  if (summaryRows.length === 0) {
+    lines.push("_(empty \u2014 no summaries ingested yet)_");
+  } else {
+    lines.push("AI-generated summaries per session. Read these first for topic-level overviews.");
+    lines.push("");
+    if (opts.summaryTruncated) {
+      lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many \u2014 older summaries reachable via \`Grep pattern="..." path="~/.deeplake/memory"\`._`);
+      lines.push("");
+    }
+    lines.push("| Session | Created | Last Updated | Project | Description |");
+    lines.push("|---------|---------|--------------|---------|-------------|");
+    for (const row of summaryRows) {
+      const p22 = row["path"] || "";
+      const match2 = p22.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
+      if (!match2)
+        continue;
+      const summaryUser = match2[1];
+      const sessionId = match2[2];
+      const relPath = `summaries/${summaryUser}/${sessionId}.md`;
+      const project = row["project"] || "";
+      const description = row["description"] || "";
+      const creationDate = row["creation_date"] || "";
+      const lastUpdateDate = row["last_update_date"] || "";
+      lines.push(`| [${sessionId}](${relPath}) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
+    }
+  }
+  lines.push("");
+  lines.push("## sessions", "");
+  if (sessionRows.length === 0) {
+    lines.push("_(empty \u2014 no session records ingested yet)_");
+  } else {
+    lines.push("Raw session records (dialogue, tool calls). Read for exact detail / quotes.");
+    lines.push("");
+    if (opts.sessionTruncated) {
+      lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many \u2014 older sessions reachable via \`Grep pattern="..." path="~/.deeplake/memory"\`._`);
+      lines.push("");
+    }
+    lines.push("| Session | Created | Last Updated | Description |");
+    lines.push("|---------|---------|--------------|-------------|");
+    for (const row of sessionRows) {
+      const p22 = row["path"] || "";
+      const rel = p22.startsWith("/") ? p22.slice(1) : p22;
+      const filename = p22.split("/").pop() ?? p22;
+      const description = row["description"] || "";
+      const creationDate = row["creation_date"] || "";
+      const lastUpdateDate = row["last_update_date"] || "";
+      lines.push(`| [${filename}](${rel}) | ${creationDate} | ${lastUpdateDate} | ${description} |`);
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
 // dist/src/shell/deeplake-fs.js
 var BATCH_SIZE = 10;
 var PREFETCH_BATCH_SIZE = 50;
@@ -68146,80 +68209,19 @@ var DeeplakeFs = class _DeeplakeFs {
   }
   // ── Virtual index.md generation ────────────────────────────────────────────
   async generateVirtualIndex() {
-    const INDEX_LIMIT_PER_SECTION = 50;
-    const summaryRows = await this.client.query(`SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" WHERE path LIKE '${sqlStr("/summaries/")}%' ORDER BY last_update_date DESC LIMIT ${INDEX_LIMIT_PER_SECTION + 1}`);
+    const fetchLimit = INDEX_LIMIT_PER_SECTION + 1;
+    const summaryRows = await this.client.query(`SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" WHERE path LIKE '${sqlStr("/summaries/")}%' ORDER BY last_update_date DESC LIMIT ${fetchLimit}`);
     let sessionRows = [];
     if (this.sessionsTable) {
       try {
-        sessionRows = await this.client.query(`SELECT path, MAX(description) AS description, MIN(creation_date) AS creation_date, MAX(last_update_date) AS last_update_date FROM "${this.sessionsTable}" WHERE path LIKE '${sqlStr("/sessions/")}%' GROUP BY path ORDER BY MAX(last_update_date) DESC LIMIT ${INDEX_LIMIT_PER_SECTION + 1}`);
+        sessionRows = await this.client.query(`SELECT path, MAX(description) AS description, MIN(creation_date) AS creation_date, MAX(last_update_date) AS last_update_date FROM "${this.sessionsTable}" WHERE path LIKE '${sqlStr("/sessions/")}%' GROUP BY path ORDER BY MAX(last_update_date) DESC LIMIT ${fetchLimit}`);
       } catch {
         sessionRows = [];
       }
     }
     const summaryTruncated = summaryRows.length > INDEX_LIMIT_PER_SECTION;
     const sessionTruncated = sessionRows.length > INDEX_LIMIT_PER_SECTION;
-    const summaryVisible = summaryRows.slice(0, INDEX_LIMIT_PER_SECTION);
-    const sessionVisible = sessionRows.slice(0, INDEX_LIMIT_PER_SECTION);
-    const lines = [
-      "# Session Index",
-      "",
-      "Two sources are available. Consult the section relevant to the question.",
-      ""
-    ];
-    lines.push("## memory");
-    lines.push("");
-    if (summaryRows.length === 0) {
-      lines.push("_(empty \u2014 no summaries ingested yet)_");
-    } else {
-      lines.push("AI-generated summaries per session. Read these first for topic-level overviews.");
-      lines.push("");
-      if (summaryTruncated) {
-        lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many \u2014 older summaries reachable via \`Grep pattern="..." path="~/.deeplake/memory"\`._`);
-        lines.push("");
-      }
-      lines.push("| Session | Created | Last Updated | Project | Description |");
-      lines.push("|---------|---------|--------------|---------|-------------|");
-      for (const row of summaryVisible) {
-        const p22 = row["path"];
-        const match2 = p22.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
-        if (!match2)
-          continue;
-        const summaryUser = match2[1];
-        const sessionId = match2[2];
-        const relPath = `summaries/${summaryUser}/${sessionId}.md`;
-        const project = row["project"] || "";
-        const description = row["description"] || "";
-        const creationDate = row["creation_date"] || "";
-        const lastUpdateDate = row["last_update_date"] || "";
-        lines.push(`| [${sessionId}](${relPath}) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
-      }
-    }
-    lines.push("");
-    lines.push("## sessions");
-    lines.push("");
-    if (sessionRows.length === 0) {
-      lines.push("_(empty \u2014 no session records ingested yet)_");
-    } else {
-      lines.push("Raw session records (dialogue, tool calls). Read for exact detail / quotes.");
-      lines.push("");
-      if (sessionTruncated) {
-        lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many \u2014 older sessions reachable via \`Grep pattern="..." path="~/.deeplake/memory"\`._`);
-        lines.push("");
-      }
-      lines.push("| Session | Created | Last Updated | Description |");
-      lines.push("|---------|---------|--------------|-------------|");
-      for (const row of sessionVisible) {
-        const p22 = row["path"] || "";
-        const rel = p22.startsWith("/") ? p22.slice(1) : p22;
-        const filename = p22.split("/").pop() ?? p22;
-        const description = row["description"] || "";
-        const creationDate = row["creation_date"] || "";
-        const lastUpdateDate = row["last_update_date"] || "";
-        lines.push(`| [${filename}](${rel}) | ${creationDate} | ${lastUpdateDate} | ${description} |`);
-      }
-    }
-    lines.push("");
-    return lines.join("\n");
+    return buildVirtualIndexContent(summaryRows.slice(0, INDEX_LIMIT_PER_SECTION), sessionRows.slice(0, INDEX_LIMIT_PER_SECTION), { summaryTruncated, sessionTruncated });
   }
   // ── batch prefetch ────────────────────────────────────────────────────────
   /**
