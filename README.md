@@ -37,7 +37,7 @@ Hivemind automatically captures every prompt, tool call, decision, and file oper
 One command, all your agents:
 
 ```bash
-npm -g install @deeplake/hivemind && hivemind install
+npm install -g @deeplake/hivemind && hivemind install
 ```
 
 Or, if you prefer a global install:
@@ -51,19 +51,19 @@ That's it. The installer detects every supported assistant on your machine (Clau
 **Install for a specific assistant only:**
 
 ```bash
-npx @deeplake/hivemind@latest install --only claude
-npx @deeplake/hivemind@latest claude install    # equivalent
-npx @deeplake/hivemind@latest codex install
-npx @deeplake/hivemind@latest claw install
-npx @deeplake/hivemind@latest cursor install
-npx @deeplake/hivemind@latest hermes install
-npx @deeplake/hivemind@latest pi install
+hivemind install --only claude
+hivemind claude install    # equivalent
+hivemind codex install
+hivemind claw install
+hivemind cursor install
+hivemind hermes install
+hivemind pi install
 ```
 
 **Check what's wired up:**
 
 ```bash
-npx @deeplake/hivemind@latest status
+hivemind status
 ```
 
 **Supported assistants:**
@@ -156,7 +156,7 @@ Restart Codex to activate.
 The unified installer wires six lifecycle events in `~/.cursor/hooks.json` — sessionStart, beforeSubmitPrompt, postToolUse, afterAgentResponse, stop, sessionEnd. Hooks fork a Node bundle at `~/.cursor/hivemind/bundle/` per event. Restart Cursor after install to load.
 
 ```bash
-npx @deeplake/hivemind@latest cursor install
+hivemind cursor install
 ```
 
 Auto-capture is enabled the same way as Claude Code / Codex / OpenClaw.
@@ -168,7 +168,7 @@ Auto-capture is enabled the same way as Claude Code / Codex / OpenClaw.
 Drops an `agentskills.io`-compatible skill at `~/.hermes/skills/hivemind-memory/`. Recall is via direct grep on `~/.deeplake/memory/`. Auto-capture is not yet supported (Hermes' lifecycle-hook surface isn't documented at the time of writing).
 
 ```bash
-npx @deeplake/hivemind@latest hermes install
+hivemind hermes install
 ```
 </details>
 
@@ -178,7 +178,7 @@ npx @deeplake/hivemind@latest hermes install
 Drops `~/.pi/agent/AGENTS.md` (idempotent BEGIN/END marker block) plus a skill at `~/.pi/agent/skills/hivemind-memory/`. Recall is via direct grep on `~/.deeplake/memory/`.
 
 ```bash
-npx @deeplake/hivemind@latest pi install
+hivemind pi install
 ```
 </details>
 
@@ -186,8 +186,8 @@ npx @deeplake/hivemind@latest pi install
 ### Uninstall
 
 ```bash
-npx @deeplake/hivemind@latest uninstall              # remove from every detected assistant
-npx @deeplake/hivemind@latest codex uninstall        # remove from one
+hivemind uninstall              # remove from every detected assistant
+hivemind codex uninstall        # remove from one
 ```
 
 ## How it works
