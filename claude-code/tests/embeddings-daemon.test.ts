@@ -237,21 +237,31 @@ describe("EmbedDaemon", () => {
 
     const uid = String(process.getuid?.() ?? "test");
     const sockPath = join(dir, `hivemind-embed-${uid}.sock`);
-    // Write a bad line then a good one on the same connection.
+    // Write a bad line then a good one on the same connection. Per the PR
+    // review fix: the daemon must NOT silently drop the bad line — it has
+    // to write a sentinel `{id: "unknown", error: "parse error"}` so the
+    // client doesn't block until its `timeoutMs`. Then the subsequent
+    // ping still succeeds.
     await new Promise<void>((resolve, reject) => {
       const sock = connect(sockPath);
       sock.setEncoding("utf-8");
       let buf = "";
+      const responses: Record<string, unknown>[] = [];
       sock.on("connect", () => {
         sock.write("not-json\n");
         sock.write(JSON.stringify({ op: "ping", id: "ok" }) + "\n");
       });
       sock.on("data", (c: string) => {
         buf += c;
-        const nl = buf.indexOf("\n");
-        if (nl !== -1) {
-          const resp = JSON.parse(buf.slice(0, nl));
-          expect(resp.id).toBe("ok");
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) !== -1) {
+          responses.push(JSON.parse(buf.slice(0, nl)));
+          buf = buf.slice(nl + 1);
+        }
+        if (responses.length >= 2) {
+          // Parse-error sentinel comes first, ping ok second.
+          expect(responses[0]).toMatchObject({ id: "unknown", error: "parse error" });
+          expect(responses[1].id).toBe("ok");
           sock.end();
           resolve();
         }

@@ -242,6 +242,11 @@ export class EmbedClient {
         }
       });
       sock.on("error", (e) => { clearTimeout(to); reject(e); });
+      // If the daemon crashes or closes the connection cleanly without
+      // sending a response (FIN before any data), neither `error` nor `data`
+      // ever fires — without this `end` handler the promise would silently
+      // hang until `timeoutMs` (10 minutes by default).
+      sock.on("end", () => { clearTimeout(to); reject(new Error("connection closed without response")); });
       sock.write(JSON.stringify(req) + "\n");
     });
   }

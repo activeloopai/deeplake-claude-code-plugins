@@ -60,15 +60,6 @@ export interface SearchOptions {
    * with lexical search.
    */
   queryEmbedding?: number[] | null;
-  /**
-   * Plain-text phrase used as the BM25 search term via Deeplake's `<#>`
-   * operator on TEXT columns (and on `message::text` for JSONB). Replaces
-   * the old LIKE/ILIKE substring scan: BM25 ranks by term frequency, handles
-   * multi-word queries natively, and respects a real token index (no full
-   * table scan). When the pattern is pure regex (no usable literal) this is
-   * undefined and the caller falls back to the semantic branch alone.
-   */
-  bm25Term?: string;
 }
 
 // ── Content normalization ───────────────────────────────────────────────────
@@ -298,7 +289,7 @@ export async function searchDeeplakeTables(
   sessionsTable: string,
   opts: SearchOptions,
 ): Promise<ContentRow[]> {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, bm25Term, multiWordPatterns } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, multiWordPatterns } = opts;
   const limit = opts.limit ?? 100;
 
   // ── Hybrid (lexical + semantic) branch ───────────────────────────────────
@@ -522,19 +513,6 @@ export function buildGrepSearchOptions(params: GrepMatchParams, targetPath: stri
   const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
   const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
   const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
-  // bm25Term: the raw phrase we hand to Deeplake's `<#>` operator on TEXT /
-  // JSONB. Non-regex patterns go through verbatim; regex patterns collapse
-  // to their extracted literal prefilter (longest literal for a single
-  // prefilter, space-joined alternations otherwise). If nothing literal can
-  // be extracted, bm25Term is undefined and callers fall back to semantic.
-  let bm25Term: string | undefined;
-  if (!hasRegexMeta) {
-    bm25Term = params.pattern;
-  } else if (alternationPrefilters && alternationPrefilters.length > 0) {
-    bm25Term = alternationPrefilters.join(" ");
-  } else if (literalPrefilter) {
-    bm25Term = literalPrefilter;
-  }
 
   // For non-regex multi-word patterns, split into per-word OR filters so
   // natural-language queries match any token, not only the full phrase.
@@ -545,13 +523,10 @@ export function buildGrepSearchOptions(params: GrepMatchParams, targetPath: stri
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
-    // Kept for the pure-lexical fallback path and existing tests; BM25 is now
-    // the preferred lexical ranker when a term can be extracted.
     likeOp: process.env.HIVEMIND_GREP_LIKE === "case-sensitive" ? "LIKE" : "ILIKE",
     escapedPattern: sqlLike(params.pattern),
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : undefined,
     prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
-    bm25Term,
     multiWordPatterns: multiWordPatterns.length > 1
       ? multiWordPatterns.map((w) => sqlLike(w))
       : undefined,

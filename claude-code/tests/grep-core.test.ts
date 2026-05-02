@@ -1289,36 +1289,8 @@ describe("serializeFloat4Array (indirect)", () => {
   });
 });
 
-describe("bm25Term derivation in buildGrepSearchOptions", () => {
-  it("populates bm25Term with the raw pattern for non-regex fixed strings", () => {
-    const opts = buildGrepSearchOptions(
-      { pattern: "charity race", fixedString: true, ignoreCase: false, wordMatch: false, lineNumber: false, invertMatch: false, filesOnly: false, countOnly: false },
-      "/"
-    );
-    expect(opts.bm25Term).toBe("charity race");
-  });
-
-  it("uses the extracted literal prefilter for regex patterns", () => {
-    const opts = buildGrepSearchOptions(
-      { pattern: "foo.*bar", fixedString: false, ignoreCase: false, wordMatch: false, lineNumber: false, invertMatch: false, filesOnly: false, countOnly: false },
-      "/"
-    );
-    expect(opts.bm25Term).toBe("foo");
-  });
-
-  it("joins alternation prefilters with spaces for BM25", () => {
-    const opts = buildGrepSearchOptions(
-      { pattern: "apple|banana|cherry", fixedString: false, ignoreCase: false, wordMatch: false, lineNumber: false, invertMatch: false, filesOnly: false, countOnly: false },
-      "/"
-    );
-    expect(opts.bm25Term).toBe("apple banana cherry");
-  });
-
-  it("returns undefined bm25Term when the regex has no extractable literal", () => {
-    const opts = buildGrepSearchOptions(
-      { pattern: "(?:a)", fixedString: false, ignoreCase: false, wordMatch: false, lineNumber: false, invertMatch: false, filesOnly: false, countOnly: false },
-      "/"
-    );
-    expect(opts.bm25Term).toBeUndefined();
-  });
-});
+// `bm25Term` was scaffolding for a BM25 lexical-ranker branch that was
+// dropped during the original hybrid-grep work (see commit 7b51043 — BM25
+// score scale was overpowering cosine in the UNION). The field was
+// destructured by `searchDeeplakeTables` but never read. Removed in the
+// PR review follow-up — its tests would have locked dead code in place.

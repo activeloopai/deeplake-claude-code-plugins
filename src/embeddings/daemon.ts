@@ -67,7 +67,14 @@ export class EmbedDaemon {
     this.server = createServer((sock) => this.handleConnection(sock));
     await new Promise<void>((resolve, reject) => {
       this.server!.once("error", reject);
+      // Tighten umask before listen() so the socket file is created with
+      // 0o600-equivalent permissions (rw for owner only). Without this,
+      // listen() uses the process-default umask and there's a brief window
+      // between bind and the chmodSync where another local user could
+      // connect. Restore the previous umask immediately after.
+      const prevUmask = process.umask(0o177);
       this.server!.listen(this.socketPath, () => {
+        process.umask(prevUmask);
         try { chmodSync(this.socketPath, 0o600); } catch { /* best-effort */ }
         log(`listening on ${this.socketPath}`);
         resolve();
@@ -117,6 +124,10 @@ export class EmbedDaemon {
     try {
       req = JSON.parse(line);
     } catch {
+      // Don't silently drop — the client is keyed by id (or by first response
+      // on the socket) and would otherwise block until its own timeoutMs.
+      // Send a sentinel error response so the client fails fast instead.
+      sock.write(JSON.stringify({ id: "unknown", error: "parse error" }) + "\n");
       return;
     }
     try {

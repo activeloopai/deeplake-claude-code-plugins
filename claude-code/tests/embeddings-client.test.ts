@@ -249,6 +249,32 @@ describe("EmbedClient", () => {
     expect(vec).toBeNull();
   });
 
+  it("returns null fast when the daemon FINs without sending a response (half-close)", async () => {
+    // Regression guard for the PR review fix: before the `end` handler in
+    // sendAndWait, this scenario would block until the configured timeoutMs
+    // (10 minutes by default). Now the client must reject immediately on
+    // half-close. We set a very short timeoutMs to make the failure mode
+    // (silent hang) detectable as a test timeout if the fix regresses.
+    const dir = makeTmpDir();
+    const uid = String(process.getuid?.() ?? "test");
+    const sockPath = join(dir, `hivemind-embed-${uid}.sock`);
+    const srv = createServer((sock: Socket) => {
+      // Accept, then half-close after the client sends — no response written.
+      sock.on("data", () => sock.end());
+    });
+    servers.push(srv);
+    await new Promise<void>((resolve) => srv.listen(sockPath, resolve));
+
+    const client = new EmbedClient({ socketDir: dir, timeoutMs: 60_000, autoSpawn: false });
+    const start = Date.now();
+    const vec = await client.embed("boom");
+    const elapsed = Date.now() - start;
+    expect(vec).toBeNull();
+    // Fast rejection: well under timeoutMs. The pre-fix code would hang
+    // until 60 000 ms; we expect the half-close to land in < 1 s.
+    expect(elapsed).toBeLessThan(1000);
+  });
+
   it("getEmbedClient() returns a cached singleton", () => {
     const a = getEmbedClient();
     const b = getEmbedClient();
