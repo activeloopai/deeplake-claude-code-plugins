@@ -748,7 +748,7 @@ function buildPathCondition(targetPath) {
   return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%' ESCAPE '\\')`;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, bm25Term, multiWordPatterns } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, multiWordPatterns } = opts;
   const limit = opts.limit ?? 100;
   if (queryEmbedding && queryEmbedding.length > 0) {
     const vecLit = serializeFloat4Array(queryEmbedding);
@@ -878,25 +878,14 @@ function buildGrepSearchOptions(params, targetPath) {
   const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
   const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
   const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
-  let bm25Term;
-  if (!hasRegexMeta) {
-    bm25Term = params.pattern;
-  } else if (alternationPrefilters && alternationPrefilters.length > 0) {
-    bm25Term = alternationPrefilters.join(" ");
-  } else if (literalPrefilter) {
-    bm25Term = literalPrefilter;
-  }
   const multiWordPatterns = !hasRegexMeta ? params.pattern.split(/\s+/).filter((w) => w.length > 2).slice(0, 4) : [];
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
-    // Kept for the pure-lexical fallback path and existing tests; BM25 is now
-    // the preferred lexical ranker when a term can be extracted.
     likeOp: process.env.HIVEMIND_GREP_LIKE === "case-sensitive" ? "LIKE" : "ILIKE",
     escapedPattern: sqlLike(params.pattern),
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0,
     prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
-    bm25Term,
     multiWordPatterns: multiWordPatterns.length > 1 ? multiWordPatterns.map((w) => sqlLike(w)) : void 0
   };
 }
@@ -1228,6 +1217,10 @@ var EmbedClient = class {
       sock.on("error", (e) => {
         clearTimeout(to);
         reject(e);
+      });
+      sock.on("end", () => {
+        clearTimeout(to);
+        reject(new Error("connection closed without response"));
       });
       sock.write(JSON.stringify(req) + "\n");
     });

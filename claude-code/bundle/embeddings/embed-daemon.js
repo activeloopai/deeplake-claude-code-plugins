@@ -139,7 +139,9 @@ var EmbedDaemon = class {
     this.server = createServer((sock) => this.handleConnection(sock));
     await new Promise((resolve, reject) => {
       this.server.once("error", reject);
+      const prevUmask = process.umask(127);
       this.server.listen(this.socketPath, () => {
+        process.umask(prevUmask);
         try {
           chmodSync(this.socketPath, 384);
         } catch {
@@ -201,6 +203,7 @@ var EmbedDaemon = class {
     try {
       req = JSON.parse(line);
     } catch {
+      sock.write(JSON.stringify({ id: "unknown", error: "parse error" }) + "\n");
       return;
     }
     try {

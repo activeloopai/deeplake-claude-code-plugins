@@ -362,6 +362,10 @@ var EmbedClient = class {
         clearTimeout(to);
         reject(e);
       });
+      sock.on("end", () => {
+        clearTimeout(to);
+        reject(new Error("connection closed without response"));
+      });
       sock.write(JSON.stringify(req) + "\n");
     });
   }
