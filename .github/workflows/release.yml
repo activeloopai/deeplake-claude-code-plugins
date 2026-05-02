@@ -74,6 +74,16 @@ jobs:
               fs.writeFileSync(cpf, JSON.stringify(cd, null, 2) + '\n');
             }
           "
+          # Rebuild bundles so any version-baked-in literal (e.g. the
+          # X-Deeplake-Client header from src/utils/client-header.ts that
+          # esbuild inlines via 'define') picks up $VERSION instead of the
+          # previous release's value. Without this step, every release
+          # shipped bundles carrying the OLD version, and CI's
+          # 'Verify bundle/' check failed on every subsequent PR until
+          # someone manually rebuilt + committed bundles
+          # (see prior chore commits 6f1d89a, 8f911ba).
+          npm install
+          npm run build
           git add -A
           git commit -m "chore: bump version to $VERSION"
           git push

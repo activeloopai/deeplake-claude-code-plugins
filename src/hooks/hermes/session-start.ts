@@ -87,6 +87,8 @@ async function main(): Promise<void> {
       const config = loadConfig();
       if (config) {
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+        await api.ensureTable();
+        await api.ensureSessionsTable(config.sessionsTableName);
         await createPlaceholder(api, config.tableName, sessionId, cwd, config.userName, config.orgName, config.workspaceId);
         log("placeholder created");
       }

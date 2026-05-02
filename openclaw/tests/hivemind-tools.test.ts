@@ -290,19 +290,19 @@ describe("hivemind_index", () => {
       .mockResolvedValueOnce([])
       // Then the /index.md fallback path issues two queries for the index build.
       .mockResolvedValueOnce([
-        { path: "/summaries/alice/abc.md", project: "openclaw-coexist", description: "Debugging hivemind coexistence", creation_date: "2026-04-22T12:00:00Z" },
+        { path: "/summaries/alice/abc.md", project: "openclaw-coexist", description: "Debugging hivemind coexistence", creation_date: "2026-04-22T12:00:00Z", last_update_date: "2026-04-22T12:30:00Z" },
       ])
       .mockResolvedValueOnce([
-        { path: "/sessions/alice/alice_o_ws_xyz.jsonl", description: "Telegram session" },
+        { path: "/sessions/alice/alice_o_ws_xyz.jsonl", description: "Telegram session", creation_date: "2026-04-22T12:00:00Z", last_update_date: "2026-04-22T12:30:00Z" },
       ]);
     const { tools } = await loadPluginWithTools();
     const index = tools.find(t => t.name === "hivemind_index")!;
     const result = await index.execute(undefined, {});
     const text = result.content[0].text;
-    expect(text).toContain("# Memory Index");
-    expect(text).toContain("/summaries/alice/abc.md");
-    expect(text).toContain("/sessions/alice/alice_o_ws_xyz.jsonl");
-    expect(text).toContain("1 summaries");
-    expect(text).toContain("1 sessions");
+    expect(text).toContain("# Session Index");
+    expect(text).toContain("## memory");
+    expect(text).toContain("## sessions");
+    expect(text).toContain("[abc](summaries/alice/abc.md)");
+    expect(text).toContain("[alice_o_ws_xyz.jsonl](sessions/alice/alice_o_ws_xyz.jsonl)");
   });
 });

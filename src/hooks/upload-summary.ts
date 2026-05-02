@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { embeddingSqlLiteral } from "../embeddings/sql.js";
 
 export type QueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
 
@@ -22,6 +23,13 @@ export interface UploadParams {
   sessionId: string;
   text: string;
   ts?: string;
+  /**
+   * Pre-computed nomic embedding of `text` to store alongside the summary.
+   * Passing `null` or `undefined` writes SQL NULL — the column stays
+   * schema-compatible and the row is still reachable via the lexical
+   * retrieval branch, it just won't show up in the semantic branch.
+   */
+  embedding?: number[] | null;
 }
 
 export interface UploadResult {
@@ -56,6 +64,7 @@ export async function uploadSummary(query: QueryFn, params: UploadParams): Promi
   const ts = params.ts ?? new Date().toISOString();
   const desc = extractDescription(text);
   const sizeBytes = Buffer.byteLength(text);
+  const embSql = embeddingSqlLiteral(params.embedding ?? null);
 
   const existing = await query(
     `SELECT path FROM "${tableName}" WHERE path = '${esc(vpath)}' LIMIT 1`
@@ -65,6 +74,7 @@ export async function uploadSummary(query: QueryFn, params: UploadParams): Promi
     const sql =
       `UPDATE "${tableName}" SET ` +
       `summary = E'${esc(text)}', ` +
+      `summary_embedding = ${embSql}, ` +
       `size_bytes = ${sizeBytes}, ` +
       `description = E'${esc(desc)}', ` +
       `last_update_date = '${ts}' ` +
@@ -74,8 +84,8 @@ export async function uploadSummary(query: QueryFn, params: UploadParams): Promi
   }
 
   const sql =
-    `INSERT INTO "${tableName}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) ` +
-    `VALUES ('${randomUUID()}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', '${esc(userName)}', 'text/markdown', ` +
+    `INSERT INTO "${tableName}" (id, path, filename, summary, summary_embedding, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `VALUES ('${randomUUID()}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', ${embSql}, '${esc(userName)}', 'text/markdown', ` +
     `${sizeBytes}, '${esc(project)}', E'${esc(desc)}', '${esc(agent)}', '${ts}', '${ts}')`;
   await query(sql);
   return { path: "insert", sql, descLength: desc.length, summaryLength: text.length };

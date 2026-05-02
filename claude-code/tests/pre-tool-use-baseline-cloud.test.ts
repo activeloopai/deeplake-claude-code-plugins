@@ -113,20 +113,27 @@ function makeBaselineWorkspaceApi(sessionRows = SESSION_ROWS) {
 }
 
 describe("baseline_cloud 3-QA regression: sessions-only workspace", () => {
-  it("pure builder renders a real 272-row index without the old '0 sessions:' bug", () => {
+  it("pure builder renders the full session listing without the old '0 sessions:' bug", () => {
     const content = buildVirtualIndexContent([], SESSION_ROWS);
 
-    expect(content).toContain("272 entries (0 summaries, 272 sessions):");
-    expect(content).toContain("## Sessions");
-    expect(content).not.toContain("## Summaries");
-    // Bug guard: the old output had a lone "${n} sessions:" header with
-    // n taken from summary rows only. In this workspace that would be 0.
+    expect(content).toContain("# Session Index");
+    expect(content).toContain("## sessions");
+    // Memory section is always emitted now; on an empty memory it carries
+    // an explicit empty notice. That replaces the pre-fix logic that
+    // omitted the section header — we keep both bits visible.
+    expect(content).toContain("## memory");
+    expect(content).toContain("_(empty — no summaries ingested yet)_");
+    // Original bug guard: the old output had a lone "${n} sessions:" header
+    // sourced from summary-row count only. The new format has no count line
+    // at all, so these regex anchors stay green.
     expect(content).not.toMatch(/^0 sessions:$/m);
     expect(content).not.toContain("\n0 sessions:\n");
 
-    // Every real session path from the fixture must appear in the index.
+    // Every real session path from the fixture must appear in the rendered
+    // table. Paths render workspace-relative (no leading slash) so we strip
+    // the slash before checking.
     for (const row of SESSION_ROWS) {
-      expect(content).toContain(row.path);
+      expect(content).toContain(row.path.slice(1));
     }
   });
 
@@ -135,10 +142,15 @@ describe("baseline_cloud 3-QA regression: sessions-only workspace", () => {
     const result = await readVirtualPathContents(api, "memory", "sessions", ["/index.md"]);
     const indexContent = result.get("/index.md") ?? "";
 
-    expect(indexContent).toContain("272 entries (0 summaries, 272 sessions):");
-    // Must land on the three sessions that carry answers for our 3 real QAs.
+    expect(indexContent).toContain("# Session Index");
+    expect(indexContent).toContain("## sessions");
+    // The fallback now slices to the first 50 most-recently-updated rows
+    // (LIMIT in the SQL keeps DB cost bounded; slice trims the +1 sentinel
+    // used to detect truncation). The fixture's first 50 in insertion order
+    // happen to be conv_0_session_1..35 + conv_1_session_1..15, which
+    // covers all REAL_QAs (conv 0 sessions 1, 2, 7, 10).
     for (const qa of REAL_QAS) {
-      expect(indexContent).toContain(qa.expected_session_file);
+      expect(indexContent).toContain(qa.expected_session_file.slice(1));
     }
   });
 
@@ -184,11 +196,13 @@ describe("baseline_cloud 3-QA regression: sessions-only workspace", () => {
         expect(decision?.file_path).toBe(materialized?.returnedPath);
 
         const body = materialized?.content ?? "";
-        expect(body).toContain("# Memory Index");
-        expect(body).toContain("272 entries (0 summaries, 272 sessions):");
-        expect(body).toContain(qa.expected_session_file);
+        expect(body).toContain("# Session Index");
+        expect(body).toContain("## sessions");
+        // Path renders without leading slash (workspace-relative link target).
+        expect(body).toContain(qa.expected_session_file.slice(1));
         // Fix #1 regression guard (still important after fix #2): the old
         // synthesized index reported sessions from the memory table only.
+        // The new format has no count line at all so these regex stay green.
         expect(body).not.toMatch(/\b0 sessions:/);
         expect(body).not.toMatch(/\b1 sessions:/);
       });
@@ -218,8 +232,9 @@ describe("baseline_cloud 3-QA regression: sessions-only workspace", () => {
         // an `echo "..."` payload so the virtual shell isn't needed here.
         expect(decision?.file_path).toBeUndefined();
         const body = decision?.command ?? "";
-        expect(body).toContain("272 entries (0 summaries, 272 sessions):");
-        expect(body).toContain(qa.expected_session_file);
+        expect(body).toContain("# Session Index");
+        // Path renders without leading slash (workspace-relative link target).
+        expect(body).toContain(qa.expected_session_file.slice(1));
       });
     });
   }
@@ -372,7 +387,7 @@ describe("baseline_cloud 3-QA regression: sessions-only workspace", () => {
     // "${n} sessions:" would appear in the output instead of the dual-
     // table "${total} entries (${s} summaries, ${n} sessions):" header.
     const api = { query: vi.fn(async () => []) } as any;
-    const readVirtualPathContentFn = vi.fn(async () => "# Memory Index\n\n272 entries (0 summaries, 272 sessions):\n");
+    const readVirtualPathContentFn = vi.fn(async () => "# Session Index\n\n## sessions\n\n| Session | Created | Last Updated | Description |\n|---------|---------|--------------|-------------|\n| [conv_0_session_1.json](sessions/conv_0_session_1.json) |  |  |  |\n");
     let materialized: string | undefined;
 
     const decision = await processPreToolUse(
@@ -397,9 +412,11 @@ describe("baseline_cloud 3-QA regression: sessions-only workspace", () => {
 
     expect(decision).not.toBeNull();
     expect(materialized).toBeDefined();
-    // The dual-table builder's content was materialized, not the
-    // single-table "N sessions:" fallback.
-    expect(materialized).toContain("272 entries (0 summaries, 272 sessions):");
+    // The dual-table builder's content was materialized, not any inline
+    // fallback. New format: "# Session Index" header + "## sessions" section.
+    expect(materialized).toContain("# Session Index");
+    expect(materialized).toContain("## sessions");
+    // Pre-fix bug-shape "${n} sessions:" header must not reappear.
     expect(materialized).not.toMatch(/\n\d+ sessions:\n/);
     // Production code must not issue its own fallback SELECT against
     // memory for /index.md — it delegates entirely to readVirtualPath.

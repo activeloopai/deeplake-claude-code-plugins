@@ -26,6 +26,12 @@ vi.mock("../../src/deeplake-api.js", () => ({
     ensureSessionsTable(t: string) { return ensureSessionsTableMock(t); }
   },
 }));
+vi.mock("../../src/embeddings/client.js", () => ({
+  EmbedClient: class {
+    embed(_text: string, _kind?: string) { return Promise.resolve(null); }
+    warmup() { return Promise.resolve(false); }
+  },
+}));
 vi.mock("../../src/utils/session-path.js", () => ({
   buildSessionPath: (...a: unknown[]) => buildSessionPathMock(...a),
 }));
@@ -237,5 +243,41 @@ describe("cursor capture hook — INSERT failure handling", () => {
     await runHook();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("fatal: syntax error"));
     expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+});
+
+describe("cursor capture hook — message_embedding column", () => {
+  it("INSERT carries the message_embedding column in the column list", async () => {
+    stdinMock.mockResolvedValue({
+      conversation_id: "sid-emb-1",
+      hook_event_name: "beforeSubmitPrompt",
+      prompt: "embed me",
+    });
+    await runHook();
+    const sql = queryMock.mock.calls[0][0] as string;
+    expect(sql).toMatch(/\(id, path, filename, message, message_embedding,/);
+  });
+
+  it("emits NULL for the embedding value when EmbedClient returns null", async () => {
+    stdinMock.mockResolvedValue({
+      conversation_id: "sid-emb-2",
+      hook_event_name: "beforeSubmitPrompt",
+      prompt: "no daemon",
+    });
+    await runHook();
+    const sql = queryMock.mock.calls[0][0] as string;
+    expect(sql).toContain("'::jsonb, NULL,");
+  });
+
+  it("HIVEMIND_EMBEDDINGS=false short-circuits to NULL without invoking EmbedClient", async () => {
+    stdinMock.mockResolvedValue({
+      conversation_id: "sid-emb-3",
+      hook_event_name: "beforeSubmitPrompt",
+      prompt: "disabled",
+    });
+    await runHook({ HIVEMIND_EMBEDDINGS: "false" });
+    const sql = queryMock.mock.calls[0][0] as string;
+    expect(sql).toContain("'::jsonb, NULL,");
+    expect(sql).toMatch(/, message_embedding,/);
   });
 });

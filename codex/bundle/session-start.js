@@ -9,16 +9,18 @@ import { dirname as dirname2, join as join4 } from "node:path";
 import { execSync } from "node:child_process";
 
 // dist/src/commands/auth-creds.js
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-var CONFIG_DIR = join(homedir(), ".deeplake");
-var CREDS_PATH = join(CONFIG_DIR, "credentials.json");
+function configDir() {
+  return join(homedir(), ".deeplake");
+}
+function credsPath() {
+  return join(configDir(), "credentials.json");
+}
 function loadCredentials() {
-  if (!existsSync(CREDS_PATH))
-    return null;
   try {
-    return JSON.parse(readFileSync(CREDS_PATH, "utf-8"));
+    return JSON.parse(readFileSync(credsPath(), "utf-8"));
   } catch {
     return null;
   }
@@ -102,9 +104,20 @@ var __bundleDir = dirname2(fileURLToPath(import.meta.url));
 var AUTH_CMD = join4(__bundleDir, "commands", "auth-login.js");
 var context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
 
-Structure: index.md (start here) \u2192 summaries/*.md \u2192 sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
-Search: grep -r "keyword" ~/.deeplake/memory/
-IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem.
+Deeplake memory has THREE tiers \u2014 pick the right one for the question:
+1. ~/.deeplake/memory/index.md   \u2014 auto-generated index, top 50 most-recently-updated entries with Created + Last Updated + Project + Description columns. ~5 KB. **For "what's recent / who did X this week / since <date>" queries, START HERE** and trust the Last Updated column over any "Started:" line in summary bodies.
+2. ~/.deeplake/memory/summaries/ \u2014 condensed wiki summaries per session (~3 KB each). For keyword/topic recall, search these.
+3. ~/.deeplake/memory/sessions/  \u2014 raw full-dialogue JSONL (~5 KB each). FALLBACK only \u2014 use when summaries don't contain the exact quote/turn you need.
+
+Search workflow:
+- Time-based ("last week", "today", "since X"): cat ~/.deeplake/memory/index.md and read the most-recent rows.
+- Keyword/topic recall: grep -r "keyword" ~/.deeplake/memory/summaries/ (the shell hook routes this through hybrid lexical+semantic search \u2014 synonyms match too). Then cat the top-matching summary.
+- Raw transcript fallback only: grep -r "keyword" ~/.deeplake/memory/sessions/ (use sparingly \u2014 JSONL is verbose).
+
+\u2705 grep -r "keyword" ~/.deeplake/memory/summaries/
+\u274C grep without a summaries/ or sessions/ suffix \u2014 too noisy
+
+IMPORTANT: Only use bash builtins (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) on ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem.
 Do NOT spawn subagents to read deeplake memory.`;
 async function main() {
   if (process.env.HIVEMIND_WIKI_WORKER === "1")
