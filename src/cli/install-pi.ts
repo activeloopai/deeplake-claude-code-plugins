@@ -32,6 +32,13 @@ const LEGACY_SKILL_DIR = join(PI_AGENT_DIR, "skills", "hivemind-memory");
 const EXTENSIONS_DIR = join(PI_AGENT_DIR, "extensions");
 const EXTENSION_PATH = join(EXTENSIONS_DIR, "hivemind.ts");
 const VERSION_DIR = join(PI_AGENT_DIR, ".hivemind");
+// Pi's session_shutdown handler spawns this bundled wiki-worker (which
+// itself shells `pi --print`) to generate the AI summary + embed it via
+// the canonical daemon. CC/codex/cursor/hermes ship their wiki-worker
+// inside their per-agent bundles; pi has no per-agent bundle so we
+// install it as a separate file alongside.
+const WIKI_WORKER_DIR = join(PI_AGENT_DIR, "hivemind");
+const WIKI_WORKER_PATH = join(WIKI_WORKER_DIR, "wiki-worker.js");
 
 const HIVEMIND_BLOCK_START = "<!-- BEGIN hivemind-memory -->";
 const HIVEMIND_BLOCK_END = "<!-- END hivemind-memory -->";
@@ -107,11 +114,22 @@ export function installPi(): void {
   ensureDir(EXTENSIONS_DIR);
   copyFileSync(srcExtension, EXTENSION_PATH);
 
+  // 3. Wiki-worker bundle (spawned by extension at periodic + session_shutdown
+  //    triggers to generate AI summary via `pi --print`).
+  const srcWorker = join(pkgRoot(), "pi", "bundle", "wiki-worker.js");
+  if (existsSync(srcWorker)) {
+    ensureDir(WIKI_WORKER_DIR);
+    copyFileSync(srcWorker, WIKI_WORKER_PATH);
+  }
+
   ensureDir(VERSION_DIR);
   writeVersionStamp(VERSION_DIR, getVersion());
 
   log(`  pi             AGENTS.md updated -> ${AGENTS_MD}`);
   log(`  pi             extension installed -> ${EXTENSION_PATH}`);
+  if (existsSync(WIKI_WORKER_PATH)) {
+    log(`  pi             wiki-worker installed -> ${WIKI_WORKER_PATH}`);
+  }
 }
 
 export function uninstallPi(): void {
@@ -122,6 +140,10 @@ export function uninstallPi(): void {
   if (existsSync(EXTENSION_PATH)) {
     rmSync(EXTENSION_PATH, { force: true });
     log(`  pi             removed extension ${EXTENSION_PATH}`);
+  }
+  if (existsSync(WIKI_WORKER_DIR)) {
+    rmSync(WIKI_WORKER_DIR, { recursive: true, force: true });
+    log(`  pi             removed wiki-worker dir ${WIKI_WORKER_DIR}`);
   }
   if (existsSync(AGENTS_MD)) {
     const prior = readFileSync(AGENTS_MD, "utf-8");

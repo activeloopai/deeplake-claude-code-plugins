@@ -23351,6 +23351,10 @@ function sqlLike(value) {
   return sqlStr(value).replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 
+// dist/src/embeddings/columns.js
+var SUMMARY_EMBEDDING_COL = "summary_embedding";
+var MESSAGE_EMBEDDING_COL = "message_embedding";
+
 // dist/src/deeplake-api.js
 var indexMarkerStorePromise = null;
 function getIndexMarkerStore() {
@@ -23492,7 +23496,8 @@ var DeeplakeApi = class {
       }
       const text = await resp.text().catch(() => "");
       const retryable403 = isSessionInsertQuery(sql) && (resp.status === 401 || resp.status === 403 && (text.length === 0 || isTransientHtml403(text)));
-      if (attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
+      const alreadyExists = resp.status === 500 && isDuplicateIndexError(text);
+      if (!alreadyExists && attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
         log2(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
         await sleep(delay);
@@ -23526,7 +23531,7 @@ var DeeplakeApi = class {
     const lud = row.lastUpdateDate ?? ts;
     const exists = await this.query(`SELECT path FROM "${this.tableName}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`);
     if (exists.length > 0) {
-      let setClauses = `summary = E'${sqlStr(row.contentText)}', mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
+      let setClauses = `summary = E'${sqlStr(row.contentText)}', ${SUMMARY_EMBEDDING_COL} = NULL, mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
       if (row.project !== void 0)
         setClauses += `, project = '${sqlStr(row.project)}'`;
       if (row.description !== void 0)
@@ -23534,8 +23539,8 @@ var DeeplakeApi = class {
       await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(row.path)}'`);
     } else {
       const id = randomUUID();
-      let cols = "id, path, filename, summary, mime_type, size_bytes, creation_date, last_update_date";
-      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
+      let cols = `id, path, filename, summary, ${SUMMARY_EMBEDDING_COL}, mime_type, size_bytes, creation_date, last_update_date`;
+      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', NULL, '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
       if (row.project !== void 0) {
         cols += ", project";
         vals += `, '${sqlStr(row.project)}'`;
@@ -23576,6 +23581,66 @@ var DeeplakeApi = class {
       }
       log2(`index "${indexName}" skipped: ${e.message}`);
     }
+  }
+  /**
+   * Ensure a vector column exists on the given table.
+   *
+   * The previous implementation always issued `ALTER TABLE ADD COLUMN IF NOT
+   * EXISTS …` on every SessionStart. On a long-running workspace that's
+   * already migrated, every call returns 500 "Column already exists" — noisy
+   * in the log and a wasted round-trip. Worse, the very first call after the
+   * column is genuinely added triggers Deeplake's post-ALTER `vector::at`
+   * window (~30s) during which subsequent INSERTs fail; minimising the
+   * number of ALTER calls minimises exposure to that window.
+   *
+   * New flow:
+   *   1. Check the local marker file (mirrors ensureLookupIndex). If fresh,
+   *      return — zero network calls.
+   *   2. SELECT 1 FROM information_schema.columns WHERE table_name = T AND
+   *      column_name = C. Read-only, idempotent, can't tickle the post-ALTER
+   *      bug. If the column is present → mark + return.
+   *   3. Only if step 2 says the column is missing, fall back to ALTER ADD
+   *      COLUMN IF NOT EXISTS. Mark on success, also mark if Deeplake reports
+   *      "already exists" (race: another client added it between our SELECT
+   *      and ALTER).
+   *
+   * Marker uses the same dir / TTL as ensureLookupIndex so both schema
+   * caches share an opt-out (HIVEMIND_INDEX_MARKER_DIR) and a TTL knob.
+   */
+  async ensureEmbeddingColumn(table, column) {
+    await this.ensureColumn(table, column, "FLOAT4[]");
+  }
+  /**
+   * Generic marker-gated column migration. Same SELECT-then-ALTER flow as
+   * ensureEmbeddingColumn, parameterized by SQL type so it can patch up any
+   * column that was added to the schema after the table was originally
+   * created. Used today for `summary_embedding`, `message_embedding`, and
+   * the `agent` column (added 2026-04-11) — the latter has no fallback if
+   * a user upgraded over a pre-2026-04-11 table, so every INSERT fails
+   * with `column "agent" does not exist`.
+   */
+  async ensureColumn(table, column, sqlType) {
+    const markers = await getIndexMarkerStore();
+    const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, `col_${column}`);
+    if (markers.hasFreshIndexMarker(markerPath))
+      return;
+    const colCheck = `SELECT 1 FROM information_schema.columns WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' AND table_schema = '${sqlStr(this.workspaceId)}' LIMIT 1`;
+    const rows = await this.query(colCheck);
+    if (rows.length > 0) {
+      markers.writeIndexMarker(markerPath);
+      return;
+    }
+    try {
+      await this.query(`ALTER TABLE "${table}" ADD COLUMN ${column} ${sqlType}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/already exists/i.test(msg))
+        throw e;
+      const recheck = await this.query(colCheck);
+      if (recheck.length === 0)
+        throw e;
+    }
+    markers.writeIndexMarker(markerPath);
   }
   /** List all tables in the workspace (with retry). */
   async listTables(forceRefresh = false) {
@@ -23652,22 +23717,26 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, tbl);
+      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', summary_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, tbl);
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
     }
+    await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
+    await this.ensureColumn(tbl, "agent", "TEXT NOT NULL DEFAULT ''");
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
   async ensureSessionsTable(name) {
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, name);
+      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, message_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, name);
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
     }
+    await this.ensureEmbeddingColumn(name, MESSAGE_EMBEDDING_COL);
+    await this.ensureColumn(name, "agent", "TEXT NOT NULL DEFAULT ''");
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
 };
@@ -23836,23 +23905,24 @@ function normalizeContent(path, raw) {
     return raw;
   }
   if (Array.isArray(obj.turns)) {
-    const header = [];
-    if (obj.date_time)
-      header.push(`date: ${obj.date_time}`);
-    if (obj.speakers) {
-      const s = obj.speakers;
-      const names = [s.speaker_a, s.speaker_b].filter(Boolean).join(", ");
-      if (names)
-        header.push(`speakers: ${names}`);
-    }
+    const dateHeader = obj.date_time ? `(${String(obj.date_time)}) ` : "";
     const lines = obj.turns.map((t) => {
       const sp = String(t?.speaker ?? t?.name ?? "?").trim();
       const tx = String(t?.text ?? t?.content ?? "").replace(/\s+/g, " ").trim();
       const tag = t?.dia_id ? `[${t.dia_id}] ` : "";
-      return `${tag}${sp}: ${tx}`;
+      return `${dateHeader}${tag}${sp}: ${tx}`;
     });
-    const out2 = [...header, ...lines].join("\n");
+    const out2 = lines.join("\n");
     return out2.trim() ? out2 : raw;
+  }
+  if (obj.turn && typeof obj.turn === "object" && !Array.isArray(obj.turn)) {
+    const t = obj.turn;
+    const sp = String(t.speaker ?? t.name ?? "?").trim();
+    const tx = String(t.text ?? t.content ?? "").replace(/\s+/g, " ").trim();
+    const tag = t.dia_id ? `[${String(t.dia_id)}] ` : "";
+    const dateHeader = obj.date_time ? `(${String(obj.date_time)}) ` : "";
+    const line = `${dateHeader}${tag}${sp}: ${tx}`;
+    return line.trim() ? line : raw;
   }
   const stripRecalled = (t) => {
     const i = t.indexOf("<recalled-memories>");
@@ -23896,8 +23966,38 @@ function buildPathCondition(targetPath) {
   return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%' ESCAPE '\\')`;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, multiWordPatterns } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, multiWordPatterns } = opts;
   const limit = opts.limit ?? 100;
+  if (queryEmbedding && queryEmbedding.length > 0) {
+    const vecLit = serializeFloat4Array(queryEmbedding);
+    const semanticLimit = Math.min(limit, Number(process.env.HIVEMIND_SEMANTIC_LIMIT ?? "20"));
+    const lexicalLimit = Math.min(limit, Number(process.env.HIVEMIND_HYBRID_LEXICAL_LIMIT ?? "20"));
+    const filterPatternsForLex = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : [escapedPattern];
+    const memLexFilter = buildContentFilter("summary::text", likeOp, filterPatternsForLex);
+    const sessLexFilter = buildContentFilter("message::text", likeOp, filterPatternsForLex);
+    const memLexQuery = memLexFilter ? `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, 1.0 AS score FROM "${memoryTable}" WHERE 1=1${pathFilter}${memLexFilter} LIMIT ${lexicalLimit}` : null;
+    const sessLexQuery = sessLexFilter ? `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, 1.0 AS score FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessLexFilter} LIMIT ${lexicalLimit}` : null;
+    const memSemQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, (summary_embedding <#> ${vecLit}) AS score FROM "${memoryTable}" WHERE ARRAY_LENGTH(summary_embedding, 1) > 0${pathFilter} ORDER BY score DESC LIMIT ${semanticLimit}`;
+    const sessSemQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, (message_embedding <#> ${vecLit}) AS score FROM "${sessionsTable}" WHERE ARRAY_LENGTH(message_embedding, 1) > 0${pathFilter} ORDER BY score DESC LIMIT ${semanticLimit}`;
+    const parts = [memSemQuery, sessSemQuery];
+    if (memLexQuery)
+      parts.push(memLexQuery);
+    if (sessLexQuery)
+      parts.push(sessLexQuery);
+    const unionSql = parts.map((q) => `(${q})`).join(" UNION ALL ");
+    const outerLimit = semanticLimit + lexicalLimit;
+    const rows2 = await api.query(`SELECT path, content, source_order, creation_date, score FROM (` + unionSql + `) AS combined ORDER BY score DESC LIMIT ${outerLimit}`);
+    const seen = /* @__PURE__ */ new Set();
+    const unique = [];
+    for (const row of rows2) {
+      const p = String(row["path"]);
+      if (seen.has(p))
+        continue;
+      seen.add(p);
+      unique.push({ path: p, content: String(row["content"] ?? "") });
+    }
+    return unique;
+  }
   const filterPatterns = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : multiWordPatterns && multiWordPatterns.length > 1 ? multiWordPatterns : [escapedPattern];
   const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
   const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
@@ -23908,6 +24008,15 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
     path: String(row["path"]),
     content: String(row["content"] ?? "")
   }));
+}
+function serializeFloat4Array(vec) {
+  const parts = [];
+  for (const v of vec) {
+    if (!Number.isFinite(v))
+      return "NULL";
+    parts.push(String(v));
+  }
+  return `ARRAY[${parts.join(",")}]::float4[]`;
 }
 function buildPathFilter(targetPath) {
   const condition = buildPathCondition(targetPath);
@@ -23991,7 +24100,7 @@ function buildGrepSearchOptions(params, targetPath) {
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
-    likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
+    likeOp: process.env.HIVEMIND_GREP_LIKE === "case-sensitive" ? "LIKE" : "ILIKE",
     escapedPattern: sqlLike(params.pattern),
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0,
     prefilterPatterns: alternationPrefilters?.map((literal2) => sqlLike(literal2)),

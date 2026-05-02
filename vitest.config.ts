@@ -94,6 +94,42 @@ export default defineConfig({
           functions: 90,
           lines: 90,
         },
+        // embedding_generation — nomic daemon + IPC client + SQL helper.
+        // Lines/statements held at 90; branches + functions are allowed to
+        // dip on the daemon because a few paths (SIGINT/SIGTERM handlers,
+        // the non-Linux `typeof process.getuid !== "function"` fallback,
+        // and the server "error" handler) can't be triggered from unit
+        // tests without forking a real subprocess.
+        "src/embeddings/client.ts": {
+          statements: 90,
+          branches: 80,
+          functions: 90,
+          lines: 90,
+        },
+        "src/embeddings/daemon.ts": {
+          statements: 90,
+          branches: 75,
+          functions: 75,
+          lines: 90,
+        },
+        "src/embeddings/nomic.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/embeddings/protocol.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/embeddings/sql.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
         "src/hooks/pre-tool-use.ts": {
           statements: 90,
           branches: 90,

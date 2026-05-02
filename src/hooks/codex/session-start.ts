@@ -24,9 +24,20 @@ const AUTH_CMD = join(__bundleDir, "commands", "auth-login.js");
 
 const context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
 
-Structure: index.md (start here) → summaries/*.md → sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
-Search: grep -r "keyword" ~/.deeplake/memory/
-IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem.
+Deeplake memory has THREE tiers — pick the right one for the question:
+1. ~/.deeplake/memory/index.md   — auto-generated index, top 50 most-recently-updated entries with Created + Last Updated + Project + Description columns. ~5 KB. **For "what's recent / who did X this week / since <date>" queries, START HERE** and trust the Last Updated column over any "Started:" line in summary bodies.
+2. ~/.deeplake/memory/summaries/ — condensed wiki summaries per session (~3 KB each). For keyword/topic recall, search these.
+3. ~/.deeplake/memory/sessions/  — raw full-dialogue JSONL (~5 KB each). FALLBACK only — use when summaries don't contain the exact quote/turn you need.
+
+Search workflow:
+- Time-based ("last week", "today", "since X"): cat ~/.deeplake/memory/index.md and read the most-recent rows.
+- Keyword/topic recall: grep -r "keyword" ~/.deeplake/memory/summaries/ (the shell hook routes this through hybrid lexical+semantic search — synonyms match too). Then cat the top-matching summary.
+- Raw transcript fallback only: grep -r "keyword" ~/.deeplake/memory/sessions/ (use sparingly — JSONL is verbose).
+
+✅ grep -r "keyword" ~/.deeplake/memory/summaries/
+❌ grep without a summaries/ or sessions/ suffix — too noisy
+
+IMPORTANT: Only use bash builtins (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) on ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem.
 Do NOT spawn subagents to read deeplake memory.`;
 
 interface CodexSessionStartInput {

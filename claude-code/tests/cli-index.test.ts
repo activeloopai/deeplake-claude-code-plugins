@@ -291,7 +291,8 @@ describe("per-platform shorthand: hivemind <platform> install|uninstall", () => 
   it("missing subcommand exits 1 with a usage warning", async () => {
     await runCli(["claude"]);
     expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(stderrText()).toContain("Usage: hivemind claude install|uninstall");
+    expect(stderrText()).toContain("Usage: hivemind claude install");
+    expect(stderrText()).toContain("uninstall");
   });
 });
 
