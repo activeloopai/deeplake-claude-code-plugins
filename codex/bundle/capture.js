@@ -128,7 +128,7 @@ function sqlStr(value) {
 // dist/src/utils/client-header.js
 var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
 function deeplakeClientValue() {
-  return `hivemind/${"0.6.50"}`;
+  return `hivemind/${"0.6.51"}`;
 }
 function deeplakeClientHeader() {
   return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
@@ -461,6 +461,11 @@ function buildSessionPath(config, sessionId) {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${workspace}_${sessionId}.jsonl`;
 }
 
+// dist/src/utils/project-name.js
+function resolveProjectName(cwd = process.cwd()) {
+  return cwd.split("/").pop() || "unknown";
+}
+
 // dist/src/hooks/summary-state.js
 import { readFileSync as readFileSync3, writeFileSync as writeFileSync2, writeSync, mkdirSync as mkdirSync2, renameSync, existsSync as existsSync3, unlinkSync, openSync, closeSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
@@ -683,7 +688,7 @@ function findCodexBin() {
 }
 function spawnCodexWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
-  const projectName = cwd.split("/").pop() || "unknown";
+  const projectName = resolveProjectName(cwd);
   const tmpDir = join6(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
   mkdirSync4(tmpDir, { recursive: true });
   const configFile = join6(tmpDir, "config.json");
@@ -766,7 +771,7 @@ async function main() {
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);
   log3(`writing to ${sessionPath}`);
-  const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
+  const projectName = resolveProjectName(input.cwd ?? "");
   const filename = sessionPath.split("/").pop() ?? "";
   const jsonForSql = line.replace(/'/g, "''");
   const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'codex', '${ts}', '${ts}')`;

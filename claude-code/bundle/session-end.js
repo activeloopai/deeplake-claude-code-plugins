@@ -90,6 +90,11 @@ function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
   };
 }
 
+// dist/src/utils/project-name.js
+function resolveProjectName(cwd = process.cwd()) {
+  return cwd.split("/").pop() || "unknown";
+}
+
 // dist/src/hooks/spawn-wiki-worker.js
 var HOME = homedir3();
 var wikiLogger = makeWikiLogger(join4(HOME, ".claude", "hooks"));
@@ -156,7 +161,7 @@ function findClaudeBin() {
 }
 function spawnWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
-  const projectName = cwd.split("/").pop() || "unknown";
+  const projectName = resolveProjectName(cwd);
   const tmpDir = join4(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
   mkdirSync2(tmpDir, { recursive: true });
   const configFile = join4(tmpDir, "config.json");

@@ -131,7 +131,7 @@ function sqlStr(value) {
 // dist/src/utils/client-header.js
 var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
 function deeplakeClientValue() {
-  return `hivemind/${"0.6.50"}`;
+  return `hivemind/${"0.6.51"}`;
 }
 function deeplakeClientHeader() {
   return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
@@ -483,6 +483,11 @@ function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
   };
 }
 
+// dist/src/utils/project-name.js
+function resolveProjectName(cwd = process.cwd()) {
+  return cwd.split("/").pop() || "unknown";
+}
+
 // dist/src/hooks/codex/spawn-wiki-worker.js
 var HOME = homedir3();
 var wikiLogger = makeWikiLogger(join5(HOME, ".codex", "hooks"));
@@ -546,7 +551,7 @@ function findCodexBin() {
 }
 function spawnCodexWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
-  const projectName = cwd.split("/").pop() || "unknown";
+  const projectName = resolveProjectName(cwd);
   const tmpDir = join5(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
   mkdirSync3(tmpDir, { recursive: true });
   const configFile = join5(tmpDir, "config.json");
@@ -697,7 +702,7 @@ async function main() {
       };
       const line = JSON.stringify(entry);
       const sessionPath = buildSessionPath(config, sessionId);
-      const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
+      const projectName = resolveProjectName(input.cwd ?? "");
       const filename = sessionPath.split("/").pop() ?? "";
       const jsonForSql = line.replace(/'/g, "''");
       const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', 'Stop', 'codex', '${ts}', '${ts}')`;

@@ -517,6 +517,11 @@ function getInstalledVersion(bundleDir, pluginManifestDir) {
   return null;
 }
 
+// dist/src/utils/project-name.js
+function resolveProjectName(cwd = process.cwd()) {
+  return cwd.split("/").pop() || "unknown";
+}
+
 // dist/src/hooks/cursor/session-start.js
 var log3 = (msg) => log("cursor-session-start", msg);
 var __bundleDir = dirname2(fileURLToPath(import.meta.url));
@@ -543,7 +548,7 @@ async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, 
   if (existing.length > 0)
     return;
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const projectName = cwd.split("/").pop() ?? "unknown";
+  const projectName = resolveProjectName(cwd);
   const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
   const content = [
     `# Session ${sessionId}`,

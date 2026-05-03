@@ -457,6 +457,11 @@ function buildSessionPath(config, sessionId) {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${workspace}_${sessionId}.jsonl`;
 }
 
+// dist/src/utils/project-name.js
+function resolveProjectName(cwd = process.cwd()) {
+  return cwd.split("/").pop() || "unknown";
+}
+
 // dist/src/hooks/hermes/capture.js
 var log3 = (msg) => log("hermes-capture", msg);
 var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
@@ -524,7 +529,7 @@ async function main() {
   const sessionPath = buildSessionPath(config, sessionId);
   const line = JSON.stringify(entry);
   log3(`writing to ${sessionPath}`);
-  const projectName = cwd.split("/").pop() || "unknown";
+  const projectName = resolveProjectName(cwd);
   const filename = sessionPath.split("/").pop() ?? "";
   const jsonForSql = line.replace(/'/g, "''");
   const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', 'hermes', '${ts}', '${ts}')`;
