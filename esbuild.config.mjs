@@ -23,7 +23,7 @@ const ccShell = [
 
 const ccCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
-  { entry: "dist/src/commands/log-experiment.js", out: "commands/log-experiment" },
+  { entry: "dist/src/commands/gdd.js", out: "commands/gdd" },
 ];
 
 const ccAll = [...ccHooks, ...ccShell, ...ccCommands];
@@ -61,6 +61,7 @@ const codexShell = [
 
 const codexCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
+  { entry: "dist/src/commands/gdd.js", out: "commands/gdd" },
 ];
 
 const codexAll = [...codexHooks, ...codexShell, ...codexCommands];
