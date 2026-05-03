@@ -159,7 +159,7 @@ Auto-capture is enabled the same way as Claude Code / Codex / OpenClaw.
 <details>
   <summary><b>Hermes Agent</b></summary>
 
-Drops an `agentskills.io`-compatible skill at `~/.hermes/skills/hivemind-memory/`. Recall is via direct grep on `~/.deeplake/memory/`. Auto-capture is not yet supported (Hermes' lifecycle-hook surface isn't documented at the time of writing).
+Wires shell hooks into `~/.hermes/config.yaml` (`pre_llm_call` / `post_tool_call` / `post_llm_call` / `on_session_end`) for auto-capture, drops the bundle at `~/.hermes/hivemind/bundle/`, registers the shared MCP server (`~/.hivemind/mcp/server.js`) under `mcp_servers.hivemind`, and installs an `agentskills.io`-compatible skill at `~/.hermes/skills/hivemind-memory/` for recall.
 
 ```bash
 hivemind hermes install
@@ -169,11 +169,13 @@ hivemind hermes install
 <details>
   <summary><b>pi (badlogic/pi-mono coding-agent)</b></summary>
 
-Drops `~/.pi/agent/AGENTS.md` (idempotent BEGIN/END marker block) plus a skill at `~/.pi/agent/skills/hivemind-memory/`. Recall is via direct grep on `~/.deeplake/memory/`.
+Upserts an idempotent BEGIN/END marker block into `~/.pi/agent/AGENTS.md` (auto-loaded every turn) and drops a TypeScript extension at `~/.pi/agent/extensions/hivemind.ts`. The extension subscribes to pi's lifecycle events (`session_start` / `input` / `tool_result` / `message_end`) for auto-capture and registers `hivemind_search`, `hivemind_read`, `hivemind_index` as first-class pi tools.
 
 ```bash
 hivemind pi install
 ```
+
+Note: no per-agent SKILL.md is dropped under `~/.pi/agent/skills/` — pi reads skills from both that directory AND the shared `~/.agents/skills/` location. If the codex installer has run on the same machine, pi picks up the hivemind skill from the shared `~/.agents/skills/hivemind-memory` symlink automatically. The AGENTS.md block plus the registered tools cover the action surface in either case.
 </details>
 
 
@@ -412,13 +414,20 @@ hivemind/
 │   ├── hooks/              ← Claude Code hooks
 │   ├── hooks/codex/        ← Codex hooks
 │   ├── hooks/cursor/       ← Cursor hooks
+│   ├── hooks/hermes/       ← Hermes shell hooks
+│   ├── hooks/pi/           ← pi wiki-worker (extension lives in pi/extension-source/)
+│   ├── embeddings/         ← nomic embed-daemon + protocol + SQL helpers
 │   ├── mcp/                ← MCP server (used by Hermes; available to any future MCP-aware client)
+│   ├── commands/           ← auth, auth-creds, auth-login, session-prune
 │   └── cli/                ← unified `hivemind install` CLI + per-agent installers
 ├── claude-code/            ← Claude Code plugin source (marketplace-distributed)
-├── openclaw/               ← OpenClaw plugin source
-├── codex/                  ← Codex plugin source
-├── cursor/                 ← Cursor plugin source
-└── mcp/                    ← MCP server build output
+├── codex/                  ← Codex plugin build output (npm-distributed)
+├── cursor/                 ← Cursor plugin build output (npm-distributed)
+├── hermes/                 ← Hermes plugin build output (npm-distributed)
+├── mcp/                    ← MCP server build output (shared by Hermes + future MCP clients)
+├── openclaw/               ← OpenClaw plugin source + build output (ClawHub-distributed)
+├── pi/                     ← pi extension source (ships raw .ts; pi compiles at load)
+└── bundle/                 ← unified `hivemind` CLI build output
 ```
 
 ## Security
