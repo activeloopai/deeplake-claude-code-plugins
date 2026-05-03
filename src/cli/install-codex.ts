@@ -8,7 +8,10 @@ const CODEX_HOME = join(HOME, ".codex");
 const PLUGIN_DIR = join(CODEX_HOME, "hivemind");
 const HOOKS_PATH = join(CODEX_HOME, "hooks.json");
 const AGENTS_SKILLS_DIR = join(HOME, ".agents", "skills");
-const SKILL_LINK = join(AGENTS_SKILLS_DIR, "hivemind-memory");
+const SKILL_LINKS = [
+  { source: "deeplake-memory", link: "hivemind-memory" },
+  { source: "gdd-workflow", link: "gdd-workflow" },
+];
 
 function hookCmd(bundleFile: string, timeout: number, matcher?: string): Record<string, unknown> {
   const block: Record<string, unknown> = {
@@ -123,11 +126,13 @@ export function installCodex(): void {
   writeJson(HOOKS_PATH, mergeHooksJson(buildHooksJson()));
 
   ensureDir(AGENTS_SKILLS_DIR);
-  const skillTarget = join(PLUGIN_DIR, "skills", "deeplake-memory");
-  if (existsSync(skillTarget)) {
-    symlinkForce(skillTarget, SKILL_LINK);
-  } else {
-    warn(`  Codex          skill source missing at ${skillTarget}; skipping symlink`);
+  for (const skill of SKILL_LINKS) {
+    const skillTarget = join(PLUGIN_DIR, "skills", skill.source);
+    if (existsSync(skillTarget)) {
+      symlinkForce(skillTarget, join(AGENTS_SKILLS_DIR, skill.link));
+    } else {
+      warn(`  Codex          skill source missing at ${skillTarget}; skipping symlink`);
+    }
   }
 
   writeVersionStamp(PLUGIN_DIR, getVersion());
@@ -165,9 +170,12 @@ export function uninstallCodex(): void {
       }
     }
   }
-  if (existsSync(SKILL_LINK)) {
-    unlinkSync(SKILL_LINK);
-    log(`  Codex          removed ${SKILL_LINK}`);
+  for (const skill of SKILL_LINKS) {
+    const skillLink = join(AGENTS_SKILLS_DIR, skill.link);
+    if (existsSync(skillLink)) {
+      unlinkSync(skillLink);
+      log(`  Codex          removed ${skillLink}`);
+    }
   }
   log(`  Codex          plugin files kept at ${PLUGIN_DIR}`);
 }

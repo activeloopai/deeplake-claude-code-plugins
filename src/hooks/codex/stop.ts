@@ -20,6 +20,7 @@ import { log as _log } from "../../utils/debug.js";
 import { bundleDirFromImportMeta, spawnCodexWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 import { tryAcquireLock, releaseLock } from "../summary-state.js";
 import { buildSessionPath } from "../../utils/session-path.js";
+import { resolveProjectName } from "../../utils/project-name.js";
 
 const log = (msg: string) => _log("codex-stop", msg);
 
@@ -99,7 +100,7 @@ async function main(): Promise<void> {
       };
       const line = JSON.stringify(entry);
       const sessionPath = buildSessionPath(config, sessionId);
-      const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
+      const projectName = resolveProjectName(input.cwd ?? "");
       const filename = sessionPath.split("/").pop() ?? "";
       // For JSONB: only escape single quotes for the SQL literal, keep JSON structure intact.
       // sqlStr() would also escape backslashes and strip control chars, corrupting the JSON.

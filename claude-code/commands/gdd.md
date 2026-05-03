@@ -1,5 +1,5 @@
 ---
-description: Log an experiment result to the hivemind experiment log
+description: Log an experiment result to the hivemind GDD log
 allowed-tools: Bash
 argument-hint: log <change_id> <metric> <status> "<description>" [--metadata <json>]
 ---
@@ -7,7 +7,7 @@ argument-hint: log <change_id> <metric> <status> "<description>" [--metadata <js
 Run:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/bundle/commands/log-experiment.js" $ARGUMENTS
+node "${CLAUDE_PLUGIN_ROOT}/bundle/commands/gdd.js" $ARGUMENTS
 ```
 
 Subcommands:
@@ -17,4 +17,5 @@ Subcommands:
 - `init [--table <name>]` — create the experiment table without inserting a row.
 
 Default table: `experiments` (override with `--table` or `HIVEMIND_EXPERIMENT_TABLE`).
-The schema (`change_identifier`, `metric`, `metadata`, `status`, `description`, `global_promoted`, `timestamp`) is parallelism-agnostic — works for git worktrees, branches, patch hashes, A/B variant ids, prompt versions, or any opaque change reference.
+`project` is auto-resolved the same way as the hooks: from the current directory name.
+The schema (`change_identifier`, `project`, `metric`, `metadata`, `status`, `description`, `global_promoted`, `timestamp`) is parallelism-agnostic — works for git worktrees, branches, patch hashes, A/B variant ids, prompt versions, or any opaque change reference.

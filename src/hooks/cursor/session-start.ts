@@ -27,6 +27,7 @@ import { sqlStr } from "../../utils/sql.js";
 import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
+import { resolveProjectName } from "../../utils/project-name.js";
 const log = (msg: string) => _log("cursor-session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -80,7 +81,7 @@ async function createPlaceholder(
   if (existing.length > 0) return;
 
   const now = new Date().toISOString();
-  const projectName = cwd.split("/").pop() ?? "unknown";
+  const projectName = resolveProjectName(cwd);
   const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
   const content = [
     `# Session ${sessionId}`,

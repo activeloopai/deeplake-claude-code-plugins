@@ -19,6 +19,7 @@ import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { log as _log } from "../../utils/debug.js";
 import { buildSessionPath } from "../../utils/session-path.js";
+import { resolveProjectName } from "../../utils/project-name.js";
 const log = (msg: string) => _log("cursor-capture", msg);
 
 interface CursorCaptureInput {
@@ -113,7 +114,7 @@ async function main(): Promise<void> {
   const line = JSON.stringify(entry);
   log(`writing to ${sessionPath}`);
 
-  const projectName = cwd.split("/").pop() || "unknown";
+  const projectName = resolveProjectName(cwd);
   const filename = sessionPath.split("/").pop() ?? "";
   // For JSONB: only escape single quotes, keep JSON structure intact.
   // sqlStr() would also escape backslashes and corrupt the JSON.
