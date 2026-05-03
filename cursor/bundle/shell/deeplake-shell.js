@@ -46081,14 +46081,14 @@ var require_turndown_cjs = __commonJS({
         } else if (node.nodeType === 1) {
           replacement = replacementForNode.call(self2, node);
         }
-        return join7(output, replacement);
+        return join11(output, replacement);
       }, "");
     }
     function postProcess(output) {
       var self2 = this;
       this.rules.forEach(function(rule) {
         if (typeof rule.append === "function") {
-          output = join7(output, rule.append(self2.options));
+          output = join11(output, rule.append(self2.options));
         }
       });
       return output.replace(/^[\t\r\n]+/, "").replace(/[\t\r\n\s]+$/, "");
@@ -46100,7 +46100,7 @@ var require_turndown_cjs = __commonJS({
       if (whitespace.leading || whitespace.trailing) content = content.trim();
       return whitespace.leading + rule.replacement(content, node, this.options) + whitespace.trailing;
     }
-    function join7(output, replacement) {
+    function join11(output, replacement) {
       var s12 = trimTrailingNewlines(output);
       var s22 = trimLeadingNewlines(replacement);
       var nls = Math.max(output.length - s12.length, replacement.length - s22.length);
@@ -66819,10 +66819,14 @@ function sqlLike(value) {
   return sqlStr(value).replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 
+// dist/src/embeddings/columns.js
+var SUMMARY_EMBEDDING_COL = "summary_embedding";
+var MESSAGE_EMBEDDING_COL = "message_embedding";
+
 // dist/src/utils/client-header.js
 var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
 function deeplakeClientValue() {
-  return `hivemind/${__HIVEMIND_VERSION__}`;
+  return "hivemind";
 }
 function deeplakeClientHeader() {
   return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
@@ -66969,7 +66973,8 @@ var DeeplakeApi = class {
       }
       const text = await resp.text().catch(() => "");
       const retryable403 = isSessionInsertQuery(sql) && (resp.status === 401 || resp.status === 403 && (text.length === 0 || isTransientHtml403(text)));
-      if (attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
+      const alreadyExists = resp.status === 500 && isDuplicateIndexError(text);
+      if (!alreadyExists && attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
         log2(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
         await sleep(delay);
@@ -67003,7 +67008,7 @@ var DeeplakeApi = class {
     const lud = row.lastUpdateDate ?? ts3;
     const exists = await this.query(`SELECT path FROM "${this.tableName}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`);
     if (exists.length > 0) {
-      let setClauses = `summary = E'${sqlStr(row.contentText)}', mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
+      let setClauses = `summary = E'${sqlStr(row.contentText)}', ${SUMMARY_EMBEDDING_COL} = NULL, mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
       if (row.project !== void 0)
         setClauses += `, project = '${sqlStr(row.project)}'`;
       if (row.description !== void 0)
@@ -67011,8 +67016,8 @@ var DeeplakeApi = class {
       await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(row.path)}'`);
     } else {
       const id = randomUUID();
-      let cols = "id, path, filename, summary, mime_type, size_bytes, creation_date, last_update_date";
-      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
+      let cols = `id, path, filename, summary, ${SUMMARY_EMBEDDING_COL}, mime_type, size_bytes, creation_date, last_update_date`;
+      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', NULL, '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
       if (row.project !== void 0) {
         cols += ", project";
         vals += `, '${sqlStr(row.project)}'`;
@@ -67053,6 +67058,66 @@ var DeeplakeApi = class {
       }
       log2(`index "${indexName}" skipped: ${e6.message}`);
     }
+  }
+  /**
+   * Ensure a vector column exists on the given table.
+   *
+   * The previous implementation always issued `ALTER TABLE ADD COLUMN IF NOT
+   * EXISTS …` on every SessionStart. On a long-running workspace that's
+   * already migrated, every call returns 500 "Column already exists" — noisy
+   * in the log and a wasted round-trip. Worse, the very first call after the
+   * column is genuinely added triggers Deeplake's post-ALTER `vector::at`
+   * window (~30s) during which subsequent INSERTs fail; minimising the
+   * number of ALTER calls minimises exposure to that window.
+   *
+   * New flow:
+   *   1. Check the local marker file (mirrors ensureLookupIndex). If fresh,
+   *      return — zero network calls.
+   *   2. SELECT 1 FROM information_schema.columns WHERE table_name = T AND
+   *      column_name = C. Read-only, idempotent, can't tickle the post-ALTER
+   *      bug. If the column is present → mark + return.
+   *   3. Only if step 2 says the column is missing, fall back to ALTER ADD
+   *      COLUMN IF NOT EXISTS. Mark on success, also mark if Deeplake reports
+   *      "already exists" (race: another client added it between our SELECT
+   *      and ALTER).
+   *
+   * Marker uses the same dir / TTL as ensureLookupIndex so both schema
+   * caches share an opt-out (HIVEMIND_INDEX_MARKER_DIR) and a TTL knob.
+   */
+  async ensureEmbeddingColumn(table, column) {
+    await this.ensureColumn(table, column, "FLOAT4[]");
+  }
+  /**
+   * Generic marker-gated column migration. Same SELECT-then-ALTER flow as
+   * ensureEmbeddingColumn, parameterized by SQL type so it can patch up any
+   * column that was added to the schema after the table was originally
+   * created. Used today for `summary_embedding`, `message_embedding`, and
+   * the `agent` column (added 2026-04-11) — the latter has no fallback if
+   * a user upgraded over a pre-2026-04-11 table, so every INSERT fails
+   * with `column "agent" does not exist`.
+   */
+  async ensureColumn(table, column, sqlType) {
+    const markers = await getIndexMarkerStore();
+    const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, `col_${column}`);
+    if (markers.hasFreshIndexMarker(markerPath))
+      return;
+    const colCheck = `SELECT 1 FROM information_schema.columns WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' AND table_schema = '${sqlStr(this.workspaceId)}' LIMIT 1`;
+    const rows = await this.query(colCheck);
+    if (rows.length > 0) {
+      markers.writeIndexMarker(markerPath);
+      return;
+    }
+    try {
+      await this.query(`ALTER TABLE "${table}" ADD COLUMN ${column} ${sqlType}`);
+    } catch (e6) {
+      const msg = e6 instanceof Error ? e6.message : String(e6);
+      if (!/already exists/i.test(msg))
+        throw e6;
+      const recheck = await this.query(colCheck);
+      if (recheck.length === 0)
+        throw e6;
+    }
+    markers.writeIndexMarker(markerPath);
   }
   /** List all tables in the workspace (with retry). */
   async listTables(forceRefresh = false) {
@@ -67129,22 +67194,26 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, tbl);
+      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', summary_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, tbl);
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
     }
+    await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
+    await this.ensureColumn(tbl, "agent", "TEXT NOT NULL DEFAULT ''");
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
   async ensureSessionsTable(name) {
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, name);
+      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, message_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, name);
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
     }
+    await this.ensureEmbeddingColumn(name, MESSAGE_EMBEDDING_COL);
+    await this.ensureColumn(name, "agent", "TEXT NOT NULL DEFAULT ''");
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
 };
@@ -67152,6 +67221,8 @@ var DeeplakeApi = class {
 // dist/src/shell/deeplake-fs.js
 import { basename as basename4, posix } from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { dirname as dirname4, join as join9 } from "node:path";
 
 // dist/src/shell/grep-core.js
 var TOOL_INPUT_FIELDS = [
@@ -67317,23 +67388,24 @@ function normalizeContent(path2, raw) {
     return raw;
   }
   if (Array.isArray(obj.turns)) {
-    const header = [];
-    if (obj.date_time)
-      header.push(`date: ${obj.date_time}`);
-    if (obj.speakers) {
-      const s10 = obj.speakers;
-      const names = [s10.speaker_a, s10.speaker_b].filter(Boolean).join(", ");
-      if (names)
-        header.push(`speakers: ${names}`);
-    }
+    const dateHeader = obj.date_time ? `(${String(obj.date_time)}) ` : "";
     const lines = obj.turns.map((t6) => {
       const sp = String(t6?.speaker ?? t6?.name ?? "?").trim();
       const tx = String(t6?.text ?? t6?.content ?? "").replace(/\s+/g, " ").trim();
       const tag = t6?.dia_id ? `[${t6.dia_id}] ` : "";
-      return `${tag}${sp}: ${tx}`;
+      return `${dateHeader}${tag}${sp}: ${tx}`;
     });
-    const out2 = [...header, ...lines].join("\n");
+    const out2 = lines.join("\n");
     return out2.trim() ? out2 : raw;
+  }
+  if (obj.turn && typeof obj.turn === "object" && !Array.isArray(obj.turn)) {
+    const t6 = obj.turn;
+    const sp = String(t6.speaker ?? t6.name ?? "?").trim();
+    const tx = String(t6.text ?? t6.content ?? "").replace(/\s+/g, " ").trim();
+    const tag = t6.dia_id ? `[${String(t6.dia_id)}] ` : "";
+    const dateHeader = obj.date_time ? `(${String(obj.date_time)}) ` : "";
+    const line = `${dateHeader}${tag}${sp}: ${tx}`;
+    return line.trim() ? line : raw;
   }
   const stripRecalled = (t6) => {
     const i11 = t6.indexOf("<recalled-memories>");
@@ -67377,8 +67449,38 @@ function buildPathCondition(targetPath) {
   return `(path = '${sqlStr(clean)}' OR path LIKE '${sqlLike(clean)}/%' ESCAPE '\\')`;
 }
 async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
-  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, multiWordPatterns } = opts;
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, multiWordPatterns } = opts;
   const limit = opts.limit ?? 100;
+  if (queryEmbedding && queryEmbedding.length > 0) {
+    const vecLit = serializeFloat4Array(queryEmbedding);
+    const semanticLimit = Math.min(limit, Number(process.env.HIVEMIND_SEMANTIC_LIMIT ?? "20"));
+    const lexicalLimit = Math.min(limit, Number(process.env.HIVEMIND_HYBRID_LEXICAL_LIMIT ?? "20"));
+    const filterPatternsForLex = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : [escapedPattern];
+    const memLexFilter = buildContentFilter("summary::text", likeOp, filterPatternsForLex);
+    const sessLexFilter = buildContentFilter("message::text", likeOp, filterPatternsForLex);
+    const memLexQuery = memLexFilter ? `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, 1.0 AS score FROM "${memoryTable}" WHERE 1=1${pathFilter}${memLexFilter} LIMIT ${lexicalLimit}` : null;
+    const sessLexQuery = sessLexFilter ? `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, 1.0 AS score FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessLexFilter} LIMIT ${lexicalLimit}` : null;
+    const memSemQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, (summary_embedding <#> ${vecLit}) AS score FROM "${memoryTable}" WHERE ARRAY_LENGTH(summary_embedding, 1) > 0${pathFilter} ORDER BY score DESC LIMIT ${semanticLimit}`;
+    const sessSemQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, (message_embedding <#> ${vecLit}) AS score FROM "${sessionsTable}" WHERE ARRAY_LENGTH(message_embedding, 1) > 0${pathFilter} ORDER BY score DESC LIMIT ${semanticLimit}`;
+    const parts = [memSemQuery, sessSemQuery];
+    if (memLexQuery)
+      parts.push(memLexQuery);
+    if (sessLexQuery)
+      parts.push(sessLexQuery);
+    const unionSql = parts.map((q17) => `(${q17})`).join(" UNION ALL ");
+    const outerLimit = semanticLimit + lexicalLimit;
+    const rows2 = await api.query(`SELECT path, content, source_order, creation_date, score FROM (` + unionSql + `) AS combined ORDER BY score DESC LIMIT ${outerLimit}`);
+    const seen = /* @__PURE__ */ new Set();
+    const unique = [];
+    for (const row of rows2) {
+      const p22 = String(row["path"]);
+      if (seen.has(p22))
+        continue;
+      seen.add(p22);
+      unique.push({ path: p22, content: String(row["content"] ?? "") });
+    }
+    return unique;
+  }
   const filterPatterns = contentScanOnly ? prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : prefilterPattern ? [prefilterPattern] : [] : multiWordPatterns && multiWordPatterns.length > 1 ? multiWordPatterns : [escapedPattern];
   const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
   const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
@@ -67389,6 +67491,15 @@ async function searchDeeplakeTables(api, memoryTable, sessionsTable, opts) {
     path: String(row["path"]),
     content: String(row["content"] ?? "")
   }));
+}
+function serializeFloat4Array(vec) {
+  const parts = [];
+  for (const v27 of vec) {
+    if (!Number.isFinite(v27))
+      return "NULL";
+    parts.push(String(v27));
+  }
+  return `ARRAY[${parts.join(",")}]::float4[]`;
 }
 function buildPathFilter(targetPath) {
   const condition = buildPathCondition(targetPath);
@@ -67482,7 +67593,7 @@ function buildGrepSearchOptions(params, targetPath) {
   return {
     pathFilter: buildPathFilter(targetPath),
     contentScanOnly: hasRegexMeta,
-    likeOp: params.ignoreCase ? "ILIKE" : "LIKE",
+    likeOp: process.env.HIVEMIND_GREP_LIKE === "case-sensitive" ? "LIKE" : "ILIKE",
     escapedPattern: sqlLike(params.pattern),
     prefilterPattern: literalPrefilter ? sqlLike(literalPrefilter) : void 0,
     prefilterPatterns: alternationPrefilters?.map((literal) => sqlLike(literal)),
@@ -67538,6 +67649,346 @@ function refineGrepMatches(rows, params, forceMultiFilePrefix) {
   return output;
 }
 
+// dist/src/embeddings/client.js
+import { connect } from "node:net";
+import { spawn } from "node:child_process";
+import { openSync, closeSync, writeSync, unlinkSync, existsSync as existsSync4, readFileSync as readFileSync3 } from "node:fs";
+import { homedir as homedir3 } from "node:os";
+import { join as join7 } from "node:path";
+
+// dist/src/embeddings/protocol.js
+var DEFAULT_SOCKET_DIR = "/tmp";
+var DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1e3;
+var DEFAULT_CLIENT_TIMEOUT_MS = 2e3;
+function socketPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
+  return `${dir}/hivemind-embed-${uid}.sock`;
+}
+function pidPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
+  return `${dir}/hivemind-embed-${uid}.pid`;
+}
+
+// dist/src/embeddings/client.js
+var SHARED_DAEMON_PATH = join7(homedir3(), ".hivemind", "embed-deps", "embed-daemon.js");
+var log3 = (m26) => log("embed-client", m26);
+function getUid() {
+  const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
+  return uid !== void 0 ? String(uid) : process.env.USER ?? "default";
+}
+var EmbedClient = class {
+  socketPath;
+  pidPath;
+  timeoutMs;
+  daemonEntry;
+  autoSpawn;
+  spawnWaitMs;
+  nextId = 0;
+  constructor(opts = {}) {
+    const uid = getUid();
+    const dir = opts.socketDir ?? "/tmp";
+    this.socketPath = socketPathFor(uid, dir);
+    this.pidPath = pidPathFor(uid, dir);
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS;
+    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON ?? (existsSync4(SHARED_DAEMON_PATH) ? SHARED_DAEMON_PATH : void 0);
+    this.autoSpawn = opts.autoSpawn ?? true;
+    this.spawnWaitMs = opts.spawnWaitMs ?? 5e3;
+  }
+  /**
+   * Returns an embedding vector, or null on timeout/failure. Hooks MUST treat
+   * null as "skip embedding column" — never block the write path on us.
+   *
+   * Fire-and-forget spawn on miss: if the daemon isn't up, this call returns
+   * null AND kicks off a background spawn. The next call finds a ready daemon.
+   */
+  async embed(text, kind = "document") {
+    let sock;
+    try {
+      sock = await this.connectOnce();
+    } catch {
+      if (this.autoSpawn)
+        this.trySpawnDaemon();
+      return null;
+    }
+    try {
+      const id = String(++this.nextId);
+      const req = { op: "embed", id, kind, text };
+      const resp = await this.sendAndWait(sock, req);
+      if (resp.error || !("embedding" in resp) || !resp.embedding) {
+        log3(`embed err: ${resp.error ?? "no embedding"}`);
+        return null;
+      }
+      return resp.embedding;
+    } catch (e6) {
+      const err = e6 instanceof Error ? e6.message : String(e6);
+      log3(`embed failed: ${err}`);
+      return null;
+    } finally {
+      try {
+        sock.end();
+      } catch {
+      }
+    }
+  }
+  /**
+   * Wait up to spawnWaitMs for the daemon to accept connections, spawning if
+   * necessary. Meant for SessionStart / long-running batches — not the hot path.
+   */
+  async warmup() {
+    try {
+      const s10 = await this.connectOnce();
+      s10.end();
+      return true;
+    } catch {
+      if (!this.autoSpawn)
+        return false;
+      this.trySpawnDaemon();
+      try {
+        const s10 = await this.waitForSocket();
+        s10.end();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+  connectOnce() {
+    return new Promise((resolve5, reject) => {
+      const sock = connect(this.socketPath);
+      const to3 = setTimeout(() => {
+        sock.destroy();
+        reject(new Error("connect timeout"));
+      }, this.timeoutMs);
+      sock.once("connect", () => {
+        clearTimeout(to3);
+        resolve5(sock);
+      });
+      sock.once("error", (e6) => {
+        clearTimeout(to3);
+        reject(e6);
+      });
+    });
+  }
+  trySpawnDaemon() {
+    let fd;
+    try {
+      fd = openSync(this.pidPath, "wx", 384);
+      writeSync(fd, String(process.pid));
+    } catch (e6) {
+      if (this.isPidFileStale()) {
+        try {
+          unlinkSync(this.pidPath);
+        } catch {
+        }
+        try {
+          fd = openSync(this.pidPath, "wx", 384);
+          writeSync(fd, String(process.pid));
+        } catch {
+          return;
+        }
+      } else {
+        return;
+      }
+    }
+    if (!this.daemonEntry || !existsSync4(this.daemonEntry)) {
+      log3(`daemonEntry not configured or missing: ${this.daemonEntry}`);
+      try {
+        closeSync(fd);
+        unlinkSync(this.pidPath);
+      } catch {
+      }
+      return;
+    }
+    try {
+      const child = spawn(process.execPath, [this.daemonEntry], {
+        detached: true,
+        stdio: "ignore",
+        env: process.env
+      });
+      child.unref();
+      log3(`spawned daemon pid=${child.pid}`);
+    } finally {
+      closeSync(fd);
+    }
+  }
+  isPidFileStale() {
+    try {
+      const raw = readFileSync3(this.pidPath, "utf-8").trim();
+      const pid = Number(raw);
+      if (!pid || Number.isNaN(pid))
+        return true;
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+  }
+  async waitForSocket() {
+    const deadline = Date.now() + this.spawnWaitMs;
+    let delay = 30;
+    while (Date.now() < deadline) {
+      await sleep2(delay);
+      delay = Math.min(delay * 1.5, 300);
+      if (!existsSync4(this.socketPath))
+        continue;
+      try {
+        return await this.connectOnce();
+      } catch {
+      }
+    }
+    throw new Error("daemon did not become ready within spawnWaitMs");
+  }
+  sendAndWait(sock, req) {
+    return new Promise((resolve5, reject) => {
+      let buf = "";
+      const to3 = setTimeout(() => {
+        sock.destroy();
+        reject(new Error("request timeout"));
+      }, this.timeoutMs);
+      sock.setEncoding("utf-8");
+      sock.on("data", (chunk) => {
+        buf += chunk;
+        const nl3 = buf.indexOf("\n");
+        if (nl3 === -1)
+          return;
+        const line = buf.slice(0, nl3);
+        clearTimeout(to3);
+        try {
+          resolve5(JSON.parse(line));
+        } catch (e6) {
+          reject(e6);
+        }
+      });
+      sock.on("error", (e6) => {
+        clearTimeout(to3);
+        reject(e6);
+      });
+      sock.on("end", () => {
+        clearTimeout(to3);
+        reject(new Error("connection closed without response"));
+      });
+      sock.write(JSON.stringify(req) + "\n");
+    });
+  }
+};
+function sleep2(ms3) {
+  return new Promise((r10) => setTimeout(r10, ms3));
+}
+
+// dist/src/embeddings/sql.js
+function embeddingSqlLiteral(vec) {
+  if (!vec || vec.length === 0)
+    return "NULL";
+  const parts = [];
+  for (const v27 of vec) {
+    if (!Number.isFinite(v27))
+      return "NULL";
+    parts.push(String(v27));
+  }
+  return `ARRAY[${parts.join(",")}]::float4[]`;
+}
+
+// dist/src/embeddings/disable.js
+import { createRequire } from "node:module";
+import { homedir as homedir4 } from "node:os";
+import { join as join8 } from "node:path";
+import { pathToFileURL } from "node:url";
+var cachedStatus = null;
+function defaultResolveTransformers() {
+  try {
+    createRequire(import.meta.url).resolve("@huggingface/transformers");
+    return;
+  } catch {
+  }
+  const sharedDir = join8(homedir4(), ".hivemind", "embed-deps");
+  createRequire(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
+}
+var _resolve = defaultResolveTransformers;
+function detectStatus() {
+  if (process.env.HIVEMIND_EMBEDDINGS === "false")
+    return "env-disabled";
+  try {
+    _resolve();
+    return "enabled";
+  } catch {
+    return "no-transformers";
+  }
+}
+function embeddingsStatus() {
+  if (cachedStatus !== null)
+    return cachedStatus;
+  cachedStatus = detectStatus();
+  return cachedStatus;
+}
+function embeddingsDisabled() {
+  return embeddingsStatus() !== "enabled";
+}
+
+// dist/src/hooks/virtual-table-query.js
+var INDEX_LIMIT_PER_SECTION = 50;
+function buildVirtualIndexContent(summaryRows, sessionRows = [], opts = {}) {
+  const lines = [
+    "# Session Index",
+    "",
+    "Two sources are available. Consult the section relevant to the question.",
+    ""
+  ];
+  lines.push("## memory", "");
+  if (summaryRows.length === 0) {
+    lines.push("_(empty \u2014 no summaries ingested yet)_");
+  } else {
+    lines.push("AI-generated summaries per session. Read these first for topic-level overviews.");
+    lines.push("");
+    if (opts.summaryTruncated) {
+      lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many \u2014 older summaries reachable via \`Grep pattern="..." path="~/.deeplake/memory"\`._`);
+      lines.push("");
+    }
+    lines.push("| Session | Created | Last Updated | Project | Description |");
+    lines.push("|---------|---------|--------------|---------|-------------|");
+    for (const row of summaryRows) {
+      const p22 = row["path"] || "";
+      const match2 = p22.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
+      if (!match2)
+        continue;
+      const summaryUser = match2[1];
+      const sessionId = match2[2];
+      const relPath = `summaries/${summaryUser}/${sessionId}.md`;
+      const project = row["project"] || "";
+      const description = row["description"] || "";
+      const creationDate = row["creation_date"] || "";
+      const lastUpdateDate = row["last_update_date"] || "";
+      lines.push(`| [${sessionId}](${relPath}) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
+    }
+  }
+  lines.push("");
+  lines.push("## sessions", "");
+  if (sessionRows.length === 0) {
+    lines.push("_(empty \u2014 no session records ingested yet)_");
+  } else {
+    lines.push("Raw session records (dialogue, tool calls). Read for exact detail / quotes.");
+    lines.push("");
+    if (opts.sessionTruncated) {
+      lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many \u2014 older sessions reachable via \`Grep pattern="..." path="~/.deeplake/memory"\`._`);
+      lines.push("");
+    }
+    lines.push("| Session | Created | Last Updated | Description |");
+    lines.push("|---------|---------|--------------|-------------|");
+    for (const row of sessionRows) {
+      const p22 = row["path"] || "";
+      const rel = p22.startsWith("/") ? p22.slice(1) : p22;
+      const filename = p22.split("/").pop() ?? p22;
+      const description = row["description"] || "";
+      const creationDate = row["creation_date"] || "";
+      const lastUpdateDate = row["last_update_date"] || "";
+      lines.push(`| [${filename}](${rel}) | ${creationDate} | ${lastUpdateDate} | ${description} |`);
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
 // dist/src/shell/deeplake-fs.js
 var BATCH_SIZE = 10;
 var PREFETCH_BATCH_SIZE = 50;
@@ -67565,6 +68016,9 @@ function guessMime(filename) {
 function normalizeSessionMessage(path2, message) {
   const raw = typeof message === "string" ? message : JSON.stringify(message);
   return normalizeContent(path2, raw);
+}
+function resolveEmbedDaemonPath() {
+  return join9(dirname4(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
 }
 function joinSessionMessages(path2, messages) {
   return messages.map((message) => normalizeSessionMessage(path2, message)).join("\n");
@@ -67595,6 +68049,8 @@ var DeeplakeFs = class _DeeplakeFs {
   // Paths that live in the sessions table (multi-row, read by concatenation)
   sessionPaths = /* @__PURE__ */ new Set();
   sessionsTable = null;
+  // Embedding client lazily created on first flush. Lives as long as the process.
+  embedClient = null;
   constructor(client, table, mountPoint) {
     this.client = client;
     this.table = table;
@@ -67628,7 +68084,14 @@ var DeeplakeFs = class _DeeplakeFs {
     })();
     const sessionsBootstrap = sessionsTable && sessionSyncOk ? (async () => {
       try {
-        const sessionRows = await client.query(`SELECT path, SUM(size_bytes) as total_size FROM "${sessionsTable}" GROUP BY path ORDER BY path`);
+        const sessionRows = await client.query(
+          // NOTE: SUM(size_bytes) returns NULL on the Deeplake backend when combined
+          // with GROUP BY path (confirmed against workspace `with_embedding`). MAX
+          // works and — for the single-row-per-file layout — is equal to SUM. For
+          // multi-row-per-turn layouts MAX under-reports total size but stays >0
+          // so files don't look like empty placeholders in ls/stat.
+          `SELECT path, MAX(size_bytes) as total_size FROM "${sessionsTable}" GROUP BY path ORDER BY path`
+        );
         for (const row of sessionRows) {
           const p22 = row["path"];
           if (!fs3.files.has(p22)) {
@@ -67688,7 +68151,8 @@ var DeeplakeFs = class _DeeplakeFs {
     }
     const rows = [...this.pending.values()];
     this.pending.clear();
-    const results = await Promise.allSettled(rows.map((r10) => this.upsertRow(r10)));
+    const embeddings = await this.computeEmbeddings(rows);
+    const results = await Promise.allSettled(rows.map((r10, i11) => this.upsertRow(r10, embeddings[i11])));
     let failures = 0;
     for (let i11 = 0; i11 < results.length; i11++) {
       if (results[i11].status === "rejected") {
@@ -67702,7 +68166,17 @@ var DeeplakeFs = class _DeeplakeFs {
       throw new Error(`flush: ${failures}/${rows.length} writes failed and were re-queued`);
     }
   }
-  async upsertRow(r10) {
+  async computeEmbeddings(rows) {
+    if (rows.length === 0)
+      return [];
+    if (embeddingsDisabled())
+      return rows.map(() => null);
+    if (!this.embedClient) {
+      this.embedClient = new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() });
+    }
+    return Promise.all(rows.map((r10) => this.embedClient.embed(r10.contentText, "document")));
+  }
+  async upsertRow(r10, embedding) {
     const text = sqlStr(r10.contentText);
     const p22 = sqlStr(r10.path);
     const fname = sqlStr(r10.filename);
@@ -67710,8 +68184,9 @@ var DeeplakeFs = class _DeeplakeFs {
     const ts3 = (/* @__PURE__ */ new Date()).toISOString();
     const cd = r10.creationDate ?? ts3;
     const lud = r10.lastUpdateDate ?? ts3;
+    const embSql = embeddingSqlLiteral(embedding);
     if (this.flushed.has(r10.path)) {
-      let setClauses = `filename = '${fname}', summary = E'${text}', mime_type = '${mime}', size_bytes = ${r10.sizeBytes}, last_update_date = '${sqlStr(lud)}'`;
+      let setClauses = `filename = '${fname}', summary = E'${text}', summary_embedding = ${embSql}, mime_type = '${mime}', size_bytes = ${r10.sizeBytes}, last_update_date = '${sqlStr(lud)}'`;
       if (r10.project !== void 0)
         setClauses += `, project = '${sqlStr(r10.project)}'`;
       if (r10.description !== void 0)
@@ -67719,54 +68194,27 @@ var DeeplakeFs = class _DeeplakeFs {
       await this.client.query(`UPDATE "${this.table}" SET ${setClauses} WHERE path = '${p22}'`);
     } else {
       const id = randomUUID2();
-      const cols = "id, path, filename, summary, mime_type, size_bytes, creation_date, last_update_date" + (r10.project !== void 0 ? ", project" : "") + (r10.description !== void 0 ? ", description" : "");
-      const vals = `'${id}', '${p22}', '${fname}', E'${text}', '${mime}', ${r10.sizeBytes}, '${sqlStr(cd)}', '${sqlStr(lud)}'` + (r10.project !== void 0 ? `, '${sqlStr(r10.project)}'` : "") + (r10.description !== void 0 ? `, '${sqlStr(r10.description)}'` : "");
+      const cols = "id, path, filename, summary, summary_embedding, mime_type, size_bytes, creation_date, last_update_date" + (r10.project !== void 0 ? ", project" : "") + (r10.description !== void 0 ? ", description" : "");
+      const vals = `'${id}', '${p22}', '${fname}', E'${text}', ${embSql}, '${mime}', ${r10.sizeBytes}, '${sqlStr(cd)}', '${sqlStr(lud)}'` + (r10.project !== void 0 ? `, '${sqlStr(r10.project)}'` : "") + (r10.description !== void 0 ? `, '${sqlStr(r10.description)}'` : "");
       await this.client.query(`INSERT INTO "${this.table}" (${cols}) VALUES (${vals})`);
       this.flushed.add(r10.path);
     }
   }
   // ── Virtual index.md generation ────────────────────────────────────────────
   async generateVirtualIndex() {
-    const rows = await this.client.query(`SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" WHERE path LIKE '${sqlStr("/summaries/")}%' ORDER BY last_update_date DESC`);
-    const sessionPathsByKey = /* @__PURE__ */ new Map();
-    for (const sp of this.sessionPaths) {
-      const hivemind = sp.match(/\/sessions\/[^/]+\/[^/]+_([^.]+)\.jsonl$/);
-      if (hivemind) {
-        sessionPathsByKey.set(hivemind[1], sp.slice(1));
-      } else {
-        const fname = sp.split("/").pop() ?? "";
-        const stem = fname.replace(/\.[^.]+$/, "");
-        if (stem)
-          sessionPathsByKey.set(stem, sp.slice(1));
+    const fetchLimit = INDEX_LIMIT_PER_SECTION + 1;
+    const summaryRows = await this.client.query(`SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" WHERE path LIKE '${sqlStr("/summaries/")}%' ORDER BY last_update_date DESC LIMIT ${fetchLimit}`);
+    let sessionRows = [];
+    if (this.sessionsTable) {
+      try {
+        sessionRows = await this.client.query(`SELECT path, MAX(description) AS description, MIN(creation_date) AS creation_date, MAX(last_update_date) AS last_update_date FROM "${this.sessionsTable}" WHERE path LIKE '${sqlStr("/sessions/")}%' GROUP BY path ORDER BY MAX(last_update_date) DESC LIMIT ${fetchLimit}`);
+      } catch {
+        sessionRows = [];
       }
     }
-    const lines = [
-      "# Session Index",
-      "",
-      "List of all Claude Code sessions with summaries.",
-      "",
-      "| Session | Conversation | Created | Last Updated | Project | Description |",
-      "|---------|-------------|---------|--------------|---------|-------------|"
-    ];
-    for (const row of rows) {
-      const p22 = row["path"];
-      const match2 = p22.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
-      if (!match2)
-        continue;
-      const summaryUser = match2[1];
-      const sessionId = match2[2];
-      const relPath = `summaries/${summaryUser}/${sessionId}.md`;
-      const baseName = sessionId.replace(/_summary$/, "");
-      const convPath = sessionPathsByKey.get(sessionId) ?? sessionPathsByKey.get(baseName);
-      const convLink = convPath ? `[messages](${convPath})` : "";
-      const project = row["project"] || "";
-      const description = row["description"] || "";
-      const creationDate = row["creation_date"] || "";
-      const lastUpdateDate = row["last_update_date"] || "";
-      lines.push(`| [${sessionId}](${relPath}) | ${convLink} | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
-    }
-    lines.push("");
-    return lines.join("\n");
+    const summaryTruncated = summaryRows.length > INDEX_LIMIT_PER_SECTION;
+    const sessionTruncated = sessionRows.length > INDEX_LIMIT_PER_SECTION;
+    return buildVirtualIndexContent(summaryRows.slice(0, INDEX_LIMIT_PER_SECTION), sessionRows.slice(0, INDEX_LIMIT_PER_SECTION), { summaryTruncated, sessionTruncated });
   }
   // ── batch prefetch ────────────────────────────────────────────────────────
   /**
@@ -69074,8 +69522,8 @@ function stripQuotes(val) {
 }
 
 // node_modules/yargs-parser/build/lib/index.js
-import { readFileSync as readFileSync3 } from "fs";
-import { createRequire } from "node:module";
+import { readFileSync as readFileSync4 } from "fs";
+import { createRequire as createRequire2 } from "node:module";
 var _a3;
 var _b;
 var _c;
@@ -69088,7 +69536,7 @@ if (nodeVersion) {
   }
 }
 var env = process ? process.env : {};
-var require2 = createRequire ? createRequire(import.meta.url) : void 0;
+var require2 = createRequire2 ? createRequire2(import.meta.url) : void 0;
 var parser = new YargsParser({
   cwd: process.cwd,
   env: () => {
@@ -69101,7 +69549,7 @@ var parser = new YargsParser({
     if (typeof require2 !== "undefined") {
       return require2(path2);
     } else if (path2.match(/\.json$/)) {
-      return JSON.parse(readFileSync3(path2, "utf8"));
+      return JSON.parse(readFileSync4(path2, "utf8"));
     } else {
       throw Error("only .json config files are supported in ESM");
     }
@@ -69120,6 +69568,33 @@ yargsParser.looksLikeNumber = looksLikeNumber;
 var lib_default = yargsParser;
 
 // dist/src/shell/grep-interceptor.js
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { dirname as dirname5, join as join10 } from "node:path";
+var SEMANTIC_SEARCH_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false" && !embeddingsDisabled();
+var SEMANTIC_EMBED_TIMEOUT_MS = Number(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS ?? "500");
+function resolveGrepEmbedDaemonPath() {
+  return join10(dirname5(fileURLToPath2(import.meta.url)), "..", "embeddings", "embed-daemon.js");
+}
+var sharedGrepEmbedClient = null;
+function getGrepEmbedClient() {
+  if (!sharedGrepEmbedClient) {
+    sharedGrepEmbedClient = new EmbedClient({
+      daemonEntry: resolveGrepEmbedDaemonPath(),
+      timeoutMs: SEMANTIC_EMBED_TIMEOUT_MS
+    });
+  }
+  return sharedGrepEmbedClient;
+}
+function patternIsSemanticFriendly(pattern, fixedString) {
+  if (!pattern || pattern.length < 2)
+    return false;
+  if (fixedString)
+    return true;
+  const metaMatches = pattern.match(/[|()\[\]{}+?^$\\]/g);
+  if (!metaMatches)
+    return true;
+  return metaMatches.length <= 1;
+}
 var MAX_FALLBACK_CANDIDATES = 500;
 function createGrepCommand(client, fs3, table, sessionsTable) {
   return Yi2("grep", async (args, ctx) => {
@@ -69161,12 +69636,21 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
       filesOnly: Boolean(parsed.l || parsed["files-with-matches"]),
       countOnly: Boolean(parsed.c || parsed["count"])
     };
+    let queryEmbedding = null;
+    if (SEMANTIC_SEARCH_ENABLED && patternIsSemanticFriendly(pattern, matchParams.fixedString)) {
+      try {
+        queryEmbedding = await getGrepEmbedClient().embed(pattern, "query");
+      } catch {
+        queryEmbedding = null;
+      }
+    }
     let rows = [];
     try {
       const searchOptions = {
         ...buildGrepSearchOptions(matchParams, targets[0] ?? ctx.cwd),
         pathFilter: buildPathFilterForTargets(targets),
-        limit: 100
+        limit: 100,
+        queryEmbedding
       };
       const queryRows = await Promise.race([
         searchDeeplakeTables(client, table, sessionsTable ?? "sessions", searchOptions),
@@ -69175,6 +69659,21 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
       rows.push(...queryRows);
     } catch {
       rows = [];
+    }
+    if (rows.length === 0 && queryEmbedding) {
+      try {
+        const lexicalOptions = {
+          ...buildGrepSearchOptions(matchParams, targets[0] ?? ctx.cwd),
+          pathFilter: buildPathFilterForTargets(targets),
+          limit: 100
+        };
+        const lexicalRows = await Promise.race([
+          searchDeeplakeTables(client, table, sessionsTable ?? "sessions", lexicalOptions),
+          new Promise((_16, reject) => setTimeout(() => reject(new Error("timeout")), 3e3))
+        ]);
+        rows.push(...lexicalRows);
+      } catch {
+      }
     }
     const seen = /* @__PURE__ */ new Set();
     rows = rows.filter((r10) => seen.has(r10.path) ? false : (seen.add(r10.path), true));
@@ -69189,7 +69688,19 @@ function createGrepCommand(client, fs3, table, sessionsTable) {
       }
     }
     const normalized = rows.map((r10) => ({ path: r10.path, content: normalizeContent(r10.path, r10.content) }));
-    const output = refineGrepMatches(normalized, matchParams);
+    let output;
+    if (queryEmbedding && queryEmbedding.length > 0 && process.env.HIVEMIND_SEMANTIC_EMIT_ALL !== "false") {
+      output = [];
+      for (const r10 of normalized) {
+        for (const line of r10.content.split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed)
+            output.push(`${r10.path}:${line}`);
+        }
+      }
+    } else {
+      output = refineGrepMatches(normalized, matchParams);
+    }
     return {
       stdout: output.length > 0 ? output.join("\n") + "\n" : "",
       stderr: "",

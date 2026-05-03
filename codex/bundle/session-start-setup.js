@@ -17,7 +17,7 @@ __export(index_marker_store_exports, {
   hasFreshIndexMarker: () => hasFreshIndexMarker,
   writeIndexMarker: () => writeIndexMarker
 });
-import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { join as join4 } from "node:path";
 import { tmpdir } from "node:os";
 function getIndexMarkerDir() {
@@ -28,7 +28,7 @@ function buildIndexMarkerPath(workspaceId, orgId, table, suffix) {
   return join4(getIndexMarkerDir(), `${markerKey}.json`);
 }
 function hasFreshIndexMarker(markerPath) {
-  if (!existsSync3(markerPath))
+  if (!existsSync2(markerPath))
     return false;
   try {
     const raw = JSON.parse(readFileSync3(markerPath, "utf-8"));
@@ -64,42 +64,43 @@ import { execSync } from "node:child_process";
 // dist/src/utils/client-header.js
 var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
 function deeplakeClientValue() {
-  return `hivemind/${"0.6.51"}`;
+  return "hivemind";
 }
 function deeplakeClientHeader() {
   return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
 }
 
 // dist/src/commands/auth-creds.js
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-var CONFIG_DIR = join(homedir(), ".deeplake");
-var CREDS_PATH = join(CONFIG_DIR, "credentials.json");
+function configDir() {
+  return join(homedir(), ".deeplake");
+}
+function credsPath() {
+  return join(configDir(), "credentials.json");
+}
 function loadCredentials() {
-  if (!existsSync(CREDS_PATH))
-    return null;
   try {
-    return JSON.parse(readFileSync(CREDS_PATH, "utf-8"));
+    return JSON.parse(readFileSync(credsPath(), "utf-8"));
   } catch {
     return null;
   }
 }
 function saveCredentials(creds) {
-  if (!existsSync(CONFIG_DIR))
-    mkdirSync(CONFIG_DIR, { recursive: true, mode: 448 });
-  writeFileSync(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
+  mkdirSync(configDir(), { recursive: true, mode: 448 });
+  writeFileSync(credsPath(), JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
 }
 
 // dist/src/config.js
-import { readFileSync as readFileSync2, existsSync as existsSync2 } from "node:fs";
+import { readFileSync as readFileSync2, existsSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir2, userInfo } from "node:os";
 function loadConfig() {
   const home = homedir2();
   const credPath = join2(home, ".deeplake", "credentials.json");
   let creds = null;
-  if (existsSync2(credPath)) {
+  if (existsSync(credPath)) {
     try {
       creds = JSON.parse(readFileSync2(credPath, "utf-8"));
     } catch {
@@ -146,6 +147,10 @@ function log(tag, msg) {
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
+
+// dist/src/embeddings/columns.js
+var SUMMARY_EMBEDDING_COL = "summary_embedding";
+var MESSAGE_EMBEDDING_COL = "message_embedding";
 
 // dist/src/deeplake-api.js
 var indexMarkerStorePromise = null;
@@ -288,7 +293,8 @@ var DeeplakeApi = class {
       }
       const text = await resp.text().catch(() => "");
       const retryable403 = isSessionInsertQuery(sql) && (resp.status === 401 || resp.status === 403 && (text.length === 0 || isTransientHtml403(text)));
-      if (attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
+      const alreadyExists = resp.status === 500 && isDuplicateIndexError(text);
+      if (!alreadyExists && attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
         log2(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
         await sleep(delay);
@@ -322,7 +328,7 @@ var DeeplakeApi = class {
     const lud = row.lastUpdateDate ?? ts;
     const exists = await this.query(`SELECT path FROM "${this.tableName}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`);
     if (exists.length > 0) {
-      let setClauses = `summary = E'${sqlStr(row.contentText)}', mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
+      let setClauses = `summary = E'${sqlStr(row.contentText)}', ${SUMMARY_EMBEDDING_COL} = NULL, mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
       if (row.project !== void 0)
         setClauses += `, project = '${sqlStr(row.project)}'`;
       if (row.description !== void 0)
@@ -330,8 +336,8 @@ var DeeplakeApi = class {
       await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(row.path)}'`);
     } else {
       const id = randomUUID();
-      let cols = "id, path, filename, summary, mime_type, size_bytes, creation_date, last_update_date";
-      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
+      let cols = `id, path, filename, summary, ${SUMMARY_EMBEDDING_COL}, mime_type, size_bytes, creation_date, last_update_date`;
+      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', NULL, '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
       if (row.project !== void 0) {
         cols += ", project";
         vals += `, '${sqlStr(row.project)}'`;
@@ -372,6 +378,66 @@ var DeeplakeApi = class {
       }
       log2(`index "${indexName}" skipped: ${e.message}`);
     }
+  }
+  /**
+   * Ensure a vector column exists on the given table.
+   *
+   * The previous implementation always issued `ALTER TABLE ADD COLUMN IF NOT
+   * EXISTS …` on every SessionStart. On a long-running workspace that's
+   * already migrated, every call returns 500 "Column already exists" — noisy
+   * in the log and a wasted round-trip. Worse, the very first call after the
+   * column is genuinely added triggers Deeplake's post-ALTER `vector::at`
+   * window (~30s) during which subsequent INSERTs fail; minimising the
+   * number of ALTER calls minimises exposure to that window.
+   *
+   * New flow:
+   *   1. Check the local marker file (mirrors ensureLookupIndex). If fresh,
+   *      return — zero network calls.
+   *   2. SELECT 1 FROM information_schema.columns WHERE table_name = T AND
+   *      column_name = C. Read-only, idempotent, can't tickle the post-ALTER
+   *      bug. If the column is present → mark + return.
+   *   3. Only if step 2 says the column is missing, fall back to ALTER ADD
+   *      COLUMN IF NOT EXISTS. Mark on success, also mark if Deeplake reports
+   *      "already exists" (race: another client added it between our SELECT
+   *      and ALTER).
+   *
+   * Marker uses the same dir / TTL as ensureLookupIndex so both schema
+   * caches share an opt-out (HIVEMIND_INDEX_MARKER_DIR) and a TTL knob.
+   */
+  async ensureEmbeddingColumn(table, column) {
+    await this.ensureColumn(table, column, "FLOAT4[]");
+  }
+  /**
+   * Generic marker-gated column migration. Same SELECT-then-ALTER flow as
+   * ensureEmbeddingColumn, parameterized by SQL type so it can patch up any
+   * column that was added to the schema after the table was originally
+   * created. Used today for `summary_embedding`, `message_embedding`, and
+   * the `agent` column (added 2026-04-11) — the latter has no fallback if
+   * a user upgraded over a pre-2026-04-11 table, so every INSERT fails
+   * with `column "agent" does not exist`.
+   */
+  async ensureColumn(table, column, sqlType) {
+    const markers = await getIndexMarkerStore();
+    const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, `col_${column}`);
+    if (markers.hasFreshIndexMarker(markerPath))
+      return;
+    const colCheck = `SELECT 1 FROM information_schema.columns WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' AND table_schema = '${sqlStr(this.workspaceId)}' LIMIT 1`;
+    const rows = await this.query(colCheck);
+    if (rows.length > 0) {
+      markers.writeIndexMarker(markerPath);
+      return;
+    }
+    try {
+      await this.query(`ALTER TABLE "${table}" ADD COLUMN ${column} ${sqlType}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/already exists/i.test(msg))
+        throw e;
+      const recheck = await this.query(colCheck);
+      if (recheck.length === 0)
+        throw e;
+    }
+    markers.writeIndexMarker(markerPath);
   }
   /** List all tables in the workspace (with retry). */
   async listTables(forceRefresh = false) {
@@ -448,22 +514,26 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, tbl);
+      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', summary_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, tbl);
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
     }
+    await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
+    await this.ensureColumn(tbl, "agent", "TEXT NOT NULL DEFAULT ''");
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
   async ensureSessionsTable(name) {
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log2(`table "${name}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, name);
+      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, message_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, name);
       log2(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
     }
+    await this.ensureEmbeddingColumn(name, MESSAGE_EMBEDDING_COL);
+    await this.ensureColumn(name, "agent", "TEXT NOT NULL DEFAULT ''");
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
 };

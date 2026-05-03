@@ -38,9 +38,38 @@ describe("isHivemindHookEntry", () => {
     }, PD)).toBe(false);
   });
 
-  it("false when command points to a sibling plugin dir (not ours)", () => {
+  it("false when command points to a sibling plugin dir whose filename is NOT a hivemind bundle entry-point", () => {
     expect(isHivemindHookEntry({
       hooks: [{ type: "command", command: "node /home/test/.codex/other-plugin/bundle/x.js" }],
+    }, PD)).toBe(false);
+  });
+
+  // The dual-install case from production: a local hivemind dev clone wired
+  // into hooks.json under a path that's NOT the canonical install dir.
+  // We MUST recognise these as ours so re-install strips them — otherwise
+  // two hivemind copies race on every codex session.
+  it("true when command points to a hivemind bundle file in a foreign path (dev-clone scenario)", () => {
+    expect(isHivemindHookEntry({
+      hooks: [{ type: "command", command: 'node "/home/test/dev-clone-of-hivemind/codex/bundle/session-start.js"', timeout: 120 }],
+    }, PD)).toBe(true);
+  });
+
+  it.each([
+    "session-start.js",
+    "session-start-setup.js",
+    "capture.js",
+    "pre-tool-use.js",
+    "stop.js",
+    "wiki-worker.js",
+  ])("true when command targets a known hivemind bundle file: bundle/%s", (file) => {
+    expect(isHivemindHookEntry({
+      hooks: [{ type: "command", command: `node "/some/sibling/codex/bundle/${file}"` }],
+    }, PD)).toBe(true);
+  });
+
+  it("false when filename matches but path does not contain a 'bundle/' segment (avoids matching unrelated scripts)", () => {
+    expect(isHivemindHookEntry({
+      hooks: [{ type: "command", command: 'node "/home/test/scripts/session-start.js"' }],
     }, PD)).toBe(false);
   });
 

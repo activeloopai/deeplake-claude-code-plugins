@@ -17,6 +17,7 @@ const debugLogMock = vi.fn();
 const ensureTableMock = vi.fn();
 const ensureSessionsTableMock = vi.fn();
 const execSyncMock = vi.fn();
+const embedWarmupMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/commands/auth.js", () => ({
@@ -38,6 +39,23 @@ vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
   return { ...actual, execSync: (...a: any[]) => execSyncMock(...a) };
 });
+vi.mock("../../src/embeddings/client.js", () => ({
+  EmbedClient: class {
+    async warmup() { return embedWarmupMock(); }
+  },
+}));
+// `embeddingsDisabled()` walks the real filesystem looking for
+// @huggingface/transformers, which is no longer in this repo's node_modules
+// (it's installed once into ~/.hivemind/embed-deps via `hivemind embeddings
+// install`). Without this mock the warmup branch is never reached and every
+// assertion below would land on the "skipped: no-transformers" log line. We
+// still respect HIVEMIND_EMBEDDINGS=false so the master-flag branch test below
+// behaves like production.
+vi.mock("../../src/embeddings/disable.js", () => ({
+  embeddingsDisabled: () => process.env.HIVEMIND_EMBEDDINGS === "false",
+  embeddingsStatus: () =>
+    process.env.HIVEMIND_EMBEDDINGS === "false" ? "disabled-by-env" : "enabled",
+}));
 
 // We also need to control global.fetch for the GitHub version lookup.
 const originalFetch = global.fetch;
@@ -74,6 +92,7 @@ beforeEach(() => {
   ensureTableMock.mockReset().mockResolvedValue(undefined);
   ensureSessionsTableMock.mockReset().mockResolvedValue(undefined);
   execSyncMock.mockReset();
+  embedWarmupMock.mockReset().mockResolvedValue(true);
   fetchMock.mockReset().mockResolvedValue({
     ok: true,
     json: async () => ({ version: "0.0.1" }), // same-as-current: no update
@@ -214,6 +233,44 @@ describe("session-start-setup hook — version check + autoupdate", () => {
     await runHook();
     // Inner try/catch in getLatestVersion swallows; no autoupdate triggers.
     expect(execSyncMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("session-start-setup hook — embed daemon warmup", () => {
+  it("calls EmbedClient.warmup() by default and logs the outcome", async () => {
+    await runHook();
+    expect(embedWarmupMock).toHaveBeenCalledTimes(1);
+    expect(debugLogMock).toHaveBeenCalledWith("embed daemon warmup: ok");
+  });
+
+  it("logs 'failed' when warmup returns false", async () => {
+    embedWarmupMock.mockResolvedValue(false);
+    await runHook();
+    expect(debugLogMock).toHaveBeenCalledWith("embed daemon warmup: failed");
+  });
+
+  it("logs the thrown message when warmup rejects", async () => {
+    embedWarmupMock.mockRejectedValue(new Error("daemon spawn failed"));
+    await runHook();
+    expect(debugLogMock).toHaveBeenCalledWith(
+      expect.stringContaining("embed daemon warmup threw: daemon spawn failed"),
+    );
+  });
+
+  it("skips warmup when HIVEMIND_EMBED_WARMUP=false", async () => {
+    await runHook({ HIVEMIND_EMBED_WARMUP: "false" });
+    expect(embedWarmupMock).not.toHaveBeenCalled();
+    expect(debugLogMock).toHaveBeenCalledWith(
+      "embed daemon warmup skipped via HIVEMIND_EMBED_WARMUP=false",
+    );
+  });
+
+  it("skips warmup when the master HIVEMIND_EMBEDDINGS=false flag is set", async () => {
+    await runHook({ HIVEMIND_EMBEDDINGS: "false" });
+    expect(embedWarmupMock).not.toHaveBeenCalled();
+    expect(debugLogMock).toHaveBeenCalledWith(
+      "embed daemon warmup skipped: HIVEMIND_EMBEDDINGS=false",
+    );
   });
 });
 

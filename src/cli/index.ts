@@ -4,6 +4,7 @@ import { installOpenclaw, uninstallOpenclaw } from "./install-openclaw.js";
 import { installCursor, uninstallCursor } from "./install-cursor.js";
 import { installHermes, uninstallHermes } from "./install-hermes.js";
 import { installPi, uninstallPi } from "./install-pi.js";
+import { enableEmbeddings, disableEmbeddings, statusEmbeddings } from "./embeddings.js";
 import { ensureLoggedIn, isLoggedIn, maybeShowOrgChoice } from "./auth.js";
 import { runAuthCommand } from "../commands/auth-login.js";
 import { detectPlatforms, allPlatformIds, log, warn, type PlatformId } from "./util.js";
@@ -44,6 +45,18 @@ Usage:
 
   hivemind login            Run device-flow login (open browser).
   hivemind status           Show which assistants are wired up.
+
+Semantic search (embeddings):
+  hivemind embeddings install                Download @huggingface/transformers
+                                             once (~600 MB) into a shared dir
+                                             and symlink every detected agent
+                                             plugin to it. Idempotent.
+  hivemind embeddings uninstall [--prune]    Remove the per-agent symlinks.
+                                             --prune also deletes the shared dir.
+  hivemind embeddings status                 Show shared-deps + per-agent state.
+
+  Add --with-embeddings to "hivemind install" (or "hivemind <agent> install")
+  to run "embeddings install" automatically after installing the agent(s).
 
 Account / org / workspace:
   hivemind whoami                          Show current user, org, workspace.
@@ -86,6 +99,7 @@ function hasFlag(args: string[], flag: string): boolean {
 async function runInstallAll(args: string[]): Promise<void> {
   const only = parseOnly(args);
   const skipAuth = hasFlag(args, "--skip-auth");
+  const withEmbeddings = hasFlag(args, "--with-embeddings");
 
   const targets: PlatformId[] = only ?? detectPlatforms().map(p => p.id);
 
@@ -108,6 +122,11 @@ async function runInstallAll(args: string[]): Promise<void> {
   }
 
   for (const id of targets) runSingleInstall(id);
+
+  if (withEmbeddings) {
+    log("");
+    enableEmbeddings();
+  }
 
   await maybeShowOrgChoice();
 
@@ -175,6 +194,18 @@ async function main(): Promise<void> {
   if (cmd === "login") { await ensureLoggedIn(); return; }
   if (cmd === "status") { runStatus(); return; }
 
+  if (cmd === "embeddings") {
+    const sub = args[1];
+    if (sub === "install" || sub === "enable") { enableEmbeddings(); return; }
+    if (sub === "uninstall" || sub === "disable") {
+      disableEmbeddings({ prune: hasFlag(args.slice(2), "--prune") });
+      return;
+    }
+    if (sub === "status") { statusEmbeddings(); return; }
+    warn("Usage: hivemind embeddings install | uninstall [--prune] | status");
+    process.exit(1);
+  }
+
   // Account / org / workspace subcommands — passthrough to the auth-login dispatcher.
   if (AUTH_SUBCOMMANDS.has(cmd)) {
     await runAuthCommand(args);
@@ -184,9 +215,15 @@ async function main(): Promise<void> {
   const platformCmds: PlatformId[] = ["claude", "codex", "claw", "cursor", "hermes", "pi"];
   if (platformCmds.includes(cmd as PlatformId)) {
     const sub = args[1];
-    if (sub === "install") runSingleInstall(cmd as PlatformId);
+    if (sub === "install") {
+      runSingleInstall(cmd as PlatformId);
+      if (hasFlag(args.slice(2), "--with-embeddings")) {
+        log("");
+        enableEmbeddings();
+      }
+    }
     else if (sub === "uninstall") runSingleUninstall(cmd as PlatformId);
-    else { warn(`Usage: hivemind ${cmd} install|uninstall`); process.exit(1); }
+    else { warn(`Usage: hivemind ${cmd} install [--with-embeddings] | uninstall`); process.exit(1); }
     return;
   }
 

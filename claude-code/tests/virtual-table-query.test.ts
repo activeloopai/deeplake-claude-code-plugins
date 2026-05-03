@@ -16,10 +16,14 @@ describe("virtual-table-query", () => {
         project: "repo",
         description: "session summary",
         creation_date: "2026-01-01T00:00:00.000Z",
+        last_update_date: "2026-01-02T00:00:00.000Z",
       },
     ]);
-    expect(content).toContain("# Memory Index");
-    expect(content).toContain("/summaries/alice/s1.md");
+    expect(content).toContain("# Session Index");
+    expect(content).toContain("## memory");
+    // Renderer emits a markdown table link with workspace-relative path
+    expect(content).toContain("[s1](summaries/alice/s1.md)");
+    expect(content).toContain("Last Updated");
   });
 
   it("builds index rows when project metadata is missing", () => {
@@ -28,8 +32,8 @@ describe("virtual-table-query", () => {
         path: "/summaries/alice/s2.md",
       },
     ]);
-    expect(content).toContain("/summaries/alice/s2.md");
-    expect(content).toContain("# Memory Index");
+    expect(content).toContain("[s2](summaries/alice/s2.md)");
+    expect(content).toContain("# Session Index");
   });
 
   it("prefers a memory-table hit for exact path reads", async () => {
@@ -79,6 +83,7 @@ describe("virtual-table-query", () => {
             project: "repo",
             description: "session summary",
             creation_date: "2026-01-01T00:00:00.000Z",
+            last_update_date: "2026-01-02T00:00:00.000Z",
           },
         ])
         .mockResolvedValueOnce([]),
@@ -87,7 +92,8 @@ describe("virtual-table-query", () => {
     const content = await readVirtualPathContents(api, "memory", "sessions", ["/summaries/a.md", "/index.md"]);
 
     expect(content.get("/summaries/a.md")).toBe("summary body");
-    expect(content.get("/index.md")).toContain("# Memory Index");
+    expect(content.get("/index.md")).toContain("# Session Index");
+    expect(content.get("/index.md")).toContain("[s1](summaries/alice/s1.md)");
     // 1 union query for exact paths + 2 parallel fallback queries (summaries + sessions) for /index.md
     expect(api.query).toHaveBeenCalledTimes(3);
   });
@@ -238,39 +244,42 @@ describe("virtual-table-query", () => {
             project: "repo",
             description: "summary one",
             creation_date: "2026-01-01T00:00:00.000Z",
+            last_update_date: "2026-01-02T00:00:00.000Z",
           },
         ],
         [
-          { path: "/sessions/conv_0_session_1.json", description: "session one" },
-          { path: "/sessions/conv_0_session_2.json", description: "session two" },
+          { path: "/sessions/conv_0_session_1.json", description: "session one", creation_date: "2026-01-03", last_update_date: "2026-01-04" },
+          { path: "/sessions/conv_0_session_2.json", description: "session two", creation_date: "2026-01-05", last_update_date: "2026-01-06" },
         ],
       );
 
-      expect(content).toContain("3 entries (1 summaries, 2 sessions):");
-      expect(content).toContain("## Summaries");
-      expect(content).toContain("## Sessions");
-      expect(content).toContain("/summaries/alice/s1.md");
-      expect(content).toContain("/sessions/conv_0_session_1.json");
-      expect(content).toContain("/sessions/conv_0_session_2.json");
-      // Summaries section comes before Sessions section
-      expect(content.indexOf("## Summaries")).toBeLessThan(content.indexOf("## Sessions"));
+      expect(content).toContain("# Session Index");
+      expect(content).toContain("## memory");
+      expect(content).toContain("## sessions");
+      expect(content).toContain("[s1](summaries/alice/s1.md)");
+      expect(content).toContain("[conv_0_session_1.json](sessions/conv_0_session_1.json)");
+      expect(content).toContain("[conv_0_session_2.json](sessions/conv_0_session_2.json)");
+      // memory section comes before sessions section
+      expect(content.indexOf("## memory")).toBeLessThan(content.indexOf("## sessions"));
     });
 
     it("renders only sessions when the memory table is empty (the baseline_cloud regression)", () => {
       const content = buildVirtualIndexContent(
         [],
         [
-          { path: "/sessions/conv_0_session_1.json", description: "first" },
-          { path: "/sessions/conv_0_session_2.json", description: "second" },
+          { path: "/sessions/conv_0_session_1.json", description: "first", creation_date: "2026-01-01", last_update_date: "2026-01-02" },
+          { path: "/sessions/conv_0_session_2.json", description: "second", creation_date: "2026-01-03", last_update_date: "2026-01-04" },
         ],
       );
 
-      expect(content).toContain("2 entries (0 summaries, 2 sessions):");
-      expect(content).toContain("## Sessions");
-      expect(content).not.toContain("## Summaries");
-      expect(content).toContain("/sessions/conv_0_session_1.json");
-      // Guard against the old bug: must not report "0 sessions:" as the total.
-      expect(content).not.toMatch(/\n0 sessions:/);
+      // Both sections always render now (the empty-memory case shows an
+      // explicit "_(empty — no summaries ingested yet)_" notice instead of
+      // omitting the section). Guards against the old "0 sessions:" header
+      // bug while keeping the fix for the baseline-cloud sessions-only case.
+      expect(content).toContain("## memory");
+      expect(content).toContain("_(empty — no summaries ingested yet)_");
+      expect(content).toContain("## sessions");
+      expect(content).toContain("[conv_0_session_1.json](sessions/conv_0_session_1.json)");
     });
 
     it("stays backwards-compatible when called with only summary rows", () => {
@@ -280,20 +289,52 @@ describe("virtual-table-query", () => {
           project: "repo",
           description: "summary only",
           creation_date: "2026-01-01T00:00:00.000Z",
+          last_update_date: "2026-01-02T00:00:00.000Z",
         },
       ]);
 
-      expect(content).toContain("1 entries (1 summaries, 0 sessions):");
-      expect(content).toContain("/summaries/alice/s1.md");
-      expect(content).not.toContain("## Sessions");
+      expect(content).toContain("[s1](summaries/alice/s1.md)");
+      // sessions section still emitted but reports empty
+      expect(content).toContain("_(empty — no session records ingested yet)_");
     });
 
     it("produces a well-formed empty index when both tables are empty", () => {
       const content = buildVirtualIndexContent([], []);
-      expect(content).toContain("# Memory Index");
-      expect(content).toContain("0 entries (0 summaries, 0 sessions):");
-      expect(content).not.toContain("## Summaries");
-      expect(content).not.toContain("## Sessions");
+      expect(content).toContain("# Session Index");
+      expect(content).toContain("_(empty — no summaries ingested yet)_");
+      expect(content).toContain("_(empty — no session records ingested yet)_");
+    });
+
+    it("emits the truncation notice when summary or session rows exceed the cap", () => {
+      // Synthesise rows just to confirm the truncated:true branch in opts is
+      // honoured by the renderer. The numbers don't matter; the notice text
+      // is the regression guard.
+      const content = buildVirtualIndexContent(
+        [{ path: "/summaries/alice/s1.md", project: "p", description: "d", creation_date: "2026-01-01", last_update_date: "2026-01-02" }],
+        [{ path: "/sessions/alice/x.jsonl", description: "d", creation_date: "2026-01-01", last_update_date: "2026-01-02" }],
+        { summaryTruncated: true, sessionTruncated: true },
+      );
+      // Both sections show the "showing N most-recent of many" notice.
+      const truncationNotices = (content.match(/most-recent of many/g) ?? []);
+      expect(truncationNotices.length).toBe(2);
+    });
+
+    it("skips summary rows whose path doesn't match the /summaries/<user>/<id>.md shape", () => {
+      // Defense-in-depth: if a row sneaks in with a malformed path (e.g. an
+      // older write that stored the wrong shape), the renderer must skip
+      // it rather than crash or emit a broken markdown link. Locks the
+      // `if (!match) continue;` branch in the loop.
+      const content = buildVirtualIndexContent(
+        [
+          { path: "/summaries/alice/good.md", project: "p", description: "d", creation_date: "2026-01-01", last_update_date: "2026-01-02" },
+          { path: "/summaries/bad-shape-no-user", project: "p", description: "d", creation_date: "2026-01-01", last_update_date: "2026-01-02" },
+          { path: "/totally/unrelated/path.md",  project: "p", description: "d", creation_date: "2026-01-01", last_update_date: "2026-01-02" },
+        ],
+        [],
+      );
+      expect(content).toContain("[good](summaries/alice/good.md)");
+      expect(content).not.toContain("bad-shape-no-user");
+      expect(content).not.toContain("totally/unrelated");
     });
   });
 
@@ -326,12 +367,22 @@ describe("virtual-table-query", () => {
 
       expect(summarySql).toContain('FROM "memory"');
       expect(summarySql).toContain("path LIKE '/summaries/%'");
+      // The fix for the index.md bottleneck: scope by recency + bound by LIMIT.
+      expect(summarySql).toContain("ORDER BY last_update_date DESC");
+      expect(summarySql).toMatch(/LIMIT \d+/);
+      expect(summarySql).toContain("last_update_date");
+
       expect(sessionsSql).toContain('FROM "sessions"');
       expect(sessionsSql).toContain("path LIKE '/sessions/%'");
+      // GROUP BY collapses the many-rows-per-conversation shape; ORDER BY +
+      // LIMIT bound the response.
+      expect(sessionsSql).toContain("GROUP BY path");
+      expect(sessionsSql).toContain("ORDER BY MAX(last_update_date) DESC");
+      expect(sessionsSql).toMatch(/LIMIT \d+/);
 
-      expect(indexContent).toContain("2 entries (0 summaries, 2 sessions):");
-      expect(indexContent).toContain("/sessions/conv_0_session_1.json");
-      expect(indexContent).toContain("/sessions/conv_0_session_2.json");
+      expect(indexContent).toContain("# Session Index");
+      expect(indexContent).toContain("[conv_0_session_1.json](sessions/conv_0_session_1.json)");
+      expect(indexContent).toContain("[conv_0_session_2.json](sessions/conv_0_session_2.json)");
     });
 
     it("still produces an index when the sessions-table fallback query fails", async () => {
@@ -352,8 +403,10 @@ describe("virtual-table-query", () => {
       const result = await readVirtualPathContents(api, "memory", "sessions", ["/index.md"]);
       const indexContent = result.get("/index.md") ?? "";
 
-      expect(indexContent).toContain("1 entries (1 summaries, 0 sessions):");
-      expect(indexContent).toContain("/summaries/alice/s1.md");
+      expect(indexContent).toContain("# Session Index");
+      expect(indexContent).toContain("[s1](summaries/alice/s1.md)");
+      // sessions table is down → renders the empty notice instead of crashing
+      expect(indexContent).toContain("_(empty — no session records ingested yet)_");
     });
   });
 });

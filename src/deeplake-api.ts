@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { log as _log } from "./utils/debug.js";
 import { sqlStr } from "./utils/sql.js";
+import { SUMMARY_EMBEDDING_COL, MESSAGE_EMBEDDING_COL } from "./embeddings/columns.js";
 import { deeplakeClientHeader } from "./utils/client-header.js";
 
 // index-marker-store touches node:fs. Load it lazily so bundlers that split
@@ -180,7 +181,12 @@ export class DeeplakeApi {
       const retryable403 =
         isSessionInsertQuery(sql) &&
         (resp.status === 401 || (resp.status === 403 && (text.length === 0 || isTransientHtml403(text))));
-      if (attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
+      // Deeplake returns HTTP 500 (not 409) when ADD COLUMN IF NOT EXISTS / CREATE
+      // INDEX IF NOT EXISTS hit an already-present object. The error is
+      // deterministic — retrying just burns ~4s of exponential backoff per call,
+      // and SessionStart issues several of these on every run. Fail fast.
+      const alreadyExists = resp.status === 500 && isDuplicateIndexError(text);
+      if (!alreadyExists && attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
         log(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
         await sleep(delay);
@@ -221,6 +227,7 @@ export class DeeplakeApi {
     );
     if (exists.length > 0) {
       let setClauses = `summary = E'${sqlStr(row.contentText)}', ` +
+        `${SUMMARY_EMBEDDING_COL} = NULL, ` +
         `mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
       if (row.project !== undefined) setClauses += `, project = '${sqlStr(row.project)}'`;
       if (row.description !== undefined) setClauses += `, description = '${sqlStr(row.description)}'`;
@@ -229,8 +236,8 @@ export class DeeplakeApi {
       );
     } else {
       const id = randomUUID();
-      let cols = "id, path, filename, summary, mime_type, size_bytes, creation_date, last_update_date";
-      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
+      let cols = `id, path, filename, summary, ${SUMMARY_EMBEDDING_COL}, mime_type, size_bytes, creation_date, last_update_date`;
+      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', NULL, '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
       if (row.project !== undefined) { cols += ", project"; vals += `, '${sqlStr(row.project)}'`; }
       if (row.description !== undefined) { cols += ", description"; vals += `, '${sqlStr(row.description)}'`; }
       await this.query(
@@ -275,6 +282,77 @@ export class DeeplakeApi {
       }
       log(`index "${indexName}" skipped: ${e.message}`);
     }
+  }
+
+  /**
+   * Ensure a vector column exists on the given table.
+   *
+   * The previous implementation always issued `ALTER TABLE ADD COLUMN IF NOT
+   * EXISTS …` on every SessionStart. On a long-running workspace that's
+   * already migrated, every call returns 500 "Column already exists" — noisy
+   * in the log and a wasted round-trip. Worse, the very first call after the
+   * column is genuinely added triggers Deeplake's post-ALTER `vector::at`
+   * window (~30s) during which subsequent INSERTs fail; minimising the
+   * number of ALTER calls minimises exposure to that window.
+   *
+   * New flow:
+   *   1. Check the local marker file (mirrors ensureLookupIndex). If fresh,
+   *      return — zero network calls.
+   *   2. SELECT 1 FROM information_schema.columns WHERE table_name = T AND
+   *      column_name = C. Read-only, idempotent, can't tickle the post-ALTER
+   *      bug. If the column is present → mark + return.
+   *   3. Only if step 2 says the column is missing, fall back to ALTER ADD
+   *      COLUMN IF NOT EXISTS. Mark on success, also mark if Deeplake reports
+   *      "already exists" (race: another client added it between our SELECT
+   *      and ALTER).
+   *
+   * Marker uses the same dir / TTL as ensureLookupIndex so both schema
+   * caches share an opt-out (HIVEMIND_INDEX_MARKER_DIR) and a TTL knob.
+   */
+  private async ensureEmbeddingColumn(table: string, column: string): Promise<void> {
+    await this.ensureColumn(table, column, "FLOAT4[]");
+  }
+
+  /**
+   * Generic marker-gated column migration. Same SELECT-then-ALTER flow as
+   * ensureEmbeddingColumn, parameterized by SQL type so it can patch up any
+   * column that was added to the schema after the table was originally
+   * created. Used today for `summary_embedding`, `message_embedding`, and
+   * the `agent` column (added 2026-04-11) — the latter has no fallback if
+   * a user upgraded over a pre-2026-04-11 table, so every INSERT fails
+   * with `column "agent" does not exist`.
+   */
+  private async ensureColumn(table: string, column: string, sqlType: string): Promise<void> {
+    const markers = await getIndexMarkerStore();
+    const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, `col_${column}`);
+    if (markers.hasFreshIndexMarker(markerPath)) return;
+
+    // Include table_schema = workspaceId to disambiguate across tenants — Deeplake's
+    // information_schema.columns is multi-workspace, so a same-named table in another
+    // workspace that already has the column would otherwise produce a false-positive
+    // PRESENT and skip the ALTER on this workspace's actual table.
+    const colCheck = `SELECT 1 FROM information_schema.columns ` +
+      `WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' AND table_schema = '${sqlStr(this.workspaceId)}' LIMIT 1`;
+
+    const rows = await this.query(colCheck);
+    if (rows.length > 0) {
+      markers.writeIndexMarker(markerPath);
+      return;
+    }
+
+    // Column confirmed missing: ALTER without IF NOT EXISTS so any failure is
+    // surfaced. The single tolerated exception is a race with another writer
+    // that adds the column between our SELECT and our ALTER — re-SELECT to
+    // confirm and treat as success. Everything else propagates.
+    try {
+      await this.query(`ALTER TABLE "${table}" ADD COLUMN ${column} ${sqlType}`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/already exists/i.test(msg)) throw e;
+      const recheck = await this.query(colCheck);
+      if (recheck.length === 0) throw e;
+    }
+    markers.writeIndexMarker(markerPath);
   }
 
   /** List all tables in the workspace (with retry). */
@@ -360,6 +438,7 @@ export class DeeplakeApi {
           `path TEXT NOT NULL DEFAULT '', ` +
           `filename TEXT NOT NULL DEFAULT '', ` +
           `summary TEXT NOT NULL DEFAULT '', ` +
+          `summary_embedding FLOAT4[], ` +
           `author TEXT NOT NULL DEFAULT '', ` +
           `mime_type TEXT NOT NULL DEFAULT 'text/plain', ` +
           `size_bytes BIGINT NOT NULL DEFAULT 0, ` +
@@ -374,6 +453,17 @@ export class DeeplakeApi {
       log(`table "${tbl}" created`);
       if (!tables.includes(tbl)) this._tablesCache = [...tables, tbl];
     }
+    // Always verify the embedding column is present, regardless of who created
+    // the table. CREATE TABLE may have raced with another plugin's CREATE that
+    // used an older schema without summary_embedding (e.g. a stale bundle of
+    // a sibling plugin sharing the same memory table). ensureEmbeddingColumn
+    // is idempotent and steady-state-cheap: SELECT info_schema, ALTER only if
+    // the column is genuinely missing.
+    await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
+    // Same fallback for the `agent` column (added 2026-04-11). Pre-2026-04-11
+    // tables don't have it; without this ALTER, every INSERT fails with
+    // `column "agent" does not exist` after upgrading over an old schema.
+    await this.ensureColumn(tbl, "agent", "TEXT NOT NULL DEFAULT ''");
     // BM25 index disabled — CREATE INDEX causes intermittent oid errors on fresh tables.
     // See bm25-oid-bug.sh for reproduction. Re-enable once Deeplake fixes the oid invalidation.
     // try {
@@ -394,6 +484,7 @@ export class DeeplakeApi {
           `path TEXT NOT NULL DEFAULT '', ` +
           `filename TEXT NOT NULL DEFAULT '', ` +
           `message JSONB, ` +
+          `message_embedding FLOAT4[], ` +
           `author TEXT NOT NULL DEFAULT '', ` +
           `mime_type TEXT NOT NULL DEFAULT 'application/json', ` +
           `size_bytes BIGINT NOT NULL DEFAULT 0, ` +
@@ -408,6 +499,10 @@ export class DeeplakeApi {
       log(`table "${name}" created`);
       if (!tables.includes(name)) this._tablesCache = [...tables, name];
     }
+    // Always verify message_embedding is present (same rationale as ensureTable).
+    await this.ensureEmbeddingColumn(name, MESSAGE_EMBEDDING_COL);
+    // Same fallback for the `agent` column (see ensureTable for rationale).
+    await this.ensureColumn(name, "agent", "TEXT NOT NULL DEFAULT ''");
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
 }

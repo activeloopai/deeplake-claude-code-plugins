@@ -18,14 +18,14 @@ __export(index_marker_store_exports, {
   writeIndexMarker: () => writeIndexMarker
 });
 import { existsSync as existsSync11, mkdirSync as mkdirSync3, readFileSync as readFileSync8, writeFileSync as writeFileSync5 } from "node:fs";
-import { join as join13 } from "node:path";
+import { join as join14 } from "node:path";
 import { tmpdir } from "node:os";
 function getIndexMarkerDir() {
-  return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join13(tmpdir(), "hivemind-deeplake-indexes");
+  return process.env.HIVEMIND_INDEX_MARKER_DIR ?? join14(tmpdir(), "hivemind-deeplake-indexes");
 }
 function buildIndexMarkerPath(workspaceId, orgId, table, suffix) {
   const markerKey = [workspaceId, orgId, table, suffix].join("__").replace(/[^a-zA-Z0-9_.-]/g, "_");
-  return join13(getIndexMarkerDir(), `${markerKey}.json`);
+  return join14(getIndexMarkerDir(), `${markerKey}.json`);
 }
 function hasFreshIndexMarker(markerPath) {
   if (!existsSync11(markerPath))
@@ -255,6 +255,14 @@ function buildHooksJson() {
     }
   };
 }
+var HIVEMIND_BUNDLE_FILES = [
+  "session-start.js",
+  "session-start-setup.js",
+  "capture.js",
+  "pre-tool-use.js",
+  "stop.js",
+  "wiki-worker.js"
+];
 function isHivemindHookEntry(entry, pluginDir = PLUGIN_DIR) {
   if (!entry || typeof entry !== "object")
     return false;
@@ -264,7 +272,25 @@ function isHivemindHookEntry(entry, pluginDir = PLUGIN_DIR) {
     if (!h || typeof h !== "object")
       return false;
     const cmd = h.command;
-    return typeof cmd === "string" && cmd.includes(`${pluginDir}/bundle/`);
+    if (typeof cmd !== "string")
+      return false;
+    if (cmd.includes(`${pluginDir}/bundle/`))
+      return true;
+    return HIVEMIND_BUNDLE_FILES.some((f) => cmd.includes(`/bundle/${f}`));
+  });
+}
+function isForeignHivemindHookEntry(entry, pluginDir = PLUGIN_DIR) {
+  if (!isHivemindHookEntry(entry, pluginDir))
+    return false;
+  const e = entry;
+  const hooks = Array.isArray(e.hooks) ? e.hooks : [];
+  return hooks.every((h) => {
+    if (!h || typeof h !== "object")
+      return false;
+    const cmd = h.command;
+    if (typeof cmd !== "string")
+      return false;
+    return !cmd.includes(`${pluginDir}/bundle/`);
   });
 }
 function mergeHooks(existing, ours, pluginDir = PLUGIN_DIR) {
@@ -292,7 +318,30 @@ function mergeHooksJson(ours) {
   } catch {
     warn(`  Codex          ${HOOKS_PATH} unparseable \u2014 ignoring prior content`);
   }
+  reportForeignHivemindHooks(existing);
   return mergeHooks(existing, ours);
+}
+function reportForeignHivemindHooks(existing) {
+  const existingHooks = existing.hooks && typeof existing.hooks === "object" ? existing.hooks : {};
+  const foreign = /* @__PURE__ */ new Set();
+  for (const entries of Object.values(existingHooks)) {
+    for (const e of entries ?? []) {
+      if (!isForeignHivemindHookEntry(e))
+        continue;
+      const hooks = Array.isArray(e.hooks) ? e.hooks : [];
+      for (const h of hooks) {
+        const cmd = h?.command;
+        if (typeof cmd === "string")
+          foreign.add(cmd);
+      }
+    }
+  }
+  if (foreign.size === 0)
+    return;
+  warn(`  Codex          stripping ${foreign.size} hivemind hook(s) from a non-canonical path:`);
+  for (const cmd of foreign)
+    warn(`                   ${cmd}`);
+  warn(`                 (these were probably leftover from a local dev clone \u2014 re-add them manually if intentional)`);
 }
 function tryEnableCodexHooks() {
   try {
@@ -3302,6 +3351,8 @@ var LEGACY_SKILL_DIR = join8(PI_AGENT_DIR, "skills", "hivemind-memory");
 var EXTENSIONS_DIR = join8(PI_AGENT_DIR, "extensions");
 var EXTENSION_PATH = join8(EXTENSIONS_DIR, "hivemind.ts");
 var VERSION_DIR = join8(PI_AGENT_DIR, ".hivemind");
+var WIKI_WORKER_DIR = join8(PI_AGENT_DIR, "hivemind");
+var WIKI_WORKER_PATH = join8(WIKI_WORKER_DIR, "wiki-worker.js");
 var HIVEMIND_BLOCK_START = "<!-- BEGIN hivemind-memory -->";
 var HIVEMIND_BLOCK_END = "<!-- END hivemind-memory -->";
 var HIVEMIND_BLOCK_BODY = `${HIVEMIND_BLOCK_START}
@@ -3381,10 +3432,18 @@ function installPi() {
   }
   ensureDir(EXTENSIONS_DIR);
   copyFileSync2(srcExtension, EXTENSION_PATH);
+  const srcWorker = join8(pkgRoot(), "pi", "bundle", "wiki-worker.js");
+  if (existsSync7(srcWorker)) {
+    ensureDir(WIKI_WORKER_DIR);
+    copyFileSync2(srcWorker, WIKI_WORKER_PATH);
+  }
   ensureDir(VERSION_DIR);
   writeVersionStamp(VERSION_DIR, getVersion());
   log(`  pi             AGENTS.md updated -> ${AGENTS_MD}`);
   log(`  pi             extension installed -> ${EXTENSION_PATH}`);
+  if (existsSync7(WIKI_WORKER_PATH)) {
+    log(`  pi             wiki-worker installed -> ${WIKI_WORKER_PATH}`);
+  }
 }
 function uninstallPi() {
   if (existsSync7(LEGACY_SKILL_DIR)) {
@@ -3394,6 +3453,10 @@ function uninstallPi() {
   if (existsSync7(EXTENSION_PATH)) {
     rmSync3(EXTENSION_PATH, { force: true });
     log(`  pi             removed extension ${EXTENSION_PATH}`);
+  }
+  if (existsSync7(WIKI_WORKER_DIR)) {
+    rmSync3(WIKI_WORKER_DIR, { recursive: true, force: true });
+    log(`  pi             removed wiki-worker dir ${WIKI_WORKER_DIR}`);
   }
   if (existsSync7(AGENTS_MD)) {
     const prior = readFileSync5(AGENTS_MD, "utf-8");
@@ -3411,9 +3474,178 @@ function uninstallPi() {
   }
 }
 
+// dist/src/cli/embeddings.js
+import { copyFileSync as copyFileSync3, chmodSync, existsSync as existsSync8, lstatSync as lstatSync2, readdirSync, readlinkSync, rmSync as rmSync4, statSync, unlinkSync as unlinkSync5 } from "node:fs";
+import { execFileSync as execFileSync3 } from "node:child_process";
+import { join as join9 } from "node:path";
+var SHARED_DIR = join9(HOME, ".hivemind", "embed-deps");
+var SHARED_NODE_MODULES = join9(SHARED_DIR, "node_modules");
+var SHARED_DAEMON_PATH = join9(SHARED_DIR, "embed-daemon.js");
+var TRANSFORMERS_PKG = "@huggingface/transformers";
+var TRANSFORMERS_RANGE = "^3.0.0";
+function findHivemindInstalls(home = HOME) {
+  const out = [];
+  const fixed = [
+    { id: "codex", pluginDir: join9(home, ".codex", "hivemind") },
+    { id: "cursor", pluginDir: join9(home, ".cursor", "hivemind") },
+    { id: "hermes", pluginDir: join9(home, ".hermes", "hivemind") }
+  ];
+  for (const inst of fixed) {
+    if (existsSync8(join9(inst.pluginDir, "bundle")))
+      out.push(inst);
+  }
+  const ccCache = join9(home, ".claude", "plugins", "cache", "hivemind", "hivemind");
+  if (existsSync8(ccCache)) {
+    let entries = [];
+    try {
+      entries = readdirSync(ccCache);
+    } catch {
+    }
+    for (const ver of entries) {
+      const dir = join9(ccCache, ver);
+      try {
+        if (!statSync(dir).isDirectory())
+          continue;
+      } catch {
+        continue;
+      }
+      const candidates = [join9(dir, "bundle"), join9(dir, "claude-code", "bundle")];
+      if (candidates.some((p) => existsSync8(p))) {
+        out.push({ id: `claude (${ver})`, pluginDir: dir });
+      }
+    }
+  }
+  return out;
+}
+function isSharedDepsInstalled(sharedNodeModules = SHARED_NODE_MODULES) {
+  return existsSync8(join9(sharedNodeModules, TRANSFORMERS_PKG));
+}
+function isSymlinkToSharedDeps(linkPath, sharedNodeModules) {
+  if (!existsSync8(linkPath))
+    return false;
+  try {
+    if (!lstatSync2(linkPath).isSymbolicLink())
+      return false;
+    return readlinkSync(linkPath) === sharedNodeModules;
+  } catch {
+    return false;
+  }
+}
+function linkStateFor(install, sharedNodeModules = SHARED_NODE_MODULES) {
+  const link = join9(install.pluginDir, "node_modules");
+  if (!existsSync8(link) && !isSymbolicLink(link))
+    return { kind: "no-node-modules" };
+  try {
+    if (lstatSync2(link).isSymbolicLink()) {
+      const target = readlinkSync(link);
+      return target === sharedNodeModules ? { kind: "linked-to-shared" } : { kind: "linked-elsewhere", target };
+    }
+  } catch {
+    return { kind: "no-node-modules" };
+  }
+  return { kind: "owns-own-node-modules" };
+}
+function isSymbolicLink(path) {
+  try {
+    return lstatSync2(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+function ensureSharedDeps() {
+  if (!isSharedDepsInstalled()) {
+    log(`  Embeddings     installing ${TRANSFORMERS_PKG}@${TRANSFORMERS_RANGE} into ${SHARED_DIR}`);
+    log(`                 (~600 MB; first install only \u2014 every agent will share this)`);
+    ensureDir(SHARED_DIR);
+    writeJson(join9(SHARED_DIR, "package.json"), {
+      name: "hivemind-embed-deps",
+      version: "1.0.0",
+      private: true,
+      dependencies: { [TRANSFORMERS_PKG]: TRANSFORMERS_RANGE }
+    });
+    execFileSync3("npm", ["install", "--omit=dev", "--no-package-lock", "--no-audit", "--no-fund"], {
+      cwd: SHARED_DIR,
+      stdio: "inherit"
+    });
+  } else {
+    log(`  Embeddings     shared deps already present at ${SHARED_DIR}`);
+  }
+  ensureDir(SHARED_DIR);
+  const src = join9(pkgRoot(), "embeddings", "embed-daemon.js");
+  if (existsSync8(src)) {
+    copyFileSync3(src, SHARED_DAEMON_PATH);
+    chmodSync(SHARED_DAEMON_PATH, 493);
+  } else {
+    warn(`  Embeddings     standalone daemon bundle missing at ${src} (run 'npm run build' first)`);
+  }
+}
+function linkAgent(install) {
+  const link = join9(install.pluginDir, "node_modules");
+  symlinkForce(SHARED_NODE_MODULES, link);
+  log(`  Embeddings     linked ${install.id.padEnd(20)} -> shared deps`);
+}
+function enableEmbeddings() {
+  ensureSharedDeps();
+  const installs = findHivemindInstalls();
+  if (installs.length === 0) {
+    warn("  Embeddings     no hivemind installs detected \u2014 run `hivemind install` first");
+    warn("                 (the shared deps are in place; subsequent agent installs will pick them up if you re-run `hivemind embeddings install`)");
+    return;
+  }
+  for (const inst of installs)
+    linkAgent(inst);
+  log(`  Embeddings     enabled. Restart your agents to pick up.`);
+}
+function disableEmbeddings(opts) {
+  const installs = findHivemindInstalls();
+  for (const inst of installs) {
+    const link = join9(inst.pluginDir, "node_modules");
+    if (isSymlinkToSharedDeps(link, SHARED_NODE_MODULES)) {
+      unlinkSync5(link);
+      log(`  Embeddings     unlinked ${inst.id}`);
+    }
+  }
+  if (opts?.prune && existsSync8(SHARED_DIR)) {
+    rmSync4(SHARED_DIR, { recursive: true, force: true });
+    log(`  Embeddings     pruned ${SHARED_DIR}`);
+  }
+}
+function statusEmbeddings() {
+  log(`Shared deps:   ${SHARED_DIR}`);
+  log(`Installed:     ${isSharedDepsInstalled() ? "yes" : "no"}`);
+  log(`Daemon:        ${existsSync8(SHARED_DAEMON_PATH) ? SHARED_DAEMON_PATH : "(not present)"}`);
+  log("");
+  log(`Agent installs:`);
+  const installs = findHivemindInstalls();
+  if (installs.length === 0) {
+    log(`  (none detected)`);
+    return;
+  }
+  for (const inst of installs) {
+    const state = linkStateFor(inst);
+    let label;
+    switch (state.kind) {
+      case "linked-to-shared":
+        label = "\u2713 linked \u2192 shared";
+        break;
+      case "no-node-modules":
+        label = "\u2717 not linked (embeddings disabled)";
+        break;
+      case "owns-own-node-modules":
+        label = "\u25B3 has its own node_modules (not shared)";
+        break;
+      case "linked-elsewhere":
+        label = `\u25B3 linked \u2192 ${state.target}`;
+        break;
+    }
+    log(`  ${inst.id.padEnd(20)} ${label}`);
+    log(`  ${" ".repeat(20)}   ${inst.pluginDir}`);
+  }
+}
+
 // dist/src/cli/auth.js
 import { existsSync as existsSync9 } from "node:fs";
-import { join as join10 } from "node:path";
+import { join as join11 } from "node:path";
 
 // dist/src/commands/auth.js
 import { execSync } from "node:child_process";
@@ -3421,38 +3653,40 @@ import { execSync } from "node:child_process";
 // dist/src/utils/client-header.js
 var DEEPLAKE_CLIENT_HEADER = "X-Deeplake-Client";
 function deeplakeClientValue() {
-  return `hivemind/${__HIVEMIND_VERSION__}`;
+  return "hivemind";
 }
 function deeplakeClientHeader() {
   return { [DEEPLAKE_CLIENT_HEADER]: deeplakeClientValue() };
 }
 
 // dist/src/commands/auth-creds.js
-import { readFileSync as readFileSync6, writeFileSync as writeFileSync4, existsSync as existsSync8, mkdirSync as mkdirSync2, unlinkSync as unlinkSync5 } from "node:fs";
-import { join as join9 } from "node:path";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync4, mkdirSync as mkdirSync2, unlinkSync as unlinkSync6 } from "node:fs";
+import { join as join10 } from "node:path";
 import { homedir as homedir2 } from "node:os";
-var CONFIG_DIR = join9(homedir2(), ".deeplake");
-var CREDS_PATH = join9(CONFIG_DIR, "credentials.json");
+function configDir() {
+  return join10(homedir2(), ".deeplake");
+}
+function credsPath() {
+  return join10(configDir(), "credentials.json");
+}
 function loadCredentials() {
-  if (!existsSync8(CREDS_PATH))
-    return null;
   try {
-    return JSON.parse(readFileSync6(CREDS_PATH, "utf-8"));
+    return JSON.parse(readFileSync6(credsPath(), "utf-8"));
   } catch {
     return null;
   }
 }
 function saveCredentials(creds) {
-  if (!existsSync8(CONFIG_DIR))
-    mkdirSync2(CONFIG_DIR, { recursive: true, mode: 448 });
-  writeFileSync4(CREDS_PATH, JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
+  mkdirSync2(configDir(), { recursive: true, mode: 448 });
+  writeFileSync4(credsPath(), JSON.stringify({ ...creds, savedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2), { mode: 384 });
 }
 function deleteCredentials() {
-  if (existsSync8(CREDS_PATH)) {
-    unlinkSync5(CREDS_PATH);
+  try {
+    unlinkSync6(credsPath());
     return true;
+  } catch {
+    return false;
   }
-  return false;
 }
 
 // dist/src/commands/auth.js
@@ -3633,9 +3867,9 @@ Using: ${orgName}
 }
 
 // dist/src/cli/auth.js
-var CREDS_PATH2 = join10(HOME, ".deeplake", "credentials.json");
+var CREDS_PATH = join11(HOME, ".deeplake", "credentials.json");
 function isLoggedIn() {
-  return existsSync9(CREDS_PATH2) && loadCredentials() !== null;
+  return existsSync9(CREDS_PATH) && loadCredentials() !== null;
 }
 async function ensureLoggedIn() {
   if (isLoggedIn())
@@ -3669,11 +3903,11 @@ async function maybeShowOrgChoice() {
 
 // dist/src/config.js
 import { readFileSync as readFileSync7, existsSync as existsSync10 } from "node:fs";
-import { join as join11 } from "node:path";
+import { join as join12 } from "node:path";
 import { homedir as homedir3, userInfo } from "node:os";
 function loadConfig() {
   const home = homedir3();
-  const credPath = join11(home, ".deeplake", "credentials.json");
+  const credPath = join12(home, ".deeplake", "credentials.json");
   let creds = null;
   if (existsSync10(credPath)) {
     try {
@@ -3695,7 +3929,7 @@ function loadConfig() {
     apiUrl: process.env.HIVEMIND_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.HIVEMIND_TABLE ?? "memory",
     sessionsTableName: process.env.HIVEMIND_SESSIONS_TABLE ?? "sessions",
-    memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? join11(home, ".deeplake", "memory")
+    memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? join12(home, ".deeplake", "memory")
   };
 }
 
@@ -3704,10 +3938,10 @@ import { randomUUID } from "node:crypto";
 
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
-import { join as join12 } from "node:path";
+import { join as join13 } from "node:path";
 import { homedir as homedir4 } from "node:os";
 var DEBUG = process.env.HIVEMIND_DEBUG === "1";
-var LOG = join12(homedir4(), ".deeplake", "hook-debug.log");
+var LOG = join13(homedir4(), ".deeplake", "hook-debug.log");
 function log2(tag, msg) {
   if (!DEBUG)
     return;
@@ -3719,6 +3953,10 @@ function log2(tag, msg) {
 function sqlStr(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
+
+// dist/src/embeddings/columns.js
+var SUMMARY_EMBEDDING_COL = "summary_embedding";
+var MESSAGE_EMBEDDING_COL = "message_embedding";
 
 // dist/src/deeplake-api.js
 var indexMarkerStorePromise = null;
@@ -3861,7 +4099,8 @@ var DeeplakeApi = class {
       }
       const text = await resp.text().catch(() => "");
       const retryable403 = isSessionInsertQuery(sql) && (resp.status === 401 || resp.status === 403 && (text.length === 0 || isTransientHtml403(text)));
-      if (attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
+      const alreadyExists = resp.status === 500 && isDuplicateIndexError(text);
+      if (!alreadyExists && attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
         log3(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
         await sleep(delay);
@@ -3895,7 +4134,7 @@ var DeeplakeApi = class {
     const lud = row.lastUpdateDate ?? ts;
     const exists = await this.query(`SELECT path FROM "${this.tableName}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`);
     if (exists.length > 0) {
-      let setClauses = `summary = E'${sqlStr(row.contentText)}', mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
+      let setClauses = `summary = E'${sqlStr(row.contentText)}', ${SUMMARY_EMBEDDING_COL} = NULL, mime_type = '${sqlStr(row.mimeType)}', size_bytes = ${row.sizeBytes}, last_update_date = '${lud}'`;
       if (row.project !== void 0)
         setClauses += `, project = '${sqlStr(row.project)}'`;
       if (row.description !== void 0)
@@ -3903,8 +4142,8 @@ var DeeplakeApi = class {
       await this.query(`UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(row.path)}'`);
     } else {
       const id = randomUUID();
-      let cols = "id, path, filename, summary, mime_type, size_bytes, creation_date, last_update_date";
-      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
+      let cols = `id, path, filename, summary, ${SUMMARY_EMBEDDING_COL}, mime_type, size_bytes, creation_date, last_update_date`;
+      let vals = `'${id}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', E'${sqlStr(row.contentText)}', NULL, '${sqlStr(row.mimeType)}', ${row.sizeBytes}, '${cd}', '${lud}'`;
       if (row.project !== void 0) {
         cols += ", project";
         vals += `, '${sqlStr(row.project)}'`;
@@ -3945,6 +4184,66 @@ var DeeplakeApi = class {
       }
       log3(`index "${indexName}" skipped: ${e.message}`);
     }
+  }
+  /**
+   * Ensure a vector column exists on the given table.
+   *
+   * The previous implementation always issued `ALTER TABLE ADD COLUMN IF NOT
+   * EXISTS …` on every SessionStart. On a long-running workspace that's
+   * already migrated, every call returns 500 "Column already exists" — noisy
+   * in the log and a wasted round-trip. Worse, the very first call after the
+   * column is genuinely added triggers Deeplake's post-ALTER `vector::at`
+   * window (~30s) during which subsequent INSERTs fail; minimising the
+   * number of ALTER calls minimises exposure to that window.
+   *
+   * New flow:
+   *   1. Check the local marker file (mirrors ensureLookupIndex). If fresh,
+   *      return — zero network calls.
+   *   2. SELECT 1 FROM information_schema.columns WHERE table_name = T AND
+   *      column_name = C. Read-only, idempotent, can't tickle the post-ALTER
+   *      bug. If the column is present → mark + return.
+   *   3. Only if step 2 says the column is missing, fall back to ALTER ADD
+   *      COLUMN IF NOT EXISTS. Mark on success, also mark if Deeplake reports
+   *      "already exists" (race: another client added it between our SELECT
+   *      and ALTER).
+   *
+   * Marker uses the same dir / TTL as ensureLookupIndex so both schema
+   * caches share an opt-out (HIVEMIND_INDEX_MARKER_DIR) and a TTL knob.
+   */
+  async ensureEmbeddingColumn(table, column) {
+    await this.ensureColumn(table, column, "FLOAT4[]");
+  }
+  /**
+   * Generic marker-gated column migration. Same SELECT-then-ALTER flow as
+   * ensureEmbeddingColumn, parameterized by SQL type so it can patch up any
+   * column that was added to the schema after the table was originally
+   * created. Used today for `summary_embedding`, `message_embedding`, and
+   * the `agent` column (added 2026-04-11) — the latter has no fallback if
+   * a user upgraded over a pre-2026-04-11 table, so every INSERT fails
+   * with `column "agent" does not exist`.
+   */
+  async ensureColumn(table, column, sqlType) {
+    const markers = await getIndexMarkerStore();
+    const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, `col_${column}`);
+    if (markers.hasFreshIndexMarker(markerPath))
+      return;
+    const colCheck = `SELECT 1 FROM information_schema.columns WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' AND table_schema = '${sqlStr(this.workspaceId)}' LIMIT 1`;
+    const rows = await this.query(colCheck);
+    if (rows.length > 0) {
+      markers.writeIndexMarker(markerPath);
+      return;
+    }
+    try {
+      await this.query(`ALTER TABLE "${table}" ADD COLUMN ${column} ${sqlType}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/already exists/i.test(msg))
+        throw e;
+      const recheck = await this.query(colCheck);
+      if (recheck.length === 0)
+        throw e;
+    }
+    markers.writeIndexMarker(markerPath);
   }
   /** List all tables in the workspace (with retry). */
   async listTables(forceRefresh = false) {
@@ -4021,22 +4320,26 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log3(`table "${tbl}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, tbl);
+      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', summary_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, tbl);
       log3(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
     }
+    await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
+    await this.ensureColumn(tbl, "agent", "TEXT NOT NULL DEFAULT ''");
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
   async ensureSessionsTable(name) {
     const tables = await this.listTables();
     if (!tables.includes(name)) {
       log3(`table "${name}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, name);
+      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${name}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, message_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, name);
       log3(`table "${name}" created`);
       if (!tables.includes(name))
         this._tablesCache = [...tables, name];
     }
+    await this.ensureEmbeddingColumn(name, MESSAGE_EMBEDDING_COL);
+    await this.ensureColumn(name, "agent", "TEXT NOT NULL DEFAULT ''");
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
 };
@@ -4368,6 +4671,18 @@ Usage:
   hivemind login            Run device-flow login (open browser).
   hivemind status           Show which assistants are wired up.
 
+Semantic search (embeddings):
+  hivemind embeddings install                Download @huggingface/transformers
+                                             once (~600 MB) into a shared dir
+                                             and symlink every detected agent
+                                             plugin to it. Idempotent.
+  hivemind embeddings uninstall [--prune]    Remove the per-agent symlinks.
+                                             --prune also deletes the shared dir.
+  hivemind embeddings status                 Show shared-deps + per-agent state.
+
+  Add --with-embeddings to "hivemind install" (or "hivemind <agent> install")
+  to run "embeddings install" automatically after installing the agent(s).
+
 Account / org / workspace:
   hivemind whoami                          Show current user, org, workspace.
   hivemind logout                          Remove credentials.
@@ -4408,6 +4723,7 @@ function hasFlag(args, flag) {
 async function runInstallAll(args) {
   const only = parseOnly(args);
   const skipAuth = hasFlag(args, "--skip-auth");
+  const withEmbeddings = hasFlag(args, "--with-embeddings");
   const targets = only ?? detectPlatforms().map((p) => p.id);
   if (targets.length === 0) {
     log("No supported assistants detected.");
@@ -4426,6 +4742,10 @@ async function runInstallAll(args) {
   }
   for (const id of targets)
     runSingleInstall(id);
+  if (withEmbeddings) {
+    log("");
+    enableEmbeddings();
+  }
   await maybeShowOrgChoice();
   log("");
   log("Done. Restart each assistant to activate hooks.");
@@ -4507,6 +4827,23 @@ async function main() {
     runStatus();
     return;
   }
+  if (cmd === "embeddings") {
+    const sub = args[1];
+    if (sub === "install" || sub === "enable") {
+      enableEmbeddings();
+      return;
+    }
+    if (sub === "uninstall" || sub === "disable") {
+      disableEmbeddings({ prune: hasFlag(args.slice(2), "--prune") });
+      return;
+    }
+    if (sub === "status") {
+      statusEmbeddings();
+      return;
+    }
+    warn("Usage: hivemind embeddings install | uninstall [--prune] | status");
+    process.exit(1);
+  }
   if (AUTH_SUBCOMMANDS.has(cmd)) {
     await runAuthCommand(args);
     return;
@@ -4514,12 +4851,16 @@ async function main() {
   const platformCmds = ["claude", "codex", "claw", "cursor", "hermes", "pi"];
   if (platformCmds.includes(cmd)) {
     const sub = args[1];
-    if (sub === "install")
+    if (sub === "install") {
       runSingleInstall(cmd);
-    else if (sub === "uninstall")
+      if (hasFlag(args.slice(2), "--with-embeddings")) {
+        log("");
+        enableEmbeddings();
+      }
+    } else if (sub === "uninstall")
       runSingleUninstall(cmd);
     else {
-      warn(`Usage: hivemind ${cmd} install|uninstall`);
+      warn(`Usage: hivemind ${cmd} install [--with-embeddings] | uninstall`);
       process.exit(1);
     }
     return;

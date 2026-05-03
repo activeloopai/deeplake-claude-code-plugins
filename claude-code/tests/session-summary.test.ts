@@ -111,6 +111,21 @@ function makeClient(seed: Record<string, Buffer> = {}) {
               } else if (/\d/.test(valsStr[i])) {
                 const m = valsStr.slice(i).match(/^(\d+)/);
                 if (m) { allVals.push(m[1]); i += m[1].length; } else i++;
+              } else if (valsStr.slice(i, i + 4).toUpperCase() === "NULL") {
+                allVals.push("");
+                i += 4;
+              } else if (valsStr.slice(i, i + 6).toUpperCase() === "ARRAY[") {
+                let depth = 1;
+                let end = i + 6;
+                while (end < valsStr.length && depth > 0) {
+                  if (valsStr[end] === "[") depth++;
+                  else if (valsStr[end] === "]") depth--;
+                  end++;
+                }
+                const castMatch = valsStr.slice(end).match(/^::float4\[\]/i);
+                if (castMatch) end += castMatch[0].length;
+                allVals.push(valsStr.slice(i, end));
+                i = end;
               } else { i++; }
             }
             const colMap: Record<string, string> = {};

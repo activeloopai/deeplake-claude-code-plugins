@@ -30,14 +30,20 @@ const context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH
 1. Your built-in memory (~/.claude/) — personal per-project notes
 2. Deeplake global memory (~/.deeplake/memory/) — global memory shared across all sessions, users, and agents in the org
 
-Deeplake memory structure:
-- ~/.deeplake/memory/index.md — START HERE, table of all sessions
-- ~/.deeplake/memory/summaries/username/*.md — AI-generated wiki summaries per session
-- ~/.deeplake/memory/sessions/username/*.jsonl — raw session data (last resort)
+Deeplake memory has THREE tiers — pick the right one for the question:
+1. ~/.deeplake/memory/index.md   — auto-generated index, top 50 most-recently-updated entries with \`Created\` + \`Last Updated\` + \`Project\` + \`Description\` columns. ~5 KB. **For "what's recent / who did X this week / since <date>" queries, START HERE** and trust the \`Last Updated\` column over any \`Started:\` line in summary bodies.
+2. ~/.deeplake/memory/summaries/ — condensed wiki summaries per session (~3 KB each). For keyword/topic recall, search these.
+3. ~/.deeplake/memory/sessions/  — raw full-dialogue JSONL (~5 KB each). FALLBACK only — use when summaries don't contain the exact quote/turn you need.
 
-SEARCH STRATEGY: Always read index.md first. Then read specific summaries. Only read raw JSONL if summaries don't have enough detail. Do NOT jump straight to JSONL files.
+Search workflow:
+  - Time-based ("last week", "today", "since X"): \`cat ~/.deeplake/memory/index.md\` and read the most-recent rows.
+  - Keyword/topic recall: use the **Bash tool** with \`grep -r "keyword" ~/.deeplake/memory/summaries/\`. The Bash hook routes this through hybrid lexical+semantic search — synonyms / paraphrases match too. Then \`cat\` the top-matching summary to pull the answer.
+  - Raw transcript fallback only: \`grep -r "keyword" ~/.deeplake/memory/sessions/\` (use sparingly — JSONL is verbose).
 
-Search command: Grep pattern="keyword" path="~/.deeplake/memory"
+Tool choice on this mount:
+  ✅ Bash tool with \`grep -r\` / \`cat\` / \`ls\` / \`head\` / \`tail\` — supported, fast.
+  ❌ Built-in Grep tool — not supported on this path; use Bash grep instead.
+  ❌ \`grep\` without a \`summaries/\` or \`sessions/\` suffix — too noisy, drowns the answer.
 
 Organization management — each argument is SEPARATE (do NOT quote subcommands together):
 - node "HIVEMIND_AUTH_CMD" login                              — SSO login
@@ -50,7 +56,7 @@ Organization management — each argument is SEPARATE (do NOT quote subcommands 
 - node "HIVEMIND_AUTH_CMD" members                            — list members
 - node "HIVEMIND_AUTH_CMD" remove <user-id>                   — remove member
 
-IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem. If a task seems to require Python, rewrite it using bash commands and standard text-processing tools (awk, sed, jq, grep, etc.).
+IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem. Avoid bash brace expansions like \`{1..10}\` (not fully supported); spell out paths explicitly. Bash output is capped at 10MB total — avoid \`for f in *.json; do cat $f\` style loops on the whole sessions dir.
 
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
