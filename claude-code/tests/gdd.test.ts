@@ -4,7 +4,8 @@ import {
   ensureExperimentTable,
   logExperiment,
   promoteExperiment,
-} from "../../src/commands/experiment-log.js";
+  resolveProjectName,
+} from "../../src/commands/gdd.js";
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
@@ -24,7 +25,7 @@ function makeApi() {
 
 beforeEach(() => mockFetch.mockReset());
 
-// ── ensureExperimentTable ──────────────────────────────────────────────────
+// -- ensureExperimentTable ----------------------------------------------------
 
 describe("ensureExperimentTable", () => {
   it("creates the table when missing with the generic schema", async () => {
@@ -40,12 +41,13 @@ describe("ensureExperimentTable", () => {
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS "experiments"');
     expect(sql).toContain("id TEXT");
     expect(sql).toContain("change_identifier TEXT");
-    expect(sql).toContain("metric FLOAT64");
+    expect(sql).toContain("project TEXT");
+    expect(sql).toContain("metric FLOAT");
     expect(sql).toContain("metadata JSONB");
     expect(sql).toContain("status TEXT");
     expect(sql).toContain("description TEXT");
     expect(sql).toContain("global_promoted TEXT");
-    expect(sql).toContain("timestamp TEXT");
+    expect(sql).toContain("timestamp TEXT NOT NULL DEFAULT ''");
     expect(sql).toContain("USING deeplake");
   });
 
@@ -65,14 +67,15 @@ describe("ensureExperimentTable", () => {
   });
 });
 
-// ── logExperiment ──────────────────────────────────────────────────────────
+// -- logExperiment ------------------------------------------------------------
 
 describe("logExperiment", () => {
-  it("INSERTs a row with JSONB metadata and the expected columns", async () => {
+  it("INSERTs a row with project, JSONB metadata, and the expected columns", async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({}));
 
     const id = await logExperiment(makeApi(), "experiments", {
       changeIdentifier: "a1b2c3d",
+      project: "hivemind",
       metric: 0.9979,
       status: "keep",
       description: "baseline",
@@ -84,8 +87,9 @@ describe("logExperiment", () => {
 
     const sql = JSON.parse(mockFetch.mock.calls[0][1].body).query;
     expect(sql).toContain('INSERT INTO "experiments"');
-    expect(sql).toContain("(id, change_identifier, metric, metadata, status, description, global_promoted, timestamp)");
+    expect(sql).toContain("(id, change_identifier, project, metric, metadata, status, description, global_promoted, timestamp)");
     expect(sql).toContain("'a1b2c3d'");
+    expect(sql).toContain("'hivemind'");
     expect(sql).toContain("0.9979");
     expect(sql).toContain("'keep'");
     expect(sql).toContain("'baseline'");
@@ -93,6 +97,20 @@ describe("logExperiment", () => {
     expect(sql).toContain('"run_tag":"c0"');
     expect(sql).toContain('"direction":"baseline"');
     expect(sql).toContain("'no'"); // global_promoted defaults to 'no'
+  });
+
+  it("auto-resolves project from the current directory when omitted", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+
+    await logExperiment(makeApi(), "experiments", {
+      changeIdentifier: "x",
+      metric: 1,
+      status: "keep",
+      description: "",
+    });
+
+    const sql = JSON.parse(mockFetch.mock.calls[0][1].body).query;
+    expect(sql).toContain(`'${resolveProjectName()}'`);
   });
 
   it("escapes single quotes in description and metadata without corrupting JSON", async () => {
@@ -137,7 +155,7 @@ describe("logExperiment", () => {
   });
 });
 
-// ── promoteExperiment ──────────────────────────────────────────────────────
+// -- promoteExperiment --------------------------------------------------------
 
 describe("promoteExperiment", () => {
   it("issues UPDATE matching change_identifier when no id is given", async () => {

@@ -42,6 +42,8 @@ beforeEach(() => {
   writeFileSync(join(tmpPkg, "codex", "bundle", "capture.js"), "// fake bundle file");
   mkdirSync(join(tmpPkg, "codex", "skills", "deeplake-memory"), { recursive: true });
   writeFileSync(join(tmpPkg, "codex", "skills", "deeplake-memory", "SKILL.md"), "fake skill body");
+  mkdirSync(join(tmpPkg, "codex", "skills", "gdd-workflow"), { recursive: true });
+  writeFileSync(join(tmpPkg, "codex", "skills", "gdd-workflow", "SKILL.md"), "fake gdd skill body");
   // Mock package.json so getVersion() resolves to a known value.
   writeFileSync(join(tmpPkg, "package.json"), JSON.stringify({ version: "1.2.3" }));
 
@@ -78,6 +80,7 @@ describe("installCodex — happy path", () => {
     expect(existsSync(join(pluginDir, "bundle", "session-start.js"))).toBe(true);
     expect(existsSync(join(pluginDir, "bundle", "capture.js"))).toBe(true);
     expect(existsSync(join(pluginDir, "skills", "deeplake-memory", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(pluginDir, "skills", "gdd-workflow", "SKILL.md"))).toBe(true);
     expect(readFileSync(join(pluginDir, ".hivemind_version"), "utf-8")).toBe("1.2.3");
   });
 
@@ -104,6 +107,15 @@ describe("installCodex — happy path", () => {
     const link = join(tmpHome, ".agents", "skills", "hivemind-memory");
     expect(existsSync(link)).toBe(true);
     // Validate it points at the real on-disk skill payload.
+    expect(existsSync(join(link, "SKILL.md"))).toBe(true);
+  });
+
+  it("creates the agentskills symlink at ~/.agents/skills/gdd-workflow", async () => {
+    const { installCodex } = await importInstaller();
+    installCodex();
+
+    const link = join(tmpHome, ".agents", "skills", "gdd-workflow");
+    expect(existsSync(link)).toBe(true);
     expect(existsSync(join(link, "SKILL.md"))).toBe(true);
   });
 
@@ -150,9 +162,11 @@ describe("installCodex — happy path", () => {
 
   it("warns and skips the symlink (without throwing) when the skill source is missing", async () => {
     rmSync(join(tmpPkg, "codex", "skills", "deeplake-memory"), { recursive: true, force: true });
+    rmSync(join(tmpPkg, "codex", "skills", "gdd-workflow"), { recursive: true, force: true });
     const { installCodex } = await importInstaller();
     expect(() => installCodex()).not.toThrow();
     expect(existsSync(join(tmpHome, ".agents", "skills", "hivemind-memory"))).toBe(false);
+    expect(existsSync(join(tmpHome, ".agents", "skills", "gdd-workflow"))).toBe(false);
   });
 
   it("throws when the bundle source is missing (build hasn't run)", async () => {
@@ -168,10 +182,12 @@ describe("uninstallCodex", () => {
     installCodex();
     expect(existsSync(join(tmpHome, ".codex", "hooks.json"))).toBe(true);
     expect(existsSync(join(tmpHome, ".agents", "skills", "hivemind-memory"))).toBe(true);
+    expect(existsSync(join(tmpHome, ".agents", "skills", "gdd-workflow"))).toBe(true);
 
     uninstallCodex();
     expect(existsSync(join(tmpHome, ".codex", "hooks.json"))).toBe(false);
     expect(existsSync(join(tmpHome, ".agents", "skills", "hivemind-memory"))).toBe(false);
+    expect(existsSync(join(tmpHome, ".agents", "skills", "gdd-workflow"))).toBe(false);
     // Plugin payload is intentionally preserved (lets the user re-install
     // without re-downloading) — assert the bundle is still there.
     expect(existsSync(join(tmpHome, ".codex", "hivemind", "bundle", "session-start.js"))).toBe(true);
