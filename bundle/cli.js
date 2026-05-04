@@ -441,12 +441,14 @@ function uninstallOpenclaw() {
 }
 
 // dist/src/cli/install-cursor.js
-import { existsSync as existsSync4, unlinkSync as unlinkSync3 } from "node:fs";
+import { existsSync as existsSync4, rmSync as rmSync2, unlinkSync as unlinkSync3 } from "node:fs";
 import { join as join5 } from "node:path";
 var CURSOR_HOME = join5(HOME, ".cursor");
 var PLUGIN_DIR3 = join5(CURSOR_HOME, "hivemind");
+var SKILLS_DIR = join5(CURSOR_HOME, "skills");
 var HOOKS_PATH2 = join5(CURSOR_HOME, "hooks.json");
 var HIVEMIND_MARKER_KEY = "_hivemindManaged";
+var MANAGED_SKILLS = ["gdd-workflow"];
 function buildHookCmd(bundleFile, timeout) {
   return {
     type: "command",
@@ -514,11 +516,16 @@ function stripHooksFromConfig(existing) {
 }
 function installCursor() {
   const srcBundle = join5(pkgRoot(), "cursor", "bundle");
+  const srcSkills = join5(pkgRoot(), "cursor", "skills");
   if (!existsSync4(srcBundle)) {
     throw new Error(`Cursor bundle missing at ${srcBundle}. Run 'npm run build' first.`);
   }
   ensureDir(PLUGIN_DIR3);
   copyDir(srcBundle, join5(PLUGIN_DIR3, "bundle"));
+  if (existsSync4(srcSkills)) {
+    ensureDir(SKILLS_DIR);
+    copyDir(srcSkills, SKILLS_DIR);
+  }
   const existing = readJson(HOOKS_PATH2);
   const merged = mergeHooks2(existing);
   writeJson(HOOKS_PATH2, merged);
@@ -526,6 +533,11 @@ function installCursor() {
   log(`  Cursor         installed -> ${PLUGIN_DIR3}`);
 }
 function uninstallCursor() {
+  for (const skill of MANAGED_SKILLS) {
+    const skillDir = join5(SKILLS_DIR, skill);
+    if (existsSync4(skillDir))
+      rmSync2(skillDir, { recursive: true, force: true });
+  }
   const existing = readJson(HOOKS_PATH2);
   if (!existing) {
     log("  Cursor         no hooks.json to clean");
@@ -543,7 +555,7 @@ function uninstallCursor() {
 }
 
 // dist/src/cli/install-hermes.js
-import { existsSync as existsSync6, writeFileSync as writeFileSync2, readFileSync as readFileSync4, rmSync as rmSync2, unlinkSync as unlinkSync4 } from "node:fs";
+import { existsSync as existsSync6, writeFileSync as writeFileSync2, readFileSync as readFileSync4, rmSync as rmSync3, unlinkSync as unlinkSync4 } from "node:fs";
 import { join as join7 } from "node:path";
 
 // node_modules/js-yaml/dist/js-yaml.mjs
@@ -3152,11 +3164,13 @@ function ensureMcpServerInstalled() {
 
 // dist/src/cli/install-hermes.js
 var HERMES_HOME = join7(HOME, ".hermes");
-var SKILLS_DIR = join7(HERMES_HOME, "skills", "hivemind-memory");
+var SKILLS_ROOT = join7(HERMES_HOME, "skills");
+var MEMORY_SKILL_DIR = join7(SKILLS_ROOT, "hivemind-memory");
 var HIVEMIND_DIR2 = join7(HERMES_HOME, "hivemind");
 var BUNDLE_DIR = join7(HIVEMIND_DIR2, "bundle");
 var CONFIG_PATH = join7(HERMES_HOME, "config.yaml");
 var SERVER_KEY = "hivemind";
+var MANAGED_PACKAGED_SKILLS = ["gdd-workflow"];
 var SKILL_BODY = `---
 name: hivemind-memory
 description: Global team and org memory powered by Activeloop. ALWAYS check BOTH built-in memory AND Hivemind memory when recalling information.
@@ -3276,10 +3290,15 @@ function writeConfig(cfg) {
   writeFileSync2(CONFIG_PATH, dumped);
 }
 function installHermes() {
-  ensureDir(SKILLS_DIR);
-  writeFileSync2(join7(SKILLS_DIR, "SKILL.md"), SKILL_BODY);
-  writeVersionStamp(SKILLS_DIR, getVersion());
-  log(`  Hermes         skill installed -> ${SKILLS_DIR}`);
+  ensureDir(MEMORY_SKILL_DIR);
+  writeFileSync2(join7(MEMORY_SKILL_DIR, "SKILL.md"), SKILL_BODY);
+  writeVersionStamp(MEMORY_SKILL_DIR, getVersion());
+  log(`  Hermes         skill installed -> ${MEMORY_SKILL_DIR}`);
+  const srcSkills = join7(pkgRoot(), "hermes", "skills");
+  if (existsSync6(srcSkills)) {
+    copyDir(srcSkills, SKILLS_ROOT);
+    log(`  Hermes         packaged skills installed -> ${SKILLS_ROOT}`);
+  }
   const srcBundle = join7(pkgRoot(), "hermes", "bundle");
   if (!existsSync6(srcBundle)) {
     throw new Error(`Hermes bundle missing at ${srcBundle}. Run 'npm run build' first.`);
@@ -3302,12 +3321,19 @@ function installHermes() {
   log(`  Hermes         config updated -> ${CONFIG_PATH} (mcp_servers + hooks + hooks_auto_accept)`);
 }
 function uninstallHermes() {
-  if (existsSync6(SKILLS_DIR)) {
-    rmSync2(SKILLS_DIR, { recursive: true, force: true });
-    log(`  Hermes         removed ${SKILLS_DIR}`);
+  if (existsSync6(MEMORY_SKILL_DIR)) {
+    rmSync3(MEMORY_SKILL_DIR, { recursive: true, force: true });
+    log(`  Hermes         removed ${MEMORY_SKILL_DIR}`);
+  }
+  for (const skill of MANAGED_PACKAGED_SKILLS) {
+    const skillDir = join7(SKILLS_ROOT, skill);
+    if (existsSync6(skillDir)) {
+      rmSync3(skillDir, { recursive: true, force: true });
+      log(`  Hermes         removed ${skillDir}`);
+    }
   }
   if (existsSync6(HIVEMIND_DIR2)) {
-    rmSync2(HIVEMIND_DIR2, { recursive: true, force: true });
+    rmSync3(HIVEMIND_DIR2, { recursive: true, force: true });
     log(`  Hermes         removed ${HIVEMIND_DIR2}`);
   }
   if (existsSync6(CONFIG_PATH)) {
@@ -3343,7 +3369,7 @@ function uninstallHermes() {
 }
 
 // dist/src/cli/install-pi.js
-import { existsSync as existsSync7, writeFileSync as writeFileSync3, rmSync as rmSync3, readFileSync as readFileSync5, copyFileSync as copyFileSync2 } from "node:fs";
+import { existsSync as existsSync7, writeFileSync as writeFileSync3, rmSync as rmSync4, readFileSync as readFileSync5, copyFileSync as copyFileSync2 } from "node:fs";
 import { join as join8 } from "node:path";
 var PI_AGENT_DIR = join8(HOME, ".pi", "agent");
 var AGENTS_MD = join8(PI_AGENT_DIR, "AGENTS.md");
@@ -3421,7 +3447,7 @@ ${after}`;
 function installPi() {
   ensureDir(PI_AGENT_DIR);
   if (existsSync7(LEGACY_SKILL_DIR)) {
-    rmSync3(LEGACY_SKILL_DIR, { recursive: true, force: true });
+    rmSync4(LEGACY_SKILL_DIR, { recursive: true, force: true });
   }
   const prior = existsSync7(AGENTS_MD) ? readFileSync5(AGENTS_MD, "utf-8") : null;
   const next = upsertHivemindBlock(prior);
@@ -3447,22 +3473,22 @@ function installPi() {
 }
 function uninstallPi() {
   if (existsSync7(LEGACY_SKILL_DIR)) {
-    rmSync3(LEGACY_SKILL_DIR, { recursive: true, force: true });
+    rmSync4(LEGACY_SKILL_DIR, { recursive: true, force: true });
     log(`  pi             removed ${LEGACY_SKILL_DIR}`);
   }
   if (existsSync7(EXTENSION_PATH)) {
-    rmSync3(EXTENSION_PATH, { force: true });
+    rmSync4(EXTENSION_PATH, { force: true });
     log(`  pi             removed extension ${EXTENSION_PATH}`);
   }
   if (existsSync7(WIKI_WORKER_DIR)) {
-    rmSync3(WIKI_WORKER_DIR, { recursive: true, force: true });
+    rmSync4(WIKI_WORKER_DIR, { recursive: true, force: true });
     log(`  pi             removed wiki-worker dir ${WIKI_WORKER_DIR}`);
   }
   if (existsSync7(AGENTS_MD)) {
     const prior = readFileSync5(AGENTS_MD, "utf-8");
     const stripped = stripHivemindBlock(prior);
     if (stripped.trim().length === 0) {
-      rmSync3(AGENTS_MD, { force: true });
+      rmSync4(AGENTS_MD, { force: true });
       log(`  pi             removed empty ${AGENTS_MD}`);
     } else {
       writeFileSync3(AGENTS_MD, stripped);
@@ -3470,12 +3496,12 @@ function uninstallPi() {
     }
   }
   if (existsSync7(VERSION_DIR)) {
-    rmSync3(VERSION_DIR, { recursive: true, force: true });
+    rmSync4(VERSION_DIR, { recursive: true, force: true });
   }
 }
 
 // dist/src/cli/embeddings.js
-import { copyFileSync as copyFileSync3, chmodSync, existsSync as existsSync8, lstatSync as lstatSync2, readdirSync, readlinkSync, rmSync as rmSync4, statSync, unlinkSync as unlinkSync5 } from "node:fs";
+import { copyFileSync as copyFileSync3, chmodSync, existsSync as existsSync8, lstatSync as lstatSync2, readdirSync, readlinkSync, rmSync as rmSync5, statSync, unlinkSync as unlinkSync5 } from "node:fs";
 import { execFileSync as execFileSync3 } from "node:child_process";
 import { join as join9 } from "node:path";
 var SHARED_DIR = join9(HOME, ".hivemind", "embed-deps");
@@ -3606,7 +3632,7 @@ function disableEmbeddings(opts) {
     }
   }
   if (opts?.prune && existsSync8(SHARED_DIR)) {
-    rmSync4(SHARED_DIR, { recursive: true, force: true });
+    rmSync5(SHARED_DIR, { recursive: true, force: true });
     log(`  Embeddings     pruned ${SHARED_DIR}`);
   }
 }

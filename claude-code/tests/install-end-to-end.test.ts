@@ -171,6 +171,7 @@ describe("installCursor / uninstallCursor", () => {
     installCursor();
 
     expect(existsSync(join(fakeHome, ".cursor/hivemind/bundle"))).toBe(true);
+    expect(existsSync(join(fakeHome, ".cursor/skills/gdd-workflow/SKILL.md"))).toBe(true);
     expect(existsSync(join(fakeHome, ".cursor/hooks.json"))).toBe(true);
 
     const cfg = JSON.parse(readFileSync(join(fakeHome, ".cursor/hooks.json"), "utf-8"));
@@ -211,9 +212,11 @@ describe("installCursor / uninstallCursor", () => {
     );
     cx.installCursor();
     expect(existsSync(join(fakeHome, ".cursor/hooks.json"))).toBe(true);
+    expect(existsSync(join(fakeHome, ".cursor/skills/gdd-workflow/SKILL.md"))).toBe(true);
     cx.uninstallCursor();
     // Only `version` would have remained → file deleted entirely.
     expect(existsSync(join(fakeHome, ".cursor/hooks.json"))).toBe(false);
+    expect(existsSync(join(fakeHome, ".cursor/skills/gdd-workflow"))).toBe(false);
   });
 
   it("uninstall preserves user hooks (only strips hivemind entries)", async () => {
@@ -250,6 +253,7 @@ describe("installHermes / uninstallHermes", () => {
 
     expect(existsSync(join(fakeHome, ".hermes/hivemind/bundle"))).toBe(true);
     expect(existsSync(join(fakeHome, ".hermes/skills/hivemind-memory/SKILL.md"))).toBe(true);
+    expect(existsSync(join(fakeHome, ".hermes/skills/gdd-workflow/SKILL.md"))).toBe(true);
     expect(existsSync(join(fakeHome, ".hermes/config.yaml"))).toBe(true);
 
     const cfg = readFileSync(join(fakeHome, ".hermes/config.yaml"), "utf-8");
@@ -279,9 +283,11 @@ describe("installHermes / uninstallHermes", () => {
     );
     hx.installHermes();
     expect(existsSync(join(fakeHome, ".hermes/skills/hivemind-memory/SKILL.md"))).toBe(true);
+    expect(existsSync(join(fakeHome, ".hermes/skills/gdd-workflow/SKILL.md"))).toBe(true);
 
     hx.uninstallHermes();
     expect(existsSync(join(fakeHome, ".hermes/skills/hivemind-memory"))).toBe(false);
+    expect(existsSync(join(fakeHome, ".hermes/skills/gdd-workflow"))).toBe(false);
   });
 
   it("uninstall removes hooks_auto_accept (silent-auto-accept residual fix)", async () => {
