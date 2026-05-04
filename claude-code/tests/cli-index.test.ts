@@ -28,6 +28,7 @@ const runAuthCommandMock = vi.fn();
 const detectPlatformsMock = vi.fn();
 const allPlatformIdsMock = vi.fn();
 const getVersionMock = vi.fn();
+const runUpdateMock = vi.fn();
 const stdoutMock = vi.fn();
 const stderrMock = vi.fn();
 const exitSpy = vi.fn();
@@ -79,6 +80,9 @@ vi.mock("../../src/cli/util.js", async (importOriginal) => {
 vi.mock("../../src/cli/version.js", () => ({
   getVersion: (...a: unknown[]) => getVersionMock(...a),
 }));
+vi.mock("../../src/cli/update.js", () => ({
+  runUpdate: (...a: unknown[]) => runUpdateMock(...a),
+}));
 
 const originalArgv = process.argv;
 
@@ -91,6 +95,7 @@ beforeEach(() => {
   detectPlatformsMock.mockReset().mockReturnValue([]);
   allPlatformIdsMock.mockReset().mockReturnValue(["claude", "codex", "claw", "cursor", "hermes", "pi"]);
   getVersionMock.mockReset().mockReturnValue("1.2.3");
+  runUpdateMock.mockReset().mockResolvedValue(0);
   stdoutMock.mockReset();
   stderrMock.mockReset();
   exitSpy.mockReset();
@@ -293,6 +298,29 @@ describe("per-platform shorthand: hivemind <platform> install|uninstall", () => 
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(stderrText()).toContain("Usage: hivemind claude install");
     expect(stderrText()).toContain("uninstall");
+  });
+});
+
+describe("hivemind update", () => {
+  it("'update' calls runUpdate({ dryRun: false }) once and exits with its return code", async () => {
+    runUpdateMock.mockResolvedValueOnce(0);
+    await runCli(["update"]);
+    expect(runUpdateMock).toHaveBeenCalledTimes(1);
+    expect(runUpdateMock.mock.calls[0][0]).toEqual({ dryRun: false });
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("'update --dry-run' passes dryRun: true", async () => {
+    runUpdateMock.mockResolvedValueOnce(0);
+    await runCli(["update", "--dry-run"]);
+    expect(runUpdateMock).toHaveBeenCalledTimes(1);
+    expect(runUpdateMock.mock.calls[0][0]).toEqual({ dryRun: true });
+  });
+
+  it("propagates a non-zero return code from runUpdate", async () => {
+    runUpdateMock.mockResolvedValueOnce(1);
+    await runCli(["update"]);
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });
 
