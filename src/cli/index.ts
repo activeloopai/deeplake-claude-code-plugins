@@ -9,6 +9,7 @@ import { ensureLoggedIn, isLoggedIn, maybeShowOrgChoice } from "./auth.js";
 import { runAuthCommand } from "../commands/auth-login.js";
 import { detectPlatforms, allPlatformIds, log, warn, type PlatformId } from "./util.js";
 import { getVersion } from "./version.js";
+import { runUpdate } from "./update.js";
 
 const AUTH_SUBCOMMANDS = new Set([
   "whoami",
@@ -45,6 +46,9 @@ Usage:
 
   hivemind login            Run device-flow login (open browser).
   hivemind status           Show which assistants are wired up.
+  hivemind update [--dry-run]
+      Check npm for a newer @deeplake/hivemind, upgrade the CLI, and refresh
+      every detected agent bundle. Single command for all agents.
 
 Semantic search (embeddings):
   hivemind embeddings install                Download @huggingface/transformers
@@ -193,6 +197,10 @@ async function main(): Promise<void> {
 
   if (cmd === "login") { await ensureLoggedIn(); return; }
   if (cmd === "status") { runStatus(); return; }
+  if (cmd === "update") {
+    const code = await runUpdate({ dryRun: hasFlag(args.slice(1), "--dry-run") });
+    process.exit(code);
+  }
 
   if (cmd === "embeddings") {
     const sub = args[1];

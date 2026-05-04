@@ -4627,6 +4627,152 @@ if (process.argv[1] && process.argv[1].endsWith("auth-login.js")) {
   });
 }
 
+// dist/src/cli/update.js
+import { execFileSync as execFileSync4 } from "node:child_process";
+import { existsSync as existsSync12, readFileSync as readFileSync10, realpathSync } from "node:fs";
+import { dirname as dirname3, sep } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// dist/src/utils/version-check.js
+import { readFileSync as readFileSync9 } from "node:fs";
+import { dirname as dirname2, join as join15 } from "node:path";
+function isNewer(latest, current) {
+  const parse = (v) => v.split(".").map(Number);
+  const [la, lb, lc] = parse(latest);
+  const [ca, cb, cc] = parse(current);
+  return la > ca || la === ca && lb > cb || la === ca && lb === cb && lc > cc;
+}
+
+// dist/src/cli/update.js
+var NPM_REGISTRY_URL = "https://registry.npmjs.org/@deeplake/hivemind/latest";
+var PKG_NAME = "@deeplake/hivemind";
+function detectInstallKind(argv1) {
+  const realArgv1 = (() => {
+    try {
+      return realpathSync(argv1 ?? process.argv[1] ?? fileURLToPath2(import.meta.url));
+    } catch {
+      return argv1 ?? process.argv[1] ?? fileURLToPath2(import.meta.url);
+    }
+  })();
+  let dir = dirname3(realArgv1);
+  let installDir = null;
+  for (let i = 0; i < 10; i++) {
+    const pkgPath = `${dir}${sep}package.json`;
+    try {
+      const pkg = JSON.parse(readFileSync10(pkgPath, "utf-8"));
+      if (pkg.name === PKG_NAME || pkg.name === "hivemind") {
+        installDir = dir;
+        break;
+      }
+    } catch {
+    }
+    const parent = dirname3(dir);
+    if (parent === dir)
+      break;
+    dir = parent;
+  }
+  installDir ??= dirname3(realArgv1);
+  let gitDir = installDir;
+  for (let i = 0; i < 6; i++) {
+    if (existsSync12(`${gitDir}${sep}.git`)) {
+      return { kind: "local-dev", installDir };
+    }
+    const parent = dirname3(gitDir);
+    if (parent === gitDir)
+      break;
+    gitDir = parent;
+  }
+  if (realArgv1.includes(`${sep}_npx${sep}`) || realArgv1.includes(`${sep}.npx${sep}`)) {
+    return { kind: "npx", installDir };
+  }
+  if (realArgv1.includes(`node_modules${sep}@deeplake${sep}hivemind`) || realArgv1.includes(`node_modules${sep}hivemind`)) {
+    return { kind: "npm-global", installDir };
+  }
+  return { kind: "unknown", installDir };
+}
+async function getLatestNpmVersion(timeoutMs = 5e3) {
+  try {
+    const res = await fetch(NPM_REGISTRY_URL, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok)
+      return null;
+    const meta = await res.json();
+    return meta.version ?? null;
+  } catch {
+    return null;
+  }
+}
+var defaultSpawn = (cmd, args) => {
+  execFileSync4(cmd, args, { stdio: "inherit" });
+};
+async function runUpdate(opts = {}) {
+  const current = opts.currentVersionOverride ?? getVersion();
+  const latest = opts.latestVersionOverride !== void 0 ? opts.latestVersionOverride : await getLatestNpmVersion();
+  if (!latest) {
+    warn(`Could not reach npm registry to check for updates.`);
+    warn(`Current version: ${current}`);
+    return 1;
+  }
+  if (!isNewer(latest, current)) {
+    log(`hivemind ${current} is up to date (npm latest: ${latest}).`);
+    return 0;
+  }
+  log(`Update available: ${current} \u2192 ${latest}`);
+  if (opts.dryRun) {
+    log(`(dry-run) Would run: npm install -g ${PKG_NAME}@latest`);
+    log(`(dry-run) Would re-run: hivemind install --skip-auth`);
+    return 0;
+  }
+  const detected = opts.installKindOverride ?? detectInstallKind();
+  const spawn = opts.spawn ?? defaultSpawn;
+  switch (detected.kind) {
+    case "npm-global": {
+      log(`Upgrading via npm\u2026`);
+      try {
+        spawn("npm", ["install", "-g", `${PKG_NAME}@latest`]);
+      } catch (e) {
+        warn(`npm install failed: ${e.message}`);
+        warn(`Try running it manually: npm install -g ${PKG_NAME}@latest`);
+        return 1;
+      }
+      log(``);
+      log(`Refreshing agent bundles\u2026`);
+      try {
+        spawn("hivemind", ["install", "--skip-auth"]);
+      } catch (e) {
+        warn(`Agent refresh failed: ${e.message}`);
+        warn(`Run manually: hivemind install`);
+        return 1;
+      }
+      log(``);
+      log(`Updated to ${latest}.`);
+      return 0;
+    }
+    case "npx": {
+      log(`You ran hivemind via npx, which does not have a persistent global install.`);
+      log(`To use the new version, re-run with the explicit version pin:`);
+      log(``);
+      log(`  npx ${PKG_NAME}@${latest} install`);
+      log(``);
+      log(`Or install globally so future updates are one command:`);
+      log(``);
+      log(`  npm install -g ${PKG_NAME}@latest`);
+      return 0;
+    }
+    case "local-dev": {
+      warn(`hivemind is running from a local development checkout (${detected.installDir}).`);
+      warn(`Update via your dev workflow (git pull + npm install + npm run build),`);
+      warn(`not via 'hivemind update'.`);
+      return 1;
+    }
+    case "unknown":
+    default: {
+      warn(`Could not determine how hivemind was installed (path: ${detected.installDir}).`);
+      warn(`Update manually: npm install -g ${PKG_NAME}@latest`);
+      return 1;
+    }
+  }
+}
+
 // dist/src/cli/index.js
 var AUTH_SUBCOMMANDS = /* @__PURE__ */ new Set([
   "whoami",
@@ -4662,6 +4808,9 @@ Usage:
 
   hivemind login            Run device-flow login (open browser).
   hivemind status           Show which assistants are wired up.
+  hivemind update [--dry-run]
+      Check npm for a newer @deeplake/hivemind, upgrade the CLI, and refresh
+      every detected agent bundle. Single command for all agents.
 
 Semantic search (embeddings):
   hivemind embeddings install                Download @huggingface/transformers
@@ -4818,6 +4967,10 @@ async function main() {
   if (cmd === "status") {
     runStatus();
     return;
+  }
+  if (cmd === "update") {
+    const code = await runUpdate({ dryRun: hasFlag(args.slice(1), "--dry-run") });
+    process.exit(code);
   }
   if (cmd === "embeddings") {
     const sub = args[1];
