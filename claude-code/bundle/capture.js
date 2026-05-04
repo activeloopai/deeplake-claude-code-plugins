@@ -530,6 +530,11 @@ function buildSessionPath(config, sessionId) {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${workspace}_${sessionId}.jsonl`;
 }
 
+// dist/src/utils/project-name.js
+function resolveProjectName(cwd = process.cwd()) {
+  return cwd.split("/").pop() || "unknown";
+}
+
 // dist/src/hooks/summary-state.js
 import { readFileSync as readFileSync3, writeFileSync as writeFileSync2, writeSync, mkdirSync as mkdirSync2, renameSync, existsSync as existsSync3, unlinkSync, openSync, closeSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
@@ -755,7 +760,7 @@ function findClaudeBin() {
 }
 function spawnWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
-  const projectName = cwd.split("/").pop() || "unknown";
+  const projectName = resolveProjectName(cwd);
   const tmpDir = join6(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
   mkdirSync4(tmpDir, { recursive: true });
   const configFile = join6(tmpDir, "config.json");
@@ -1130,7 +1135,7 @@ async function main() {
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);
   log4(`writing to ${sessionPath}`);
-  const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
+  const projectName = resolveProjectName(input.cwd ?? "");
   const filename = sessionPath.split("/").pop() ?? "";
   const jsonForSql = line.replace(/'/g, "''");
   const embedding = embeddingsDisabled() ? null : await new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() }).embed(line, "document");

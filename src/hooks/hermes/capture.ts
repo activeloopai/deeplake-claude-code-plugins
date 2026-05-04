@@ -20,6 +20,7 @@ import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { log as _log } from "../../utils/debug.js";
 import { buildSessionPath } from "../../utils/session-path.js";
+import { resolveProjectName } from "../../utils/project-name.js";
 import { EmbedClient } from "../../embeddings/client.js";
 import { embeddingSqlLiteral } from "../../embeddings/sql.js";
 import { embeddingsDisabled } from "../../embeddings/disable.js";
@@ -112,7 +113,7 @@ async function main(): Promise<void> {
   const line = JSON.stringify(entry);
   log(`writing to ${sessionPath}`);
 
-  const projectName = cwd.split("/").pop() || "unknown";
+  const projectName = resolveProjectName(cwd);
   const filename = sessionPath.split("/").pop() ?? "";
   // For JSONB: only escape single quotes, keep JSON structure intact.
   const jsonForSql = line.replace(/'/g, "''");

@@ -30,11 +30,13 @@ import { ensureMcpServerInstalled, MCP_SERVER_PATH } from "./install-mcp-shared.
 //   - https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks
 
 const HERMES_HOME = join(HOME, ".hermes");
-const SKILLS_DIR = join(HERMES_HOME, "skills", "hivemind-memory");
+const SKILLS_ROOT = join(HERMES_HOME, "skills");
+const MEMORY_SKILL_DIR = join(SKILLS_ROOT, "hivemind-memory");
 const HIVEMIND_DIR = join(HERMES_HOME, "hivemind");
 const BUNDLE_DIR = join(HIVEMIND_DIR, "bundle");
 const CONFIG_PATH = join(HERMES_HOME, "config.yaml");
 const SERVER_KEY = "hivemind";
+const MANAGED_PACKAGED_SKILLS = ["gdd-workflow"];
 
 const SKILL_BODY = `---
 name: hivemind-memory
@@ -174,10 +176,16 @@ function writeConfig(cfg: HermesConfig): void {
 
 export function installHermes(): void {
   // 1. Skill — agent context.
-  ensureDir(SKILLS_DIR);
-  writeFileSync(join(SKILLS_DIR, "SKILL.md"), SKILL_BODY);
-  writeVersionStamp(SKILLS_DIR, getVersion());
-  log(`  Hermes         skill installed -> ${SKILLS_DIR}`);
+  ensureDir(MEMORY_SKILL_DIR);
+  writeFileSync(join(MEMORY_SKILL_DIR, "SKILL.md"), SKILL_BODY);
+  writeVersionStamp(MEMORY_SKILL_DIR, getVersion());
+  log(`  Hermes         skill installed -> ${MEMORY_SKILL_DIR}`);
+
+  const srcSkills = join(pkgRoot(), "hermes", "skills");
+  if (existsSync(srcSkills)) {
+    copyDir(srcSkills, SKILLS_ROOT);
+    log(`  Hermes         packaged skills installed -> ${SKILLS_ROOT}`);
+  }
 
   // 2. Hook bundle — auto-capture via Hermes shell-hooks.
   const srcBundle = join(pkgRoot(), "hermes", "bundle");
@@ -209,9 +217,16 @@ export function installHermes(): void {
 }
 
 export function uninstallHermes(): void {
-  if (existsSync(SKILLS_DIR)) {
-    rmSync(SKILLS_DIR, { recursive: true, force: true });
-    log(`  Hermes         removed ${SKILLS_DIR}`);
+  if (existsSync(MEMORY_SKILL_DIR)) {
+    rmSync(MEMORY_SKILL_DIR, { recursive: true, force: true });
+    log(`  Hermes         removed ${MEMORY_SKILL_DIR}`);
+  }
+  for (const skill of MANAGED_PACKAGED_SKILLS) {
+    const skillDir = join(SKILLS_ROOT, skill);
+    if (existsSync(skillDir)) {
+      rmSync(skillDir, { recursive: true, force: true });
+      log(`  Hermes         removed ${skillDir}`);
+    }
   }
 
   if (existsSync(HIVEMIND_DIR)) {

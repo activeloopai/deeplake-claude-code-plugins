@@ -13,6 +13,7 @@ import { DeeplakeApi } from "../deeplake-api.js";
 import { sqlStr } from "../utils/sql.js";
 import { log as _log } from "../utils/debug.js";
 import { buildSessionPath } from "../utils/session-path.js";
+import { resolveProjectName } from "../utils/project-name.js";
 import {
   bumpTotalCount,
   loadTriggerConfig,
@@ -117,7 +118,7 @@ async function main(): Promise<void> {
   log(`writing to ${sessionPath}`);
 
   // Simple INSERT — one row per event, no concat, no race conditions.
-  const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
+  const projectName = resolveProjectName(input.cwd ?? "");
   const filename = sessionPath.split("/").pop() ?? "";
 
   // For JSONB: only escape single quotes for the SQL literal, keep JSON structure intact.

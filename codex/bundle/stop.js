@@ -554,6 +554,11 @@ function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
   };
 }
 
+// dist/src/utils/project-name.js
+function resolveProjectName(cwd = process.cwd()) {
+  return cwd.split("/").pop() || "unknown";
+}
+
 // dist/src/hooks/codex/spawn-wiki-worker.js
 var HOME = homedir3();
 var wikiLogger = makeWikiLogger(join5(HOME, ".codex", "hooks"));
@@ -617,7 +622,7 @@ function findCodexBin() {
 }
 function spawnCodexWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
-  const projectName = cwd.split("/").pop() || "unknown";
+  const projectName = resolveProjectName(cwd);
   const tmpDir = join5(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
   mkdirSync3(tmpDir, { recursive: true });
   const configFile = join5(tmpDir, "config.json");
@@ -1048,7 +1053,7 @@ async function main() {
       };
       const line = JSON.stringify(entry);
       const sessionPath = buildSessionPath(config, sessionId);
-      const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
+      const projectName = resolveProjectName(input.cwd ?? "");
       const filename = sessionPath.split("/").pop() ?? "";
       const jsonForSql = line.replace(/'/g, "''");
       const embedding = embeddingsDisabled() ? null : await new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() }).embed(line, "document");

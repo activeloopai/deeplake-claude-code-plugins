@@ -10,6 +10,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import type { Config } from "../../config.js";
 import { makeWikiLogger } from "../../utils/wiki-log.js";
+import { resolveProjectName } from "../../utils/project-name.js";
 
 const HOME = homedir();
 const wikiLogger = makeWikiLogger(join(HOME, ".codex", "hooks"));
@@ -85,7 +86,7 @@ export interface SpawnOptions {
 
 export function spawnCodexWikiWorker(opts: SpawnOptions): void {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
-  const projectName = cwd.split("/").pop() || "unknown";
+  const projectName = resolveProjectName(cwd);
 
   const tmpDir = join(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
   mkdirSync(tmpDir, { recursive: true });

@@ -23,6 +23,7 @@ const ccShell = [
 
 const ccCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
+  { entry: "dist/src/commands/gdd.js", out: "commands/gdd" },
 ];
 
 const ccEmbed = [
@@ -72,6 +73,7 @@ const codexShell = [
 
 const codexCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
+  { entry: "dist/src/commands/gdd.js", out: "commands/gdd" },
 ];
 
 const codexEmbed = [
@@ -130,6 +132,7 @@ const cursorShell = [
 
 const cursorCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
+  { entry: "dist/src/commands/gdd.js", out: "commands/gdd" },
 ];
 
 const cursorEmbed = [
@@ -170,6 +173,7 @@ const hermesShell = [
 ];
 const hermesCommands = [
   { entry: "dist/src/commands/auth-login.js", out: "commands/auth-login" },
+  { entry: "dist/src/commands/gdd.js", out: "commands/gdd" },
 ];
 const hermesEmbed = [
   { entry: "dist/src/embeddings/daemon.js", out: "embeddings/embed-daemon" },

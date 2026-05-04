@@ -633,6 +633,11 @@ function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
   };
 }
 
+// dist/src/utils/project-name.js
+function resolveProjectName(cwd = process.cwd()) {
+  return cwd.split("/").pop() || "unknown";
+}
+
 // dist/src/hooks/codex/session-start-setup.js
 var log3 = (msg) => log("codex-session-setup", msg);
 var __bundleDir = dirname2(fileURLToPath(import.meta.url));
@@ -645,7 +650,7 @@ async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, 
     return;
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const projectName = cwd.split("/").pop() ?? "unknown";
+  const projectName = resolveProjectName(cwd);
   const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
   const content = [
     `# Session ${sessionId}`,

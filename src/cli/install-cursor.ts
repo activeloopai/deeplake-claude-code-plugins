@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { HOME, pkgRoot, ensureDir, copyDir, readJson, writeJson, writeVersionStamp, log } from "./util.js";
 import { getVersion } from "./version.js";
@@ -14,8 +14,10 @@ import { getVersion } from "./version.js";
 
 const CURSOR_HOME = join(HOME, ".cursor");
 const PLUGIN_DIR = join(CURSOR_HOME, "hivemind");
+const SKILLS_DIR = join(CURSOR_HOME, "skills");
 const HOOKS_PATH = join(CURSOR_HOME, "hooks.json");
 const HIVEMIND_MARKER_KEY = "_hivemindManaged";
+const MANAGED_SKILLS = ["gdd-workflow"];
 
 interface CursorHookEntry {
   type: "command" | "prompt";
@@ -91,12 +93,17 @@ export function stripHooksFromConfig(existing: Record<string, unknown> | null): 
 
 export function installCursor(): void {
   const srcBundle = join(pkgRoot(), "cursor", "bundle");
+  const srcSkills = join(pkgRoot(), "cursor", "skills");
   if (!existsSync(srcBundle)) {
     throw new Error(`Cursor bundle missing at ${srcBundle}. Run 'npm run build' first.`);
   }
 
   ensureDir(PLUGIN_DIR);
   copyDir(srcBundle, join(PLUGIN_DIR, "bundle"));
+  if (existsSync(srcSkills)) {
+    ensureDir(SKILLS_DIR);
+    copyDir(srcSkills, SKILLS_DIR);
+  }
 
   const existing = readJson<Record<string, unknown>>(HOOKS_PATH);
   const merged = mergeHooks(existing);
@@ -107,6 +114,11 @@ export function installCursor(): void {
 }
 
 export function uninstallCursor(): void {
+  for (const skill of MANAGED_SKILLS) {
+    const skillDir = join(SKILLS_DIR, skill);
+    if (existsSync(skillDir)) rmSync(skillDir, { recursive: true, force: true });
+  }
+
   const existing = readJson<Record<string, unknown>>(HOOKS_PATH);
   if (!existing) {
     log("  Cursor         no hooks.json to clean");
