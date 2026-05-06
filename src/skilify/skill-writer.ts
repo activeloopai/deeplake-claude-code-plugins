@@ -55,6 +55,31 @@ export interface SkillWriteResult {
   version: number;
 }
 
+/**
+ * Reject any name that isn't a strict kebab-case slug. The name comes from
+ * model output (the gate verdict) or from a remote `skills` row pulled over
+ * the network — both untrusted. Without this check, a verdict like
+ * `../../etc/passwd` or `/abs/path` would escape `skillsRoot` when joined.
+ *
+ * Additionally guards against paths longer than 100 chars (defensive — no
+ * legitimate kebab-case skill name needs more) and rejects any name
+ * containing path separators even if the regex passed (belt + suspenders).
+ */
+export function assertValidSkillName(name: string): void {
+  if (typeof name !== "string" || name.length === 0) {
+    throw new Error(`invalid skill name: empty or non-string`);
+  }
+  if (name.length > 100) {
+    throw new Error(`invalid skill name: too long (${name.length} chars)`);
+  }
+  if (name.includes("/") || name.includes("\\") || name.includes("..")) {
+    throw new Error(`invalid skill name: contains path separator or '..': ${name}`);
+  }
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) {
+    throw new Error(`invalid skill name: must be kebab-case (lowercase a-z, 0-9, hyphen): ${name}`);
+  }
+}
+
 function skillDir(skillsRoot: string, name: string): string {
   return join(skillsRoot, name);
 }
@@ -119,6 +144,7 @@ export function parseFrontmatter(text: string): { fm: Partial<SkillFrontmatter>;
 
 /** Write a new skill file. Errors if it already exists. */
 export function writeNewSkill(args: WriteSkillArgs): SkillWriteResult {
+  assertValidSkillName(args.name);
   const dir = skillDir(args.skillsRoot, args.name);
   const path = skillPath(args.skillsRoot, args.name);
   if (existsSync(path)) {
@@ -146,6 +172,7 @@ export function writeNewSkill(args: WriteSkillArgs): SkillWriteResult {
  * source sessions, and bump the version.
  */
 export function mergeSkill(args: MergeSkillArgs): SkillWriteResult {
+  assertValidSkillName(args.name);
   const path = skillPath(args.skillsRoot, args.name);
   if (!existsSync(path)) {
     throw new Error(`skill ${args.name} does not exist at ${path}; use writeNewSkill`);

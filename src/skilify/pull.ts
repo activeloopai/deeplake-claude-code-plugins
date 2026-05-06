@@ -20,7 +20,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { parseFrontmatter, type SkillFrontmatter } from "./skill-writer.js";
+import { assertValidSkillName, parseFrontmatter, type SkillFrontmatter } from "./skill-writer.js";
 import type { InstallLocation } from "./scope-config.js";
 
 export type QueryFn = (sql: string) => Promise<Record<string, unknown>[]>;
@@ -95,8 +95,25 @@ export function buildPullSql(args: {
     `author, description, trigger_text, source_sessions, install, ` +
     `created_at, updated_at ` +
     `FROM "${args.tableName}"${whereClause} ` +
-    `ORDER BY name ASC, version DESC`
+    `ORDER BY project_key ASC, name ASC, version DESC`
   );
+}
+
+/**
+ * Recognises the various error shapes Deeplake emits when the skills table
+ * doesn't exist yet. The table is created lazily on the first INSERT, so a
+ * fresh workspace's first `pull` would otherwise crash here. We treat
+ * "missing table" as an empty result set — the user has nothing to pull.
+ */
+export function isMissingTableError(message: string | undefined): boolean {
+  if (!message) return false;
+  // Deeplake / Postgres-flavoured errors:
+  //   "Table does not exist: relation \"skills\" does not exist"
+  //   "relation \"skills\" does not exist"
+  //   SQLite/local fallback variants.
+  // We avoid matching the bare phrase "does not exist" alone because that
+  // can legitimately appear in INSERT errors about other entities.
+  return /Table does not exist|relation .* does not exist|no such table/i.test(message);
 }
 
 /**
@@ -111,16 +128,24 @@ export function resolvePullDestination(install: InstallLocation, cwd?: string): 
 
 /**
  * From the rows returned by the SELECT, keep only the highest-version
- * row per skill name. The SQL already orders by (name ASC, version DESC),
- * so we simply emit the first row for each new name.
+ * row per (project_key, name). The SQL already orders by
+ * (project_key ASC, name ASC, version DESC), so the first row seen for a
+ * given composite key is the latest version.
+ *
+ * Important: keying by name alone would silently drop one of two distinct
+ * skills that happen to share a name across projects (e.g. two repos both
+ * have a `deploy` skill).
  */
 export function selectLatestPerName(rows: Record<string, unknown>[]): Record<string, unknown>[] {
   const seen = new Set<string>();
   const out: Record<string, unknown>[] = [];
   for (const r of rows) {
     const name = String(r.name ?? "");
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
+    const projectKey = String(r.project_key ?? "");
+    if (!name) continue;
+    const key = `${projectKey}\x00${name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push(r);
   }
   return out;
@@ -207,6 +232,12 @@ export function decideAction(args: {
 /**
  * Main entry point. Queries the skills table, applies filters, decides
  * actions, and (unless dry-run) writes SKILL.md files to the destination.
+ *
+ * Cross-project layout: when two projects ship a skill with the same name
+ * (e.g. both have `deploy`), they're written to disjoint subdirectories
+ * under the install root: `<root>/<project_key>/<name>/SKILL.md`. This
+ * matches the (project_key, name) uniqueness of the Deeplake table and
+ * prevents cross-project overwrites.
  */
 export async function runPull(opts: PullOptions): Promise<PullSummary> {
   const sql = buildPullSql({
@@ -214,7 +245,15 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
     users: opts.users,
     skillName: opts.skillName,
   });
-  const rows = await opts.query(sql);
+  // Treat "table does not exist" as an empty result set — the table is
+  // created lazily on first INSERT, so a fresh workspace has no skills yet.
+  let rows: Record<string, unknown>[] = [];
+  try {
+    rows = await opts.query(sql);
+  } catch (e: any) {
+    if (isMissingTableError(e?.message)) rows = [];
+    else throw e;
+  }
   const latest = selectLatestPerName(rows);
 
   const root = resolvePullDestination(opts.install, opts.cwd);
@@ -223,7 +262,22 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
   for (const row of latest) {
     const name = String(row.name ?? "");
     if (!name) continue;
-    const skillDir = join(root, name);
+    // Validate name BEFORE constructing any path — protects against a
+    // malicious or malformed `skills` row escaping the install root.
+    try { assertValidSkillName(name); }
+    catch (e: any) {
+      summary.entries.push({
+        name, remoteVersion: Number(row.version ?? 1), localVersion: null,
+        action: "skipped", destination: "(invalid name — skipped)",
+        author: String(row.author ?? ""), sourceAgent: String(row.source_agent ?? ""),
+      });
+      summary.skipped++;
+      continue;
+    }
+    const projectKey = String(row.project_key ?? "");
+    // Project subdirectory keeps cross-project skills with the same name
+    // disjoint. Skip it only when project_key is empty (legacy rows).
+    const skillDir = projectKey ? join(root, projectKey, name) : join(root, name);
     const skillFile = join(skillDir, "SKILL.md");
     const remoteVersion = Number(row.version ?? 1);
     const localVersion = readLocalVersion(skillFile);
