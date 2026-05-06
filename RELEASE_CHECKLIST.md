@@ -100,7 +100,10 @@ layers, mirroring the existing `auth-login` family:
 - [ ] **`hivemind` binary registration** — `src/cli/index.ts` dispatches the new subcommand. Test: `hivemind <newcmd> --help` exits 0 with usage text (not "Unknown command")
 - [ ] **`hivemind --help` USAGE block** — `src/cli/index.ts` `USAGE` constant has a section documenting the new family alongside `Account / org / workspace`
 - [ ] **SessionStart injection** — all four `src/hooks/{,codex/,cursor/,hermes/}session-start.ts` blobs include a section listing the new commands. Use the `HIVEMIND_CLI` placeholder and `replace(/HIVEMIND_CLI/g, HIVEMIND_CLI)` substitution so the path is resolved at inject time
-- [ ] **Slash command** — `claude-code/commands/<feature>.md` and `codex/commands/<feature>.md` exist for user-facing `/feature` invocation
+- [ ] **Slash command (OPTIONAL — decide explicitly)** — `claude-code/commands/<feature>.md` and `codex/commands/<feature>.md` register `/hivemind:<feature>` for user-typed invocation. Only add when there is a clear UX reason (e.g. parity with `/hivemind:login` for a top-level user action). If you do add one:
+  - Use `node "${CLAUDE_PLUGIN_ROOT}/bundle/cli.js" <feature> $ARGUMENTS` (CC) and `node "$CODEX_PLUGIN_ROOT/bundle/cli.js" <feature> $ARGUMENTS` (Codex). **Never** the bare-binary form `hivemind <feature> $ARGUMENTS` — it assumes `npm i -g @deeplake/hivemind` which marketplace-installed users do not have, so the slash silently breaks
+  - Cursor and Hermes do not support slash commands at all — those agents go through the CLI or natural-language inject only. Don't write slash commands you cannot deliver across all four agents unless the asymmetry is intentional
+  - If the agent already has full coverage via SessionStart inject + `hivemind <feature>` CLI, the slash is pure UX and can be skipped (skilify chose to skip it on PR #98 — agent autonomous discovery + CLI cover the ground)
 - [ ] **Bundle-scan guard test** — a vitest scans the SHIPPED `*/bundle/session-start.js` files and asserts the new section + the most-important flags are present. Protects against silent regressions on rebuild (see `claude-code/tests/skilify-session-start-injection.test.ts`)
 - [ ] Optional: dedicated SKILL.md if the feature warrants a skill (Claude Code skills auto-load on description match)
 
@@ -197,7 +200,9 @@ we passed every section EXCEPT:
 
 - **Section 2** — only the gate write path was e2e-tested; `pull --user`, `pull --users`, `pull --all-users`, `pull --to global`, `pull --dry-run`, `pull --force`, positional name, SQL injection, missing table, invalid identifier all relied on mocked unit tests until we did the dedicated pull e2e (65 assertions across 15 scenarios)
 - **Section 4** — the SessionStart injection was never extended for skilify, even though `auth-login` already had its parallel section. All four agents shipped without any way to discover `hivemind skilify pull --user X` or its variants. Closed by commits `64b25eb` + `e5c5987`.
+- **Section 4 (slash command)** — initial slash command files (`claude-code/commands/skilify.md`, `codex/commands/skilify.md`) used the bare-binary form `hivemind skilify $ARGUMENTS`, which silently fails for marketplace-installed users (no global `hivemind` bin). After deciding the SessionStart inject + CLI cover the ground, both files were removed rather than fixed — keeping the surface honest across the 4 agents (Cursor and Hermes never had slash commands anyway). Reviewer Kaghni surfaced this on PR comment 3196839552.
 
-Both gaps were caught only because the user asked the right cynical
-questions ("ha funzionato tutto davvero?" / "will cc codex etc know?").
-This file exists so the next PR doesn't depend on luck.
+Three gaps caught only because the user asked the right cynical
+questions ("ha funzionato tutto davvero?" / "will cc codex etc know?" /
+"non ci serve" on the slash command). This file exists so the next PR
+doesn't depend on luck.

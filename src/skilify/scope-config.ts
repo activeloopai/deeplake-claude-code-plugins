@@ -5,8 +5,8 @@
  *   { scope: "me" | "team" | "org", team: string[] }
  *
  * Defaults to scope "me" with an empty team list when the file is absent
- * or unreadable. The slash command (src/commands/skilify.ts) is the only
- * writer; the worker hook reads.
+ * or unreadable. The `hivemind skilify` CLI (src/commands/skilify.ts) is
+ * the only writer; the worker hook reads.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
