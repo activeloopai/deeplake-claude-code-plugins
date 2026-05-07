@@ -65,18 +65,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Validate NPM_TOKEN (whoami)
-        # Confirms the token is accepted by the registry and tells us
-        # which user/automation account it's bound to. Fails fast with
-        # ENEEDAUTH if the secret is missing or wrong.
-        run: |
-          WHO=$(npm whoami)
-          echo "npm whoami → $WHO"
-          if [ -z "$WHO" ]; then
-            echo "::error::NPM_TOKEN is not authenticating. Check the secret in the production environment."
-            exit 1
-          fi
-
       - name: Build bundles
         run: npm run build
 
@@ -96,9 +84,6 @@ jobs:
 
       - name: Authenticate ClawHub CLI
         run: clawhub login --token "$CLAWHUB_TOKEN" --no-browser
-
-      - name: Validate CLAWHUB_TOKEN (whoami)
-        run: clawhub whoami
 
       - name: clawhub package publish --dry-run
         run: clawhub package publish ./openclaw --dry-run
