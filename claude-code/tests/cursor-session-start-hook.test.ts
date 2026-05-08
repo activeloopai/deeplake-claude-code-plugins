@@ -64,9 +64,18 @@ beforeEach(() => {
   getInstalledVersionMock.mockReset().mockReturnValue("0.7.0");
   autoUpdateMock.mockReset().mockResolvedValue(undefined);
   vi.spyOn(console, "log").mockImplementation(((s: string) => { consoleLogMock(s); }) as any);
+  // Disable auto-pull during this test: maybeAutoPull would otherwise issue
+  // a third SQL query (against `skills`) through the same DeeplakeApi mock,
+  // breaking call-count assertions. The auto-pull module's behaviour is
+  // covered exhaustively in skilify-auto-pull.test.ts, so the hook tests
+  // never need it active.
+  process.env.HIVEMIND_AUTOPULL_DISABLED = "1";
 });
 
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => {
+  vi.restoreAllMocks();
+  delete process.env.HIVEMIND_AUTOPULL_DISABLED;
+});
 
 describe("cursor session-start hook — guards", () => {
   it("HIVEMIND_WIKI_WORKER=1 → no stdin read, no console output", async () => {
