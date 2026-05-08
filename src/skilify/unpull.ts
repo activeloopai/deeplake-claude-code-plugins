@@ -112,7 +112,10 @@ export function runUnpull(opts: UnpullOptions): UnpullSummary {
 
     if (!existsSync(path)) {
       // Drift: manifest says it was here, disk disagrees. Prune the entry.
-      if (!opts.dryRun) removePullEntry(opts.install, entry.dirName);
+      // Use the entry's own installRoot rather than the resolved `root` so
+      // we drop exactly the row that pointed here, even if a parallel pull
+      // wrote a same-named skill into a different installRoot.
+      if (!opts.dryRun) removePullEntry(opts.install, entry.installRoot, entry.dirName);
       summary.entries.push({
         dirName: entry.dirName,
         kind: "manifest-orphan",
@@ -150,7 +153,7 @@ export function runUnpull(opts: UnpullOptions): UnpullSummary {
     } else {
       try {
         rmSync(path, { recursive: true, force: true });
-        removePullEntry(opts.install, entry.dirName);
+        removePullEntry(opts.install, entry.installRoot, entry.dirName);
         result.action = "removed";
         summary.removed++;
       } catch (e: any) {

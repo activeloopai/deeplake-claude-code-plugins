@@ -107,14 +107,27 @@ export function saveManifest(m: PulledManifest, path: string = manifestPath()): 
 }
 
 /**
- * Insert or replace the entry for a given `(install, dirName)` pair.
- * Two pulls of the same skill update the existing row's `remoteVersion`
- * + `pulledAt`. Cross-install is keyed separately so a global and a
- * project pull of the same skill coexist as two entries.
+ * Insert or replace the entry for a given `(install, installRoot, dirName)`
+ * triple. Two pulls of the same skill update the existing row's
+ * `remoteVersion` + `pulledAt`. The triple is the right key because:
+ *  - cross-install (global vs project) entries are independent records
+ *    (same dirName can legitimately appear in both);
+ *  - cross-installRoot entries are also independent — a user who pulls
+ *    `deploy--alice` into `~/projA/.claude/skills` and into
+ *    `~/projB/.claude/skills` must end up with TWO manifest rows, one
+ *    per project root, so `unpull --to project` from each cwd only
+ *    targets that cwd's entry. Keying on `(install, dirName)` alone
+ *    would cause the second pull to silently overwrite the first row,
+ *    and unpull would then leave the first project's directory orphaned
+ *    on disk because no manifest entry pointed at it anymore.
  */
 export function recordPull(entry: PulledEntry, path: string = manifestPath()): void {
   const m = loadManifest(path);
-  const idx = m.entries.findIndex(e => e.install === entry.install && e.dirName === entry.dirName);
+  const idx = m.entries.findIndex(e =>
+    e.install === entry.install &&
+    e.installRoot === entry.installRoot &&
+    e.dirName === entry.dirName,
+  );
   if (idx >= 0) m.entries[idx] = entry;
   else m.entries.push(entry);
   saveManifest(m, path);
@@ -122,12 +135,24 @@ export function recordPull(entry: PulledEntry, path: string = manifestPath()): v
 
 /**
  * Remove an entry from the manifest. Idempotent — succeeds silently when
- * the entry doesn't exist (e.g. unpull called twice).
+ * the entry doesn't exist (e.g. unpull called twice). Keyed by the same
+ * `(install, installRoot, dirName)` triple as `recordPull` so an unpull
+ * in one project cwd never accidentally drops the manifest row for an
+ * identically-named skill pulled into a different project root.
  */
-export function removePullEntry(install: InstallLocation, dirName: string, path: string = manifestPath()): void {
+export function removePullEntry(
+  install: InstallLocation,
+  installRoot: string,
+  dirName: string,
+  path: string = manifestPath(),
+): void {
   const m = loadManifest(path);
   const before = m.entries.length;
-  m.entries = m.entries.filter(e => !(e.install === install && e.dirName === dirName));
+  m.entries = m.entries.filter(e => !(
+    e.install === install &&
+    e.installRoot === installRoot &&
+    e.dirName === dirName
+  ));
   if (m.entries.length !== before) saveManifest(m, path);
 }
 

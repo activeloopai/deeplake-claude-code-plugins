@@ -138,7 +138,7 @@ describe("recordPull", () => {
     expect(loadManifest().entries).toHaveLength(1);
   });
 
-  it("replaces an existing entry on the same (install, dirName)", () => {
+  it("replaces an existing entry on the same (install, installRoot, dirName)", () => {
     recordPull(sampleEntry({ remoteVersion: 1, pulledAt: "2026-01-01T00:00:00Z" }));
     recordPull(sampleEntry({ remoteVersion: 2, pulledAt: "2026-05-01T00:00:00Z" }));
     const m = loadManifest();
@@ -154,29 +154,73 @@ describe("recordPull", () => {
     expect(m.entries).toHaveLength(2);
     expect(m.entries.map(e => e.install).sort()).toEqual(["global", "project"]);
   });
+
+  it("keeps cross-installRoot entries separate within the same install kind", () => {
+    // Two `project` pulls of the same skill into two different cwds must
+    // produce TWO manifest rows. Without installRoot in the key, the
+    // second pull would silently overwrite the first row and the first
+    // project's dir would become a manifest orphan that unpull can't see.
+    recordPull(sampleEntry({ install: "project", installRoot: "/projA/.claude/skills" }));
+    recordPull(sampleEntry({ install: "project", installRoot: "/projB/.claude/skills" }));
+    const m = loadManifest();
+    expect(m.entries).toHaveLength(2);
+    expect(m.entries.map(e => e.installRoot).sort()).toEqual([
+      "/projA/.claude/skills",
+      "/projB/.claude/skills",
+    ]);
+  });
+
+  it("upserts within the same (install, installRoot, dirName) — both projects keep their own latest version", () => {
+    recordPull(sampleEntry({ install: "project", installRoot: "/projA", remoteVersion: 1 }));
+    recordPull(sampleEntry({ install: "project", installRoot: "/projB", remoteVersion: 1 }));
+    recordPull(sampleEntry({ install: "project", installRoot: "/projA", remoteVersion: 5 }));
+    const m = loadManifest();
+    expect(m.entries).toHaveLength(2);
+    const a = m.entries.find(e => e.installRoot === "/projA");
+    const b = m.entries.find(e => e.installRoot === "/projB");
+    expect(a?.remoteVersion).toBe(5);
+    expect(b?.remoteVersion).toBe(1);
+  });
 });
 
 describe("removePullEntry", () => {
   it("removes a matching entry", () => {
     recordPull(sampleEntry({ dirName: "a--alice" }));
     recordPull(sampleEntry({ dirName: "b--bob" }));
-    removePullEntry("global", "a--alice");
+    removePullEntry("global", "/home/test/.claude/skills", "a--alice");
     expect(loadManifest().entries.map(e => e.dirName)).toEqual(["b--bob"]);
   });
 
   it("is idempotent when the entry doesn't exist", () => {
     recordPull(sampleEntry({ dirName: "x--alice" }));
-    removePullEntry("global", "nonexistent");
+    removePullEntry("global", "/home/test/.claude/skills", "nonexistent");
     expect(loadManifest().entries).toHaveLength(1);
   });
 
-  it("keys removal by (install, dirName)", () => {
+  it("keys removal by (install, installRoot, dirName) — sibling install untouched", () => {
     recordPull(sampleEntry({ install: "global",  dirName: "deploy--alice", installRoot: "/g" }));
     recordPull(sampleEntry({ install: "project", dirName: "deploy--alice", installRoot: "/p" }));
-    removePullEntry("global", "deploy--alice");
+    removePullEntry("global", "/g", "deploy--alice");
     const m = loadManifest();
     expect(m.entries).toHaveLength(1);
     expect(m.entries[0].install).toBe("project");
+  });
+
+  it("keys removal by installRoot — sibling project root untouched", () => {
+    // Critical regression guard: removing one project's entry must not drop
+    // a same-named entry that lives in a different project root.
+    recordPull(sampleEntry({ install: "project", dirName: "deploy--alice", installRoot: "/projA" }));
+    recordPull(sampleEntry({ install: "project", dirName: "deploy--alice", installRoot: "/projB" }));
+    removePullEntry("project", "/projA", "deploy--alice");
+    const m = loadManifest();
+    expect(m.entries).toHaveLength(1);
+    expect(m.entries[0].installRoot).toBe("/projB");
+  });
+
+  it("does NOT remove the entry when only install matches but installRoot differs", () => {
+    recordPull(sampleEntry({ install: "project", dirName: "deploy--alice", installRoot: "/projA" }));
+    removePullEntry("project", "/wrong-root", "deploy--alice");
+    expect(loadManifest().entries).toHaveLength(1);
   });
 });
 
