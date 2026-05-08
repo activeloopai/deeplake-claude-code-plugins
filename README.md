@@ -17,18 +17,19 @@
 </p>
 
 <p align="center">
-  Persistent, cloud-backed shared memory for <b>Claude Code • OpenClaw • Codex • Cursor • Hermes • pi</b> agents.<br>
+  Auto-learning, cloud-backed shared brain for <b>Claude Code • OpenClaw • Codex • Cursor • Hermes • pi</b> agents.<br>
 </p>
 
-> One session ends, everything important disappears. 
+> One engineer's agent figures out a tricky migration on Monday.
 >
-> Hivemind finally fixes the "agent amnesia" problem. 
+> Tuesday, every agent on the team can execute the pattern.
 
-Hivemind automatically captures every prompt, tool call, decision, and file operation. Then turns them into searchable memory that is instantly available to every agent and teammate across sessions, machines, and time.
+**Beyond memory.** Hivemind captures every coding-agent interaction in your org as a structured trace, codifies repeated patterns into reusable skills, and propagates those skills to every agent on your team. Repeat work stops being repeat work — senior engineers' breakthroughs become every junior engineer's starting point, and your org's accumulated engineering capability survives turnover, onboarding cycles, and tool changes.
 
-- 🧠 **Captures** every session's prompts, tool calls, and responses into a shared SQL table on Deeplake Cloud
-- 🔍 **Searches** across all memory with lexical search (falls back to grep when index unavailable)
-- 🔗 **Shares** memory across sessions, agents, teammates, and machines in real-time
+- 📥 **Captures** every session's prompts, tool calls, and responses as structured traces in Deeplake
+- 🧠 **Codifies** patterns in those traces into reusable skills, available to every agent on your team
+- 🔍 **Searches** across all traces and skills with lexical retrieval (grep fallback when index unavailable)
+- 🔗 **Propagates** capability across sessions, agents, teammates, and machines in real time
 - 📁 **Intercepts** file operations on `~/.deeplake/memory/` through a virtual filesystem backed by SQL
 - 📝 **Summarizes** sessions into AI-generated wiki pages via a background worker at session end
 
@@ -188,41 +189,58 @@ hivemind codex uninstall        # remove from one
 
 ## How it works
 
+Capture is just the substrate. The interesting layer is what happens to those traces afterward.
+
+**1. Trace capture.** Every interaction (prompts, tool calls, file reads, terminal commands, reasoning chains, final outputs) is captured automatically. No configuration. `HIVEMIND_CAPTURE=true` is the default — set it to `false` to opt out.
+
+**2. Skill codification.** Hivemind detects repeated patterns across traces — the same kind of bug being fixed in different ways, the same migration shape being applied across services, the same architectural decision recurring — and codifies those patterns into skills. Codification is a mix of automatic detection (statistical pattern matching across the trace store) and LLM-assisted extraction (the [skilify worker](#skills-skilify) reviews candidate patterns and writes structured skill definitions). Workspace-level scoping keeps skills from leaking between teams.
+
+**3. Skill propagation.** Codified skills flow into agent context at inference time, across every Hivemind-connected agent in your workspace. The agent your junior engineer used this morning is sharper because of what your senior engineer's agent figured out last week.
+
+**4. Compounding capability.** Week 1, your agents stop repeating mistakes. Month 1, they're learning from each other. Quarter 1, your engineering org operates with capability that survives team changes and onboarding cycles.
+
 ```
 ┌─────────────────────────────────────────────────────┐
-│                   Your Coding Agent                 │
+│              Your Coding Agents                     │
+│   Claude Code · Codex · OpenClaw · Cursor · ...     │
 └──────────────────────────┬──────────────────────────┘
                            │
         ┌──────────────────▼──────────────────┐
-        │  📥 Capture (every turn)            │
+        │  📥 Trace capture (every turn)      │
         │  prompts · tool calls · responses   │
         └──────────────────┬──────────────────┘
                            │
         ┌──────────────────▼──────────────────┐
-        │  🧠 Hivemind                        │
-        │  SQL tables · Virtual File System   │
-        │  Search Memory · inject context     │
+        │  🧠 Skill codification              │
+        │  pattern detection · LLM extraction │
+        │  workspace-scoped                   │
+        └──────────────────┬──────────────────┘
+                           │
+        ┌──────────────────▼──────────────────┐
+        │  🔗 Skill propagation               │
+        │  injected into agent context        │
+        │  every agent · every teammate       │
         └──────────────────┬──────────────────┘
                            │
         ┌──────────────────▼──────────────────┐
         │  🌊 Deeplake                        │
-        │   Shared across all agents          │
-        │   Postgres · S3                     │
+        │  Tensor storage · Postgres · S3     │
         └─────────────────────────────────────┘
 ```
 
-Every session is captured. Every agent can recall. Teammates in the same org see the same memory.
+Every session compounds. Every agent levels up. Teammates in the same org draw from the same accumulated capability.
 
 ## Features
 
 ### 🔍 Natural search
 
-Just ask Claude naturally:
+Just ask your agent naturally:
 
 ```
 "What was Emanuele working on?"
-"Search memory for authentication bugs"
+"Search traces for authentication bugs we've solved"
 "What did we decide about the API design?"
+"Show me skills my team has codified for handling migrations"
 ```
 
 ### 📝 AI-generated session summaries
@@ -231,7 +249,7 @@ After each session, a background worker generates a wiki summary: key decisions,
 
 ### 👥 Team sharing
 
-Invite teammates to your Deeplake org. Their agents see your memory, your agents see theirs. No setup, no sync, no merge conflicts.
+Invite teammates to your Deeplake org. Their agents draw from your team's traces and skills; your agents draw from theirs. No setup, no sync, no merge conflicts.
 
 ### 🔒 Privacy controls
 
@@ -256,10 +274,11 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | User prompts          | Every message you send             |
 | Tool calls            | Tool name + full input             |
 | Tool responses        | Full tool output                   |
-| Assistant responses   | Claude's final response            |
+| Assistant responses   | The agent's final response         |
 | Subagent activity     | Subagent tool calls and responses  |
+| Codified skills       | Patterns extracted from traces     |
 
-**All users in your Deeplake workspace can read this data.** A DATA NOTICE is displayed at the start of every session.
+**All users in your Deeplake workspace can read this data.** That's the design — shared capability requires shared substrate. A DATA NOTICE is displayed at the start of every session. Workspace-level isolation prevents data leakage between orgs.
 
 ## Configuration
 
@@ -395,9 +414,10 @@ bundle.
 
 ## Skills (skilify)
 
-Hivemind also crystallises **recurring patterns from your recent sessions
-into reusable Claude Code skills**, automatically. Same architecture as
-the wiki worker: an async background process that fires on Stop /
+This is where auto-learning becomes concrete. Hivemind **codifies recurring
+patterns from your team's recent sessions into reusable skills** that
+propagate to every agent on your team — automatically. Same architecture
+as the wiki worker: an async background process that fires on Stop /
 SessionEnd, mines recent sessions in scope, asks Haiku whether the
 activity contains something worth keeping, and writes a `SKILL.md` if so.
 
@@ -579,6 +599,13 @@ hivemind/
 ├── pi/                     ← pi extension source (ships raw .ts; pi compiles at load)
 └── bundle/                 ← unified `hivemind` CLI build output
 ```
+
+## Roadmap
+
+- **Trajectory export for fine-tuning.** Because traces are stored in Deeplake's tensor format, they're export-ready as PyTorch datasets. Teams running their own open-source models can fine-tune on their org's accumulated trajectories. A handful of advanced customers are already doing this against the trajectories their Claude Code and Codex agents generated.
+- **Dense vector retrieval.** Currently using BM25 + grep fallback. Dense retrieval over GPU-accelerated vector search is in active development.
+- **Skill versioning and review.** Pre-release human review for codified skills before they propagate org-wide, for teams that want a curation step.
+- **More agents.** If your team uses an agent that isn't on the supported-assistants list above, open an issue.
 
 ## Security
 
