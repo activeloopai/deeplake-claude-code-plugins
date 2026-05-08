@@ -14,6 +14,8 @@ import { log as _log } from "../utils/debug.js";
 import { bundleDirFromImportMeta, spawnWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 import { tryAcquireLock, releaseLock } from "./summary-state.js";
 import { forceSessionEndTrigger } from "../skilify/triggers.js";
+import { parseTranscript } from "../notifications/transcript-parser.js";
+import { appendUsageRecord } from "../notifications/usage-tracker.js";
 
 const log = (msg: string) => _log("session-end", msg);
 
@@ -21,6 +23,27 @@ interface StopInput {
   session_id: string;
   cwd?: string;
   hook_event_name?: string;
+  transcript_path?: string;
+}
+
+/**
+ * Parse the session transcript for token-usage and append a usage record
+ * to ~/.deeplake/usage-stats.jsonl. Fail-soft: any error (missing file,
+ * malformed JSON, fs error) is logged and swallowed — the rest of the
+ * SessionEnd path must run unaffected.
+ */
+function recordSessionUsage(transcriptPath: string | undefined, sessionId: string): void {
+  if (!transcriptPath) return;
+  try {
+    const record = parseTranscript(transcriptPath, sessionId);
+    if (record.assistantTurns === 0) {
+      log(`zero assistant turns in transcript — skipping usage record session=${sessionId}`);
+      return;
+    }
+    appendUsageRecord(record);
+  } catch (e: any) {
+    log(`recordSessionUsage failed: ${e?.message ?? String(e)}`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -34,6 +57,11 @@ async function main(): Promise<void> {
 
   const config = loadConfig();
   if (!config) { log("no config"); return; }
+
+  // Record per-session usage stats unconditionally — independent of the
+  // wiki-worker lock. Even sessions where the wiki worker is already
+  // running (or fails to spawn) should contribute to the weekly recap.
+  recordSessionUsage(input.transcript_path, sessionId);
 
   // Coordinate with the periodic worker: if one is already running for this
   // session, skip. Two workers writing the same summary row trip the

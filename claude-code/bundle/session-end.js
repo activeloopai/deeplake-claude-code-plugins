@@ -526,8 +526,119 @@ function forceSessionEndTrigger(opts) {
   }
 }
 
+// dist/src/notifications/transcript-parser.js
+import { existsSync as existsSync6, readFileSync as readFileSync5 } from "node:fs";
+var log2 = (msg) => log("transcript-parser", msg);
+function asNonNegativeNumber(v) {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+}
+function parseTranscript(transcriptPath, fallbackSessionId, now = /* @__PURE__ */ new Date()) {
+  const empty = {
+    endedAt: now.toISOString(),
+    sessionId: fallbackSessionId,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    assistantTurns: 0,
+    model: ""
+  };
+  if (!transcriptPath || !existsSync6(transcriptPath)) {
+    log2(`transcript missing: ${transcriptPath}`);
+    return empty;
+  }
+  let raw;
+  try {
+    raw = readFileSync5(transcriptPath, "utf-8");
+  } catch (e) {
+    log2(`read failed: ${e?.message ?? String(e)}`);
+    return empty;
+  }
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
+  let assistantTurns = 0;
+  let model = "";
+  let sessionId = fallbackSessionId;
+  let endedAt = "";
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed)
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (typeof entry.timestamp === "string")
+      endedAt = entry.timestamp;
+    if (typeof entry.sessionId === "string" && entry.sessionId)
+      sessionId = entry.sessionId;
+    const msg = entry.message;
+    if (!msg || msg.role !== "assistant" || !msg.usage)
+      continue;
+    const u = msg.usage;
+    inputTokens += asNonNegativeNumber(u.input_tokens);
+    outputTokens += asNonNegativeNumber(u.output_tokens);
+    cacheReadTokens += asNonNegativeNumber(u.cache_read_input_tokens);
+    cacheCreationTokens += asNonNegativeNumber(u.cache_creation_input_tokens);
+    assistantTurns += 1;
+    if (typeof msg.model === "string" && msg.model && !model)
+      model = msg.model;
+  }
+  return {
+    endedAt: endedAt || now.toISOString(),
+    sessionId,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    assistantTurns,
+    model
+  };
+}
+
+// dist/src/notifications/usage-tracker.js
+import { appendFileSync as appendFileSync4, existsSync as existsSync7, mkdirSync as mkdirSync7, readFileSync as readFileSync6, statSync } from "node:fs";
+import { dirname as dirname3, join as join10 } from "node:path";
+import { homedir as homedir9 } from "node:os";
+var log3 = (msg) => log("usage-tracker", msg);
+function statsFilePath() {
+  return join10(homedir9(), ".deeplake", "usage-stats.jsonl");
+}
+function ensureStatsDir() {
+  const dir = dirname3(statsFilePath());
+  if (!existsSync7(dir))
+    mkdirSync7(dir, { recursive: true });
+}
+function appendUsageRecord(record) {
+  try {
+    ensureStatsDir();
+    appendFileSync4(statsFilePath(), JSON.stringify(record) + "\n", "utf-8");
+    log3(`appended record session=${record.sessionId} cacheRead=${record.cacheReadTokens}`);
+  } catch (e) {
+    log3(`appendUsageRecord failed: ${e?.message ?? String(e)}`);
+  }
+}
+
 // dist/src/hooks/session-end.js
-var log2 = (msg) => log("session-end", msg);
+var log4 = (msg) => log("session-end", msg);
+function recordSessionUsage(transcriptPath, sessionId) {
+  if (!transcriptPath)
+    return;
+  try {
+    const record = parseTranscript(transcriptPath, sessionId);
+    if (record.assistantTurns === 0) {
+      log4(`zero assistant turns in transcript \u2014 skipping usage record session=${sessionId}`);
+      return;
+    }
+    appendUsageRecord(record);
+  } catch (e) {
+    log4(`recordSessionUsage failed: ${e?.message ?? String(e)}`);
+  }
+}
 async function main() {
   if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
@@ -540,9 +651,10 @@ async function main() {
     return;
   const config = loadConfig();
   if (!config) {
-    log2("no config");
+    log4("no config");
     return;
   }
+  recordSessionUsage(input.transcript_path, sessionId);
   if (!tryAcquireLock(sessionId)) {
     wikiLog(`SessionEnd: periodic worker already running for ${sessionId}, skipping`);
     return;
@@ -557,11 +669,11 @@ async function main() {
       reason: "SessionEnd"
     });
   } catch (e) {
-    log2(`spawn failed: ${e.message}`);
+    log4(`spawn failed: ${e.message}`);
     try {
       releaseLock(sessionId);
     } catch (releaseErr) {
-      log2(`releaseLock after spawn failure also failed: ${releaseErr.message}`);
+      log4(`releaseLock after spawn failure also failed: ${releaseErr.message}`);
     }
     throw e;
   }
@@ -574,6 +686,6 @@ async function main() {
   });
 }
 main().catch((e) => {
-  log2(`fatal: ${e.message}`);
+  log4(`fatal: ${e.message}`);
   process.exit(0);
 });

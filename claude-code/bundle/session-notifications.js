@@ -259,8 +259,131 @@ async function fetchBackendNotifications(creds) {
   }
 }
 
+// dist/src/notifications/usage-tracker.js
+import { appendFileSync as appendFileSync2, existsSync, mkdirSync as mkdirSync4, readFileSync as readFileSync4, statSync } from "node:fs";
+import { dirname, join as join5 } from "node:path";
+import { homedir as homedir5 } from "node:os";
+var log5 = (msg) => log("usage-tracker", msg);
+function statsFilePath() {
+  return join5(homedir5(), ".deeplake", "usage-stats.jsonl");
+}
+function readUsageRecords() {
+  try {
+    if (!existsSync(statsFilePath()))
+      return [];
+    const raw = readFileSync4(statsFilePath(), "utf-8");
+    const out = [];
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed)
+        continue;
+      try {
+        const rec = JSON.parse(trimmed);
+        if (typeof rec.endedAt === "string" && typeof rec.sessionId === "string" && typeof rec.inputTokens === "number" && typeof rec.outputTokens === "number" && typeof rec.cacheReadTokens === "number" && typeof rec.cacheCreationTokens === "number" && typeof rec.assistantTurns === "number") {
+          out.push({
+            endedAt: rec.endedAt,
+            sessionId: rec.sessionId,
+            inputTokens: rec.inputTokens,
+            outputTokens: rec.outputTokens,
+            cacheReadTokens: rec.cacheReadTokens,
+            cacheCreationTokens: rec.cacheCreationTokens,
+            assistantTurns: rec.assistantTurns,
+            model: typeof rec.model === "string" ? rec.model : ""
+          });
+        }
+      } catch {
+      }
+    }
+    return out;
+  } catch (e) {
+    log5(`readUsageRecords failed: ${e?.message ?? String(e)}`);
+    return [];
+  }
+}
+function filterRecentRecords(records, days, now = /* @__PURE__ */ new Date()) {
+  const cutoff = now.getTime() - days * 24 * 60 * 60 * 1e3;
+  return records.filter((r) => {
+    const t = Date.parse(r.endedAt);
+    return Number.isFinite(t) && t >= cutoff;
+  });
+}
+function sumMetric(records, key) {
+  let total = 0;
+  for (const r of records) {
+    const v = r[key];
+    if (typeof v === "number" && Number.isFinite(v))
+      total += v;
+  }
+  return total;
+}
+
+// dist/src/notifications/sources/local-usage.js
+var log6 = (msg) => log("notifications-local-usage", msg);
+var LOOKBACK_DAYS = 7;
+var MIN_SESSIONS_FOR_RECAP = 2;
+function isoWeekId(date) {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const year = d.getUTCFullYear();
+  const week1Thursday = new Date(Date.UTC(year, 0, 4));
+  const week1DayNum = week1Thursday.getUTCDay() || 7;
+  const week1ThursdayShifted = new Date(week1Thursday);
+  week1ThursdayShifted.setUTCDate(week1Thursday.getUTCDate() + 4 - week1DayNum);
+  const week = 1 + Math.round((d.getTime() - week1ThursdayShifted.getTime()) / (7 * 24 * 60 * 60 * 1e3));
+  return `${year}-W${week.toString().padStart(2, "0")}`;
+}
+function formatTokens(n) {
+  if (!Number.isFinite(n) || n <= 0)
+    return "0";
+  if (n < 1e3)
+    return `${Math.round(n)}`;
+  if (n < 1e5)
+    return `${(n / 1e3).toFixed(1)}k`;
+  if (n < 1e6)
+    return `${Math.round(n / 1e3)}k`;
+  return `${(n / 1e6).toFixed(1)}M`;
+}
+function fetchLocalUsageNotifications(now = /* @__PURE__ */ new Date()) {
+  let all;
+  try {
+    all = readUsageRecords();
+  } catch (e) {
+    log6(`readUsageRecords threw: ${e?.message ?? String(e)}`);
+    return [];
+  }
+  const recent = filterRecentRecords(all, LOOKBACK_DAYS, now);
+  if (recent.length < MIN_SESSIONS_FOR_RECAP) {
+    log6(`only ${recent.length} session(s) in last ${LOOKBACK_DAYS}d \u2014 skipping recap`);
+    return [];
+  }
+  const cacheRead = sumMetric(recent, "cacheReadTokens");
+  const inputTokens = sumMetric(recent, "inputTokens");
+  const outputTokens = sumMetric(recent, "outputTokens");
+  if (cacheRead === 0 && inputTokens === 0 && outputTokens === 0) {
+    log6("no token volume in window \u2014 skipping recap");
+    return [];
+  }
+  const weekId = isoWeekId(now);
+  const sessionCount = recent.length;
+  const totalProcessed = cacheRead + inputTokens + outputTokens;
+  const title = `Your week with hivemind \u2014 ${formatTokens(cacheRead)} cached tokens reused`;
+  const body = `Across ${sessionCount} session${sessionCount === 1 ? "" : "s"} in the last ${LOOKBACK_DAYS} days, hivemind helped Claude reuse ${formatTokens(cacheRead)} tokens of cached context \u2014 the bulk of input is served from cache instead of fresh tokens. Total volume processed: ${formatTokens(totalProcessed)}.`;
+  return [
+    {
+      id: "local-usage:weekly-recap",
+      severity: "info",
+      title,
+      body,
+      // dedupKey is keyed only on the ISO-week id so the recap fires once
+      // per week even as more sessions accumulate within that window.
+      dedupKey: { week: weekId }
+    }
+  ];
+}
+
 // dist/src/notifications/index.js
-var log5 = (msg) => log("notifications", msg);
+var log7 = (msg) => log("notifications", msg);
 async function drainSessionStart(opts) {
   try {
     const state = readState();
@@ -269,7 +392,8 @@ async function drainSessionStart(opts) {
     const fromRules = evaluateRules("session_start", ctx);
     const fromQueue = queue.queue;
     const fromBackend = await fetchBackendNotifications(opts.creds);
-    const all = [...fromRules, ...fromQueue, ...fromBackend];
+    const fromLocalUsage = fetchLocalUsageNotifications();
+    const all = [...fromRules, ...fromQueue, ...fromBackend, ...fromLocalUsage];
     const fresh = all.filter((n) => !alreadyShown(state, n));
     if (fresh.length === 0) {
       if (queue.queue.length > 0)
@@ -284,9 +408,9 @@ async function drainSessionStart(opts) {
     writeState(nextState);
     if (queue.queue.length > 0)
       writeQueue({ queue: [] });
-    log5(`delivered ${fresh.length} notification(s) to ${opts.agent}`);
+    log7(`delivered ${fresh.length} notification(s) to ${opts.agent}`);
   } catch (e) {
-    log5(`drainSessionStart failed: ${e?.message ?? String(e)}`);
+    log7(`drainSessionStart failed: ${e?.message ?? String(e)}`);
   }
 }
 
@@ -311,7 +435,7 @@ var welcomeRule = {
 };
 
 // dist/src/hooks/session-notifications.js
-var log6 = (msg) => log("session-notifications", msg);
+var log8 = (msg) => log("session-notifications", msg);
 registerRule(welcomeRule);
 async function main() {
   if (process.env.HIVEMIND_WIKI_WORKER === "1")
@@ -321,6 +445,6 @@ async function main() {
   await drainSessionStart({ agent: "claude-code", creds });
 }
 main().catch((e) => {
-  log6(`fatal: ${e?.message ?? String(e)}`);
+  log8(`fatal: ${e?.message ?? String(e)}`);
   process.exit(0);
 });

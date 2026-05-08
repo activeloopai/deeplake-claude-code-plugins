@@ -21,6 +21,7 @@ import { readState, writeState, alreadyShown, markShown } from "./state.js";
 import { renderNotifications } from "./format.js";
 import { emit } from "./delivery/index.js";
 import { fetchBackendNotifications } from "./sources/backend.js";
+import { fetchLocalUsageNotifications } from "./sources/local-usage.js";
 import { log as _log } from "../utils/debug.js";
 
 const log = (msg: string) => _log("notifications", msg);
@@ -54,7 +55,11 @@ export async function drainSessionStart(opts: DrainOptions): Promise<void> {
     // Backend fetch is fail-soft (returns [] on error/timeout) — its
     // failure must not abort the rules + queue path.
     const fromBackend = await fetchBackendNotifications(opts.creds);
-    const all: Notification[] = [...fromRules, ...fromQueue, ...fromBackend];
+    // Local-usage source reads ~/.deeplake/usage-stats.jsonl synchronously
+    // and can never throw past its own catch — emits a weekly recap when
+    // there's enough data to justify one.
+    const fromLocalUsage = fetchLocalUsageNotifications();
+    const all: Notification[] = [...fromRules, ...fromQueue, ...fromBackend, ...fromLocalUsage];
 
     const fresh = all.filter(n => !alreadyShown(state, n));
     if (fresh.length === 0) {

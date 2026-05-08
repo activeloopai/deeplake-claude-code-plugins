@@ -287,6 +287,14 @@ export default defineConfig({
         "src/notifications/sources/backend.ts":   { statements: 90, branches: 90, functions: 80, lines: 90 },
         "src/notifications/delivery/index.ts":    { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/notifications/delivery/claude-code.ts": { statements: 90, branches: 90, functions: 90, lines: 90 },
+        // feat/onboarding-notifications — local-usage telemetry pipeline:
+        // SessionEnd writes a per-session record to ~/.deeplake/usage-stats.jsonl;
+        // SessionStart aggregates the last 7 days into a weekly recap notification.
+        // No deeplake-api changes needed for this slice; the server-side recap
+        // and org analytics layers will land in subsequent commits on this branch.
+        "src/notifications/usage-tracker.ts":     { statements: 90, branches: 80, functions: 90, lines: 90 },
+        "src/notifications/transcript-parser.ts": { statements: 90, branches: 80, functions: 90, lines: 90 },
+        "src/notifications/sources/local-usage.ts": { statements: 90, branches: 80, functions: 90, lines: 90 },
       },
     },
   },
