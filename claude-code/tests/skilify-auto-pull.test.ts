@@ -15,6 +15,19 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+// Stub DeeplakeApi at module load — the no-queryFn path inside maybeAutoPull
+// constructs one and calls .query(sql). Without this, that branch (and its
+// internal SQL-wrapping lambda) is uncoverable in tests, dropping the file's
+// function-coverage below the configured 90% threshold.
+const apiQueryMock = vi.fn();
+vi.mock("../../src/deeplake-api.js", () => ({
+  // Class form is required because the source code uses `new DeeplakeApi(...)`.
+  // `vi.fn().mockImplementation(arrow)` won't work as a constructor.
+  DeeplakeApi: class {
+    query(sql: string) { return apiQueryMock(sql); }
+  },
+}));
+
 import { maybeAutoPull } from "../../src/skilify/auto-pull.js";
 import type { QueryFn } from "../../src/skilify/pull.js";
 import type { Config } from "../../src/config.js";
@@ -31,6 +44,7 @@ beforeEach(() => {
   tmpHome = mkdtempSync(join(tmpdir(), "autopull-"));
   process.env.HOME = tmpHome;
   delete process.env.HIVEMIND_AUTOPULL_DISABLED;
+  apiQueryMock.mockReset();
 });
 
 afterEach(() => {
@@ -206,6 +220,29 @@ describe("maybeAutoPull — install location", () => {
     expect(result.skipped).toBe(false);
     expect(result.pulled).toBe(1);
     // ~/.claude/skills/<name>--<author>/SKILL.md, with HOME overridden to tmpHome.
+    expect(existsSync(join(tmpHome, ".claude/skills/shared-skill--alice/SKILL.md"))).toBe(true);
+  });
+});
+
+// ─── maybeAutoPull — default DeeplakeApi-backed query path ────────────────────
+
+describe("maybeAutoPull — no-queryFn path (uses DeeplakeApi)", () => {
+  it("falls back to DeeplakeApi.query when deps.queryFn is not injected", async () => {
+    // The lambda that wraps `api.query(sql)` is otherwise uncoverable —
+    // every other test injects queryFn directly. Module-level vi.mock
+    // replaces DeeplakeApi with a stub whose `.query` we observe.
+    apiQueryMock.mockResolvedValue([sampleRow()]);
+    const loadConfigFn = () => makeConfig();
+    const result = await maybeAutoPull({
+      loadConfigFn,
+      // queryFn intentionally omitted — exercise the constructor path
+      install: "project",
+      cwd: tmpHome,
+    });
+    expect(result.skipped).toBe(false);
+    expect(result.pulled).toBe(1);
+    expect(apiQueryMock).toHaveBeenCalledTimes(1);
+    expect(apiQueryMock.mock.calls[0][0]).toContain(`FROM "skills"`);
     expect(existsSync(join(tmpHome, ".claude/skills/shared-skill--alice/SKILL.md"))).toBe(true);
   });
 });
