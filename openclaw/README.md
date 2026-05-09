@@ -1,6 +1,8 @@
 # Hivemind
 
-Cloud-backed shared memory for AI agents. Install once, memory persists across sessions, machines, and channels — and is shared with every teammate in your Deeplake org.
+**Auto-learning, cloud-backed shared brain for OpenClaw.** Install once. Hivemind captures every coding-agent interaction in your org as a structured trace, codifies repeated patterns into reusable skills, and propagates those skills to every Hivemind-connected agent on your team.
+
+> One engineer's agent figures out a tricky migration on Monday. Tuesday, every agent on the team can execute the pattern.
 
 Powered by [Deeplake](https://deeplake.ai/hivemind).
 
@@ -20,10 +22,11 @@ Click the auth link, sign in, send another message. That's it.
 
 ## What it does
 
-- **Auto-recall** — before each agent turn, relevant memories surface automatically via keyword search.
-- **Auto-capture** — after each turn, the conversation is stored to your Deeplake workspace.
-- **Cross-platform** — same memory accessible from Claude Code, Codex CLI, and OpenClaw plugins.
-- **Team-wide** — every user in your Deeplake org shares the same memory.
+- **Auto-capture** — every prompt, tool call, and response is stored as a structured trace in Deeplake.
+- **Auto-recall** — relevant traces and codified skills surface automatically before each agent turn.
+- **Skill codification** — recurring patterns from your team's recent sessions are auto-codified into reusable skills (`SKILL.md`) and propagated to every agent on your team.
+- **Cross-platform** — the same trace store and skills are accessible from Claude Code, Codex, OpenClaw, Cursor, Hermes, and pi.
+- **Team-wide** — every user in your Deeplake workspace draws from the same accumulated capability.
 
 ## Commands
 
@@ -45,9 +48,9 @@ You can also just ask the agent naturally — "switch org to activeloop", "list 
 
 ## Privacy & data
 
-- **What's captured**: every user message and assistant reply, sent to `api.deeplake.ai`.
+- **What's captured**: every user prompt, tool call, tool response, and assistant reply, plus codified skills extracted from those traces — all sent to `api.deeplake.ai`. All members of your Deeplake workspace can read this data.
 - **Where credentials live**: a long-lived API token at `~/.deeplake/credentials.json` (file permissions 0600).
-- **Where it sends data**: `api.deeplake.ai` (memory storage) and `clawhub.ai` (version check on session start and via `/hivemind_version`).
+- **Where it sends data**: `api.deeplake.ai` (trace + skill storage) and `clawhub.ai` (version check on session start and via `/hivemind_version`).
 - **How to pause**: run `/hivemind_capture` to stop capture; run it again to resume.
 - **How to fully sign out**: delete `~/.deeplake/credentials.json` and revoke the token in the Deeplake dashboard.
 
@@ -63,7 +66,7 @@ The plugin does **not** replace the built-in memory plugin. It runs alongside `m
 ## Troubleshooting
 
 **Hivemind feels slow or makes tools hang.**
-Check `agents.defaults.model` in `~/.openclaw/openclaw.json`. Memory-heavy workflows issue many small tool calls; a large reasoning model feels sluggish. Recommended default is `anthropic/claude-haiku-4-5-20251001`.
+Check `agents.defaults.model` in `~/.openclaw/openclaw.json`. Hivemind issues many small tool calls per turn; a large reasoning model feels sluggish. Recommended default is `anthropic/claude-haiku-4-5-20251001`.
 
 **Model switch rejected as "not allowed".**
 OpenClaw's allowlist wants `<provider>/<exact-dated-id>`. Use `anthropic/claude-haiku-4-5-20251001` or `anthropic/claude-sonnet-4-6`. Bare IDs and `-latest` suffixes are rejected.
@@ -74,7 +77,7 @@ The CLI is disabled by default. Edit `~/.openclaw/openclaw.json` under `agents.d
 **Telegram-triggered `sudo npm i -g openclaw@latest` fails with "elevated is not available".**
 `tools.elevated.allowFrom.telegram` isn't set. Run the upgrade in a local shell instead.
 
-## Sharing memory with teammates
+## Sharing capability with teammates
 
 Invite teammates to your Deeplake org:
 
@@ -82,7 +85,7 @@ Invite teammates to your Deeplake org:
 invite alice@example.com as admin
 ```
 
-Their agents will see your memory; your agents will see theirs.
+Their agents draw from your team's traces and codified skills; yours draw from theirs. No setup, no sync, no merge conflicts.
 
 ## Source
 
