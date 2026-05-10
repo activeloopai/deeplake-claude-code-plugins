@@ -18,7 +18,7 @@ import { log as _log } from "../utils/debug.js";
 import { getInstalledVersion } from "../utils/version-check.js";
 import { makeWikiLogger } from "../utils/wiki-log.js";
 import { autoUpdate } from "./shared/autoupdate.js";
-import { maybeAutoPull } from "../skillify/auto-pull.js";
+import { autoPullSkills } from "../skillify/auto-pull.js";
 const log = (msg: string) => _log("session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -185,13 +185,15 @@ async function main(): Promise<void> {
     }
   }
 
-  // Auto-pull skills from all org users into ~/.claude/skills/. Runs at most
-  // once per HIVEMIND_AUTOPULL_INTERVAL_MIN window (default 30 min); set the
-  // env var to 0 to force every session, -1 (or HIVEMIND_AUTOPULL_DISABLED=1)
-  // to disable. Bounded by a 5s timeout so a slow Deeplake never freezes
-  // SessionStart. All failures swallowed inside maybeAutoPull (documented
-  // as never-rejecting), so no try/catch needed here.
-  const pullResult = await maybeAutoPull();
+  // Auto-pull skills from all org users into ~/.claude/skills/ on every
+  // SessionStart. File writes inside runPull are idempotent (skipped
+  // when local version is at-or-newer than remote), so re-running each
+  // session is cheap on disk; the only per-call cost is the SQL
+  // round-trip. Bounded by a 5s timeout so a slow Deeplake never
+  // freezes SessionStart. Hard opt-out via HIVEMIND_AUTOPULL_DISABLED=1.
+  // All failures swallowed inside autoPullSkills (documented as
+  // never-rejecting), so no try/catch needed here.
+  const pullResult = await autoPullSkills();
   log(`autopull: pulled=${pullResult.pulled} skipped=${pullResult.skipped}`);
 
   // Version notice in additionalContext — informational only; the

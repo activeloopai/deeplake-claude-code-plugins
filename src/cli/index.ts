@@ -71,10 +71,10 @@ Skill management (mine + share reusable Claude skills across the org):
                                            --dry-run, --force.
                                            Note: every agent's SessionStart hook
                                            auto-runs 'pull --all-users --to global'
-                                           (throttled to once per 30 min by default).
-                                           Set HIVEMIND_AUTOPULL_INTERVAL_MIN=0 to
-                                           force every session, =-1 (or
-                                           HIVEMIND_AUTOPULL_DISABLED=1) to disable.
+                                           on every session. File writes are
+                                           idempotent (skipped when local is
+                                           at-or-newer than remote). Disable via
+                                           HIVEMIND_AUTOPULL_DISABLED=1.
   hivemind skillify unpull                  Remove skills previously installed by pull.
                                            Options: --user, --users, --not-mine,
                                            --to <project|global>, --dry-run,

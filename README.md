@@ -11,24 +11,27 @@
 <h4 align="center">One brain for all your agents</h4>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/@deeplake/hivemind"><img src="https://img.shields.io/npm/v/@deeplake/hivemind?color=blue&label=npm" alt="npm"></a>
+  <a href="https://github.com/activeloopai/hivemind/stargazers"><img src="https://img.shields.io/github/stars/activeloopai/hivemind?style=social" alt="GitHub stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/node-%3E%3D22.0.0-brightgreen.svg" alt="Node"></a>
   <a href="https://deeplake.ai"><img src="https://img.shields.io/badge/Powered%20by-Deeplake-orange.svg" alt="Deeplake"></a>
 </p>
 
 <p align="center">
-  Persistent, cloud-backed shared memory for <b>Claude Code • OpenClaw • Codex • Cursor • Hermes • pi</b> agents.<br>
+  Auto-learning, cloud-backed shared brain for <b>Claude Code • OpenClaw • Codex • Cursor • Hermes • pi</b> agents.<br>
 </p>
 
-> One session ends, everything important disappears. 
+> One engineer's agent figures out a tricky migration on Monday.
 >
-> Hivemind finally fixes the "agent amnesia" problem. 
+> Tuesday, every agent on the team can execute the pattern.
 
-Hivemind automatically captures every prompt, tool call, decision, and file operation. Then turns them into searchable memory that is instantly available to every agent and teammate across sessions, machines, and time.
+**Beyond memory.** Hivemind captures every coding-agent interaction in your org as a structured trace, codifies repeated patterns into reusable skills, and propagates those skills to every agent on your team.
 
-- 🧠 **Captures** every session's prompts, tool calls, and responses into a shared SQL table on Deeplake Cloud
-- 🔍 **Searches** across all memory with lexical search (falls back to grep when index unavailable)
-- 🔗 **Shares** memory across sessions, agents, teammates, and machines in real-time
+- 📥 **Captures** every session's prompts, tool calls, and responses as structured traces in Deeplake
+- 🧠 **Codifies** patterns in those traces into reusable skills, available to every agent on your team
+- 🔍 **Searches** across all traces and skills with lexical retrieval (grep fallback when index unavailable)
+- 🔗 **Propagates** capability across sessions, agents, teammates, and machines in real time
 - 📁 **Intercepts** file operations on `~/.deeplake/memory/` through a virtual filesystem backed by SQL
 - 📝 **Summarizes** sessions into AI-generated wiki pages via a background worker at session end
 
@@ -40,7 +43,7 @@ One command, all your agents:
 npm install -g @deeplake/hivemind && hivemind install
 ```
 
-That's it. The installer detects every supported assistant on your machine (Claude Code, Codex, OpenClaw, Cursor, Hermes Agent, pi), wires up the hooks, and opens a browser once for login. Restart your assistants and they all share the same brain.
+The installer detects every supported assistant on your machine (table below), wires up the hooks, and opens a browser once for login. Restart them after install.
 
 **Install for a specific assistant only:**
 
@@ -188,50 +191,20 @@ hivemind codex uninstall        # remove from one
 
 ## How it works
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   Your Coding Agent                 │
-└──────────────────────────┬──────────────────────────┘
-                           │
-        ┌──────────────────▼──────────────────┐
-        │  📥 Capture (every turn)            │
-        │  prompts · tool calls · responses   │
-        └──────────────────┬──────────────────┘
-                           │
-        ┌──────────────────▼──────────────────┐
-        │  🧠 Hivemind                        │
-        │  SQL tables · Virtual File System   │
-        │  Search Memory · inject context     │
-        └──────────────────┬──────────────────┘
-                           │
-        ┌──────────────────▼──────────────────┐
-        │  🌊 Deeplake                        │
-        │   Shared across all agents          │
-        │   Postgres · S3                     │
-        └─────────────────────────────────────┘
-```
-
-Every session is captured. Every agent can recall. Teammates in the same org see the same memory.
+**Capture → Codify → Propagate → Compound.** Every coding-agent interaction (prompt, tool call, response) is captured as a structured trace in Deeplake. A background worker mines traces for repeated patterns and codifies them into `SKILL.md` files, scoped to your workspace. Codified skills propagate into every Hivemind-connected agent's context at inference time. The agent your junior engineer used this morning is sharper because of what your senior engineer's agent figured out last week.
 
 ## Features
 
 ### 🔍 Natural search
 
-Just ask Claude naturally:
+Just ask your agent naturally:
 
 ```
 "What was Emanuele working on?"
-"Search memory for authentication bugs"
+"Search traces for authentication bugs we've solved"
 "What did we decide about the API design?"
+"Show me skills my team has codified for handling migrations"
 ```
-
-### 📝 AI-generated session summaries
-
-After each session, a background worker generates a wiki summary: key decisions, code changes, next steps. Browse them at `~/.deeplake/memory/summaries/`.
-
-### 👥 Team sharing
-
-Invite teammates to your Deeplake org. Their agents see your memory, your agents see theirs. No setup, no sync, no merge conflicts.
 
 ### 🔒 Privacy controls
 
@@ -256,10 +229,11 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | User prompts          | Every message you send             |
 | Tool calls            | Tool name + full input             |
 | Tool responses        | Full tool output                   |
-| Assistant responses   | Claude's final response            |
+| Assistant responses   | The agent's final response         |
 | Subagent activity     | Subagent tool calls and responses  |
+| Codified skills       | Patterns extracted from traces     |
 
-**All users in your Deeplake workspace can read this data.** A DATA NOTICE is displayed at the start of every session.
+**All users in your Deeplake workspace can read this data.** That's the design — shared capability requires shared substrate. A DATA NOTICE is displayed at the start of every session. Workspace-level isolation prevents data leakage between orgs.
 
 ## Configuration
 
@@ -276,326 +250,41 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | `HIVEMIND_EMBEDDINGS`     | `true`                    | Set to `false` to force lexical-only mode  |
 | `HIVEMIND_DEBUG`          | —                         | Set to `1` for verbose hook debug logs     |
 
-## Optional: enable semantic search (embeddings)
+## Semantic search (optional)
 
-Hivemind can run a local embedding daemon (nomic-embed-text-v1.5, ~130 MB)
-so that `Grep` over `~/.deeplake/memory/` uses hybrid semantic + lexical
-ranking instead of pure BM25. This is **off by default** — the daemon
-depends on `@huggingface/transformers`, which pulls onnxruntime-node and
-sharp (~600 MB total with native binaries). Shipping that with every agent
-install would 60× the install size for a feature most users don't need.
+Hivemind ships with a local embedding daemon (nomic-embed-text-v1.5) for hybrid semantic + lexical search over `~/.deeplake/memory/`. **Off by default** because the dependency footprint is ~600 MB. Enable with `hivemind embeddings install` (or `hivemind install --with-embeddings`). Without it, search degrades silently to BM25/lexical-only.
 
-To enable, run the bundled command:
-
-```bash
-hivemind embeddings install
-```
-
-This installs `@huggingface/transformers` **once** into a shared directory
-(`~/.hivemind/embed-deps/`) and symlinks every detected agent's plugin to
-it, so the 600 MB cost is paid one time regardless of how many agents you
-have wired up. Re-run the same command after installing a new agent and
-the new symlink is added (the npm install is skipped because it's cached).
-
-Or do it in one shot at install time:
-
-```bash
-hivemind install --with-embeddings           # all detected agents
-hivemind <agent> install --with-embeddings   # a single agent
-```
-
-Other commands:
-
-```bash
-hivemind embeddings status              # show shared deps + per-agent state
-hivemind embeddings uninstall           # remove the per-agent symlinks
-hivemind embeddings uninstall --prune   # also delete the shared dir (~600 MB)
-```
-
-Restart your agents after enabling. From the next session, captured
-messages and AI-generated summaries will include a 768-dim embedding,
-and semantic recall queries will route through the local daemon (the
-nomic model is downloaded on first use and cached in `~/.cache/huggingface/`).
-
-If `@huggingface/transformers` is **not** present, Hivemind silently
-degrades to lexical-only mode:
-
-- ✅ Capture continues; rows still land in Deeplake.
-- ✅ `Grep` still works via BM25 / `ILIKE` matching on text columns.
-- ⚪ The `message_embedding` / `summary_embedding` columns stay `NULL`.
-- ⚪ The hook log notes `embeddings: no-transformers` once at session start.
-
-You can also force lexical-only mode explicitly with
-`HIVEMIND_EMBEDDINGS=false` (useful for CI or air-gapped environments).
+Full guide: **[docs/EMBEDDINGS.md](docs/EMBEDDINGS.md)**.
 
 ## Summaries
 
-Hivemind doesn't just capture raw events — it also generates an
-**AI-written wiki summary** for each session and stores it in the
-`memory` table (alongside its 768-dim `summary_embedding`). The summary
-is what shows up when you `Grep` for past sessions or follow links from
-`~/.deeplake/memory/index.md`.
+After each session, a background worker generates an AI-written wiki summary and stores it in the `memory` table alongside its 768-dim embedding. Long sessions checkpoint mid-session every 50 messages or 2 hours (configurable). The wiki worker shells out to the host agent's own CLI (`claude -p`, `codex exec`, `pi --print`, …) — no separate API key. Browse summaries at `~/.deeplake/memory/summaries/`.
 
-### When summaries are written
-
-Each agent (Claude Code / Codex / Cursor / Hermes / pi) fires a wiki
-worker on two triggers:
-
-| Trigger           | When it fires                                                                 |
-|-------------------|-------------------------------------------------------------------------------|
-| **Final**         | At session end (Stop / SessionEnd / session_shutdown), once.                  |
-| **Periodic**      | Mid-session, when **either** of two thresholds is hit since the last summary: |
-|                   | • messages-since-last-summary ≥ `HIVEMIND_SUMMARY_EVERY_N_MSGS` (default 50)  |
-|                   | • elapsed time ≥ `HIVEMIND_SUMMARY_EVERY_HOURS` (default 2)                   |
-
-The first message after a long pause therefore triggers a fresh
-summary; long sessions naturally checkpoint every ~50 messages.
-
-A per-session JSON sidecar at
-`~/.claude/hooks/summary-state/<sessionId>.json` tracks
-`{lastSummaryAt, lastSummaryCount, totalCount}`. The dir is shared
-across all agents (session ids are UUIDs so no collisions). It is
-**never deleted**, so resuming a session via `--resume` / `--continue`
-picks up where it left off.
-
-### How a summary is generated
-
-1. The wiki worker queries the `sessions` table for every event tied to
-   that session.
-2. It builds a structured prompt asking the host agent's CLI to extract
-   entities, decisions, files modified, open questions, etc.
-3. It shells out to that agent's CLI (`claude -p`, `codex exec`,
-   `pi --print`, …) with the prompt — never a separate API key, the
-   agent's existing credentials are used.
-4. The generated markdown is uploaded to the `memory` table at
-   `/summaries/<user>/<sessionId>.md`. The shared embedding daemon
-   produces the 768-dim `summary_embedding` so the summary is recallable
-   via semantic search.
-
-A lock file at `~/.claude/hooks/summary-state/<sessionId>.lock`
-prevents two workers from running concurrently for the same session.
-
-### Configuration
-
-| Env var                            | Default        | Effect                                              |
-|------------------------------------|----------------|-----------------------------------------------------|
-| `HIVEMIND_SUMMARY_EVERY_N_MSGS`    | `50`           | Trigger periodic when messages-since-last ≥ this    |
-| `HIVEMIND_SUMMARY_EVERY_HOURS`     | `2`            | Trigger periodic after this many hours, with ≥1 msg |
-| `HIVEMIND_CURSOR_MODEL`            | `auto`         | (cursor only) model passed to `cursor-agent --print --model` |
-| `HIVEMIND_HERMES_PROVIDER`         | `openrouter`   | (hermes only) provider passed to `hermes -z --provider` |
-| `HIVEMIND_HERMES_MODEL`            | `anthropic/claude-haiku-4-5` | (hermes only) model passed to `hermes -z -m` |
-| `HIVEMIND_PI_PROVIDER`             | `google`       | (pi only) provider passed to `pi --print --provider`|
-| `HIVEMIND_PI_MODEL`                | `gemini-2.5-flash` | (pi only) model passed to `pi --print --model` |
-| `HIVEMIND_CAPTURE=false`           | unset          | Disable both capture and summary generation         |
-
-For pi specifically, the wiki worker is bundled separately at
-`~/.pi/agent/hivemind/wiki-worker.js` (deposited by `hivemind pi install`).
-The other agents ship the wiki worker inside their per-agent plugin
-bundle.
+Triggers, generation flow, and env-var reference: **[docs/SUMMARIES.md](docs/SUMMARIES.md)**.
 
 ## Skills (skillify)
 
-Hivemind also crystallises **recurring patterns from your recent sessions
-into reusable Claude Code skills**, automatically. Same architecture as
-the wiki worker: an async background process that fires on Stop /
-SessionEnd, mines recent sessions in scope, asks Haiku whether the
-activity contains something worth keeping, and writes a `SKILL.md` if so.
-
-### When the skillify worker fires
-
-| Trigger          | When it fires                                                                  |
-|------------------|--------------------------------------------------------------------------------|
-| **Stop counter** | Mid-session, after every `HIVEMIND_SKILLIFY_EVERY_N_TURNS` (default 20) turns. |
-| **SessionEnd**   | Always at end-of-session, regardless of counter — catches tail-of-session knowledge. |
-
-Per-project counter state lives at
-`~/.deeplake/state/skillify/<project-key>.json`. Project key is the sha1
-of `git config remote.origin.url` (with the absolute path as fallback for
-non-git dirs).
-
-### How a skill is generated
-
-1. The worker pulls the **last 10 sessions in scope** from the `sessions`
-   Deeplake table — strictly newer than the watermark in the state file.
-2. It strips each session to **prompt + assistant text only** (tool calls
-   and thinking blocks are dropped — they're noise for skill mining).
-3. It builds a gate prompt: existing project skill bodies + the 10
-   stripped exchanges + decision rules.
-4. It runs `claude -p haiku --permission-mode bypassPermissions` with the
-   prompt. The model returns a JSON verdict:
-   - `KEEP <name> <body>` — write a new skill.
-   - `MERGE <existing-name> <merged-body>` — update an existing skill, bump version.
-   - `SKIP <reason>` — pattern is one-off / generic / already covered.
-5. On KEEP/MERGE the skill is written to `<project>/.claude/skills/<name>/SKILL.md`
-   (or `~/.claude/skills/...` if you've set `install` to `global`), with
-   provenance frontmatter (`source_sessions`, `version`, `created_by_agent`,
-   timestamps).
-6. A row is also inserted into the `skills` Deeplake table for org-wide
-   provenance (append-only — never UPDATE, sidesteps the
-   UPDATE-coalescing quirk).
-
-### `/skillify` — managing scope, team, install location
-
-The `/skillify` slash command (Claude Code, Codex) and the `hivemind
-skillify` CLI control mining behaviour.
+Hivemind **codifies recurring patterns from your team's recent sessions into reusable skills** that propagate to every agent on your team — automatically. An async background worker fires on Stop / SessionEnd, mines recent sessions in scope, asks Haiku whether the activity contains something worth keeping, and writes a `SKILL.md` to `<project>/.claude/skills/<name>/`.
 
 ```bash
 hivemind skillify                            # show current scope, team, install, per-project state
 hivemind skillify scope <me|team|org>        # who counts as "in scope" for mining
-hivemind skillify install <project|global>   # where new skills are written
-hivemind skillify promote <skill-name>       # move a project skill to ~/.claude/skills/
-hivemind skillify team add <username>        # add to the team list (used when scope=team)
-hivemind skillify team remove <username>     # remove from team
-hivemind skillify team list                  # list current team members
+hivemind skillify pull                       # install teammates' skills locally
+hivemind skillify unpull                     # remove pulled skills
 ```
 
-The team list flows into the worker's session-fetch SQL: `scope=me`
-filters by your own username, `scope=team` filters by `author IN
-(<team>)`, `scope=org` applies no author filter.
-
-Config persists at `~/.deeplake/state/skillify/config.json` (one global
-file shared across projects).
-
-### `pull` / `unpull` — sharing skills across the org
-
-Once a teammate's skills are mined into the Deeplake `skills` table, you
-can install them locally with `pull`. Layout written to disk:
-
-```text
-<root>/<name>--<author>/SKILL.md      ← pulled skills (e.g. deploy--alice/)
-<root>/<name>/SKILL.md                ← your locally-mined skills (flat, no suffix)
-```
-
-The `--<author>` suffix keeps cross-author entries with the same name
-disjoint and lets Claude Code's single-depth skill loader find pulled
-skills without any symlink trickery. `<root>` is `~/.claude/skills` for
-`--to global` and `<cwd>/.claude/skills` for `--to project`.
-
-```bash
-hivemind skillify pull                                # all authors, install globally
-hivemind skillify pull --user alice@example.com       # only this author
-hivemind skillify pull --users a@x.com,b@y.com        # multiple authors (CSV)
-hivemind skillify pull --all-users                    # explicit "no author filter" (default)
-hivemind skillify pull --to project                   # install under <cwd>/.claude/skills
-hivemind skillify pull --dry-run                      # preview, no disk writes
-hivemind skillify pull --force                        # overwrite even when local version >= remote
-hivemind skillify pull <skill-name>                   # pull only that skill (combinable with --user)
-```
-
-Every successful pull records an entry in
-`~/.deeplake/state/skillify/pulled.json`. That manifest is the source of
-truth for `unpull` — anything not in the manifest is **never** touched
-by default, even if its directory follows the `<name>--<author>` shape
-(this protects user-authored variant skills like `deploy--blue-green`).
-
-```bash
-hivemind skillify unpull                              # remove every pulled entry under the install scope
-hivemind skillify unpull --user alice@example.com     # remove only this author's pulls
-hivemind skillify unpull --users a@x.com,b@y.com      # multiple authors
-hivemind skillify unpull --not-mine                   # remove all pulls except your own
-hivemind skillify unpull --dry-run                    # preview, no disk writes
-hivemind skillify unpull --to project                 # operate on <cwd>/.claude/skills instead of global
-hivemind skillify unpull --all                        # ALSO remove flat-layout (locally-mined) skills — destructive
-hivemind skillify unpull --legacy-cleanup             # ALSO remove pre-`--author`-layout `<projectkey>/` dirs from older skillify versions
-```
-
-Drift handling: if a manifest entry's directory was deleted out-of-band
-(e.g. `rm -rf` by hand), the next `unpull` reports it as `manifest-orphan`
-and prunes the entry from the manifest without errors.
-
-Cross-project caveat: same `(name, author)` from two different projects
-collides on disk under the new flat layout — the more recently pulled
-row wins, and the prior `SKILL.md` is preserved as `SKILL.md.bak`. The
-underlying row stays in the Deeplake `skills` table, so re-pulling from
-the other project recovers it.
-
-### Auto-pull at SessionStart
-
-Every supported agent (Claude Code, Codex, Cursor, Hermes, pi) auto-runs
-the equivalent of `hivemind skillify pull --all-users --to global` at the
-start of each session, so teammate-mined skills become available without
-anyone having to remember to run pull manually. The pull is throttled —
-by default it only fires when the previous run was more than 30 minutes
-ago — and bounded by a 5-second timeout so a slow Deeplake never blocks
-SessionStart. All failures (network, missing table, auth) are swallowed
-silently and the session starts regardless. The last-run timestamp is
-persisted at `~/.deeplake/state/skillify/autopull-last-run.json`.
-
-| Env var                            | Default | Effect                                                   |
-|------------------------------------|---------|----------------------------------------------------------|
-| `HIVEMIND_AUTOPULL_INTERVAL_MIN`   | `30`    | Minutes between auto-pulls. `0` runs every session, `-1` disables. |
-| `HIVEMIND_AUTOPULL_DISABLED`       | unset   | Set to `1` to disable auto-pull entirely.                |
-
-### Configuration
-
-| Env var                              | Default | Effect                                                  |
-|--------------------------------------|---------|---------------------------------------------------------|
-| `HIVEMIND_SKILLIFY_EVERY_N_TURNS`     | `20`    | Stop-counter threshold for mid-session worker fires     |
-| `HIVEMIND_SKILLS_TABLE`              | `skills`| Deeplake table name for org-wide provenance             |
-| `HIVEMIND_SKILLIFY_WORKER=1`          | unset   | Recursion guard (set automatically inside the worker)   |
-| `HIVEMIND_CURSOR_MODEL`              | `auto`  | (cursor only) model passed to the cursor-agent gate call |
-| `HIVEMIND_HERMES_PROVIDER`           | `openrouter` | (hermes only) provider passed to the hermes gate call |
-| `HIVEMIND_HERMES_MODEL`              | `anthropic/claude-haiku-4-5` | (hermes only) model passed to hermes |
-
-### Per-agent gate CLI
-
-The skillify worker calls each agent's own headless CLI for the gate
-prompt — so a user who only has codex / cursor / hermes installed
-never needs `claude` in their PATH:
-
-| Agent       | Gate command                                                                          |
-|-------------|----------------------------------------------------------------------------------------|
-| claude_code | `claude -p <prompt> --no-session-persistence --model haiku --permission-mode bypassPermissions` |
-| codex       | `codex exec --dangerously-bypass-approvals-and-sandbox <prompt>`                       |
-| cursor      | `cursor-agent --print --model <HIVEMIND_CURSOR_MODEL> --force --output-format text <prompt>` |
-| hermes      | `hermes -z <prompt> --provider <HIVEMIND_HERMES_PROVIDER> -m <HIVEMIND_HERMES_MODEL> --yolo --ignore-user-config` |
-
-For hermes via OpenRouter (the default), set `OPENROUTER_API_KEY` in
-the environment; the worker inherits the parent process env. Other
-providers (anthropic, openai, etc.) need their respective API keys.
-
-### Logs
-
-Worker activity logs to `~/.claude/hooks/skillify.log`. Each line shows
-which session pool was mined, what the gate decided, and whether a file
-was written.
+Triggers, generation flow, full `pull` / `unpull` semantics, gate-CLI table per agent, env vars, logs: **[docs/SKILLIFY.md](docs/SKILLIFY.md)**.
 
 ## Architecture
 
-### Integration model per agent
+Per-agent integration mechanisms (marketplace plugin, hooks, skills, native extension) and monorepo structure: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
-| Agent             | Mechanism                          | Hooks/tools wired                                                                       |
-|-------------------|------------------------------------|-----------------------------------------------------------------------------------------|
-| **Claude Code**   | Marketplace plugin                 | `SessionStart` · `UserPromptSubmit` · `PreToolUse` · `PostToolUse` · `Stop` · `SubagentStop` · `SessionEnd` |
-| **Codex**         | `~/.codex/hooks.json`              | `SessionStart` · `UserPromptSubmit` · `PreToolUse(Bash)` · `PostToolUse` · `Stop`        |
-| **OpenClaw**      | Native extension at `~/.openclaw/extensions/hivemind/` | `agent_end` capture · `before_agent_start` recall · contracted tools (`hivemind_search`/`read`/`index`) |
-| **Cursor (1.7+)** | `~/.cursor/hooks.json`             | `sessionStart` · `beforeSubmitPrompt` · `postToolUse` · `afterAgentResponse` · `stop` · `sessionEnd` |
-| **Hermes**        | Skill at `~/.hermes/skills/hivemind-memory/` | recall via grep on `~/.deeplake/memory/`                                                |
-| **pi**            | `~/.pi/agent/AGENTS.md` + skill    | recall via grep on `~/.deeplake/memory/`                                                |
+## Roadmap
 
-### Monorepo structure
-
-```
-hivemind/
-├── src/                    ← shared core (API client, auth, config, SQL utils)
-│   ├── hooks/              ← Claude Code hooks
-│   ├── hooks/codex/        ← Codex hooks
-│   ├── hooks/cursor/       ← Cursor hooks
-│   ├── hooks/hermes/       ← Hermes shell hooks
-│   ├── hooks/pi/           ← pi wiki-worker (extension lives in pi/extension-source/)
-│   ├── embeddings/         ← nomic embed-daemon + protocol + SQL helpers
-│   ├── mcp/                ← MCP server (used by Hermes; available to any future MCP-aware client)
-│   ├── commands/           ← auth, auth-creds, auth-login, session-prune
-│   └── cli/                ← unified `hivemind install` CLI + per-agent installers
-├── claude-code/            ← Claude Code plugin source (marketplace-distributed)
-├── codex/                  ← Codex plugin build output (npm-distributed)
-├── cursor/                 ← Cursor plugin build output (npm-distributed)
-├── hermes/                 ← Hermes plugin build output (npm-distributed)
-├── mcp/                    ← MCP server build output (shared by Hermes + future MCP clients)
-├── openclaw/               ← OpenClaw plugin source + build output (ClawHub-distributed)
-├── pi/                     ← pi extension source (ships raw .ts; pi compiles at load)
-└── bundle/                 ← unified `hivemind` CLI build output
-```
+- **Trajectory export for fine-tuning.** Because traces are stored in Deeplake's tensor format, they're export-ready as PyTorch datasets. Teams running their own open-source models can fine-tune on their org's accumulated trajectories. A handful of advanced customers are already doing this against the trajectories their Claude Code and Codex agents generated.
+- **GPU-accelerated dense retrieval at scale.** Local CPU embeddings already ship via the optional nomic-embed daemon (see [Semantic search](#semantic-search-optional)). Next: GPU-accelerated vector search over the full trace store, on by default.
+- **Skill versioning and review.** Pre-release human review for codified skills before they propagate org-wide, for teams that want a curation step.
+- **More agents.** If your team uses an agent that isn't on the supported-assistants list above, open an issue.
 
 ## Security
 

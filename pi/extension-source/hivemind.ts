@@ -212,7 +212,7 @@ const PI_SKILLIFY_WORKER_PATH = join(homedir(), ".pi", "agent", "hivemind", "ski
 // Auto-pull worker installed alongside wiki-worker / skillify-worker by
 // `hivemind pi install`. Spawned synchronously on session_start to fetch
 // all-author skills from the org table. The worker is a thin wrapper
-// around the shared maybeAutoPull() that codex / cursor / hermes call
+// around the shared autoPullSkills() that codex / cursor / hermes call
 // directly — pi can't import the TS module (raw .ts, zero deps), so it
 // routes through this child process. Keeps pi's pulled skills layout +
 // symlink fan-out in lockstep with the other agents automatically.
@@ -222,11 +222,11 @@ const PI_AUTOPULL_WORKER_PATH = join(homedir(), ".pi", "agent", "hivemind", "aut
  * Synchronously run the bundled auto-pull worker. Bounded by a 6s
  * wall-clock cap (the worker's internal timeout is 5s; the extra second
  * is defence-in-depth for spawn overhead). Returns when the worker
- * exits, regardless of exit code — maybeAutoPull is documented as
+ * exits, regardless of exit code — autoPullSkills is documented as
  * never-rejecting and the worker swallows all failures, so a non-zero
  * exit code can only mean an unrecoverable runtime error that we want
  * to ignore here too. Pi's session_start blocks on this, mirroring the
- * `await maybeAutoPull()` in the other agents.
+ * `await autoPullSkills()` in the other agents.
  */
 function runAutopullWorker(): void {
   if (!existsSync(PI_AUTOPULL_WORKER_PATH)) {
@@ -892,7 +892,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
     }
 
     // Auto-pull all-author skills via the bundled worker (same shared
-    // maybeAutoPull as codex / cursor / hermes — see runAutopullWorker
+    // autoPullSkills as codex / cursor / hermes — see runAutopullWorker
     // above). Synchronous so freshly pulled skills are visible to pi
     // before the first prompt; 6s upper bound. Throttling, layout, and
     // per-agent symlink fan-out all live in the worker — no inline

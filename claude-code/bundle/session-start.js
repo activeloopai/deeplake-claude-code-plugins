@@ -54,8 +54,8 @@ var init_index_marker_store = __esm({
 
 // dist/src/hooks/session-start.js
 import { fileURLToPath } from "node:url";
-import { dirname as dirname4, join as join14 } from "node:path";
-import { homedir as homedir10 } from "node:os";
+import { dirname as dirname4, join as join13 } from "node:path";
+import { homedir as homedir9 } from "node:os";
 
 // dist/src/commands/auth.js
 import { execSync } from "node:child_process";
@@ -697,11 +697,6 @@ async function autoUpdate(creds, opts) {
   log3(`agent=${opts.agent} dispatched (pid=${pid ?? "?"}) (${Date.now() - t0}ms total)`);
 }
 
-// dist/src/skillify/auto-pull.js
-import { existsSync as existsSync9, mkdirSync as mkdirSync7, readFileSync as readFileSync8, renameSync as renameSync4, writeFileSync as writeFileSync6 } from "node:fs";
-import { homedir as homedir9 } from "node:os";
-import { join as join13 } from "node:path";
-
 // dist/src/skillify/pull.js
 import { existsSync as existsSync8, readFileSync as readFileSync7, writeFileSync as writeFileSync5, mkdirSync as mkdirSync6, renameSync as renameSync3, lstatSync as lstatSync2, readlinkSync, symlinkSync, unlinkSync as unlinkSync3 } from "node:fs";
 import { homedir as homedir8 } from "node:os";
@@ -872,6 +867,9 @@ function recordPull(entry, path = manifestPath()) {
     m.entries.push(entry);
   saveManifest(m, path);
 }
+function entriesForRoot(m, install, installRoot) {
+  return m.entries.filter((e) => e.install === install && e.installRoot === installRoot);
+}
 function unlinkSymlinks(paths) {
   for (const path of paths) {
     let st;
@@ -909,19 +907,24 @@ function pruneOrphanedEntries(path = manifestPath()) {
 import { existsSync as existsSync7 } from "node:fs";
 import { homedir as homedir7 } from "node:os";
 import { join as join11 } from "node:path";
-function candidates(home) {
-  return [
-    // agentskills.io shared root — codex installer always creates it,
-    // pi reads from it as one of two paths.
-    join11(home, ".agents", "skills"),
-    // hermes-specific root, agentskills.io-compatible layout.
-    join11(home, ".hermes", "skills"),
-    // pi's primary root (pi reads from this AND ~/.agents/skills/).
-    join11(home, ".pi", "agent", "skills")
-  ];
+function resolveDetected(home) {
+  const out = [];
+  const codexInstalled = existsSync7(join11(home, ".codex"));
+  const piInstalled = existsSync7(join11(home, ".pi", "agent"));
+  const hermesInstalled = existsSync7(join11(home, ".hermes"));
+  if (codexInstalled || piInstalled) {
+    out.push(join11(home, ".agents", "skills"));
+  }
+  if (hermesInstalled) {
+    out.push(join11(home, ".hermes", "skills"));
+  }
+  if (piInstalled) {
+    out.push(join11(home, ".pi", "agent", "skills"));
+  }
+  return out;
 }
 function detectAgentSkillsRoots(canonicalRoot, home = homedir7()) {
-  return candidates(home).filter((p) => p !== canonicalRoot && existsSync7(p));
+  return resolveDetected(home).filter((p) => p !== canonicalRoot);
 }
 
 // dist/src/skillify/pull.js
@@ -999,6 +1002,35 @@ function fanOutSymlinks(canonicalDir, dirName, agentRoots) {
     }
   }
   return out;
+}
+function backfillSymlinks(installRoot) {
+  const manifest = loadManifest();
+  const entries = entriesForRoot(manifest, "global", installRoot);
+  if (entries.length === 0)
+    return;
+  const detected = detectAgentSkillsRoots(installRoot);
+  for (const entry of entries) {
+    const canonical = join12(entry.installRoot, entry.dirName);
+    if (!existsSync8(canonical))
+      continue;
+    const fresh = fanOutSymlinks(canonical, entry.dirName, detected);
+    if (sameSorted(fresh, entry.symlinks))
+      continue;
+    try {
+      recordPull({ ...entry, symlinks: fresh });
+    } catch {
+    }
+  }
+}
+function sameSorted(a, b) {
+  if (a.length !== b.length)
+    return false;
+  const sa = [...a].sort();
+  const sb = [...b].sort();
+  for (let i = 0; i < sa.length; i++)
+    if (sa[i] !== sb[i])
+      return false;
+  return true;
 }
 function selectLatestPerName(rows) {
   const seen = /* @__PURE__ */ new Set();
@@ -1207,52 +1239,15 @@ async function runPull(opts) {
     else
       summary.skipped++;
   }
+  if (!opts.dryRun && opts.install === "global") {
+    backfillSymlinks(root);
+  }
   return summary;
 }
 
 // dist/src/skillify/auto-pull.js
 var log4 = (msg) => log("skillify-autopull", msg);
-function stateDir() {
-  return join13(homedir9(), ".deeplake", "state", "skillify");
-}
-function timestampFile() {
-  return join13(stateDir(), "autopull-last-run.json");
-}
-var DEFAULT_INTERVAL_MIN = 30;
 var DEFAULT_TIMEOUT_MS = 5e3;
-function readIntervalMs() {
-  const raw = process.env.HIVEMIND_AUTOPULL_INTERVAL_MIN;
-  if (raw === void 0 || raw === "")
-    return DEFAULT_INTERVAL_MIN * 6e4;
-  const n = Number(raw);
-  if (!Number.isFinite(n))
-    return DEFAULT_INTERVAL_MIN * 6e4;
-  return Math.trunc(n) * 6e4;
-}
-function readLastRun() {
-  migrateLegacyStateDir();
-  const path = timestampFile();
-  if (!existsSync9(path))
-    return null;
-  try {
-    const raw = readFileSync8(path, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (typeof parsed.lastRunMs !== "number" || !Number.isFinite(parsed.lastRunMs))
-      return null;
-    return parsed.lastRunMs;
-  } catch {
-    return null;
-  }
-}
-function writeLastRun(lastRunMs) {
-  migrateLegacyStateDir();
-  const dir = stateDir();
-  const path = timestampFile();
-  mkdirSync7(dir, { recursive: true });
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync6(tmp, JSON.stringify({ lastRunMs }));
-  renameSync4(tmp, path);
-}
 function withTimeout(p, ms) {
   let timer = null;
   const timeout = new Promise((_, reject) => {
@@ -1265,24 +1260,10 @@ function withTimeout(p, ms) {
       clearTimeout(timer);
   });
 }
-async function maybeAutoPull(deps = {}) {
-  const now = (deps.nowMs ?? Date.now)();
+async function autoPullSkills(deps = {}) {
   if (process.env.HIVEMIND_AUTOPULL_DISABLED === "1") {
     log4("disabled via HIVEMIND_AUTOPULL_DISABLED=1");
     return { pulled: 0, skipped: true, reason: "disabled" };
-  }
-  const intervalMs = readIntervalMs();
-  if (intervalMs < 0) {
-    log4("disabled via HIVEMIND_AUTOPULL_INTERVAL_MIN=-1");
-    return { pulled: 0, skipped: true, reason: "disabled" };
-  }
-  if (intervalMs > 0) {
-    const last = readLastRun();
-    if (last !== null && now - last < intervalMs) {
-      const remainingMs = intervalMs - (now - last);
-      log4(`throttled (last run ${now - last}ms ago, window ${intervalMs}ms, ${remainingMs}ms remaining)`);
-      return { pulled: 0, skipped: true, reason: "throttled" };
-    }
   }
   const loadFn = deps.loadConfigFn ?? loadConfig;
   const config = loadFn();
@@ -1309,11 +1290,6 @@ async function maybeAutoPull(deps = {}) {
       dryRun: false,
       force: false
     }), timeoutMs);
-    try {
-      writeLastRun(now);
-    } catch (e) {
-      log4(`writeLastRun failed (non-fatal): ${e?.message ?? e}`);
-    }
     log4(`pulled scanned=${summary.scanned} wrote=${summary.wrote} skipped=${summary.skipped}`);
     return { pulled: summary.wrote, skipped: false };
   } catch (e) {
@@ -1380,8 +1356,8 @@ IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
-var HOME = homedir10();
-var { log: wikiLog } = makeWikiLogger(join14(HOME, ".claude", "hooks"));
+var HOME = homedir9();
+var { log: wikiLog } = makeWikiLogger(join13(HOME, ".claude", "hooks"));
 async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, workspaceId) {
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
   const existing = await api.query(`SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`);
@@ -1448,7 +1424,7 @@ async function main() {
       wikiLog(`SessionStart: placeholder failed for ${input.session_id}: ${e.message}`);
     }
   }
-  const pullResult = await maybeAutoPull();
+  const pullResult = await autoPullSkills();
   log5(`autopull: pulled=${pullResult.pulled} skipped=${pullResult.skipped}`);
   const current = getInstalledVersion(__bundleDir, ".claude-plugin");
   const updateNotice = current ? `

@@ -625,11 +625,14 @@ describe("runPull — symlink fan-out (global install only)", () => {
   });
 
   it("fans out symlinks to detected agent roots and records them in the manifest", async () => {
-    // Pretend codex + hermes are installed.
+    // Pretend codex + hermes are installed by creating their config
+    // directories — the agent-roots detector keys off these markers
+    // (not on the skills subdir itself), since pi's installer never
+    // creates the skills dir.
+    mkdirSync(join(fakeHome, ".codex"), { recursive: true });
+    mkdirSync(join(fakeHome, ".hermes"), { recursive: true });
     const agentsRoot = join(fakeHome, ".agents", "skills");
     const hermesRoot = join(fakeHome, ".hermes", "skills");
-    mkdirSync(agentsRoot, { recursive: true });
-    mkdirSync(hermesRoot, { recursive: true });
 
     const { fn } = makeMockQuery([sampleRow()]);
     const summary = await runPull({
@@ -652,11 +655,11 @@ describe("runPull — symlink fan-out (global install only)", () => {
   });
 
   it("does NOT fan out for project-install pulls (project scope shouldn't leak globally)", async () => {
-    // Even with agent roots present, a project install should not symlink
+    // Even with agent roots detected, a project install should not symlink
     // into ~/.agents/skills — that would expose project-local skills to
     // every project on the machine.
+    mkdirSync(join(fakeHome, ".codex"), { recursive: true });
     const agentsRoot = join(fakeHome, ".agents", "skills");
-    mkdirSync(agentsRoot, { recursive: true });
 
     const { fn } = makeMockQuery([sampleRow()]);
     await runPull({
@@ -680,5 +683,81 @@ describe("runPull — symlink fan-out (global install only)", () => {
     });
     const m = loadManifest();
     expect(m.entries[0].symlinks).toEqual([]);
+  });
+
+  it("backfill: skipped (already-up-to-date) skills get fan-out symlinks for newly installed agents", async () => {
+    // Sequence we're guarding against:
+    //   1. User pulls a skill (no agents installed) → SKILL.md written,
+    //      symlinks: [].
+    //   2. User installs codex → ~/.agents/skills now expected.
+    //   3. User runs auto-pull again. Local version === remote, so
+    //      decideAction returns "skipped". Without backfill, the
+    //      skill stays invisible to codex forever.
+    // The post-loop backfill closes this by fanning out for every
+    // entry whose canonical dir exists, regardless of action.
+
+    // Step 1: pre-pulled state — SKILL.md on disk + manifest entry
+    // with symlinks: [].
+    const { fn: fn1 } = makeMockQuery([sampleRow()]);
+    await runPull({
+      query: fn1, tableName: "skills", install: "global",
+      users: [], dryRun: false, force: false,
+    });
+    const m1 = loadManifest();
+    expect(m1.entries[0].symlinks).toEqual([]);  // no agents, no fan-out
+
+    // Step 2: install codex (creates the marker dir the detector keys on).
+    mkdirSync(join(fakeHome, ".codex"), { recursive: true });
+
+    // Step 3: re-pull. Action will be "skipped" because local version
+    // === remote, but backfill should refresh symlinks anyway.
+    const { fn: fn2 } = makeMockQuery([sampleRow()]);
+    const summary = await runPull({
+      query: fn2, tableName: "skills", install: "global",
+      users: [], dryRun: false, force: false,
+    });
+    expect(summary.wrote).toBe(0);
+    expect(summary.skipped).toBe(1);
+
+    const m2 = loadManifest();
+    expect(m2.entries).toHaveLength(1);
+    expect(m2.entries[0].symlinks).toEqual([
+      join(fakeHome, ".agents", "skills", "deploy--alice"),
+    ]);
+    // Actual symlink on disk
+    expect(readlinkSync(join(fakeHome, ".agents", "skills", "deploy--alice")))
+      .toBe(join(fakeHome, ".claude", "skills", "deploy--alice"));
+  });
+
+  it("backfill: skips manifest entries whose canonical dir is missing (orphan-prune territory)", async () => {
+    // If a user manually rm-s the canonical dir, pruneOrphanedEntries
+    // catches it at the start of the next runPull. Backfill should NOT
+    // try to fan out for an entry that's about to be (or was) pruned —
+    // would create a dangling symlink.
+
+    mkdirSync(join(fakeHome, ".codex"), { recursive: true });
+    const { fn: fn1 } = makeMockQuery([sampleRow()]);
+    await runPull({
+      query: fn1, tableName: "skills", install: "global",
+      users: [], dryRun: false, force: false,
+    });
+
+    // User rm-s the canonical mid-stream.
+    rmSync(join(fakeHome, ".claude", "skills", "deploy--alice"), { recursive: true });
+    // And rm-s the agent symlink so we can verify it's NOT recreated.
+    try { rmSync(join(fakeHome, ".agents", "skills", "deploy--alice")); } catch {}
+
+    // Re-pull with no rows (org table empty for whatever reason).
+    const { fn: fn2 } = makeMockQuery([]);
+    await runPull({
+      query: fn2, tableName: "skills", install: "global",
+      users: [], dryRun: false, force: false,
+    });
+
+    // Manifest entry pruned by pruneOrphanedEntries; backfill saw nothing to do.
+    const m = loadManifest();
+    expect(m.entries).toHaveLength(0);
+    // No dangling symlink recreated by backfill.
+    expect(existsSync(join(fakeHome, ".agents", "skills", "deploy--alice"))).toBe(false);
   });
 });

@@ -107,10 +107,16 @@ beforeEach(() => {
   queryMock.mockReset().mockResolvedValue([]); // "no existing summary"
   autoUpdateMock.mockReset().mockResolvedValue(undefined);
   getInstalledVersionMock.mockReset().mockReturnValue("9.9.9");
+  // Disable auto-pull during this test: autoPullSkills would otherwise issue
+  // an extra SQL query (against `skills`) through the same DeeplakeApi mock,
+  // breaking the placeholder-branching call-count assertions. The auto-pull
+  // module's behaviour is covered exhaustively in skillify-auto-pull.test.ts.
+  process.env.HIVEMIND_AUTOPULL_DISABLED = "1";
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  delete process.env.HIVEMIND_AUTOPULL_DISABLED;
   try { rmSync(cacheTmp, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 

@@ -64,7 +64,7 @@ beforeEach(() => {
   getInstalledVersionMock.mockReset().mockReturnValue("0.7.0");
   autoUpdateMock.mockReset().mockResolvedValue(undefined);
   vi.spyOn(console, "log").mockImplementation(((s: string) => { consoleLogMock(s); }) as any);
-  // Disable auto-pull during this test: maybeAutoPull would otherwise issue
+  // Disable auto-pull during this test: autoPullSkills would otherwise issue
   // a third SQL query (against `skills`) through the same DeeplakeApi mock,
   // breaking call-count assertions. The auto-pull module's behaviour is
   // covered exhaustively in skillify-auto-pull.test.ts, so the hook tests

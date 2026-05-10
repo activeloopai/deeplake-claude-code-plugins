@@ -51,11 +51,6 @@ var init_index_marker_store = __esm({
   }
 });
 
-// dist/src/skillify/auto-pull.js
-import { existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync6, renameSync as renameSync4, writeFileSync as writeFileSync5 } from "node:fs";
-import { homedir as homedir8 } from "node:os";
-import { join as join9 } from "node:path";
-
 // dist/src/config.js
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -708,6 +703,9 @@ function recordPull(entry, path = manifestPath()) {
     m.entries.push(entry);
   saveManifest(m, path);
 }
+function entriesForRoot(m, install, installRoot) {
+  return m.entries.filter((e) => e.install === install && e.installRoot === installRoot);
+}
 function unlinkSymlinks(paths) {
   for (const path of paths) {
     let st;
@@ -745,19 +743,24 @@ function pruneOrphanedEntries(path = manifestPath()) {
 import { existsSync as existsSync6 } from "node:fs";
 import { homedir as homedir6 } from "node:os";
 import { join as join7 } from "node:path";
-function candidates(home) {
-  return [
-    // agentskills.io shared root — codex installer always creates it,
-    // pi reads from it as one of two paths.
-    join7(home, ".agents", "skills"),
-    // hermes-specific root, agentskills.io-compatible layout.
-    join7(home, ".hermes", "skills"),
-    // pi's primary root (pi reads from this AND ~/.agents/skills/).
-    join7(home, ".pi", "agent", "skills")
-  ];
+function resolveDetected(home) {
+  const out = [];
+  const codexInstalled = existsSync6(join7(home, ".codex"));
+  const piInstalled = existsSync6(join7(home, ".pi", "agent"));
+  const hermesInstalled = existsSync6(join7(home, ".hermes"));
+  if (codexInstalled || piInstalled) {
+    out.push(join7(home, ".agents", "skills"));
+  }
+  if (hermesInstalled) {
+    out.push(join7(home, ".hermes", "skills"));
+  }
+  if (piInstalled) {
+    out.push(join7(home, ".pi", "agent", "skills"));
+  }
+  return out;
 }
 function detectAgentSkillsRoots(canonicalRoot, home = homedir6()) {
-  return candidates(home).filter((p) => p !== canonicalRoot && existsSync6(p));
+  return resolveDetected(home).filter((p) => p !== canonicalRoot);
 }
 
 // dist/src/skillify/pull.js
@@ -835,6 +838,35 @@ function fanOutSymlinks(canonicalDir, dirName, agentRoots) {
     }
   }
   return out;
+}
+function backfillSymlinks(installRoot) {
+  const manifest = loadManifest();
+  const entries = entriesForRoot(manifest, "global", installRoot);
+  if (entries.length === 0)
+    return;
+  const detected = detectAgentSkillsRoots(installRoot);
+  for (const entry of entries) {
+    const canonical = join8(entry.installRoot, entry.dirName);
+    if (!existsSync7(canonical))
+      continue;
+    const fresh = fanOutSymlinks(canonical, entry.dirName, detected);
+    if (sameSorted(fresh, entry.symlinks))
+      continue;
+    try {
+      recordPull({ ...entry, symlinks: fresh });
+    } catch {
+    }
+  }
+}
+function sameSorted(a, b) {
+  if (a.length !== b.length)
+    return false;
+  const sa = [...a].sort();
+  const sb = [...b].sort();
+  for (let i = 0; i < sa.length; i++)
+    if (sa[i] !== sb[i])
+      return false;
+  return true;
 }
 function selectLatestPerName(rows) {
   const seen = /* @__PURE__ */ new Set();
@@ -1043,52 +1075,15 @@ async function runPull(opts) {
     else
       summary.skipped++;
   }
+  if (!opts.dryRun && opts.install === "global") {
+    backfillSymlinks(root);
+  }
   return summary;
 }
 
 // dist/src/skillify/auto-pull.js
 var log3 = (msg) => log("skillify-autopull", msg);
-function stateDir() {
-  return join9(homedir8(), ".deeplake", "state", "skillify");
-}
-function timestampFile() {
-  return join9(stateDir(), "autopull-last-run.json");
-}
-var DEFAULT_INTERVAL_MIN = 30;
 var DEFAULT_TIMEOUT_MS = 5e3;
-function readIntervalMs() {
-  const raw = process.env.HIVEMIND_AUTOPULL_INTERVAL_MIN;
-  if (raw === void 0 || raw === "")
-    return DEFAULT_INTERVAL_MIN * 6e4;
-  const n = Number(raw);
-  if (!Number.isFinite(n))
-    return DEFAULT_INTERVAL_MIN * 6e4;
-  return Math.trunc(n) * 6e4;
-}
-function readLastRun() {
-  migrateLegacyStateDir();
-  const path = timestampFile();
-  if (!existsSync8(path))
-    return null;
-  try {
-    const raw = readFileSync6(path, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (typeof parsed.lastRunMs !== "number" || !Number.isFinite(parsed.lastRunMs))
-      return null;
-    return parsed.lastRunMs;
-  } catch {
-    return null;
-  }
-}
-function writeLastRun(lastRunMs) {
-  migrateLegacyStateDir();
-  const dir = stateDir();
-  const path = timestampFile();
-  mkdirSync5(dir, { recursive: true });
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync5(tmp, JSON.stringify({ lastRunMs }));
-  renameSync4(tmp, path);
-}
 function withTimeout(p, ms) {
   let timer = null;
   const timeout = new Promise((_, reject) => {
@@ -1101,24 +1096,10 @@ function withTimeout(p, ms) {
       clearTimeout(timer);
   });
 }
-async function maybeAutoPull(deps = {}) {
-  const now = (deps.nowMs ?? Date.now)();
+async function autoPullSkills(deps = {}) {
   if (process.env.HIVEMIND_AUTOPULL_DISABLED === "1") {
     log3("disabled via HIVEMIND_AUTOPULL_DISABLED=1");
     return { pulled: 0, skipped: true, reason: "disabled" };
-  }
-  const intervalMs = readIntervalMs();
-  if (intervalMs < 0) {
-    log3("disabled via HIVEMIND_AUTOPULL_INTERVAL_MIN=-1");
-    return { pulled: 0, skipped: true, reason: "disabled" };
-  }
-  if (intervalMs > 0) {
-    const last = readLastRun();
-    if (last !== null && now - last < intervalMs) {
-      const remainingMs = intervalMs - (now - last);
-      log3(`throttled (last run ${now - last}ms ago, window ${intervalMs}ms, ${remainingMs}ms remaining)`);
-      return { pulled: 0, skipped: true, reason: "throttled" };
-    }
   }
   const loadFn = deps.loadConfigFn ?? loadConfig;
   const config = loadFn();
@@ -1145,11 +1126,6 @@ async function maybeAutoPull(deps = {}) {
       dryRun: false,
       force: false
     }), timeoutMs);
-    try {
-      writeLastRun(now);
-    } catch (e) {
-      log3(`writeLastRun failed (non-fatal): ${e?.message ?? e}`);
-    }
     log3(`pulled scanned=${summary.scanned} wrote=${summary.wrote} skipped=${summary.skipped}`);
     return { pulled: summary.wrote, skipped: false };
   } catch (e) {
@@ -1161,7 +1137,7 @@ async function maybeAutoPull(deps = {}) {
 // dist/src/skillify/autopull-worker.js
 void (async () => {
   try {
-    await maybeAutoPull();
+    await autoPullSkills();
   } catch {
   }
 })();

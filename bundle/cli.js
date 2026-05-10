@@ -3526,8 +3526,8 @@ function findHivemindInstalls(home = HOME) {
       } catch {
         continue;
       }
-      const candidates2 = [join9(dir, "bundle"), join9(dir, "claude-code", "bundle")];
-      if (candidates2.some((p) => existsSync8(p))) {
+      const candidates = [join9(dir, "bundle"), join9(dir, "claude-code", "bundle")];
+      if (candidates.some((p) => existsSync8(p))) {
         out.push({ id: `claude (${ver})`, pluginDir: dir });
       }
     }
@@ -4967,19 +4967,24 @@ function pruneOrphanedEntries(path = manifestPath()) {
 import { existsSync as existsSync16 } from "node:fs";
 import { homedir as homedir9 } from "node:os";
 import { join as join19 } from "node:path";
-function candidates(home) {
-  return [
-    // agentskills.io shared root — codex installer always creates it,
-    // pi reads from it as one of two paths.
-    join19(home, ".agents", "skills"),
-    // hermes-specific root, agentskills.io-compatible layout.
-    join19(home, ".hermes", "skills"),
-    // pi's primary root (pi reads from this AND ~/.agents/skills/).
-    join19(home, ".pi", "agent", "skills")
-  ];
+function resolveDetected(home) {
+  const out = [];
+  const codexInstalled = existsSync16(join19(home, ".codex"));
+  const piInstalled = existsSync16(join19(home, ".pi", "agent"));
+  const hermesInstalled = existsSync16(join19(home, ".hermes"));
+  if (codexInstalled || piInstalled) {
+    out.push(join19(home, ".agents", "skills"));
+  }
+  if (hermesInstalled) {
+    out.push(join19(home, ".hermes", "skills"));
+  }
+  if (piInstalled) {
+    out.push(join19(home, ".pi", "agent", "skills"));
+  }
+  return out;
 }
 function detectAgentSkillsRoots(canonicalRoot, home = homedir9()) {
-  return candidates(home).filter((p) => p !== canonicalRoot && existsSync16(p));
+  return resolveDetected(home).filter((p) => p !== canonicalRoot);
 }
 
 // dist/src/skillify/pull.js
@@ -5057,6 +5062,35 @@ function fanOutSymlinks(canonicalDir, dirName, agentRoots) {
     }
   }
   return out;
+}
+function backfillSymlinks(installRoot) {
+  const manifest = loadManifest();
+  const entries = entriesForRoot(manifest, "global", installRoot);
+  if (entries.length === 0)
+    return;
+  const detected = detectAgentSkillsRoots(installRoot);
+  for (const entry of entries) {
+    const canonical = join20(entry.installRoot, entry.dirName);
+    if (!existsSync17(canonical))
+      continue;
+    const fresh = fanOutSymlinks(canonical, entry.dirName, detected);
+    if (sameSorted(fresh, entry.symlinks))
+      continue;
+    try {
+      recordPull({ ...entry, symlinks: fresh });
+    } catch {
+    }
+  }
+}
+function sameSorted(a, b) {
+  if (a.length !== b.length)
+    return false;
+  const sa = [...a].sort();
+  const sb = [...b].sort();
+  for (let i = 0; i < sa.length; i++)
+    if (sa[i] !== sb[i])
+      return false;
+  return true;
 }
 function selectLatestPerName(rows) {
   const seen = /* @__PURE__ */ new Set();
@@ -5264,6 +5298,9 @@ async function runPull(opts) {
       summary.dryrun++;
     else
       summary.skipped++;
+  }
+  if (!opts.dryRun && opts.install === "global") {
+    backfillSymlinks(root);
   }
   return summary;
 }
@@ -5987,10 +6024,10 @@ Skill management (mine + share reusable Claude skills across the org):
                                            --dry-run, --force.
                                            Note: every agent's SessionStart hook
                                            auto-runs 'pull --all-users --to global'
-                                           (throttled to once per 30 min by default).
-                                           Set HIVEMIND_AUTOPULL_INTERVAL_MIN=0 to
-                                           force every session, =-1 (or
-                                           HIVEMIND_AUTOPULL_DISABLED=1) to disable.
+                                           on every session. File writes are
+                                           idempotent (skipped when local is
+                                           at-or-newer than remote). Disable via
+                                           HIVEMIND_AUTOPULL_DISABLED=1.
   hivemind skillify unpull                  Remove skills previously installed by pull.
                                            Options: --user, --users, --not-mine,
                                            --to <project|global>, --dry-run,

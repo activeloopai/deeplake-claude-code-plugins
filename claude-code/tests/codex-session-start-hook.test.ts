@@ -17,7 +17,7 @@ const stdinMock = vi.fn();
 const loadCredsMock = vi.fn();
 const debugLogMock = vi.fn();
 const spawnMock = vi.fn();
-const maybeAutoPullMock = vi.fn();
+const autoPullSkillsMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/commands/auth.js", () => ({
@@ -30,7 +30,7 @@ vi.mock("../../src/utils/debug.js", () => ({
 // touch the developer's ~/.deeplake/state/skillify timestamp file. Tests for
 // the auto-pull module itself live in claude-code/tests/skillify-auto-pull.test.ts.
 vi.mock("../../src/skillify/auto-pull.js", () => ({
-  maybeAutoPull: (...a: any[]) => maybeAutoPullMock(...a),
+  autoPullSkills: (...a: any[]) => autoPullSkillsMock(...a),
 }));
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -75,7 +75,7 @@ beforeEach(() => {
   });
   debugLogMock.mockReset();
   spawnMock.mockReset().mockImplementation(() => makeFakeChild());
-  maybeAutoPullMock.mockReset().mockResolvedValue({ pulled: 0, skipped: true, reason: "stubbed" });
+  autoPullSkillsMock.mockReset().mockResolvedValue({ pulled: 0, skipped: true, reason: "stubbed" });
 });
 
 afterEach(() => { vi.restoreAllMocks(); });

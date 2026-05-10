@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { assertValidSkillName, parseFrontmatter, type SkillFrontmatter } from "./skill-writer.js";
 import type { InstallLocation } from "./scope-config.js";
-import { pruneOrphanedEntries, recordPull } from "./manifest.js";
+import { entriesForRoot, loadManifest, pruneOrphanedEntries, recordPull } from "./manifest.js";
 import { detectAgentSkillsRoots } from "./agent-roots.js";
 
 /**
@@ -208,6 +208,62 @@ export function fanOutSymlinks(
     }
   }
   return out;
+}
+
+/**
+ * Walk every manifest entry under `installRoot` and ensure each one has
+ * fan-out symlinks pointing at the canonical dir for every currently-
+ * detected agent skill root. Updates the entry's `symlinks[]` in the
+ * manifest if the resolved set differs from the recorded one.
+ *
+ * Why this exists: the per-row fan-out inside the main pull loop only
+ * runs for rows whose action is `"wrote"`. Skills already up-to-date
+ * locally take the `"skipped"` path, which doesn't refresh symlinks.
+ * That breaks two real scenarios:
+ *
+ *   1. User installs a NEW agent (codex / hermes / pi) AFTER having
+ *      already pulled skills. Without backfill, those existing skills
+ *      stay invisible to the new agent until each one is independently
+ *      bumped on the org table.
+ *   2. User manually `rm`-s a single fan-out symlink. Without backfill,
+ *      it stays missing forever (or until the source row's version
+ *      bumps).
+ *
+ * Idempotent: when the on-disk fan-out matches the recorded set,
+ * skip the manifest write entirely. The hot-path cost is one
+ * `lstat` per (entry × detected root) pair plus three `existsSync`
+ * calls in `detectAgentSkillsRoots`. For ~50 entries × 3 roots that's
+ * ~150 syscalls, negligible.
+ *
+ * Skips entries whose canonical dir is missing — those are pruned by
+ * `pruneOrphanedEntries()` at the start of `runPull`, so by the time
+ * this runs the survivors all have a real canonical dir on disk.
+ */
+export function backfillSymlinks(installRoot: string): void {
+  const manifest = loadManifest();
+  const entries = entriesForRoot(manifest, "global", installRoot);
+  if (entries.length === 0) return;
+  const detected = detectAgentSkillsRoots(installRoot);
+  for (const entry of entries) {
+    const canonical = join(entry.installRoot, entry.dirName);
+    if (!existsSync(canonical)) continue; // pruned/orphan, leave alone
+    const fresh = fanOutSymlinks(canonical, entry.dirName, detected);
+    if (sameSorted(fresh, entry.symlinks)) continue; // no change, no write
+    try {
+      recordPull({ ...entry, symlinks: fresh });
+    } catch {
+      // Manifest write failed — leave the entry stale. Next runPull
+      // will retry; the symlinks themselves are already correct on disk.
+    }
+  }
+}
+
+function sameSorted(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sa = [...a].sort();
+  const sb = [...b].sort();
+  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
+  return true;
 }
 
 /**
@@ -470,6 +526,19 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
     if (action === "wrote") summary.wrote++;
     else if (action === "dryrun") summary.dryrun++;
     else summary.skipped++;
+  }
+
+  // Backfill fan-out for skills that were already up-to-date this run.
+  // Per-row fan-out only fires on `action === "wrote"`, so when a user
+  // installs a NEW agent (codex / hermes / pi) AFTER having pulled, the
+  // existing skills' canonical dirs are present but their symlinks in
+  // the new agent root are missing — and they'd stay missing forever
+  // because the next pull just sees `localVersion >= remoteVersion`
+  // and skips. The backfill closes this gap idempotently.
+  // Skip on dry-run (no disk mutations) and on project installs (no
+  // fan-out for them by design).
+  if (!opts.dryRun && opts.install === "global") {
+    backfillSymlinks(root);
   }
 
   return summary;

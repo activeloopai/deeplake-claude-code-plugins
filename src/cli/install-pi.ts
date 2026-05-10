@@ -45,7 +45,7 @@ const WIKI_WORKER_PATH = join(WIKI_WORKER_DIR, "wiki-worker.js");
 const SKILLIFY_WORKER_PATH = join(WIKI_WORKER_DIR, "skillify-worker.js");
 // Autopull worker bundle, spawned synchronously by pi extension on
 // session_start to fetch all-author skills from the org table. Same
-// shared maybeAutoPull() codex/cursor/hermes call directly; pi can't
+// shared autoPullSkills() codex/cursor/hermes call directly; pi can't
 // import the TS module so it routes through this child process.
 const AUTOPULL_WORKER_PATH = join(WIKI_WORKER_DIR, "autopull-worker.js");
 

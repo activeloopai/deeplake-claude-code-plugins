@@ -17,7 +17,7 @@ import { loadCredentials } from "../../commands/auth.js";
 import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
-import { maybeAutoPull } from "../../skillify/auto-pull.js";
+import { autoPullSkills } from "../../skillify/auto-pull.js";
 const log = (msg: string) => _log("codex-session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -109,10 +109,13 @@ async function main(): Promise<void> {
     log("spawned async setup process");
   }
 
-  // Auto-pull skills from all org users (5s timeout, throttled to 30min).
-  // See src/skillify/auto-pull.ts for the full opt-out story. maybeAutoPull
-  // never rejects — all errors are swallowed inside.
-  const pullResult = await maybeAutoPull();
+  // Auto-pull skills from all org users on every SessionStart (5s timeout).
+  // File writes inside runPull are idempotent (skipped when local version
+  // is at-or-newer than remote), so re-running every session is cheap on
+  // disk; the only per-call cost is the SQL round-trip. autoPullSkills
+  // never rejects — all errors are swallowed inside. Hard opt-out:
+  // HIVEMIND_AUTOPULL_DISABLED=1.
+  const pullResult = await autoPullSkills();
   log(`autopull: pulled=${pullResult.pulled} skipped=${pullResult.skipped}`);
 
   let versionNotice = "";
