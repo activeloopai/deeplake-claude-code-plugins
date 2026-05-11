@@ -87,7 +87,7 @@ const HOME = homedir();
 const { log: wikiLog } = makeWikiLogger(join(HOME, ".claude", "hooks"));
 
 /** Create a placeholder summary via direct SQL INSERT (no DeeplakeFs bootstrap needed). */
-async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
+async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string, pluginVersion: string): Promise<void> {
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
 
   const existing = await api.query(
@@ -112,9 +112,9 @@ async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: str
   const filename = `${sessionId}.md`;
 
   await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${now}', '${now}')`
+    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${sqlStr(pluginVersion)}', '${now}', '${now}')`
   );
 
   wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
@@ -157,6 +157,13 @@ async function main(): Promise<void> {
   // sees the upgrade notice promptly even when the API is down.
   await autoUpdate(creds, { agent: "claude" });
 
+  // Resolve the installed plugin version once up front — it's stamped on
+  // every row this session writes (placeholder + capture) and is also used
+  // for the user-visible update notice below.
+  // getInstalledVersion swallows its own fs errors and returns null.
+  const current = getInstalledVersion(__bundleDir, ".claude-plugin");
+  const pluginVersion = current ?? "";
+
   // Ensure tables exist and (when capture is enabled) create the placeholder
   // summary via direct SQL. Tables must always be synced so queries return
   // fresh data — only the placeholder INSERT is skipped when HIVEMIND_CAPTURE=false
@@ -173,7 +180,7 @@ async function main(): Promise<void> {
         await api.ensureTable();
         await api.ensureSessionsTable(sessionsTable);
         if (captureEnabled) {
-          await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
+          await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId, pluginVersion);
           log("placeholder created");
         } else {
           log("placeholder skipped (HIVEMIND_CAPTURE=false)");
@@ -199,9 +206,6 @@ async function main(): Promise<void> {
   // Version notice in additionalContext — informational only; the
   // upgrade-applied signal goes to stderr from inside autoUpdate (which
   // already fired earlier in main(), before the DB ensure-table calls).
-  // getInstalledVersion swallows its own fs errors and returns null, so
-  // no try/catch needed here.
-  const current = getInstalledVersion(__bundleDir, ".claude-plugin");
   const updateNotice = current ? `\n\n✅ Hivemind v${current}` : "";
 
   // No placeholder substitution needed — inject uses bare `hivemind <sub>` form.

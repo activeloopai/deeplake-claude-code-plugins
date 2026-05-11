@@ -34,11 +34,15 @@ import {
 import { bundleDirFromImportMeta, spawnCursorWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 import { tryStopCounterTrigger } from "../../skillify/triggers.js";
 import type { Config } from "../../config.js";
+import { getInstalledVersion } from "../../utils/version-check.js";
 const log = (msg: string) => _log("cursor-capture", msg);
 
 function resolveEmbedDaemonPath(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
 }
+
+const __bundleDir = dirname(fileURLToPath(import.meta.url));
+const PLUGIN_VERSION = getInstalledVersion(__bundleDir, ".claude-plugin") ?? "";
 
 interface CursorCaptureInput {
   conversation_id?: string;
@@ -146,9 +150,9 @@ async function main(): Promise<void> {
   const embeddingSql = embeddingSqlLiteral(embedding);
 
   const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', 'cursor', '${ts}', '${ts}')`;
+    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', 'cursor', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}')`;
 
   try {
     await api.query(insertSql);
