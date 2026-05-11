@@ -36,9 +36,13 @@ function getEmbedClient(): EmbedClient {
 function patternIsSemanticFriendly(pattern: string, fixedString: boolean): boolean {
   if (!pattern || pattern.length < 2) return false;
   if (fixedString) return true;
-  const meta = pattern.match(/[|()\[\]{}+?^$\\]/g);
-  if (!meta) return true;
-  return meta.length <= 1;
+  // `|` is intentionally dropped from the metacharacter blacklist: synonym
+  // alternations like `silent data loss|concurrent writer|race condition`
+  // are exactly the synonym-list use case embeddings are designed for. Cap
+  // alternative count to guard against pathological 50-clause inputs.
+  const meta = pattern.match(/[()\[\]{}+?^$\\]/g);
+  if (meta && meta.length > 1) return false;
+  return pattern.split("|").length <= 8;
 }
 
 export interface GrepParams {

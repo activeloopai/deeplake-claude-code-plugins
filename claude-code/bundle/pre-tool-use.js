@@ -1340,10 +1340,10 @@ function patternIsSemanticFriendly(pattern, fixedString) {
     return false;
   if (fixedString)
     return true;
-  const meta = pattern.match(/[|()\[\]{}+?^$\\]/g);
-  if (!meta)
-    return true;
-  return meta.length <= 1;
+  const meta = pattern.match(/[()\[\]{}+?^$\\]/g);
+  if (meta && meta.length > 1)
+    return false;
+  return pattern.split("|").length <= 8;
 }
 function splitFirstPipelineStage(cmd) {
   const input = cmd.trim();
@@ -2469,8 +2469,26 @@ function isSafe(cmd) {
   }
   return true;
 }
+var AGENT_COMMANDS = /* @__PURE__ */ new Set([
+  "claude",
+  "codex",
+  "cursor-agent",
+  "hermes",
+  "pi",
+  "openclaw"
+]);
 function touchesMemory(p) {
-  return p.includes(MEMORY_PATH) || p.includes(TILDE_PATH) || p.includes(HOME_VAR_PATH);
+  if (!p.includes(MEMORY_PATH) && !p.includes(TILDE_PATH) && !p.includes(HOME_VAR_PATH)) {
+    return false;
+  }
+  for (const stage of p.split(/\||;|&&|\|\||\n/)) {
+    if (!stage.includes(MEMORY_PATH) && !stage.includes(TILDE_PATH) && !stage.includes(HOME_VAR_PATH))
+      continue;
+    const firstToken = stage.trim().split(/\s+/)[0] ?? "";
+    if (!AGENT_COMMANDS.has(firstToken))
+      return true;
+  }
+  return false;
 }
 function rewritePaths(cmd) {
   return cmd.replace(new RegExp(MEMORY_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?", "g"), "/").replace(/~\/.deeplake\/memory\/?/g, "/").replace(/\$HOME\/.deeplake\/memory\/?/g, "/").replace(/"\$HOME\/.deeplake\/memory\/?"/g, '"/"');

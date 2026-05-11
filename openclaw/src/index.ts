@@ -67,7 +67,7 @@ import { homedir, tmpdir } from "node:os";
 import {
   existsSync as fsExists, mkdirSync as fsMkdir, openSync as fsOpen,
   closeSync as fsClose, writeFileSync as fsWriteFile, constants as fsConstants,
-  readFileSync as fsReadFile,
+  readFileSync as fsReadFile, writeSync as fsWriteFd, unlinkSync as fsUnlink,
 } from "node:fs";
 import { createHash } from "node:crypto";
 // node:child_process is stubbed in the main openclaw bundle (see esbuild.config.mjs
@@ -189,7 +189,7 @@ async function checkForUpdate(logger: PluginLogger): Promise<void> {
   try {
     const current = getInstalledVersion();
     if (!current) return;
-    const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return;
     const latest = extractLatestVersion(await res.json());
     if (latest && isNewer(latest, current)) {
@@ -297,6 +297,13 @@ let memoryTable = "memory";
 let skillsTable = "skills";  // lazy-created on first INSERT by the worker
 let captureEnabled = true;
 const capturedCounts = new Map<string, number>();
+// Per-runtime memo: session_ids whose first agent_end already spawned the
+// skilify worker. Without this, every agent_end in a long session re-fires
+// the worker; the per-projectKey lock holds while a worker is running, but
+// once it exits the next agent_end re-acquires the lock and spawns a fresh
+// worker that does ~250ms of round-trip work to no-op (watermark already
+// advanced). One spawn per session is enough; subsequent turns add nothing.
+const skilifySpawnedFor = new Set<string>();
 const fallbackSessionId = crypto.randomUUID();
 
 // --- Skilify worker spawn (mirror of src/skilify/spawn-skilify-worker.ts) ---
@@ -325,12 +332,28 @@ function deriveOpenclawProjectKey(channel: string): { key: string; project: stri
   return { key, project };
 }
 
-function tryAcquireOpenclawSkilifyLock(projectKey: string): boolean {
+// Mirror of src/skilify/state.ts:tryAcquireWorkerLock — stamp the lock with
+// String(Date.now()) on create, treat any existing lock older than maxAgeMs
+// (or with unparseable contents) as stale and recreate it. Without this, an
+// openclaw worker that dies abnormally (OOM, host kill, segfault — anything
+// that skips the releaseWorkerLock finally-block) leaves an empty lock that
+// every subsequent agent_end skips on forever, halting mining for that
+// project_key until manual cleanup.
+function tryAcquireOpenclawSkilifyLock(projectKey: string, maxAgeMs = 10 * 60 * 1000): boolean {
   try {
     fsMkdir(OPENCLAW_SKILIFY_STATE_DIR, { recursive: true });
     const lockPath = joinPath(OPENCLAW_SKILIFY_STATE_DIR, `${projectKey}.worker.lock`);
+    if (fsExists(lockPath)) {
+      let fresh = false;
+      try {
+        const ageMs = Date.now() - parseInt(fsReadFile(lockPath, "utf-8"), 10);
+        fresh = Number.isFinite(ageMs) && ageMs < maxAgeMs;
+      } catch { /* unreadable → treat as stale */ }
+      if (fresh) return false;
+      try { fsUnlink(lockPath); } catch { return false; }
+    }
     const fd = fsOpen(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY);
-    fsClose(fd);
+    try { fsWriteFd(fd, String(Date.now())); } finally { fsClose(fd); }
     return true;
   } catch { return false; }
 }
@@ -665,7 +688,7 @@ export default definePluginEntry({
           const current = getInstalledVersion();
           if (!current) return { text: "Could not determine installed version." };
           try {
-            const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(3000) });
+            const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(10000) });
             if (!res.ok) return { text: `Current version: ${current}. Could not check for updates.` };
             const latest = extractLatestVersion(await res.json());
             if (!latest) return { text: `Current version: ${current}. Could not parse latest version.` };
@@ -1123,20 +1146,24 @@ export default definePluginEntry({
           // become candidates for skill mining. Lock-protected, fire-and-forget,
           // never blocks the agent. Worker reads from the sessions table we
           // just wrote to. Non-fatal: a spawn failure here only loses one
-          // mining attempt, never breaks capture.
-          try {
-            spawnOpenclawSkilifyWorker({
-              apiUrl: cfg.apiUrl,
-              token: cfg.token,
-              orgId: cfg.orgId,
-              workspaceId: cfg.workspaceId,
-              userName: cfg.userName,
-              channel: ev.channel || "openclaw",
-              sessionId: sid,
-              loggerWarn: (msg) => logger.error(`Skilify spawn: ${msg}`),
-            });
-          } catch (e: any) {
-            logger.error(`Skilify spawn threw: ${e?.message ?? e}`);
+          // mining attempt, never breaks capture. Gated to one spawn per
+          // session_id per runtime — see skilifySpawnedFor declaration.
+          if (!skilifySpawnedFor.has(sid)) {
+            skilifySpawnedFor.add(sid);
+            try {
+              spawnOpenclawSkilifyWorker({
+                apiUrl: cfg.apiUrl,
+                token: cfg.token,
+                orgId: cfg.orgId,
+                workspaceId: cfg.workspaceId,
+                userName: cfg.userName,
+                channel: ev.channel || "openclaw",
+                sessionId: sid,
+                loggerWarn: (msg) => logger.error(`Skilify spawn: ${msg}`),
+              });
+            } catch (e: any) {
+              logger.error(`Skilify spawn threw: ${e?.message ?? e}`);
+            }
           }
         } catch (err) {
           logger.error(`Auto-capture failed: ${err instanceof Error ? err.message : String(err)}`);

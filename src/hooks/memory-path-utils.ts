@@ -33,8 +33,32 @@ export function isSafe(cmd: string): boolean {
   return true;
 }
 
+// Sub-agent CLIs that take a prompt string as an argument and never touch the
+// memory mount themselves. When a pipe-stage that contains a memory-path
+// substring starts with one of these, we treat the path as part of the
+// prompt argument (e.g. `claude -p 'use ~/.deeplake/memory/'`) and let it
+// through. Interpreters like python/node/curl/ruby are deliberately NOT in
+// this list — they will actually try to read the path and need guidance.
+const AGENT_COMMANDS = new Set([
+  "claude", "codex", "cursor-agent", "hermes", "pi", "openclaw",
+]);
+
 export function touchesMemory(p: string): boolean {
-  return p.includes(MEMORY_PATH) || p.includes(TILDE_PATH) || p.includes(HOME_VAR_PATH);
+  // Fast reject: no memory-path substring anywhere → not our concern.
+  if (!p.includes(MEMORY_PATH) && !p.includes(TILDE_PATH) && !p.includes(HOME_VAR_PATH)) {
+    return false;
+  }
+  // Find a pipe-stage that actually contains a memory-path substring. If its
+  // first token is a sub-agent CLI, the path is in a prompt arg, not a file
+  // arg, and we pass through. Any other first token (cat/grep/python/curl/
+  // node/etc.) means we should intercept — either to route to the virtual
+  // mount, or to surface the "unsafe interpreter" guidance message.
+  for (const stage of p.split(/\||;|&&|\|\||\n/)) {
+    if (!stage.includes(MEMORY_PATH) && !stage.includes(TILDE_PATH) && !stage.includes(HOME_VAR_PATH)) continue;
+    const firstToken = stage.trim().split(/\s+/)[0] ?? "";
+    if (!AGENT_COMMANDS.has(firstToken)) return true;
+  }
+  return false;
 }
 
 export function rewritePaths(cmd: string): string {
