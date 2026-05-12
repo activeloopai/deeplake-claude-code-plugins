@@ -38,6 +38,7 @@ import { ALL_CASES, ALL_DRIVERS, buildMatrix, type MatrixPoint } from "./matrix.
 import { createSandbox, buildSessionId } from "./sandbox.js";
 import { cleanupSessionRows, makeAssertionRunner } from "./assertions.js";
 import { writeSummary, formatCents, type RunSummary } from "./cost.js";
+import { resolveTestCreds } from "./creds-bootstrap.js";
 
 interface CliArgs {
   case: string | null;
@@ -84,35 +85,12 @@ Optional env:
 `);
 }
 
-function loadTestCreds(): TestCredentials {
-  const raw = process.env.HIVEMIND_E2E_CREDS_JSON;
-  if (!raw) {
-    fail("HIVEMIND_E2E_CREDS_JSON is not set; cannot run e2e matrix");
-  }
-  let parsed: Record<string, unknown>;
+async function loadTestCreds(): Promise<TestCredentials> {
   try {
-    parsed = JSON.parse(raw);
-  } catch (e) {
-    fail(`HIVEMIND_E2E_CREDS_JSON is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
+    return await resolveTestCreds();
+  } catch (e: unknown) {
+    fail(e instanceof Error ? e.message : String(e));
   }
-  const requireString = (k: string): string => {
-    const v = parsed[k];
-    if (typeof v !== "string" || v.length === 0) {
-      fail(`HIVEMIND_E2E_CREDS_JSON missing required string field "${k}"`);
-    }
-    return v;
-  };
-  const suffix = process.env.HIVEMIND_E2E_TABLE_SUFFIX ?? "";
-  const cleanSuffix = suffix ? `_${suffix.replace(/[^a-zA-Z0-9_]/g, "_")}` : "";
-  return {
-    apiUrl: requireString("apiUrl"),
-    token: requireString("token"),
-    orgId: requireString("orgId"),
-    orgName: typeof parsed.orgName === "string" ? parsed.orgName : undefined,
-    workspaceId: requireString("workspaceId"),
-    sessionsTable: `sessions${cleanSuffix}`,
-    memoryTable: `memory${cleanSuffix}`,
-  };
 }
 
 function loadProviderEnv(): ProviderEnv {
@@ -254,11 +232,14 @@ async function main(): Promise<void> {
     return;
   }
 
-  const creds = loadTestCreds();
+  const creds = await loadTestCreds();
   const providerEnv = loadProviderEnv();
   const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}`;
   const startedAt = new Date().toISOString();
-  console.log(`▶ run ${runId}: ${matrix.length} points across ${drivers.length} agents × ${cases.length} cases`);
+  console.log(
+    `▶ run ${runId}: ${matrix.length} points across ${drivers.length} agents × ${cases.length} cases\n` +
+    `  workspace ${creds.workspaceId} (org ${creds.orgName ?? creds.orgId})`,
+  );
 
   const results: MatrixResult[] = [];
   for (const point of matrix) {

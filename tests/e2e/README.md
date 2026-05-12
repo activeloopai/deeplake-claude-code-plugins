@@ -34,18 +34,34 @@ npm run e2e -- --list
 npm run e2e -- --keep-sandbox
 ```
 
-Required env vars:
+Test workspace resolution is **automatic** — two modes, evaluated in order:
 
-- `HIVEMIND_E2E_CREDS_JSON` — full `credentials.json` blob for the dedicated `hivemind-e2e` workspace under the `activeloop` org. Get this from the team password manager or generate via `hivemind login` against a token that has access to the e2e workspace.
+1. **CI / explicit** (`HIVEMIND_E2E_CREDS_JSON` env var is set): the value is parsed as a full credentials.json blob. Highest priority; no API lookup. This is how CI runs it.
+2. **Local / derive from operator** (default for devs): the harness reads your `~/.deeplake/credentials.json`, keeps the token + orgId, and resolves a fresh workspaceId by **name** from the workspace named `hivemind_e2e_test` (override with `HIVEMIND_E2E_WORKSPACE_NAME`). Your real credentials.json is **read-only** — the harness never calls `hivemind workspace <id>` or otherwise persists a workspace switch, so a mid-run crash can't leave you on the wrong workspace.
+
+If both fail (no creds blob AND no logged-in operator AND no matching workspace), the runner exits 2 with a clear message describing what's missing.
+
+Other env vars:
+
 - `ANTHROPIC_API_KEY` — needed for claude-code's points (others skip cleanly).
 - `OPENAI_API_KEY` — needed for codex + cursor-agent.
 - `GOOGLE_API_KEY` — needed for hermes + pi.
+- `HIVEMIND_E2E_WORKSPACE_NAME` — override the default `hivemind_e2e_test` workspace name (mode 2 only).
+- `HIVEMIND_E2E_TABLE_SUFFIX` — appended to sessions/memory table names. Use `HIVEMIND_E2E_TABLE_SUFFIX=$(whoami)` locally so two devs running concurrently don't collide on the same row paths.
 
 A missing provider key results in a **skip** (not a failure) for that agent's points, with the reason printed inline. The exit code stays 0 unless an actually-run point fails an assertion.
 
-Optional:
+### One-time setup (local mode)
 
-- `HIVEMIND_E2E_TABLE_SUFFIX` — appended to sessions/memory table names. Use `HIVEMIND_E2E_TABLE_SUFFIX=$(whoami)` locally so two devs running concurrently don't collide on the same row paths.
+1. `hivemind login` against the org that owns the `hivemind_e2e_test` workspace.
+2. Confirm `hivemind workspaces` shows `hivemind_e2e_test` in the list. If it doesn't, ask an admin to create it. Don't run e2e against your real working workspace — the harness DELETEs rows by session_id on cleanup and that's catastrophic for a real workspace.
+3. Run `npm run e2e -- --list` to confirm the harness picks up the matrix. Then `npm run e2e -- --case 01-capture-smoke --agent claude-code` for the fastest live smoke.
+
+### One-time setup (CI mode)
+
+1. Provision the `hivemind_e2e_test` workspace as above.
+2. Generate a credentials.json blob pointed at it (e.g. via `hivemind login` on a throwaway machine).
+3. Save the blob as the `HIVEMIND_E2E_CREDS_JSON` GH secret, plus the provider keys as `HIVEMIND_E2E_ANTHROPIC_API_KEY` etc.
 
 ### In CI
 
