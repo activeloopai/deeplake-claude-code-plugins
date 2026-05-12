@@ -299,3 +299,141 @@ describe("uninstallClaude", () => {
     expect(calls().length).toBe(1);
   });
 });
+
+describe("syncHivemindHooksToSettings", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const os = require("node:os");
+  let TEMP_HOME = "";
+  let ORIGINAL_HOME: string | undefined;
+
+  function makeMarketplaceHooks() {
+    const dir = path.join(TEMP_HOME, ".claude", "plugins", "marketplaces", "hivemind", "claude-code", "hooks");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "hooks.json"), JSON.stringify({
+      hooks: {
+        SessionStart: [{ hooks: [
+          { type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/bundle/session-start.js"', timeout: 10 },
+          { type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/bundle/session-notifications.js"', timeout: 5 },
+        ] }],
+        PostToolUse: [{ hooks: [
+          { type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/bundle/capture.js"', timeout: 15, async: true },
+        ] }],
+      },
+    }), "utf-8");
+  }
+
+  function writeSettings(s: unknown) {
+    const dir = path.join(TEMP_HOME, ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify(s), "utf-8");
+  }
+  function readSettings(): any {
+    return JSON.parse(fs.readFileSync(path.join(TEMP_HOME, ".claude", "settings.json"), "utf-8"));
+  }
+
+  beforeEach(() => {
+    TEMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "hivemind-sync-test-"));
+    ORIGINAL_HOME = process.env.HOME;
+    process.env.HOME = TEMP_HOME;
+    // Real (unmocked) execFileSync since this helper doesn't shell out at all.
+    execFileSyncMock.mockReset();
+  });
+  afterEach(() => {
+    if (ORIGINAL_HOME !== undefined) process.env.HOME = ORIGINAL_HOME;
+    else delete process.env.HOME;
+    fs.rmSync(TEMP_HOME, { recursive: true, force: true });
+  });
+
+  it("returns {changed:false} when marketplace hooks.json is missing", async () => {
+    writeSettings({ hooks: { SessionStart: [] } });
+    const { syncHivemindHooksToSettings } = await importFresh();
+    expect(syncHivemindHooksToSettings()).toEqual({ changed: false, events: [] });
+  });
+
+  it("creates a fresh settings.json when it didn't exist", async () => {
+    makeMarketplaceHooks();
+    const { syncHivemindHooksToSettings } = await importFresh();
+    const r = syncHivemindHooksToSettings();
+    expect(r.changed).toBe(true);
+    expect(r.events.sort()).toEqual(["PostToolUse", "SessionStart"]);
+    const s = readSettings();
+    const cmds = s.hooks.SessionStart[0].hooks.map((h: any) => h.command);
+    expect(cmds[0]).toContain(`${TEMP_HOME}/.claude/plugins/hivemind/bundle/session-start.js`);
+    expect(cmds[1]).toContain(`${TEMP_HOME}/.claude/plugins/hivemind/bundle/session-notifications.js`);
+  });
+
+  it("replaces hivemind-owned matchers, keeps unrelated matchers intact", async () => {
+    makeMarketplaceHooks();
+    const unrelated = { matcher: "Bash", hooks: [{ type: "command", command: "/usr/local/bin/lint-bash" }] };
+    writeSettings({ hooks: {
+      PostToolUse: [unrelated, { hooks: [{ type: "command", command: "node /home/x/.claude/plugins/hivemind/bundle/capture.js", timeout: 99 }] }],
+    } });
+    const { syncHivemindHooksToSettings } = await importFresh();
+    syncHivemindHooksToSettings();
+    const s = readSettings();
+    // unrelated matcher preserved verbatim
+    expect(s.hooks.PostToolUse[0]).toEqual(unrelated);
+    // hivemind matcher replaced with canonical content + correct timeout
+    const hm = s.hooks.PostToolUse.find((m: any) => m.hooks.some((h: any) => h.command.includes("hivemind/bundle/")));
+    expect(hm.hooks[0].timeout).toBe(15);
+    expect(hm.hooks[0].async).toBe(true);
+  });
+
+  it("is idempotent — second call leaves settings unchanged", async () => {
+    makeMarketplaceHooks();
+    writeSettings({ hooks: {} });
+    const { syncHivemindHooksToSettings } = await importFresh();
+    const r1 = syncHivemindHooksToSettings();
+    expect(r1.changed).toBe(true);
+    const r2 = syncHivemindHooksToSettings();
+    expect(r2.changed).toBe(false);
+    expect(r2.events).toEqual([]);
+  });
+
+  it("returns {changed:false} when settings.json is malformed (does not overwrite)", async () => {
+    makeMarketplaceHooks();
+    const dir = path.join(TEMP_HOME, ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "settings.json"), "{not-json", "utf-8");
+    const { syncHivemindHooksToSettings } = await importFresh();
+    expect(syncHivemindHooksToSettings()).toEqual({ changed: false, events: [] });
+    // file untouched
+    expect(fs.readFileSync(path.join(dir, "settings.json"), "utf-8")).toBe("{not-json");
+  });
+});
+
+describe("syncHivemindHooksToSettings — additional branch coverage", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const os = require("node:os");
+  let TEMP_HOME = "";
+  let ORIGINAL_HOME: string | undefined;
+  beforeEach(() => {
+    TEMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "hivemind-sync-test-extra-"));
+    ORIGINAL_HOME = process.env.HOME;
+    process.env.HOME = TEMP_HOME;
+    execFileSyncMock.mockReset();
+  });
+  afterEach(() => {
+    if (ORIGINAL_HOME !== undefined) process.env.HOME = ORIGINAL_HOME;
+    else delete process.env.HOME;
+    fs.rmSync(TEMP_HOME, { recursive: true, force: true });
+  });
+
+  it("returns {changed:false} when marketplace hooks.json is malformed JSON", async () => {
+    const dir = path.join(TEMP_HOME, ".claude", "plugins", "marketplaces", "hivemind", "claude-code", "hooks");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "hooks.json"), "{broken", "utf-8");
+    const { syncHivemindHooksToSettings } = await importFresh();
+    expect(syncHivemindHooksToSettings()).toEqual({ changed: false, events: [] });
+  });
+
+  it("returns {changed:false} when marketplace hooks.json lacks a 'hooks' key", async () => {
+    const dir = path.join(TEMP_HOME, ".claude", "plugins", "marketplaces", "hivemind", "claude-code", "hooks");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "hooks.json"), JSON.stringify({ description: "no hooks here" }), "utf-8");
+    const { syncHivemindHooksToSettings } = await importFresh();
+    expect(syncHivemindHooksToSettings()).toEqual({ changed: false, events: [] });
+  });
+});

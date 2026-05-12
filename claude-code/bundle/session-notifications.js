@@ -260,7 +260,7 @@ async function fetchBackendNotifications(creds) {
 }
 
 // dist/src/notifications/usage-tracker.js
-import { appendFileSync as appendFileSync2, existsSync, mkdirSync as mkdirSync4, readFileSync as readFileSync4, statSync } from "node:fs";
+import { appendFileSync as appendFileSync2, existsSync, mkdirSync as mkdirSync4, readFileSync as readFileSync4, readdirSync, statSync } from "node:fs";
 import { dirname, join as join5 } from "node:path";
 import { homedir as homedir5 } from "node:os";
 var log5 = (msg) => log("usage-tracker", msg);
@@ -288,7 +288,14 @@ function readUsageRecords() {
             cacheReadTokens: rec.cacheReadTokens,
             cacheCreationTokens: rec.cacheCreationTokens,
             assistantTurns: rec.assistantTurns,
-            model: typeof rec.model === "string" ? rec.model : ""
+            model: typeof rec.model === "string" ? rec.model : "",
+            // Backward compatibility: records written before
+            // feat/onboarding-notifications slice 2 don't carry these
+            // fields — read them as 0 so older records still aggregate
+            // cleanly alongside new ones.
+            hivemindInjectedBytes: typeof rec.hivemindInjectedBytes === "number" ? rec.hivemindInjectedBytes : 0,
+            memorySearchCount: typeof rec.memorySearchCount === "number" ? rec.memorySearchCount : 0,
+            memorySearchBytes: typeof rec.memorySearchBytes === "number" ? rec.memorySearchBytes : 0
           });
         }
       } catch {
@@ -316,11 +323,40 @@ function sumMetric(records, key) {
   }
   return total;
 }
+function memoryStoreSizeBytes() {
+  const root = join5(homedir5(), ".deeplake", "memory");
+  if (!existsSync(root))
+    return 0;
+  let total = 0;
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const p = join5(dir, e.name);
+      if (e.isDirectory()) {
+        stack.push(p);
+      } else if (e.isFile()) {
+        try {
+          total += statSync(p).size;
+        } catch {
+        }
+      }
+    }
+  }
+  return total;
+}
 
 // dist/src/notifications/sources/local-usage.js
 var log6 = (msg) => log("notifications-local-usage", msg);
 var LOOKBACK_DAYS = 7;
 var MIN_SESSIONS_FOR_RECAP = 2;
+var BYTES_PER_TOKEN = 4;
 function isoWeekId(date) {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   const dayNum = d.getUTCDay() || 7;
@@ -344,6 +380,17 @@ function formatTokens(n) {
     return `${Math.round(n / 1e3)}k`;
   return `${(n / 1e6).toFixed(1)}M`;
 }
+function formatBytes(n) {
+  if (!Number.isFinite(n) || n <= 0)
+    return "0 B";
+  if (n < 1024)
+    return `${Math.round(n)} B`;
+  if (n < 1024 * 1024)
+    return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024)
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
 function fetchLocalUsageNotifications(now = /* @__PURE__ */ new Date()) {
   let all;
   try {
@@ -357,26 +404,36 @@ function fetchLocalUsageNotifications(now = /* @__PURE__ */ new Date()) {
     log6(`only ${recent.length} session(s) in last ${LOOKBACK_DAYS}d \u2014 skipping recap`);
     return [];
   }
-  const cacheRead = sumMetric(recent, "cacheReadTokens");
-  const inputTokens = sumMetric(recent, "inputTokens");
-  const outputTokens = sumMetric(recent, "outputTokens");
-  if (cacheRead === 0 && inputTokens === 0 && outputTokens === 0) {
-    log6("no token volume in window \u2014 skipping recap");
+  const sessions = recent.length;
+  const memorySearches = sumMetric(recent, "memorySearchCount");
+  const memorySearchBytes = sumMetric(recent, "memorySearchBytes");
+  if (memorySearches === 0 || memorySearchBytes === 0) {
+    log6(`no memory searches in window \u2014 skipping recap`);
     return [];
   }
   const weekId = isoWeekId(now);
-  const sessionCount = recent.length;
-  const totalProcessed = cacheRead + inputTokens + outputTokens;
-  const title = `Your week with hivemind \u2014 ${formatTokens(cacheRead)} cached tokens reused`;
-  const body = `Across ${sessionCount} session${sessionCount === 1 ? "" : "s"} in the last ${LOOKBACK_DAYS} days, hivemind helped Claude reuse ${formatTokens(cacheRead)} tokens of cached context \u2014 the bulk of input is served from cache instead of fresh tokens. Total volume processed: ${formatTokens(totalProcessed)}.`;
+  const memoryStoreBytes = memoryStoreSizeBytes();
+  const X = memoryStoreBytes / BYTES_PER_TOKEN;
+  const Y = memorySearchBytes / BYTES_PER_TOKEN;
+  let title;
+  let baselineLine;
+  if (X > 0 && X > Y) {
+    const Z = X - Y;
+    title = `Hivemind saved you ~${formatTokens(Z)} tokens this week`;
+    baselineLine = `selective retrieval from your ${formatBytes(memoryStoreBytes)} memory store`;
+  } else {
+    const Z = Y;
+    title = `Hivemind delivered ~${formatTokens(Z)} tokens of past context this week`;
+    baselineLine = `from your hivemind memory store`;
+  }
+  const activityLine = `${sessions} ${sessions === 1 ? "session" : "sessions"} \xB7 ${memorySearches} memory ${memorySearches === 1 ? "search" : "searches"}`;
   return [
     {
       id: "local-usage:weekly-recap",
       severity: "info",
       title,
-      body,
-      // dedupKey is keyed only on the ISO-week id so the recap fires once
-      // per week even as more sessions accumulate within that window.
+      body: `   ${baselineLine}
+   ${activityLine}`,
       dedupKey: { week: weekId }
     }
   ];

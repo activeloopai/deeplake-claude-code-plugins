@@ -7,25 +7,54 @@
  * existing dedup logic suppresses re-fires within the week even if the
  * user opens many sessions.
  *
+ * ── Formula (kept deliberately plain — see issue #99 followup) ────────────
+ *
+ *   X − Y = Z
+ *
+ *   X = memoryStoreTokens         (≈ store_size_bytes / 4)
+ *   Y = memoryRetrievedTokens     (≈ sum of memorySearchBytes / 4 over window)
+ *   Z = tokens "saved" this week  (selective retrieval vs full-context-dump
+ *                                  baseline; Memori/Mem0 paper framing,
+ *                                  arXiv:2603.19935, arXiv:2504.19413)
+ *
+ *   Baseline assumed: without hivemind's selective retrieval, the user would
+ *   load the entire memory store into context every session. Z = the gap
+ *   between that hypothetical full-dump cost and what was actually retrieved.
+ *
+ * v1 fallback ("delivered" framing): when the memory store size is not
+ * measurable from the agent process (e.g. cloud-backed mount where node
+ * `statSync` returns 0 on every file — known limitation, see
+ * `usage-tracker.ts memoryStoreSizeBytes()`), we cannot compute X. We fall
+ * back to a simpler, defensible claim:
+ *
+ *   Z' = Y   (tokens hivemind delivered to Claude this week)
+ *
+ * Z' is a lower bound on Z (every retrieved token IS a token hivemind put
+ * into the window; Z' makes no claim about what was NOT retrieved). When
+ * deeplake-api ships a memory-size endpoint we upgrade the recap to the
+ * full X − Y = Z form. Until then this is the honest claim.
+ *
  * Skip conditions (silently — empty notification list returned):
  *   - no records at all (first-time user)
- *   - fewer than 2 sessions in the lookback window (one-off use; report
- *     would feel premature)
- *   - zero cache-read tokens AND zero input tokens (no real activity to
- *     report — likely a string of empty-/quick-exit sessions)
+ *   - fewer than MIN_SESSIONS_FOR_RECAP sessions in the lookback window
+ *   - no memory searches in the window (nothing hivemind-specific to claim)
  *
  * Failure mode: any read or parse error falls back to "no notifications"
  * — the SessionStart hook continues unaffected.
  */
 
 import type { Notification } from "../types.js";
-import { filterRecentRecords, readUsageRecords, sumMetric } from "../usage-tracker.js";
+import { filterRecentRecords, memoryStoreSizeBytes, readUsageRecords, sumMetric } from "../usage-tracker.js";
 import { log as _log } from "../../utils/debug.js";
 
 const log = (msg: string) => _log("notifications-local-usage", msg);
 
 const LOOKBACK_DAYS = 7;
 const MIN_SESSIONS_FOR_RECAP = 2;
+/** Bytes per token — rough English-text heuristic for BPE tokenizers
+ *  (Claude/GPT). Range across content is ~3.5-5; we use 4 with a `~` in
+ *  the rendered output to signal approximation. */
+const BYTES_PER_TOKEN = 4;
 
 /**
  * Compute the ISO-8601 week number identifier for a given date, formatted
@@ -37,11 +66,9 @@ const MIN_SESSIONS_FOR_RECAP = 2;
  */
 export function isoWeekId(date: Date): string {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  // Shift to the Thursday of this ISO week — that determines the week's year.
-  const dayNum = d.getUTCDay() || 7; // ISO: Sunday = 7, not 0
+  const dayNum = d.getUTCDay() || 7;
   d.setUTCDate(d.getUTCDate() + 4 - dayNum);
   const year = d.getUTCFullYear();
-  // Week number = number of weeks since week 1's Thursday.
   const week1Thursday = new Date(Date.UTC(year, 0, 4));
   const week1DayNum = week1Thursday.getUTCDay() || 7;
   const week1ThursdayShifted = new Date(week1Thursday);
@@ -50,10 +77,7 @@ export function isoWeekId(date: Date): string {
   return `${year}-W${week.toString().padStart(2, "0")}`;
 }
 
-/**
- * Format a token count into a short human-readable string.
- * 1234 → "1.2k", 12345 → "12k", 1234567 → "1.2M"
- */
+/** 1234 → "1.2k", 12345 → "12.3k", 1234567 → "1.2M". `~` is added by caller. */
 export function formatTokens(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return "0";
   if (n < 1000) return `${Math.round(n)}`;
@@ -62,10 +86,19 @@ export function formatTokens(n: number): string {
   return `${(n / 1000000).toFixed(1)}M`;
 }
 
+/** 1234 → "1.2 KB", 1500000 → "1.4 MB". */
+export function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 /**
  * Synchronously compute the local-usage notification (if any) for a
- * SessionStart drain. Pure-ish — reads the local stats file but no
- * network and no writes. Returns [] when no recap is warranted.
+ * SessionStart drain. Pure-ish — reads the local stats file + stats the
+ * memory dir (best-effort), no network and no writes.
  */
 export function fetchLocalUsageNotifications(now: Date = new Date()): Notification[] {
   let all;
@@ -82,34 +115,54 @@ export function fetchLocalUsageNotifications(now: Date = new Date()): Notificati
     return [];
   }
 
-  const cacheRead = sumMetric(recent, "cacheReadTokens");
-  const inputTokens = sumMetric(recent, "inputTokens");
-  const outputTokens = sumMetric(recent, "outputTokens");
-  if (cacheRead === 0 && inputTokens === 0 && outputTokens === 0) {
-    log("no token volume in window — skipping recap");
+  const sessions = recent.length;
+  const memorySearches = sumMetric(recent, "memorySearchCount");
+  const memorySearchBytes = sumMetric(recent, "memorySearchBytes");
+
+  // No memory searches = no hivemind-specific value delivered this week.
+  // Render nothing rather than a vacuous banner.
+  if (memorySearches === 0 || memorySearchBytes === 0) {
+    log(`no memory searches in window — skipping recap`);
     return [];
   }
 
   const weekId = isoWeekId(now);
-  const sessionCount = recent.length;
-  const totalProcessed = cacheRead + inputTokens + outputTokens;
 
-  // Title is severity-prefix-safe (no emoji that collides with the info "🐝"
-  // prefix the renderer adds). Body keeps to 1-2 lines per the framework's
-  // ≤280 char convention so it stays glanceable at session start.
-  const title = `Your week with hivemind — ${formatTokens(cacheRead)} cached tokens reused`;
-  const body =
-    `Across ${sessionCount} session${sessionCount === 1 ? "" : "s"} in the last ${LOOKBACK_DAYS} days, hivemind helped Claude reuse ${formatTokens(cacheRead)} tokens of cached context — ` +
-    `the bulk of input is served from cache instead of fresh tokens. Total volume processed: ${formatTokens(totalProcessed)}.`;
+  // ── Apply formula (see comment at top of file) ──
+  //
+  //   X = memoryStoreTokens     (= memoryStoreSizeBytes() / 4)
+  //   Y = memoryRetrievedTokens (= memorySearchBytes / 4)
+  //   Z = X − Y                  if X is measurable (> 0)
+  //   Z' = Y                     if X is unmeasurable (cloud-backed mount,
+  //                              FUSE returning 0, etc. — known v1 limitation)
+  //
+  // We pick whichever form we can defend.
+  const memoryStoreBytes = memoryStoreSizeBytes();
+  const X = memoryStoreBytes / BYTES_PER_TOKEN;
+  const Y = memorySearchBytes / BYTES_PER_TOKEN;
+
+  let title: string;
+  let baselineLine: string;
+  if (X > 0 && X > Y) {
+    // Memori-style: full-context-dump baseline.
+    const Z = X - Y;
+    title = `Hivemind saved you ~${formatTokens(Z)} tokens this week`;
+    baselineLine = `selective retrieval from your ${formatBytes(memoryStoreBytes)} memory store`;
+  } else {
+    // Fallback: delivered framing. Honest lower bound until we wire a
+    // server-side memory-size endpoint (issue #99 v1.1 followup).
+    const Z = Y;
+    title = `Hivemind delivered ~${formatTokens(Z)} tokens of past context this week`;
+    baselineLine = `from your hivemind memory store`;
+  }
+  const activityLine = `${sessions} ${sessions === 1 ? "session" : "sessions"} · ${memorySearches} memory ${memorySearches === 1 ? "search" : "searches"}`;
 
   return [
     {
       id: "local-usage:weekly-recap",
       severity: "info",
       title,
-      body,
-      // dedupKey is keyed only on the ISO-week id so the recap fires once
-      // per week even as more sessions accumulate within that window.
+      body: `   ${baselineLine}\n   ${activityLine}`,
       dedupKey: { week: weekId },
     },
   ];

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   appendUsageRecord,
   filterRecentRecords,
+  memoryStoreSizeBytes,
   readUsageRecords,
   statsFilePath,
   statsFileSizeBytes,
@@ -26,6 +27,9 @@ function rec(over: Partial<UsageRecord> = {}): UsageRecord {
     cacheCreationTokens: 200,
     assistantTurns: 5,
     model: "claude-opus-4-7",
+    hivemindInjectedBytes: 4000,
+    memorySearchCount: 2,
+    memorySearchBytes: 6000,
     ...over,
   };
 }
@@ -114,6 +118,30 @@ describe("usage-tracker — append/read", () => {
     expect(records).toHaveLength(1);
     expect(records[0].model).toBe("");
   });
+
+  it("readUsageRecords backfills hivemindInjectedBytes + memorySearchCount as 0 on pre-slice-2 records", () => {
+    // Records written before the slice-2 fields existed look exactly like
+    // this: the new fields just aren't present. The reader must accept them
+    // and emit defaults so older history aggregates cleanly.
+    const file = join(TEMP_HOME, ".deeplake", "usage-stats.jsonl");
+    mkdirSync(join(TEMP_HOME, ".deeplake"));
+    const oldShape = {
+      endedAt: "2026-05-08T00:00:00Z",
+      sessionId: "old",
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 1000,
+      cacheCreationTokens: 200,
+      assistantTurns: 5,
+      model: "claude-opus-4-7",
+    };
+    writeFileSync(file, JSON.stringify(oldShape) + "\n", "utf-8");
+    const records = readUsageRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].hivemindInjectedBytes).toBe(0);
+    expect(records[0].memorySearchCount).toBe(0);
+    expect(records[0].sessionId).toBe("old");
+  });
 });
 
 describe("usage-tracker — filterRecentRecords", () => {
@@ -171,6 +199,28 @@ describe("usage-tracker — statsFileSizeBytes", () => {
     appendUsageRecord(rec());
     const size = statsFileSizeBytes();
     expect(size).toBeGreaterThan(50);
+  });
+});
+
+describe("usage-tracker — memoryStoreSizeBytes", () => {
+  it("returns 0 when ~/.deeplake/memory does not exist", () => {
+    expect(memoryStoreSizeBytes()).toBe(0);
+  });
+
+  it("sums file sizes across nested directories", () => {
+    const memRoot = join(TEMP_HOME, ".deeplake", "memory");
+    mkdirSync(join(memRoot, "summaries", "alice"), { recursive: true });
+    writeFileSync(join(memRoot, "index.md"), "x".repeat(100), "utf-8");
+    writeFileSync(join(memRoot, "summaries", "alice", "s1.md"), "y".repeat(250), "utf-8");
+    writeFileSync(join(memRoot, "summaries", "alice", "s2.md"), "z".repeat(50), "utf-8");
+    expect(memoryStoreSizeBytes()).toBe(400);
+  });
+
+  it("ignores subdirectories that can't be read but keeps going", () => {
+    const memRoot = join(TEMP_HOME, ".deeplake", "memory");
+    mkdirSync(memRoot, { recursive: true });
+    writeFileSync(join(memRoot, "a.md"), "hello", "utf-8"); // 5 bytes
+    expect(memoryStoreSizeBytes()).toBeGreaterThanOrEqual(5);
   });
 });
 

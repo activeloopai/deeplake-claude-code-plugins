@@ -541,7 +541,10 @@ function parseTranscript(transcriptPath, fallbackSessionId, now = /* @__PURE__ *
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
     assistantTurns: 0,
-    model: ""
+    model: "",
+    hivemindInjectedBytes: 0,
+    memorySearchCount: 0,
+    memorySearchBytes: 0
   };
   if (!transcriptPath || !existsSync6(transcriptPath)) {
     log2(`transcript missing: ${transcriptPath}`);
@@ -562,6 +565,10 @@ function parseTranscript(transcriptPath, fallbackSessionId, now = /* @__PURE__ *
   let model = "";
   let sessionId = fallbackSessionId;
   let endedAt = "";
+  let hivemindInjectedBytes = 0;
+  let memorySearchCount = 0;
+  let memorySearchBytes = 0;
+  const memoryLookupToolUseIds = /* @__PURE__ */ new Set();
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed)
@@ -576,17 +583,40 @@ function parseTranscript(transcriptPath, fallbackSessionId, now = /* @__PURE__ *
       endedAt = entry.timestamp;
     if (typeof entry.sessionId === "string" && entry.sessionId)
       sessionId = entry.sessionId;
+    const att = entry.attachment;
+    if (att && typeof att.command === "string" && att.hookEvent === "SessionStart" && att.command.includes("plugins/hivemind/bundle/") && typeof att.stdout === "string") {
+      hivemindInjectedBytes += countHivemindEmittedBytes(att.stdout);
+    }
     const msg = entry.message;
-    if (!msg || msg.role !== "assistant" || !msg.usage)
-      continue;
-    const u = msg.usage;
-    inputTokens += asNonNegativeNumber(u.input_tokens);
-    outputTokens += asNonNegativeNumber(u.output_tokens);
-    cacheReadTokens += asNonNegativeNumber(u.cache_read_input_tokens);
-    cacheCreationTokens += asNonNegativeNumber(u.cache_creation_input_tokens);
-    assistantTurns += 1;
-    if (typeof msg.model === "string" && msg.model && !model)
-      model = msg.model;
+    if (msg && msg.role === "assistant") {
+      const am = msg;
+      if (am.usage) {
+        const u = am.usage;
+        inputTokens += asNonNegativeNumber(u.input_tokens);
+        outputTokens += asNonNegativeNumber(u.output_tokens);
+        cacheReadTokens += asNonNegativeNumber(u.cache_read_input_tokens);
+        cacheCreationTokens += asNonNegativeNumber(u.cache_creation_input_tokens);
+        assistantTurns += 1;
+        if (typeof am.model === "string" && am.model && !model)
+          model = am.model;
+      }
+      if (Array.isArray(am.content)) {
+        for (const c of am.content) {
+          if (c && c.type === "tool_use" && c.name === "Bash" && c.input && typeof c.input.command === "string" && isMemoryLookupCommand(c.input.command)) {
+            memorySearchCount += 1;
+            if (typeof c.id === "string")
+              memoryLookupToolUseIds.add(c.id);
+          }
+        }
+      }
+    } else if (msg && msg.role === "user" && Array.isArray(msg.content)) {
+      const um = msg;
+      for (const c of um.content ?? []) {
+        if (c && c.type === "tool_result" && typeof c.tool_use_id === "string" && memoryLookupToolUseIds.has(c.tool_use_id)) {
+          memorySearchBytes += toolResultByteLength(c.content);
+        }
+      }
+    }
   }
   return {
     endedAt: endedAt || now.toISOString(),
@@ -596,12 +626,53 @@ function parseTranscript(transcriptPath, fallbackSessionId, now = /* @__PURE__ *
     cacheReadTokens,
     cacheCreationTokens,
     assistantTurns,
-    model
+    model,
+    hivemindInjectedBytes,
+    memorySearchCount,
+    memorySearchBytes
   };
+}
+function toolResultByteLength(content) {
+  if (typeof content === "string")
+    return Buffer.byteLength(content, "utf-8");
+  if (Array.isArray(content)) {
+    let n = 0;
+    for (const part of content) {
+      if (part && typeof part === "object") {
+        const txt = part.text;
+        if (typeof txt === "string")
+          n += Buffer.byteLength(txt, "utf-8");
+      }
+    }
+    return n;
+  }
+  try {
+    return Buffer.byteLength(JSON.stringify(content ?? ""), "utf-8");
+  } catch {
+    return 0;
+  }
+}
+function countHivemindEmittedBytes(stdout) {
+  try {
+    const parsed = JSON.parse(stdout);
+    let n = 0;
+    const ctx = parsed?.hookSpecificOutput?.additionalContext;
+    if (typeof ctx === "string")
+      n += Buffer.byteLength(ctx, "utf-8");
+    const sys = parsed?.systemMessage;
+    if (typeof sys === "string")
+      n += Buffer.byteLength(sys, "utf-8");
+    return n;
+  } catch {
+    return 0;
+  }
+}
+function isMemoryLookupCommand(command) {
+  return command.includes(".deeplake/memory");
 }
 
 // dist/src/notifications/usage-tracker.js
-import { appendFileSync as appendFileSync4, existsSync as existsSync7, mkdirSync as mkdirSync7, readFileSync as readFileSync6, statSync } from "node:fs";
+import { appendFileSync as appendFileSync4, existsSync as existsSync7, mkdirSync as mkdirSync7, readFileSync as readFileSync6, readdirSync, statSync } from "node:fs";
 import { dirname as dirname3, join as join10 } from "node:path";
 import { homedir as homedir9 } from "node:os";
 var log3 = (msg) => log("usage-tracker", msg);

@@ -12,7 +12,7 @@
  * skips this week.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { log as _log } from "../utils/debug.js";
@@ -28,8 +28,11 @@ export interface UsageRecord {
   inputTokens: number;
   /** Tokens billed for output (assistant text). */
   outputTokens: number;
-  /** Tokens read from prompt cache — substantially cheaper than fresh input
-   *  and the dominant savings driver from session-start memory injection. */
+  /** Tokens read from prompt cache. Anthropic-side accounting; not
+   *  attributable to hivemind alone (the cache holds system prompt, tool
+   *  defs, prior turns, AND the hivemind context block — hivemind is one
+   *  contributor among many). Kept for context but not used in user-facing
+   *  "savings" claims. */
   cacheReadTokens: number;
   /** Tokens written to prompt cache during this session. */
   cacheCreationTokens: number;
@@ -37,6 +40,25 @@ export interface UsageRecord {
   assistantTurns: number;
   /** Model id reported in the transcript (e.g. "claude-opus-4-7"). May be empty. */
   model: string;
+  /** Total BYTES of `additionalContext` + `systemMessage` emitted by hivemind's
+   *  SessionStart hooks this session. This is the precise volume of context
+   *  hivemind injected — measurable, deterministic. Divided by 4 yields an
+   *  approximate token count for surfacing in the weekly recap.
+   *
+   *  Filter: only attachments whose command path contains
+   *  `plugins/hivemind/bundle/` count. Counts both the memory hook's
+   *  additionalContext AND the notifications hook's systemMessage. */
+  hivemindInjectedBytes: number;
+  /** Count of Bash tool calls whose command references `deeplake/memory` —
+   *  i.e. Claude actively grep/cat/find'd the user's memory store during
+   *  the session. Direct evidence of mid-session use of hivemind. */
+  memorySearchCount: number;
+  /** Total BYTES of `tool_result` content returned from those memory-lookup
+   *  Bash calls — the actual past-session content hivemind put into the
+   *  context window mid-session. Bytes / 4 ≈ tokens delivered to Claude.
+   *  This is the load-bearing input to the weekly recap's "delivered"
+   *  number; the rest of the fields are supporting/diagnostic. */
+  memorySearchBytes: number;
 }
 
 /**
@@ -99,6 +121,13 @@ export function readUsageRecords(): UsageRecord[] {
             cacheCreationTokens: rec.cacheCreationTokens,
             assistantTurns: rec.assistantTurns,
             model: typeof rec.model === "string" ? rec.model : "",
+            // Backward compatibility: records written before
+            // feat/onboarding-notifications slice 2 don't carry these
+            // fields — read them as 0 so older records still aggregate
+            // cleanly alongside new ones.
+            hivemindInjectedBytes: typeof rec.hivemindInjectedBytes === "number" ? rec.hivemindInjectedBytes : 0,
+            memorySearchCount: typeof rec.memorySearchCount === "number" ? rec.memorySearchCount : 0,
+            memorySearchBytes: typeof rec.memorySearchBytes === "number" ? rec.memorySearchBytes : 0,
           });
         }
       } catch {
@@ -149,5 +178,42 @@ export function statsFileSizeBytes(): number {
   } catch {
     return 0;
   }
+}
+
+/**
+ * Sum the byte size of every regular file under `~/.deeplake/memory/`. Used
+ * by the weekly recap as a "your team's collective memory size" datum.
+ *
+ * Walks the directory iteratively (no recursion-depth risk) and tolerates
+ * permission errors on individual files — they just contribute 0. Returns
+ * 0 if the memory dir doesn't exist.
+ */
+export function memoryStoreSizeBytes(): number {
+  const root = join(homedir(), ".deeplake", "memory");
+  if (!existsSync(root)) return 0;
+  let total = 0;
+  const stack: string[] = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) {
+        stack.push(p);
+      } else if (e.isFile()) {
+        try {
+          total += statSync(p).size;
+        } catch {
+          // unreadable — skip
+        }
+      }
+    }
+  }
+  return total;
 }
 

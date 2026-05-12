@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { log } from "./util.js";
 
 // Claude Code's plugin loader is a managed surface: it owns the cache layout,
@@ -72,6 +75,132 @@ function pluginAlreadyInstalled(): boolean {
 // activated will simply error out, which is fine.
 const PLUGIN_SCOPES = ["user", "project", "local", "managed"] as const;
 
+/**
+ * Sync hivemind's canonical hook list (`hooks.json` in the marketplace
+ * plugin) into the user's `~/.claude/settings.json`.
+ *
+ * Why this exists: Claude Code reads SessionStart/PostToolUse/etc. hooks
+ * from settings.json at session start. The plugin install/update flow
+ * (`claude plugin install`, `claude plugin update`) writes settings.json
+ * the FIRST time a plugin is installed but does not re-merge new hook
+ * declarations from the plugin's own hooks.json on subsequent updates.
+ *
+ * Concretely: a user who installed hivemind at v0.6.x (when hooks.json
+ * had only `session-start.js` + `session-start-setup.js` for
+ * SessionStart) and later ran `claude plugin update` to bump to v0.7.x
+ * (which added `session-notifications.js`) ends up with settings.json
+ * still listing only the 2 original hooks. The new hook never fires.
+ *
+ * This sync makes `hivemind update` idempotent w.r.t. settings.json:
+ * for every event in the plugin's canonical hooks.json, replace the
+ * hivemind-owned matcher block with the current canonical list. Other
+ * user-customized matchers in the same events are preserved.
+ *
+ * Identifies "hivemind-owned" matchers by checking whether any command
+ * in the matcher references `plugins/hivemind/bundle/` (the canonical
+ * install path, after `${CLAUDE_PLUGIN_ROOT}` resolution).
+ */
+
+interface HookEntry {
+  type?: string;
+  command?: string;
+  timeout?: number;
+  async?: boolean;
+}
+
+interface HookMatcher {
+  matcher?: string;
+  hooks: HookEntry[];
+}
+
+interface HooksJsonShape {
+  hooks?: Record<string, HookMatcher[]>;
+}
+
+interface SettingsShape {
+  hooks?: Record<string, HookMatcher[]>;
+  [k: string]: unknown;
+}
+
+function resolvePluginRoot(): string {
+  return join(homedir(), ".claude", "plugins", "hivemind");
+}
+
+function marketplaceHooksJsonPath(): string {
+  return join(homedir(), ".claude", "plugins", "marketplaces", "hivemind", "claude-code", "hooks", "hooks.json");
+}
+
+function settingsJsonPath(): string {
+  return join(homedir(), ".claude", "settings.json");
+}
+
+function resolveCommand(command: string, pluginRoot: string): string {
+  return command.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, pluginRoot);
+}
+
+function isHivemindMatcher(matcher: HookMatcher): boolean {
+  return matcher.hooks?.some(h => typeof h.command === "string" && h.command.includes("plugins/hivemind/bundle/")) ?? false;
+}
+
+export function syncHivemindHooksToSettings(): { changed: boolean; events: string[] } {
+  const hooksPath = marketplaceHooksJsonPath();
+  const settingsPath = settingsJsonPath();
+  if (!existsSync(hooksPath)) return { changed: false, events: [] };
+
+  let canonical: HooksJsonShape;
+  try {
+    canonical = JSON.parse(readFileSync(hooksPath, "utf-8")) as HooksJsonShape;
+  } catch {
+    return { changed: false, events: [] };
+  }
+  if (!canonical.hooks) return { changed: false, events: [] };
+
+  let settings: SettingsShape = {};
+  if (existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as SettingsShape;
+    } catch {
+      // Corrupt settings.json — better to abort than overwrite.
+      return { changed: false, events: [] };
+    }
+  }
+  settings.hooks = settings.hooks ?? {};
+
+  const pluginRoot = resolvePluginRoot();
+  const changedEvents: string[] = [];
+  let changed = false;
+
+  for (const [event, matchers] of Object.entries(canonical.hooks)) {
+    // Resolve ${CLAUDE_PLUGIN_ROOT} in every command of the canonical list.
+    const resolvedMatchers: HookMatcher[] = matchers.map(m => ({
+      ...(m.matcher !== undefined ? { matcher: m.matcher } : {}),
+      hooks: m.hooks.map(h => ({
+        ...(h.type !== undefined ? { type: h.type } : {}),
+        ...(h.command !== undefined ? { command: resolveCommand(h.command, pluginRoot) } : {}),
+        ...(h.timeout !== undefined ? { timeout: h.timeout } : {}),
+        ...(h.async !== undefined ? { async: h.async } : {}),
+      })),
+    }));
+
+    const existing = settings.hooks[event] ?? [];
+    // Drop matchers that are hivemind-owned (so we can replace them with
+    // the canonical list). Preserve everything else verbatim.
+    const preserved = existing.filter(m => !isHivemindMatcher(m));
+    const next = [...preserved, ...resolvedMatchers];
+
+    if (JSON.stringify(next) !== JSON.stringify(existing)) {
+      settings.hooks[event] = next;
+      changedEvents.push(event);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+  }
+  return { changed, events: changedEvents };
+}
+
 export function installClaude(): void {
   requireClaudeCli();
 
@@ -113,6 +242,20 @@ export function installClaude(): void {
 
   // enable is idempotent in claude CLI — safe to run unconditionally
   runClaude(["plugin", "enable", PLUGIN_KEY]);
+
+  // Sync the plugin's canonical hooks.json into the user's settings.json.
+  // `claude plugin install` writes settings.json the first time, but
+  // `claude plugin update` does NOT re-sync hooks on version bumps, so
+  // users who installed before a hook was added end up never firing it.
+  // This makes the install/update path idempotent w.r.t. hook registration.
+  try {
+    const sync = syncHivemindHooksToSettings();
+    if (sync.changed) {
+      log(`  Claude Code    settings.json hooks synced (${sync.events.join(", ")})`);
+    }
+  } catch (e: any) {
+    log(`  Claude Code    settings.json sync skipped: ${e?.message ?? String(e)}`);
+  }
 }
 
 export function uninstallClaude(): void {
