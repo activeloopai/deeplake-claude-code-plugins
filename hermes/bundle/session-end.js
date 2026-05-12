@@ -373,16 +373,27 @@ function statePath(projectKey) {
 function lockPath2(projectKey) {
   return join9(STATE_DIR2, `${projectKey}.lock`);
 }
+var DEFAULT_PORTS = {
+  http: "80",
+  https: "443",
+  ssh: "22",
+  git: "9418"
+};
 function normalizeGitRemoteUrl(url) {
   let s = url.trim();
-  const hadScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(s);
-  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
-  if (!hadScheme) {
+  const schemeMatch = s.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+  const scheme = schemeMatch ? schemeMatch[1].toLowerCase() : null;
+  if (schemeMatch)
+    s = s.slice(schemeMatch[0].length);
+  if (!scheme) {
     const scp = s.match(/^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/);
     if (scp)
       s = `${scp[1]}/${scp[2]}`;
   }
   s = s.replace(/^[^@/]+@/, "");
+  if (scheme && DEFAULT_PORTS[scheme]) {
+    s = s.replace(new RegExp(`^([^/]+):${DEFAULT_PORTS[scheme]}(/|$)`), "$1$2");
+  }
   s = s.replace(/\.git\/?$/i, "");
   s = s.replace(/\/+$/, "");
   return s.toLowerCase();

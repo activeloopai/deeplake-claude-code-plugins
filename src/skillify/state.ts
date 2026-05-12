@@ -70,21 +70,42 @@ function lockPath(projectKey: string): string {
  * it doesn't look like a git URL (so the cwd-fallback path keeps absolute
  * disk paths distinct).
  */
+/**
+ * Default port per scheme. If the URL carries `:<defaultPort>` explicitly,
+ * we strip it so `https://host:443/x` collapses with `https://host/x`
+ * (otherwise the two hash to different project keys despite being the same
+ * remote). Non-default ports (e.g. `:8443`) are preserved — they're
+ * load-bearing.
+ */
+const DEFAULT_PORTS: Record<string, string> = {
+  http: "80",
+  https: "443",
+  ssh: "22",
+  git: "9418",
+};
+
 export function normalizeGitRemoteUrl(url: string): string {
   let s = url.trim();
-  // 1. Strip URL scheme (https://, http://, git://, ssh://, …) if present.
-  const hadScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(s);
-  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+  // 1. Capture + strip URL scheme (https://, http://, git://, ssh://, …).
+  const schemeMatch = s.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+  const scheme = schemeMatch ? schemeMatch[1].toLowerCase() : null;
+  if (schemeMatch) s = s.slice(schemeMatch[0].length);
   // 2. SCP-style remote (no scheme prefix): `[user@]host:path` → `host/path`.
   //    Only applies when the original input had no scheme — otherwise the
   //    `:` is from `host:port`, not the SCP separator.
-  if (!hadScheme) {
+  if (!scheme) {
     const scp = s.match(/^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/);
     if (scp) s = `${scp[1]}/${scp[2]}`;
   }
   // 3. Strip embedded credentials (user@ or user:pass@) from the host part.
   s = s.replace(/^[^@/]+@/, "");
-  // 4. Drop trailing `.git` (with or without trailing slash) and any
+  // 4. Strip the default port for the scheme (e.g. `:443` on https) — it
+  //    is implied and shouldn't make the hash diverge from the port-less
+  //    form. Non-default ports stay (e.g. `:8443`).
+  if (scheme && DEFAULT_PORTS[scheme]) {
+    s = s.replace(new RegExp(`^([^/]+):${DEFAULT_PORTS[scheme]}(/|$)`), "$1$2");
+  }
+  // 5. Drop trailing `.git` (with or without trailing slash) and any
   //    remaining trailing slash.
   s = s.replace(/\.git\/?$/i, "");
   s = s.replace(/\/+$/, "");
