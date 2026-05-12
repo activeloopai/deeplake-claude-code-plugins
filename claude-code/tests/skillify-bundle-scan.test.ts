@@ -10,15 +10,22 @@ import { join } from "node:path";
  */
 
 const ROOT = join(__dirname, "..", "..");
-const AGENTS = ["claude-code", "codex", "cursor", "hermes"] as const;
+// openclaw is a separate npm sub-package and writes its build to `dist/`
+// (gitignored, regenerated on `npm run build`), whereas the other agents
+// commit their bundles under `bundle/`. We still want the shared worker
+// bundle (skillify-worker.js) to pass the same shape + content guards on
+// openclaw, since it is rebuilt from the same src/skillify/skillify-worker.ts.
+const AGENTS = ["claude-code", "codex", "cursor", "hermes", "openclaw"] as const;
 
 function bundlePath(agent: string, file: string): string {
-  return join(ROOT, agent, "bundle", file);
+  const dir = agent === "openclaw" ? "dist" : "bundle";
+  return join(ROOT, agent, dir, file);
 }
 
 describe("skillify-worker bundle is shipped per agent", () => {
   for (const agent of AGENTS) {
-    it(`${agent}/bundle/skillify-worker.js exists and contains the worker entry`, () => {
+    const bundleDir = agent === "openclaw" ? "dist" : "bundle";
+    it(`${agent}/${bundleDir}/skillify-worker.js exists and contains the worker entry`, () => {
       const path = bundlePath(agent, "skillify-worker.js");
       expect(existsSync(path), `${path} missing`).toBe(true);
       const text = readFileSync(path, "utf-8");
@@ -101,14 +108,17 @@ describe("legacy state-dir migration is shipped in every agent's bundle", () => 
   // these regressions ship, users with a populated ~/.deeplake/state/skilify/
   // would silently start fresh on ~/.deeplake/state/skillify/.
   //
-  // claude-code/codex/cursor/hermes ship the shared TS module compiled into
-  // skillify-worker.js + the SessionStart hooks. pi ships skillify-worker.js
-  // too (no SessionStart hook). openclaw inlines an equivalent helper
-  // because its self-contained bundle can't import from src/skillify.
+  // claude-code/codex/cursor/hermes/openclaw ship the shared TS module
+  // compiled into skillify-worker.js + the SessionStart hooks. pi ships
+  // skillify-worker.js too (no SessionStart hook). openclaw additionally
+  // ships an inlined helper inside index.js (its self-contained bundle
+  // can't import from src/skillify) — that one is covered by the
+  // dedicated test below.
   const SHARED_AGENTS = [...AGENTS, "pi"] as const;
 
   for (const agent of SHARED_AGENTS) {
-    it(`${agent}/bundle/skillify-worker.js: migration helper present and called from readState`, () => {
+    const bundleDir = agent === "openclaw" ? "dist" : "bundle";
+    it(`${agent}/${bundleDir}/skillify-worker.js: migration helper present and called from readState`, () => {
       const text = readFileSync(bundlePath(agent, "skillify-worker.js"), "utf-8");
       expect(text, `${agent}: migrateLegacyStateDir helper missing`).toContain("function migrateLegacyStateDir");
       // readState is the first state file the worker touches; if migration
