@@ -85,6 +85,48 @@ describe("usage-tracker — append/read", () => {
     expect(records.map(r => r.sessionId)).toEqual(["good", "good-2"]);
   });
 
+  it("readUsageRecords backward-compat: accepts records missing memorySearchCount (defaults to 0)", () => {
+    const file = join(TEMP_HOME, ".deeplake", "usage-stats.jsonl");
+    mkdirSync(join(TEMP_HOME, ".deeplake"));
+    // Simulate a record written by a prior parser version: no memorySearchCount.
+    const legacy = JSON.stringify({
+      endedAt: "2026-05-12T18:09:18Z",
+      sessionId: "legacy-record",
+      memorySearchBytes: 0,
+      // memorySearchCount intentionally missing
+    });
+    writeFileSync(file, legacy + "\n", "utf-8");
+    const records = readUsageRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].sessionId).toBe("legacy-record");
+    expect(records[0].memorySearchCount).toBe(0);
+  });
+
+  it("readUsageRecords backward-compat: accepts records missing memorySearchBytes (defaults to 0)", () => {
+    const file = join(TEMP_HOME, ".deeplake", "usage-stats.jsonl");
+    mkdirSync(join(TEMP_HOME, ".deeplake"));
+    const legacy = JSON.stringify({
+      endedAt: "2026-05-12T18:09:18Z",
+      sessionId: "legacy-record",
+      // memorySearchBytes intentionally missing
+      memorySearchCount: 0,
+    });
+    writeFileSync(file, legacy + "\n", "utf-8");
+    const records = readUsageRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].memorySearchBytes).toBe(0);
+  });
+
+  it("readUsageRecords still drops records missing the strict minimum (endedAt or sessionId)", () => {
+    const file = join(TEMP_HOME, ".deeplake", "usage-stats.jsonl");
+    mkdirSync(join(TEMP_HOME, ".deeplake"));
+    const noEnded = JSON.stringify({ sessionId: "x", memorySearchBytes: 0, memorySearchCount: 0 });
+    const noSession = JSON.stringify({ endedAt: "2026-05-12T00:00:00Z", memorySearchBytes: 0, memorySearchCount: 0 });
+    const good = JSON.stringify(rec({ sessionId: "valid" }));
+    writeFileSync(file, `${noEnded}\n${noSession}\n${good}\n`, "utf-8");
+    expect(readUsageRecords().map(r => r.sessionId)).toEqual(["valid"]);
+  });
+
   it("readUsageRecords ignores blank lines without warning", () => {
     const file = join(TEMP_HOME, ".deeplake", "usage-stats.jsonl");
     mkdirSync(join(TEMP_HOME, ".deeplake"));

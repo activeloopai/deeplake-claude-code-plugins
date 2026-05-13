@@ -303,12 +303,12 @@ function readUsageRecords() {
         continue;
       try {
         const rec = JSON.parse(trimmed);
-        if (typeof rec.endedAt === "string" && typeof rec.sessionId === "string" && typeof rec.memorySearchBytes === "number" && typeof rec.memorySearchCount === "number") {
+        if (typeof rec.endedAt === "string" && typeof rec.sessionId === "string") {
           out.push({
             endedAt: rec.endedAt,
             sessionId: rec.sessionId,
-            memorySearchBytes: rec.memorySearchBytes,
-            memorySearchCount: rec.memorySearchCount
+            memorySearchBytes: typeof rec.memorySearchBytes === "number" ? rec.memorySearchBytes : 0,
+            memorySearchCount: typeof rec.memorySearchCount === "number" ? rec.memorySearchCount : 0
           });
         }
       } catch {

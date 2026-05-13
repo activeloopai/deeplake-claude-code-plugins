@@ -72,17 +72,23 @@ export function readUsageRecords(): UsageRecord[] {
       if (!trimmed) continue;
       try {
         const rec = JSON.parse(trimmed) as Partial<UsageRecord>;
+        // Strict minimum: endedAt + sessionId. Numeric fields are
+        // backward-compat: records written by older parser versions
+        // (no `memorySearchCount` field yet, or no `memorySearchBytes`)
+        // get the missing values defaulted to 0 rather than dropped.
+        // Keeping older records in the aggregate matters — the recap
+        // counts "sessions you've used hivemind in," and silently
+        // dropping one because its schema lacked a field added later
+        // is a subtle bug.
         if (
           typeof rec.endedAt === "string" &&
-          typeof rec.sessionId === "string" &&
-          typeof rec.memorySearchBytes === "number" &&
-          typeof rec.memorySearchCount === "number"
+          typeof rec.sessionId === "string"
         ) {
           out.push({
             endedAt: rec.endedAt,
             sessionId: rec.sessionId,
-            memorySearchBytes: rec.memorySearchBytes,
-            memorySearchCount: rec.memorySearchCount,
+            memorySearchBytes: typeof rec.memorySearchBytes === "number" ? rec.memorySearchBytes : 0,
+            memorySearchCount: typeof rec.memorySearchCount === "number" ? rec.memorySearchCount : 0,
           });
         }
       } catch {
