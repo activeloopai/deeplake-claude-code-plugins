@@ -1127,9 +1127,9 @@ export default definePluginEntry({
             const jsonForSql = line.replace(/'/g, "''");
 
             const insertSql =
-              `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+              `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
               `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(cfg.userName)}', ` +
-              `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(msg.role)}', 'openclaw', '${ts}', '${ts}')`;
+              `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(msg.role)}', 'openclaw', '${sqlStr(getInstalledVersion() ?? "")}', '${ts}', '${ts}')`;
 
             try {
               await dl.query(insertSql);

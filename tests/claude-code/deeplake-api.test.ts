@@ -402,19 +402,25 @@ describe("DeeplakeApi.ensureTable", () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
     // post-CREATE SELECT info_schema for agent column → present (CREATE included it)
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
+    // post-CREATE SELECT info_schema for plugin_version column → present (CREATE included it)
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
     const api = makeApi("my_table");
     await api.ensureTable();
-    expect(mockFetch).toHaveBeenCalledTimes(4);
+    expect(mockFetch).toHaveBeenCalledTimes(5);
     const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
     expect(createSql).toContain("CREATE TABLE IF NOT EXISTS");
     expect(createSql).toContain("my_table");
     expect(createSql).toContain("USING deeplake");
+    expect(createSql).toContain("plugin_version TEXT NOT NULL DEFAULT ''");
     const schemaSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
     expect(schemaSql).toContain("information_schema.columns");
     expect(schemaSql).toContain("summary_embedding");
     const agentSchemaSql = JSON.parse(mockFetch.mock.calls[3][1].body).query;
     expect(agentSchemaSql).toContain("information_schema.columns");
     expect(agentSchemaSql).toContain("agent");
+    const pvSchemaSql = JSON.parse(mockFetch.mock.calls[4][1].body).query;
+    expect(pvSchemaSql).toContain("information_schema.columns");
+    expect(pvSchemaSql).toContain("plugin_version");
   });
 
   it("on existing table: checks information_schema first, then issues ALTER ADD COLUMN when the column is missing", async () => {
@@ -427,9 +433,11 @@ describe("DeeplakeApi.ensureTable", () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER summary_embedding succeeds
     // agent SELECT info_schema → present (focus this test on the embedding flow)
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
+    // plugin_version SELECT info_schema → present (focus this test on the embedding flow)
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
     const api = makeApi("my_table");
     await api.ensureTable();
-    expect(mockFetch).toHaveBeenCalledTimes(4); // listTables + SELECT_emb + ALTER_emb + SELECT_agent
+    expect(mockFetch).toHaveBeenCalledTimes(5); // listTables + SELECT_emb + ALTER_emb + SELECT_agent + SELECT_pv
     const schemaSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
     expect(schemaSql).toContain("information_schema.columns");
     expect(schemaSql).toContain("summary_embedding");
@@ -450,9 +458,11 @@ describe("DeeplakeApi.ensureTable", () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
     // agent SELECT info_schema → present (post-2026-04-11 schema is current)
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
+    // plugin_version SELECT info_schema → present (current schema)
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
     const api = makeApi("my_table");
     await api.ensureTable();
-    expect(mockFetch).toHaveBeenCalledTimes(3); // listTables + SELECT_emb + SELECT_agent — NO ALTER
+    expect(mockFetch).toHaveBeenCalledTimes(4); // listTables + SELECT_emb + SELECT_agent + SELECT_pv — NO ALTER
     const schemaSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
     expect(schemaSql).toContain("information_schema.columns");
     // Regression guard: scenario 5 (fully migrated workspace) used to send a
@@ -499,10 +509,12 @@ describe("DeeplakeApi.ensureTable", () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
     // agent SELECT info_schema → present
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
+    // plugin_version SELECT info_schema → present
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
     const api = makeApi("my_table");
     await expect(api.ensureTable()).resolves.toBeUndefined();
-    expect(mockFetch).toHaveBeenCalledTimes(5);
-    // 2nd call to ensureTable: listTables cached AND both column markers cached → 0 new fetches
+    expect(mockFetch).toHaveBeenCalledTimes(6);
+    // 2nd call to ensureTable: listTables cached AND all column markers cached → 0 new fetches
     mockFetch.mockReset();
     await api.ensureTable();
     expect(mockFetch).toHaveBeenCalledTimes(0);
@@ -530,6 +542,7 @@ describe("DeeplakeApi.ensureTable", () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // post-CREATE SELECT info_schema PRESENT (embedding)
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // post-CREATE SELECT info_schema PRESENT (agent)
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // post-CREATE SELECT info_schema PRESENT (plugin_version)
     const api = makeApi("default_table");
     await api.ensureTable("custom_table");
     const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
@@ -543,23 +556,25 @@ describe("DeeplakeApi.ensureTable", () => {
     });
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT memory embedding: present
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT memory agent: present
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT memory plugin_version: present
     mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE sessions
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT sessions embedding post-CREATE: present
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT sessions agent post-CREATE: present
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT sessions plugin_version post-CREATE: present
     mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX
     const api = makeApi("memory");
 
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(mockFetch).toHaveBeenCalledTimes(7);
+    expect(mockFetch).toHaveBeenCalledTimes(9);
     const schemaSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
     expect(schemaSql).toContain("information_schema.columns");
     expect(schemaSql).toContain("summary_embedding");
-    const createSql = JSON.parse(mockFetch.mock.calls[3][1].body).query;
+    const createSql = JSON.parse(mockFetch.mock.calls[4][1].body).query;
     expect(createSql).toContain("CREATE TABLE IF NOT EXISTS");
     expect(createSql).toContain("sessions");
-    const indexSql = JSON.parse(mockFetch.mock.calls[6][1].body).query;
+    const indexSql = JSON.parse(mockFetch.mock.calls[8][1].body).query;
     expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
     expect(indexSql).toContain("\"path\"");
     expect(indexSql).toContain("\"creation_date\"");
@@ -577,6 +592,7 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // post-CREATE SELECT info_schema embedding PRESENT
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // post-CREATE SELECT info_schema agent PRESENT
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // post-CREATE SELECT info_schema plugin_version PRESENT
     mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX
     const api = makeApi();
     await api.ensureSessionsTable("sessions");
@@ -585,7 +601,8 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
     expect(createSql).toContain("sessions");
     expect(createSql).toContain("JSONB");
     expect(createSql).toContain("USING deeplake");
-    const indexSql = JSON.parse(mockFetch.mock.calls[4][1].body).query;
+    expect(createSql).toContain("plugin_version TEXT NOT NULL DEFAULT ''");
+    const indexSql = JSON.parse(mockFetch.mock.calls[5][1].body).query;
     expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
     expect(indexSql).toContain("\"sessions\"");
     expect(indexSql).toContain("(\"path\", \"creation_date\")");
@@ -599,17 +616,18 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [] })); // SELECT info_schema embedding: missing
     mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER embedding
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT agent: present (focus this test on the embedding flow)
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT plugin_version: present
     mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX
     const api = makeApi();
     await api.ensureSessionsTable("sessions");
-    expect(mockFetch).toHaveBeenCalledTimes(5);
+    expect(mockFetch).toHaveBeenCalledTimes(6);
     const schemaSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
     expect(schemaSql).toContain("information_schema.columns");
     expect(schemaSql).toContain("message_embedding");
     const alterSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
     expect(alterSql).toContain("ALTER TABLE");
     expect(alterSql).toContain("message_embedding FLOAT4[]");
-    const indexSql = JSON.parse(mockFetch.mock.calls[4][1].body).query;
+    const indexSql = JSON.parse(mockFetch.mock.calls[5][1].body).query;
     expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
   });
 
@@ -620,10 +638,11 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
     });
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT embedding: present
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT agent: present
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT plugin_version: present
     mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX
     const api = makeApi();
     await api.ensureSessionsTable("sessions");
-    expect(mockFetch).toHaveBeenCalledTimes(4);
+    expect(mockFetch).toHaveBeenCalledTimes(5);
     const allSql = mockFetch.mock.calls.filter(c => c[1]?.body).map(c => JSON.parse(c[1].body).query).join(" | ");
     expect(allSql).not.toContain("ALTER TABLE");
   });
@@ -636,11 +655,12 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [] })); // SELECT info_schema embedding: missing
     mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER embedding ok
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT agent: present
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT plugin_version: present
     mockFetch.mockResolvedValueOnce(jsonResponse("forbidden", 403));
     const api = makeApi();
 
     await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
-    expect(mockFetch).toHaveBeenCalledTimes(5);
+    expect(mockFetch).toHaveBeenCalledTimes(6);
   });
 
   it("treats duplicate concurrent index creation errors as success and records a local marker", async () => {
@@ -651,6 +671,7 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [] })); // SELECT info_schema embedding: missing
     mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER embedding ok
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT agent: present
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT plugin_version: present
     mockFetch.mockResolvedValueOnce(jsonResponse("duplicate key value violates unique constraint \"pg_class_relname_nsp_index\"", 400));
 
     const api = makeApi();
@@ -707,11 +728,12 @@ describe("lookup-index marker with invalid updatedAt", () => {
       JSON.stringify({ updatedAt: "not-a-date" }),
     );
 
-    // Queue responses for: listTables (sessions present) + SELECT info_schema embedding (PRESENT, no ALTER) + SELECT info_schema agent (PRESENT, no ALTER) + CREATE INDEX
+    // Queue responses for: listTables (sessions present) + SELECT info_schema embedding (PRESENT, no ALTER) + SELECT info_schema agent (PRESENT, no ALTER) + SELECT info_schema plugin_version (PRESENT, no ALTER) + CREATE INDEX
     mockFetch
       .mockResolvedValueOnce(jsonResponse({ tables: [{ table_name: "sessions" }] }))         // listTables: sessions exists
       .mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }))           // message_embedding PRESENT → no ALTER
       .mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }))           // agent PRESENT → no ALTER
+      .mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }))           // plugin_version PRESENT → no ALTER
       .mockResolvedValueOnce(jsonResponse({ columns: [], rows: [] }));                       // CREATE INDEX (marker invalid → re-run)
 
     const api = makeApi();

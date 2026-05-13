@@ -6,7 +6,8 @@
  * in the background so they don't block session startup.
  */
 
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials } from "../../commands/auth.js";
 import { loadConfig } from "../../config.js";
@@ -16,9 +17,13 @@ import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
 import { makeWikiLogger } from "../../utils/wiki-log.js";
 import { autoUpdate } from "../shared/autoupdate.js";
+import { getInstalledVersion } from "../../utils/version-check.js";
 const log = (msg: string) => _log("codex-session-setup", msg);
 
 const { log: wikiLog } = makeWikiLogger(join(homedir(), ".codex", "hooks"));
+
+const __bundleDir = dirname(fileURLToPath(import.meta.url));
+const PLUGIN_VERSION = getInstalledVersion(__bundleDir, ".codex-plugin") ?? "";
 
 /** Create a placeholder summary via direct SQL INSERT. */
 async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
@@ -46,9 +51,9 @@ async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: str
   const filename = `${sessionId}.md`;
 
   await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'codex', '${now}', '${now}')`
+    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'codex', '${sqlStr(PLUGIN_VERSION)}', '${now}', '${now}')`
   );
 
   wikiLog(`SessionSetup: created placeholder for ${sessionId} (${cwd})`);

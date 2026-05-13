@@ -31,11 +31,15 @@ import {
   releaseLock,
 } from "../summary-state.js";
 import { bundleDirFromImportMeta, spawnCodexWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
+import { getInstalledVersion } from "../../utils/version-check.js";
 const log = (msg: string) => _log("codex-capture", msg);
 
 function resolveEmbedDaemonPath(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
 }
+
+const __bundleDir = dirname(fileURLToPath(import.meta.url));
+const PLUGIN_VERSION = getInstalledVersion(__bundleDir, ".codex-plugin") ?? "";
 
 interface CodexHookInput {
   session_id: string;
@@ -119,9 +123,9 @@ async function main(): Promise<void> {
   const embeddingSql = embeddingSqlLiteral(embedding);
 
   const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'codex', '${ts}', '${ts}')`;
+    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'codex', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}')`;
 
   try {
     await api.query(insertSql);

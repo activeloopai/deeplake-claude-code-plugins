@@ -112,7 +112,7 @@ function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
 // dist/src/hooks/cursor/spawn-wiki-worker.js
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join as join5 } from "node:path";
+import { dirname as dirname2, join as join6 } from "node:path";
 import { writeFileSync as writeFileSync2, mkdirSync as mkdirSync3 } from "node:fs";
 import { homedir as homedir4, tmpdir } from "node:os";
 
@@ -134,9 +134,51 @@ function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
   };
 }
 
+// dist/src/utils/version-check.js
+import { readFileSync as readFileSync3 } from "node:fs";
+import { dirname, join as join5 } from "node:path";
+function getInstalledVersion(bundleDir, pluginManifestDir) {
+  try {
+    const pluginJson = join5(bundleDir, "..", pluginManifestDir, "plugin.json");
+    const plugin = JSON.parse(readFileSync3(pluginJson, "utf-8"));
+    if (plugin.version)
+      return plugin.version;
+  } catch {
+  }
+  try {
+    const stamp = readFileSync3(join5(bundleDir, "..", ".hivemind_version"), "utf-8").trim();
+    if (stamp)
+      return stamp;
+  } catch {
+  }
+  const HIVEMIND_PKG_NAMES = /* @__PURE__ */ new Set([
+    "hivemind",
+    "hivemind-codex",
+    "@deeplake/hivemind",
+    "@deeplake/hivemind-codex",
+    "@activeloop/hivemind",
+    "@activeloop/hivemind-codex"
+  ]);
+  let dir = bundleDir;
+  for (let i = 0; i < 5; i++) {
+    const candidate = join5(dir, "package.json");
+    try {
+      const pkg = JSON.parse(readFileSync3(candidate, "utf-8"));
+      if (HIVEMIND_PKG_NAMES.has(pkg.name) && pkg.version)
+        return pkg.version;
+    } catch {
+    }
+    const parent = dirname(dir);
+    if (parent === dir)
+      break;
+    dir = parent;
+  }
+  return null;
+}
+
 // dist/src/hooks/cursor/spawn-wiki-worker.js
 var HOME = homedir4();
-var wikiLogger = makeWikiLogger(join5(HOME, ".cursor", "hooks"));
+var wikiLogger = makeWikiLogger(join6(HOME, ".cursor", "hooks"));
 var WIKI_LOG = wikiLogger.path;
 var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry.
 
@@ -198,9 +240,10 @@ function findCursorBin() {
 function spawnCursorWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
   const projectName = cwd.split("/").pop() || "unknown";
-  const tmpDir = join5(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  const tmpDir = join6(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
   mkdirSync3(tmpDir, { recursive: true });
-  const configFile = join5(tmpDir, "config.json");
+  const pluginVersion = getInstalledVersion(bundleDir, ".claude-plugin") ?? "";
+  const configFile = join6(tmpDir, "config.json");
   writeFileSync2(configFile, JSON.stringify({
     apiUrl: config.apiUrl,
     token: config.token,
@@ -211,15 +254,16 @@ function spawnCursorWikiWorker(opts) {
     sessionId,
     userName: config.userName,
     project: projectName,
+    pluginVersion,
     tmpDir,
     cursorBin: findCursorBin(),
     cursorModel: process.env.HIVEMIND_CURSOR_MODEL ?? "auto",
     wikiLog: WIKI_LOG,
-    hooksDir: join5(HOME, ".cursor", "hooks"),
+    hooksDir: join6(HOME, ".cursor", "hooks"),
     promptTemplate: WIKI_PROMPT_TEMPLATE
   }));
   wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
-  const workerPath = join5(bundleDir, "wiki-worker.js");
+  const workerPath = join6(bundleDir, "wiki-worker.js");
   spawn("nohup", ["node", workerPath, configFile], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"]
@@ -227,13 +271,13 @@ function spawnCursorWikiWorker(opts) {
   wikiLog(`${reason}: spawned summary worker for ${sessionId}`);
 }
 function bundleDirFromImportMeta(importMetaUrl) {
-  return dirname(fileURLToPath(importMetaUrl));
+  return dirname2(fileURLToPath(importMetaUrl));
 }
 
 // dist/src/skillify/spawn-skillify-worker.js
 import { spawn as spawn2 } from "node:child_process";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-import { dirname as dirname2, join as join7 } from "node:path";
+import { dirname as dirname3, join as join8 } from "node:path";
 import { writeFileSync as writeFileSync3, mkdirSync as mkdirSync4, appendFileSync as appendFileSync3, chmodSync } from "node:fs";
 import { homedir as homedir6, tmpdir as tmpdir2 } from "node:os";
 
@@ -241,7 +285,7 @@ import { homedir as homedir6, tmpdir as tmpdir2 } from "node:os";
 import { execFileSync } from "node:child_process";
 import { existsSync as existsSync3 } from "node:fs";
 import { homedir as homedir5 } from "node:os";
-import { join as join6 } from "node:path";
+import { join as join7 } from "node:path";
 function findAgentBin(agent) {
   const which = (name) => {
     try {
@@ -256,24 +300,24 @@ function findAgentBin(agent) {
   };
   switch (agent) {
     case "claude_code":
-      return which("claude") ?? join6(homedir5(), ".claude", "local", "claude");
+      return which("claude") ?? join7(homedir5(), ".claude", "local", "claude");
     case "codex":
       return which("codex") ?? "/usr/local/bin/codex";
     case "cursor":
       return which("cursor-agent") ?? "/usr/local/bin/cursor-agent";
     case "hermes":
-      return which("hermes") ?? join6(homedir5(), ".local", "bin", "hermes");
+      return which("hermes") ?? join7(homedir5(), ".local", "bin", "hermes");
     case "pi":
-      return which("pi") ?? join6(homedir5(), ".local", "bin", "pi");
+      return which("pi") ?? join7(homedir5(), ".local", "bin", "pi");
   }
 }
 
 // dist/src/skillify/spawn-skillify-worker.js
 var HOME2 = homedir6();
-var SKILLIFY_LOG = join7(HOME2, ".claude", "hooks", "skillify.log");
+var SKILLIFY_LOG = join8(HOME2, ".claude", "hooks", "skillify.log");
 function skillifyLog(msg) {
   try {
-    mkdirSync4(dirname2(SKILLIFY_LOG), { recursive: true });
+    mkdirSync4(dirname3(SKILLIFY_LOG), { recursive: true });
     appendFileSync3(SKILLIFY_LOG, `[${utcTimestamp()}] ${msg}
 `);
   } catch {
@@ -281,10 +325,10 @@ function skillifyLog(msg) {
 }
 function spawnSkillifyWorker(opts) {
   const { config, cwd, projectKey, project, bundleDir, agent, scopeConfig, currentSessionId, reason } = opts;
-  const tmpDir = join7(tmpdir2(), `deeplake-skillify-${projectKey}-${Date.now()}`);
+  const tmpDir = join8(tmpdir2(), `deeplake-skillify-${projectKey}-${Date.now()}`);
   mkdirSync4(tmpDir, { recursive: true, mode: 448 });
   const gateBin = findAgentBin(agent);
-  const configFile = join7(tmpDir, "config.json");
+  const configFile = join8(tmpDir, "config.json");
   writeFileSync3(configFile, JSON.stringify({
     apiUrl: config.apiUrl,
     token: config.token,
@@ -315,7 +359,7 @@ function spawnSkillifyWorker(opts) {
   } catch {
   }
   skillifyLog(`${reason}: spawning skillify worker for project=${project} key=${projectKey}`);
-  const workerPath = join7(bundleDir, "skillify-worker.js");
+  const workerPath = join8(bundleDir, "skillify-worker.js");
   spawn2("nohup", ["node", workerPath, configFile], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"]
@@ -324,25 +368,25 @@ function spawnSkillifyWorker(opts) {
 }
 
 // dist/src/skillify/state.js
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync4, writeSync as writeSync2, mkdirSync as mkdirSync5, renameSync as renameSync3, existsSync as existsSync5, unlinkSync as unlinkSync2, openSync as openSync2, closeSync as closeSync2 } from "node:fs";
+import { readFileSync as readFileSync4, writeFileSync as writeFileSync4, writeSync as writeSync2, mkdirSync as mkdirSync5, renameSync as renameSync3, existsSync as existsSync5, unlinkSync as unlinkSync2, openSync as openSync2, closeSync as closeSync2 } from "node:fs";
 import { execSync as execSync2 } from "node:child_process";
 import { homedir as homedir8 } from "node:os";
 import { createHash } from "node:crypto";
-import { join as join9, basename } from "node:path";
+import { join as join10, basename } from "node:path";
 
 // dist/src/skillify/legacy-migration.js
 import { existsSync as existsSync4, renameSync as renameSync2 } from "node:fs";
 import { homedir as homedir7 } from "node:os";
-import { join as join8 } from "node:path";
+import { join as join9 } from "node:path";
 var dlog2 = (msg) => log("skillify-migrate", msg);
 var attempted = false;
 function migrateLegacyStateDir() {
   if (attempted)
     return;
   attempted = true;
-  const root = join8(homedir7(), ".deeplake", "state");
-  const legacy = join8(root, "skilify");
-  const current = join8(root, "skillify");
+  const root = join9(homedir7(), ".deeplake", "state");
+  const legacy = join9(root, "skilify");
+  const current = join9(root, "skillify");
   if (!existsSync4(legacy))
     return;
   if (existsSync4(current))
@@ -362,17 +406,17 @@ function migrateLegacyStateDir() {
 
 // dist/src/skillify/state.js
 var dlog3 = (msg) => log("skillify-state", msg);
-var STATE_DIR2 = join9(homedir8(), ".deeplake", "state", "skillify");
+var STATE_DIR2 = join10(homedir8(), ".deeplake", "state", "skillify");
 var YIELD_BUF2 = new Int32Array(new SharedArrayBuffer(4));
 var TRIGGER_THRESHOLD = (() => {
   const n = Number(process.env.HIVEMIND_SKILLIFY_EVERY_N_TURNS ?? "");
   return Number.isInteger(n) && n > 0 ? n : 20;
 })();
 function statePath(projectKey) {
-  return join9(STATE_DIR2, `${projectKey}.json`);
+  return join10(STATE_DIR2, `${projectKey}.json`);
 }
 function lockPath2(projectKey) {
-  return join9(STATE_DIR2, `${projectKey}.lock`);
+  return join10(STATE_DIR2, `${projectKey}.lock`);
 }
 var DEFAULT_PORTS = {
   http: "80",
@@ -421,7 +465,7 @@ function readState(projectKey) {
   if (!existsSync5(p))
     return null;
   try {
-    return JSON.parse(readFileSync3(p, "utf-8"));
+    return JSON.parse(readFileSync4(p, "utf-8"));
   } catch {
     return null;
   }
@@ -483,7 +527,7 @@ function tryAcquireWorkerLock(projectKey, maxAgeMs = 10 * 60 * 1e3) {
   const p = lockPath2(projectKey);
   if (existsSync5(p)) {
     try {
-      const ageMs = Date.now() - parseInt(readFileSync3(p, "utf-8"), 10);
+      const ageMs = Date.now() - parseInt(readFileSync4(p, "utf-8"), 10);
       if (Number.isFinite(ageMs) && ageMs < maxAgeMs)
         return false;
     } catch (readErr) {
@@ -517,18 +561,18 @@ function releaseWorkerLock(projectKey) {
 }
 
 // dist/src/skillify/scope-config.js
-import { existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync4, writeFileSync as writeFileSync5 } from "node:fs";
+import { existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync5, writeFileSync as writeFileSync5 } from "node:fs";
 import { homedir as homedir9 } from "node:os";
-import { join as join10 } from "node:path";
-var STATE_DIR3 = join10(homedir9(), ".deeplake", "state", "skillify");
-var CONFIG_PATH = join10(STATE_DIR3, "config.json");
+import { join as join11 } from "node:path";
+var STATE_DIR3 = join11(homedir9(), ".deeplake", "state", "skillify");
+var CONFIG_PATH = join11(STATE_DIR3, "config.json");
 var DEFAULT = { scope: "me", team: [], install: "project" };
 function loadScopeConfig() {
   migrateLegacyStateDir();
   if (!existsSync6(CONFIG_PATH))
     return DEFAULT;
   try {
-    const raw = JSON.parse(readFileSync4(CONFIG_PATH, "utf-8"));
+    const raw = JSON.parse(readFileSync5(CONFIG_PATH, "utf-8"));
     const scope = raw.scope === "team" || raw.scope === "org" ? raw.scope : "me";
     const team = Array.isArray(raw.team) ? raw.team.filter((s) => typeof s === "string") : [];
     const install = raw.install === "global" ? "global" : "project";

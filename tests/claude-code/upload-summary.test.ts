@@ -192,6 +192,70 @@ describe("uploadSummary — summary_embedding column", () => {
   });
 });
 
+describe("uploadSummary — plugin_version column", () => {
+  it("INSERT path stamps the supplied pluginVersion literal", async () => {
+    const { fn, calls } = makeSpyQuery([[]]);
+    await uploadSummary(fn, {
+      ...BASE,
+      text: TEXT_WITH_WHAT_HAPPENED,
+      pluginVersion: "0.7.18",
+    });
+    const insert = calls.find(c => /^INSERT INTO/i.test(c))!;
+    expect(insert).toMatch(/\(\s*id[^)]*\bplugin_version\b[^)]*\)/);
+    expect(insert).toContain("'0.7.18'");
+  });
+
+  it("INSERT path defaults pluginVersion to '' when caller omits it (matches column DEFAULT)", async () => {
+    const { fn, calls } = makeSpyQuery([[]]);
+    await uploadSummary(fn, { ...BASE, text: TEXT_WITH_WHAT_HAPPENED });
+    const insert = calls.find(c => /^INSERT INTO/i.test(c))!;
+    expect(insert).toMatch(/\(\s*id[^)]*\bplugin_version\b[^)]*\)/);
+    // INSERT VALUES list must include an empty literal for plugin_version
+    // (between 'agent' and the creation_date timestamp).
+    expect(insert).toMatch(/'',\s*'\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("UPDATE path sets plugin_version when caller supplies it", async () => {
+    const { fn, calls } = makeSpyQuery([[{ path: BASE.vpath }]]);
+    await uploadSummary(fn, {
+      ...BASE,
+      text: TEXT_WITH_WHAT_HAPPENED,
+      pluginVersion: "0.7.18",
+    });
+    const update = calls.find(c => /^UPDATE/i.test(c))!;
+    expect(update).toContain("plugin_version = '0.7.18'");
+  });
+
+  it("UPDATE path explicitly clearing pluginVersion with '' writes it (escape-hatch for callers)", async () => {
+    const { fn, calls } = makeSpyQuery([[{ path: BASE.vpath }]]);
+    await uploadSummary(fn, {
+      ...BASE,
+      text: TEXT_WITH_WHAT_HAPPENED,
+      pluginVersion: "",
+    });
+    const update = calls.find(c => /^UPDATE/i.test(c))!;
+    expect(update).toContain("plugin_version = ''");
+  });
+
+  // Regression guard for the CodeRabbit finding on PR #120: a legacy
+  // spawner whose config.json predates the pluginVersion field would
+  // pass `cfg.pluginVersion === undefined` through to uploadSummary.
+  // If the worker turned that into "" via the old `?? ""` collapse, the
+  // UPDATE would erase a previously-stored real version. The fix: keep
+  // the column OUT of the SET clause entirely when pluginVersion is
+  // undefined — the existing row value survives untouched.
+  it("UPDATE path omits plugin_version from SET when caller passes undefined (preserves stored value)", async () => {
+    const { fn, calls } = makeSpyQuery([[{ path: BASE.vpath }]]);
+    await uploadSummary(fn, { ...BASE, text: TEXT_WITH_WHAT_HAPPENED });
+    const update = calls.find(c => /^UPDATE/i.test(c))!;
+    // Must NOT touch the column.
+    expect(update).not.toMatch(/plugin_version\s*=/);
+    // Must still update the other columns (summary + description).
+    expect(update).toMatch(/summary\s*=\s*E'/);
+    expect(update).toMatch(/description\s*=\s*E'/);
+  });
+});
+
 describe("extractDescription", () => {
   it("extracts the What Happened section trimmed to 300 chars", () => {
     const d = extractDescription(TEXT_WITH_WHAT_HAPPENED);

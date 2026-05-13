@@ -94,6 +94,20 @@ function loadCreds(): Creds | null {
 const MEMORY_TABLE = process.env.HIVEMIND_TABLE ?? "memory";
 const SESSIONS_TABLE = process.env.HIVEMIND_SESSIONS_TABLE ?? "sessions";
 
+// Read the hivemind version stamped by `hivemind pi install` into
+// ~/.pi/agent/.hivemind/.hivemind_version. The installer writes this
+// at install time (see src/cli/install-pi.ts), so by the time this
+// extension loads the file should be present. Resolved once and reused
+// — the version doesn't change for the lifetime of a pi process.
+const PLUGIN_VERSION: string = (() => {
+  try {
+    const stamp = readFileSync(join(homedir(), ".pi", "agent", ".hivemind", ".hivemind_version"), "utf-8").trim();
+    return stamp || "";
+  } catch {
+    return "";
+  }
+})();
+
 // ---------- SQL escape (matches src/utils/sql.ts) ------------------------------
 
 function sqlStr(value: string): string {
@@ -422,6 +436,7 @@ function spawnWikiWorker(
     sessionId,
     userName: creds.userName,
     project,
+    pluginVersion: PLUGIN_VERSION,
     tmpDir,
     piBin: findPiBin(),
     piProvider: process.env.HIVEMIND_PI_PROVIDER ?? "google",
@@ -626,9 +641,9 @@ async function writeSessionRow(
   const emb = await embed(line);
   logHm(`writeSessionRow: embed=${emb ? `dims=${emb.length}` : "null"}`);
   const insertSql =
-    `INSERT INTO "${SESSIONS_TABLE}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `INSERT INTO "${SESSIONS_TABLE}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embedSqlLiteral(emb)}, '${sqlStr(creds.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', '${agent}', '${ts}', '${ts}')`;
+    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', '${agent}', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}')`;
   let lastErr: any = null;
   for (let attempt = 0; attempt <= INSERT_RETRY_BACKOFFS_MS.length; attempt++) {
     try {

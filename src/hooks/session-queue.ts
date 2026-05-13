@@ -30,6 +30,7 @@ export interface QueuedSessionRow {
   project: string;
   description: string;
   agent: string;
+  pluginVersion: string;
   creationDate: string;
   lastUpdateDate: string;
 }
@@ -96,6 +97,7 @@ export function buildQueuedSessionRow(args: {
   projectName: string;
   description: string;
   agent: string;
+  pluginVersion?: string;
   timestamp: string;
 }): QueuedSessionRow {
   return {
@@ -108,6 +110,7 @@ export function buildQueuedSessionRow(args: {
     project: args.projectName,
     description: args.description,
     agent: args.agent,
+    pluginVersion: args.pluginVersion ?? "",
     creationDate: args.timestamp,
     lastUpdateDate: args.timestamp,
   };
@@ -129,13 +132,13 @@ export function buildSessionInsertSql(sessionsTable: string, rows: QueuedSession
     return (
       `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, ` +
       `'${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', ` +
-      `'${sqlStr(row.agent)}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`
+      `'${sqlStr(row.agent)}', '${sqlStr(row.pluginVersion ?? "")}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`
     );
   }).join(", ");
 
   return (
     `INSERT INTO "${table}" ` +
-    `(id, path, filename, message, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `(id, path, filename, message, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `VALUES ${values}`
   );
 }
