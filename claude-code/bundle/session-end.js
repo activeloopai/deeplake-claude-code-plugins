@@ -590,7 +590,7 @@ function forceSessionEndTrigger(opts) {
 }
 
 // dist/src/notifications/transcript-parser.js
-import { existsSync as existsSync7, readFileSync as readFileSync5 } from "node:fs";
+import { existsSync as existsSync7, readFileSync as readFileSync6 } from "node:fs";
 var log2 = (msg) => log("transcript-parser", msg);
 function parseTranscript(transcriptPath, fallbackSessionId, now = /* @__PURE__ */ new Date()) {
   const empty = {
@@ -605,7 +605,7 @@ function parseTranscript(transcriptPath, fallbackSessionId, now = /* @__PURE__ *
   }
   let raw;
   try {
-    raw = readFileSync5(transcriptPath, "utf-8");
+    raw = readFileSync6(transcriptPath, "utf-8");
   } catch (e) {
     log2(`read failed: ${e?.message ?? String(e)}`);
     return empty;
@@ -680,15 +680,15 @@ function toolResultByteLength(content) {
 }
 
 // dist/src/notifications/usage-tracker.js
-import { appendFileSync as appendFileSync4, existsSync as existsSync8, mkdirSync as mkdirSync7, readFileSync as readFileSync6, readdirSync } from "node:fs";
-import { dirname as dirname3, join as join11 } from "node:path";
+import { appendFileSync as appendFileSync4, existsSync as existsSync8, mkdirSync as mkdirSync7, readFileSync as readFileSync7, readdirSync } from "node:fs";
+import { dirname as dirname4, join as join12 } from "node:path";
 import { homedir as homedir10 } from "node:os";
 var log3 = (msg) => log("usage-tracker", msg);
 function statsFilePath() {
-  return join11(homedir10(), ".deeplake", "usage-stats.jsonl");
+  return join12(homedir10(), ".deeplake", "usage-stats.jsonl");
 }
 function ensureStatsDir() {
-  const dir = dirname3(statsFilePath());
+  const dir = dirname4(statsFilePath());
   if (!existsSync8(dir))
     mkdirSync7(dir, { recursive: true });
 }
