@@ -5548,7 +5548,7 @@ function decideTargetForManifestEntry(entry, opts, userFilter, haveUserFilter) {
 import { spawn } from "node:child_process";
 import { existsSync as existsSync21, mkdirSync as mkdirSync8, readFileSync as readFileSync14, writeFileSync as writeFileSync10 } from "node:fs";
 import { homedir as homedir14 } from "node:os";
-import { dirname as dirname4, join as join24 } from "node:path";
+import { basename, dirname as dirname4, join as join24 } from "node:path";
 
 // dist/src/skillify/local-source.js
 import { readdirSync as readdirSync4, readFileSync as readFileSync13, existsSync as existsSync19, statSync as statSync4 } from "node:fs";
@@ -6222,6 +6222,10 @@ async function runMineLocal(args) {
       flat.push({ skill: sk, session: r.session });
   }
   flat.sort((a, b) => b.session.mtime - a.session.mtime);
+  const fanOutRoots = detectAgentSkillsRoots(skillsRoot);
+  if (fanOutRoots.length > 0) {
+    console.log(`Fan-out targets: ${fanOutRoots.join(", ")}`);
+  }
   const written = [];
   const knownSummaries = [...existingSummaries];
   for (const { skill, session } of flat) {
@@ -6240,8 +6244,11 @@ async function runMineLocal(args) {
         sourceSessions: [session.sessionId],
         agent: gateAgent
       });
-      console.log(`  wrote ${skill.name} \u2190 session ${session.sessionId.slice(0, 8)} (${session.agent})`);
-      written.push({ skill, session, result });
+      const canonicalDir = dirname4(result.path);
+      const symlinks = fanOutRoots.length > 0 ? fanOutSymlinks(canonicalDir, basename(canonicalDir), fanOutRoots) : [];
+      const symlinkSuffix = symlinks.length > 0 ? `, fan-out \u2192 ${symlinks.length} root(s)` : "";
+      console.log(`  wrote ${skill.name} \u2190 session ${session.sessionId.slice(0, 8)} (${session.agent}${symlinkSuffix})`);
+      written.push({ skill, session, result, symlinks });
       knownSummaries.push({ name: skill.name, desc: skill.description });
     } catch (e) {
       if (/already exists/i.test(e.message ?? "")) {
@@ -6253,9 +6260,10 @@ async function runMineLocal(args) {
   }
   if (written.length > 0) {
     const existing = loadManifest2();
-    const newEntries = written.map(({ skill, session, result }) => ({
+    const newEntries = written.map(({ skill, session, result, symlinks }) => ({
       skill_name: skill.name,
       canonical_path: result.path,
+      symlinks,
       source_session_ids: [session.sessionId],
       source_session_paths: [session.path],
       source_agent: session.agent,

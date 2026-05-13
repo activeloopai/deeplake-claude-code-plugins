@@ -23,7 +23,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import {
   detectInstalledAgents,
@@ -38,6 +38,8 @@ import { extractPairs, type Pair } from "../skillify/extractors/index.js";
 import { findAgentBin, type Agent } from "../skillify/gate-runner.js";
 import { extractJsonBlock } from "../skillify/gate-parser.js";
 import { resolveSkillsRoot, writeNewSkill, listSkills, parseFrontmatter } from "../skillify/skill-writer.js";
+import { detectAgentSkillsRoots } from "../skillify/agent-roots.js";
+import { fanOutSymlinks } from "../skillify/pull.js";
 
 const EPSILON = 0.3;
 const DEFAULT_N = 8;
@@ -56,6 +58,8 @@ const MANIFEST_PATH = join(homedir(), ".claude", "hivemind", "local-mined.json")
 interface ManifestEntry {
   skill_name: string;
   canonical_path: string;
+  /** Symlink targets created in other agents' skill roots (see fanOutSymlinks). */
+  symlinks: string[];
   source_session_ids: string[];
   source_session_paths: string[];
   source_agent: string;
@@ -530,7 +534,18 @@ export async function runMineLocal(args: string[]): Promise<void> {
   }
   flat.sort((a, b) => b.session.mtime - a.session.mtime);
 
-  const written: Array<{ skill: MinedSkill; session: SessionFile; result: { path: string; createdAt: string } }> = [];
+  // Compute fan-out targets once: which non-Claude agent skill roots are
+  // installed on this machine? We reuse the same detector + symlink helper
+  // that `hivemind skillify pull` uses, so a mined skill ends up visible
+  // to every agent (codex, hermes, pi via ~/.agents/skills/, ~/.hermes/skills/,
+  // ~/.pi/agent/skills/). Cursor has no native skill discovery and is
+  // intentionally excluded by detectAgentSkillsRoots.
+  const fanOutRoots = detectAgentSkillsRoots(skillsRoot);
+  if (fanOutRoots.length > 0) {
+    console.log(`Fan-out targets: ${fanOutRoots.join(", ")}`);
+  }
+
+  const written: Array<{ skill: MinedSkill; session: SessionFile; result: { path: string; createdAt: string }; symlinks: string[] }> = [];
   const knownSummaries: Array<{ name: string; desc: string }> = [...existingSummaries];
 
   for (const { skill, session } of flat) {
@@ -549,8 +564,13 @@ export async function runMineLocal(args: string[]): Promise<void> {
         sourceSessions: [session.sessionId],
         agent: gateAgent,
       });
-      console.log(`  wrote ${skill.name} ← session ${session.sessionId.slice(0, 8)} (${session.agent})`);
-      written.push({ skill, session, result });
+      const canonicalDir = dirname(result.path);
+      const symlinks = fanOutRoots.length > 0
+        ? fanOutSymlinks(canonicalDir, basename(canonicalDir), fanOutRoots)
+        : [];
+      const symlinkSuffix = symlinks.length > 0 ? `, fan-out → ${symlinks.length} root(s)` : "";
+      console.log(`  wrote ${skill.name} ← session ${session.sessionId.slice(0, 8)} (${session.agent}${symlinkSuffix})`);
+      written.push({ skill, session, result, symlinks });
       knownSummaries.push({ name: skill.name, desc: skill.description });
     } catch (e: any) {
       if (/already exists/i.test(e.message ?? "")) {
@@ -567,9 +587,10 @@ export async function runMineLocal(args: string[]): Promise<void> {
 
   if (written.length > 0) {
     const existing = loadManifest();
-    const newEntries: ManifestEntry[] = written.map(({ skill, session, result }) => ({
+    const newEntries: ManifestEntry[] = written.map(({ skill, session, result, symlinks }) => ({
       skill_name: skill.name,
       canonical_path: result.path,
+      symlinks,
       source_session_ids: [session.sessionId],
       source_session_paths: [session.path],
       source_agent: session.agent,
