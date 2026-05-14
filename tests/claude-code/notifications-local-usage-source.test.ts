@@ -25,15 +25,23 @@ function rec(over: Partial<UsageRecord> = {}): UsageRecord {
   };
 }
 
+let ORIGINAL_MIN_SESSIONS: string | undefined;
+
 beforeEach(() => {
   TEMP_HOME = mkdtempSync(join(tmpdir(), "hivemind-local-usage-test-"));
   ORIGINAL_HOME = process.env.HOME;
   process.env.HOME = TEMP_HOME;
+  // Lower the threshold to 0 for most tests; tests that specifically verify
+  // the threshold itself set their own value within the `it` block.
+  ORIGINAL_MIN_SESSIONS = process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS;
+  process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS = "0";
 });
 
 afterEach(() => {
   if (ORIGINAL_HOME !== undefined) process.env.HOME = ORIGINAL_HOME;
   else delete process.env.HOME;
+  if (ORIGINAL_MIN_SESSIONS !== undefined) process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS = ORIGINAL_MIN_SESSIONS;
+  else delete process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS;
   rmSync(TEMP_HOME, { recursive: true, force: true });
 });
 
@@ -191,5 +199,68 @@ describe("fetchLocalUsageNotifications — skills-generated segment", () => {
 
     const out = fetchLocalUsageNotifications("sess-abc", "kamo");
     expect(out[0].body).not.toContain("skills generated");
+  });
+});
+
+describe("fetchLocalUsageNotifications — MIN_SESSIONS_FOR_RECAP threshold", () => {
+  it("returns [] when sessions < threshold even if memorySearchBytes > 0", () => {
+    process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS = "100";
+    // 50 records, each with real memory activity. Should NOT fire because below threshold.
+    for (let i = 0; i < 50; i++) {
+      appendUsageRecord(rec({ sessionId: `s-${i}`, memorySearchBytes: 5000, memorySearchCount: 3 }));
+    }
+    expect(fetchLocalUsageNotifications("sess-abc", undefined)).toEqual([]);
+  });
+
+  it("fires when sessions == threshold (boundary)", () => {
+    process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS = "100";
+    for (let i = 0; i < 100; i++) {
+      appendUsageRecord(rec({ sessionId: `s-${i}`, memorySearchBytes: 5000, memorySearchCount: 3 }));
+    }
+    const out = fetchLocalUsageNotifications("sess-abc", undefined);
+    expect(out).toHaveLength(1);
+    expect(out[0].body).toContain("100 sessions");
+  });
+
+  it("fires when sessions > threshold", () => {
+    process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS = "100";
+    for (let i = 0; i < 150; i++) {
+      appendUsageRecord(rec({ sessionId: `s-${i}`, memorySearchBytes: 5000, memorySearchCount: 3 }));
+    }
+    const out = fetchLocalUsageNotifications("sess-abc", undefined);
+    expect(out).toHaveLength(1);
+    expect(out[0].body).toContain("150 sessions");
+  });
+
+  it("defaults to threshold of 100 when env var is unset", () => {
+    delete process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS;
+    // 99 records → below the 100 default → no fire
+    for (let i = 0; i < 99; i++) {
+      appendUsageRecord(rec({ sessionId: `s-${i}`, memorySearchBytes: 5000, memorySearchCount: 3 }));
+    }
+    expect(fetchLocalUsageNotifications("sess-abc", undefined)).toEqual([]);
+  });
+
+  it("non-integer env var falls back to default 100", () => {
+    process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS = "not-a-number";
+    for (let i = 0; i < 50; i++) {
+      appendUsageRecord(rec({ sessionId: `s-${i}`, memorySearchBytes: 5000, memorySearchCount: 3 }));
+    }
+    expect(fetchLocalUsageNotifications("sess-abc", undefined)).toEqual([]);
+  });
+
+  it("negative env var falls back to default 100", () => {
+    process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS = "-5";
+    for (let i = 0; i < 50; i++) {
+      appendUsageRecord(rec({ sessionId: `s-${i}`, memorySearchBytes: 5000, memorySearchCount: 3 }));
+    }
+    expect(fetchLocalUsageNotifications("sess-abc", undefined)).toEqual([]);
+  });
+
+  it("env var of 0 disables the threshold (used by other tests in this file)", () => {
+    process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS = "0";
+    appendUsageRecord(rec({ sessionId: "s-1", memorySearchBytes: 5000, memorySearchCount: 3 }));
+    appendUsageRecord(rec({ sessionId: "s-2", memorySearchBytes: 5000, memorySearchCount: 3 }));
+    expect(fetchLocalUsageNotifications("sess-abc", undefined)).toHaveLength(1);
   });
 });

@@ -354,6 +354,15 @@ function countUserGeneratedSkills(userName) {
 var log6 = (msg) => log("notifications-local-usage", msg);
 var BYTES_PER_TOKEN = 4;
 var SAVINGS_MULTIPLIER = 1.7;
+function minSessionsForRecap() {
+  const raw = process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS;
+  if (typeof raw === "string" && raw.length > 0) {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n >= 0)
+      return n;
+  }
+  return 100;
+}
 function formatTokens(n) {
   if (!Number.isFinite(n) || n <= 0)
     return "0";
@@ -378,6 +387,11 @@ function fetchLocalUsageNotifications(sessionId, userName) {
   }
   if (records.length === 0) {
     log6("no usage records yet \u2014 skipping recap");
+    return [];
+  }
+  const minSessions = minSessionsForRecap();
+  if (records.length < minSessions) {
+    log6(`only ${records.length} sessions, threshold is ${minSessions} \u2014 skipping recap`);
     return [];
   }
   const memorySearchBytes = sumMetric(records, "memorySearchBytes");

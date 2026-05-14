@@ -44,6 +44,25 @@ const BYTES_PER_TOKEN = 4;
  *  actually delivered. See plan + docs/FAQ. */
 const SAVINGS_MULTIPLIER = 1.7;
 
+/** Minimum cumulative session count before the savings recap is shown.
+ *  Below this, the number reads as a rounding error and the banner is
+ *  premature ("Hivemind has saved you ~200 tokens"). With Activeloop's
+ *  typical 100-1000 sessions/day usage, 100 fires within a day or two
+ *  of real use — late enough that the displayed savings number is
+ *  substantive, soon enough that users don't wait weeks.
+ *
+ *  Overridable via `HIVEMIND_NOTIFICATIONS_MIN_SESSIONS` env var for
+ *  testing + power-user tuning. Non-integer / non-positive values fall
+ *  back to the production default. */
+function minSessionsForRecap(): number {
+  const raw = process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS;
+  if (typeof raw === "string" && raw.length > 0) {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n >= 0) return n;
+  }
+  return 100;
+}
+
 /** 1234 → "1.2k", 12345 → "12.3k", 1234567 → "1.2M". Caller prepends `~`. */
 export function formatTokens(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return "0";
@@ -75,6 +94,12 @@ export function fetchLocalUsageNotifications(sessionId: string | undefined, user
 
   if (records.length === 0) {
     log("no usage records yet — skipping recap");
+    return [];
+  }
+
+  const minSessions = minSessionsForRecap();
+  if (records.length < minSessions) {
+    log(`only ${records.length} sessions, threshold is ${minSessions} — skipping recap`);
     return [];
   }
 
