@@ -238,7 +238,7 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     // HIVEMIND_SKILLIFY_WORKER=1 recursion guard set on spawn env
     expect(src).toMatch(/HIVEMIND_SKILLIFY_WORKER:\s*"1"/);
     // agent_end hook calls it after the capture loop
-    expect(src).toMatch(/agent_end[\s\S]{0,3500}Auto-captured[\s\S]{0,500}spawnOpenclawSkillifyWorker/);
+    expect(src).toMatch(/agent_end[\s\S]{0,3500}Auto-captured[\s\S]{0,1500}spawnOpenclawSkillifyWorker/);
     // install: "global" — no per-project cwd, skills land under ~/.claude/skills/
     expect(src).toMatch(/install:\s*"global"/);
   });
@@ -290,6 +290,53 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     expect(text).toMatch(/INSERT INTO/);
     expect(text).toMatch(/gate-runner|runGate/);
     expect(text).toMatch(/skillifyLog/);
+  });
+
+  it("openclaw deduplicates skillify spawns by session_id (one spawn per session per runtime)", () => {
+    // Issue #100: without this guard, every agent_end in a long session
+    // re-fires the worker. Lock prevents overlap, not redundant re-spawn —
+    // each redundant fire still costs ~250ms of SQL roundtrip and process churn.
+    const src = readFileSync(resolve(BUNDLE_ROOT, "openclaw", "src", "index.ts"), "utf-8");
+    expect(src).toMatch(/skillifySpawnedFor\s*=\s*new Set/);
+    expect(src).toMatch(/skillifySpawnedFor\.has\(sid\)/);
+    expect(src).toMatch(/skillifySpawnedFor\.add\(sid\)/);
+  });
+
+  it("openclaw skillify spawn lock checks for staleness before refusing to fire", () => {
+    // Issue #110: O_CREAT|O_EXCL without staleness check meant an abnormally
+    // dead worker (OOM / segfault / host kill) left an empty lock that every
+    // subsequent agent_end skipped on forever. Lock now stamps a timestamp
+    // on create and treats any existing lock older than maxAgeMs as stale.
+    // Acquisition is atomic via writeFileSync(..., { flag: "wx" }) so a
+    // concurrent acquirer can never observe a zero-byte lock and racily
+    // classify it as stale.
+    const src = readFileSync(resolve(BUNDLE_ROOT, "openclaw", "src", "index.ts"), "utf-8");
+    expect(src).toMatch(/maxAgeMs\s*=\s*10\s*\*\s*60\s*\*\s*1000/);
+    expect(src).toMatch(/fsWriteFile\(lockPath,\s*String\(Date\.now\(\)\),\s*\{\s*flag:\s*"wx"\s*\}\)/);
+    expect(src).toMatch(/fsUnlink\(lockPath\)/);
+    // Regression: the unsafe two-step open(O_EXCL)+writeSync sequence is gone.
+    expect(src).not.toMatch(/O_EXCL/);
+  });
+
+  it("openclaw skillify spawn memoizes session_id ONLY after spawn succeeds", () => {
+    // Issue #100 follow-up: if spawnOpenclawSkillifyWorker returns early
+    // (lock contention, missing delegate CLI, config-write fail) the
+    // session_id must NOT be marked as handled — the next agent_end should
+    // retry. spawnOpenclawSkillifyWorker now returns a boolean and the
+    // caller only .add(sid)s on true.
+    const src = readFileSync(resolve(BUNDLE_ROOT, "openclaw", "src", "index.ts"), "utf-8");
+    expect(src).toMatch(/function spawnOpenclawSkillifyWorker\([^)]*\):\s*boolean/);
+    expect(src).toMatch(/if\s*\(spawned\)\s*skillifySpawnedFor\.add\(sid\)/);
+  });
+
+  it("openclaw checkForUpdate uses a 10s AbortSignal (was too aggressive at 3-5s)", () => {
+    // Issues #105 / #109: cold gateway TLS + bonjour-watchdog noise exceeds
+    // 3-5s. Registry steady-state is ~167ms so 10s is plenty of headroom
+    // without adding meaningful blocking delay on the gateway-init path.
+    const src = readFileSync(resolve(BUNDLE_ROOT, "openclaw", "src", "index.ts"), "utf-8");
+    expect(src).not.toMatch(/AbortSignal\.timeout\(\s*(?:3000|5000)\s*\)/);
+    const sites = src.match(/AbortSignal\.timeout\(\s*10000\s*\)/g) ?? [];
+    expect(sites.length).toBeGreaterThanOrEqual(2);
   });
 });
 

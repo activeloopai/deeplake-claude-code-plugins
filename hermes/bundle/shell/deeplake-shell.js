@@ -69622,10 +69622,10 @@ function patternIsSemanticFriendly(pattern, fixedString) {
     return false;
   if (fixedString)
     return true;
-  const metaMatches = pattern.match(/[|()\[\]{}+?^$\\]/g);
-  if (!metaMatches)
-    return true;
-  return metaMatches.length <= 1;
+  const metaMatches = pattern.match(/[()\[\]{}+?^$\\]/g);
+  if (metaMatches && metaMatches.length > 1)
+    return false;
+  return pattern.split("|").length <= 8;
 }
 var MAX_FALLBACK_CANDIDATES = 500;
 function createGrepCommand(client, fs3, table, sessionsTable) {

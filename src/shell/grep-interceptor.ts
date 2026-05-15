@@ -43,10 +43,12 @@ function getGrepEmbedClient(): EmbedClient {
 function patternIsSemanticFriendly(pattern: string, fixedString: boolean): boolean {
   if (!pattern || pattern.length < 2) return false;
   if (fixedString) return true;
-  // Literal-ish patterns with only occasional `.*` are still fine for semantic.
-  const metaMatches = pattern.match(/[|()\[\]{}+?^$\\]/g);
-  if (!metaMatches) return true;
-  return metaMatches.length <= 1;
+  // `|` dropped from the metacharacter blacklist — synonym alternations are
+  // exactly what embeddings are good at. Cap alternative count so a
+  // pathological 50-clause pattern still falls back to lexical.
+  const metaMatches = pattern.match(/[()\[\]{}+?^$\\]/g);
+  if (metaMatches && metaMatches.length > 1) return false;
+  return pattern.split("|").length <= 8;
 }
 
 const MAX_FALLBACK_CANDIDATES = 500;

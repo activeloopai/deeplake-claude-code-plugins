@@ -1342,10 +1342,10 @@ function patternIsSemanticFriendly(pattern, fixedString) {
     return false;
   if (fixedString)
     return true;
-  const meta = pattern.match(/[|()\[\]{}+?^$\\]/g);
-  if (!meta)
-    return true;
-  return meta.length <= 1;
+  const meta = pattern.match(/[()\[\]{}+?^$\\]/g);
+  if (meta && meta.length > 1)
+    return false;
+  return pattern.split("|").length <= 8;
 }
 function splitFirstPipelineStage(cmd) {
   const input = cmd.trim();
@@ -2471,8 +2471,71 @@ function isSafe(cmd) {
   }
   return true;
 }
+var AGENT_COMMANDS = /* @__PURE__ */ new Set([
+  "claude",
+  "codex",
+  "cursor-agent",
+  "hermes",
+  "pi",
+  "openclaw"
+]);
+function splitShellStages(p) {
+  const out = [];
+  let cur = "";
+  let quote = null;
+  let escaped = false;
+  for (let i = 0; i < p.length; i++) {
+    const ch = p[i];
+    if (escaped) {
+      cur += ch;
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && ch === "\\") {
+      cur += ch;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      cur += ch;
+      if (ch === quote)
+        quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      cur += ch;
+      continue;
+    }
+    if (ch === ";" || ch === "\n") {
+      out.push(cur);
+      cur = "";
+      continue;
+    }
+    if (ch === "|" || ch === "&" && p[i + 1] === "&") {
+      out.push(cur);
+      cur = "";
+      if (ch === "&")
+        i++;
+      continue;
+    }
+    cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
 function touchesMemory(p) {
-  return p.includes(MEMORY_PATH) || p.includes(TILDE_PATH) || p.includes(HOME_VAR_PATH);
+  if (!p.includes(MEMORY_PATH) && !p.includes(TILDE_PATH) && !p.includes(HOME_VAR_PATH)) {
+    return false;
+  }
+  for (const stage of splitShellStages(p)) {
+    if (!stage.includes(MEMORY_PATH) && !stage.includes(TILDE_PATH) && !stage.includes(HOME_VAR_PATH))
+      continue;
+    const firstToken = stage.trim().split(/\s+/)[0] ?? "";
+    if (!AGENT_COMMANDS.has(firstToken))
+      return true;
+  }
+  return false;
 }
 function rewritePaths(cmd) {
   return cmd.replace(new RegExp(MEMORY_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?", "g"), "/").replace(/~\/.deeplake\/memory\/?/g, "/").replace(/\$HOME\/.deeplake\/memory\/?/g, "/").replace(/"\$HOME\/.deeplake\/memory\/?"/g, '"/"');

@@ -1321,10 +1321,10 @@ function patternIsSemanticFriendly(pattern, fixedString) {
     return false;
   if (fixedString)
     return true;
-  const meta = pattern.match(/[|()\[\]{}+?^$\\]/g);
-  if (!meta)
-    return true;
-  return meta.length <= 1;
+  const meta = pattern.match(/[()\[\]{}+?^$\\]/g);
+  if (meta && meta.length > 1)
+    return false;
+  return pattern.split("|").length <= 8;
 }
 function splitFirstPipelineStage(cmd) {
   const input = cmd.trim();
@@ -1662,15 +1662,232 @@ import { join as join7 } from "node:path";
 var MEMORY_PATH = join7(homedir5(), ".deeplake", "memory");
 var TILDE_PATH = "~/.deeplake/memory";
 var HOME_VAR_PATH = "$HOME/.deeplake/memory";
+var AGENT_COMMANDS = /* @__PURE__ */ new Set([
+  "claude",
+  "codex",
+  "cursor-agent",
+  "hermes",
+  "pi",
+  "openclaw"
+]);
+function splitShellStages(p) {
+  const out = [];
+  let cur = "";
+  let quote = null;
+  let escaped = false;
+  for (let i = 0; i < p.length; i++) {
+    const ch = p[i];
+    if (escaped) {
+      cur += ch;
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && ch === "\\") {
+      cur += ch;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      cur += ch;
+      if (ch === quote)
+        quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      cur += ch;
+      continue;
+    }
+    if (ch === ";" || ch === "\n") {
+      out.push(cur);
+      cur = "";
+      continue;
+    }
+    if (ch === "|" || ch === "&" && p[i + 1] === "&") {
+      out.push(cur);
+      cur = "";
+      if (ch === "&")
+        i++;
+      continue;
+    }
+    cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
 function touchesMemory(p) {
-  return p.includes(MEMORY_PATH) || p.includes(TILDE_PATH) || p.includes(HOME_VAR_PATH);
+  if (!p.includes(MEMORY_PATH) && !p.includes(TILDE_PATH) && !p.includes(HOME_VAR_PATH)) {
+    return false;
+  }
+  for (const stage of splitShellStages(p)) {
+    if (!stage.includes(MEMORY_PATH) && !stage.includes(TILDE_PATH) && !stage.includes(HOME_VAR_PATH))
+      continue;
+    const firstToken = stage.trim().split(/\s+/)[0] ?? "";
+    if (!AGENT_COMMANDS.has(firstToken))
+      return true;
+  }
+  return false;
 }
 function rewritePaths(cmd) {
   return cmd.replace(new RegExp(MEMORY_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?", "g"), "/").replace(/~\/.deeplake\/memory\/?/g, "/").replace(/\$HOME\/.deeplake\/memory\/?/g, "/").replace(/"\$HOME\/.deeplake\/memory\/?"/g, '"/"');
 }
 
+// dist/src/hooks/virtual-table-query.js
+function normalizeSessionPart(path, content) {
+  return normalizeContent(path, content);
+}
+var INDEX_LIMIT_PER_SECTION = 50;
+function buildVirtualIndexContent(summaryRows, sessionRows = [], opts = {}) {
+  const lines = [
+    "# Session Index",
+    "",
+    "Two sources are available. Consult the section relevant to the question.",
+    ""
+  ];
+  lines.push("## memory", "");
+  if (summaryRows.length === 0) {
+    lines.push("_(empty \u2014 no summaries ingested yet)_");
+  } else {
+    lines.push("AI-generated summaries per session. Read these first for topic-level overviews.");
+    lines.push("");
+    if (opts.summaryTruncated) {
+      lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many \u2014 older summaries reachable via \`Grep pattern="..." path="~/.deeplake/memory"\`._`);
+      lines.push("");
+    }
+    lines.push("| Session | Created | Last Updated | Project | Description |");
+    lines.push("|---------|---------|--------------|---------|-------------|");
+    for (const row of summaryRows) {
+      const p = row["path"] || "";
+      const match = p.match(/\/summaries\/([^/]+)\/([^/]+)\.md$/);
+      if (!match)
+        continue;
+      const summaryUser = match[1];
+      const sessionId = match[2];
+      const relPath = `summaries/${summaryUser}/${sessionId}.md`;
+      const project = row["project"] || "";
+      const description = row["description"] || "";
+      const creationDate = row["creation_date"] || "";
+      const lastUpdateDate = row["last_update_date"] || "";
+      lines.push(`| [${sessionId}](${relPath}) | ${creationDate} | ${lastUpdateDate} | ${project} | ${description} |`);
+    }
+  }
+  lines.push("");
+  lines.push("## sessions", "");
+  if (sessionRows.length === 0) {
+    lines.push("_(empty \u2014 no session records ingested yet)_");
+  } else {
+    lines.push("Raw session records (dialogue, tool calls). Read for exact detail / quotes.");
+    lines.push("");
+    if (opts.sessionTruncated) {
+      lines.push(`_Showing ${INDEX_LIMIT_PER_SECTION} most-recent of many \u2014 older sessions reachable via \`Grep pattern="..." path="~/.deeplake/memory"\`._`);
+      lines.push("");
+    }
+    lines.push("| Session | Created | Last Updated | Description |");
+    lines.push("|---------|---------|--------------|-------------|");
+    for (const row of sessionRows) {
+      const p = row["path"] || "";
+      const rel = p.startsWith("/") ? p.slice(1) : p;
+      const filename = p.split("/").pop() ?? p;
+      const description = row["description"] || "";
+      const creationDate = row["creation_date"] || "";
+      const lastUpdateDate = row["last_update_date"] || "";
+      lines.push(`| [${filename}](${rel}) | ${creationDate} | ${lastUpdateDate} | ${description} |`);
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+function buildUnionQuery(memoryQuery, sessionsQuery) {
+  return `SELECT path, content, size_bytes, creation_date, source_order FROM ((${memoryQuery}) UNION ALL (${sessionsQuery})) AS combined ORDER BY path, source_order, creation_date`;
+}
+function buildInList(paths) {
+  return paths.map((path) => `'${sqlStr(path)}'`).join(", ");
+}
+async function queryUnionRows(api, memoryQuery, sessionsQuery) {
+  const unionQuery = buildUnionQuery(memoryQuery, sessionsQuery);
+  try {
+    return await api.query(unionQuery);
+  } catch {
+    const [memoryRows, sessionRows] = await Promise.all([
+      api.query(memoryQuery).catch(() => []),
+      api.query(sessionsQuery).catch(() => [])
+    ]);
+    return [...memoryRows, ...sessionRows];
+  }
+}
+async function readVirtualPathContents(api, memoryTable, sessionsTable, virtualPaths) {
+  const uniquePaths = [...new Set(virtualPaths)];
+  const result = new Map(uniquePaths.map((path) => [path, null]));
+  if (uniquePaths.length === 0)
+    return result;
+  const inList = buildInList(uniquePaths);
+  const rows = await queryUnionRows(api, `SELECT path, summary::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path IN (${inList})`, `SELECT path, message::text AS content, NULL::bigint AS size_bytes, COALESCE(creation_date::text, '') AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path IN (${inList})`);
+  const memoryHits = /* @__PURE__ */ new Map();
+  const sessionHits = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const path = row["path"];
+    const content = row["content"];
+    const sourceOrder = Number(row["source_order"] ?? 0);
+    if (typeof path !== "string" || typeof content !== "string")
+      continue;
+    if (sourceOrder === 0) {
+      memoryHits.set(path, content);
+    } else {
+      const current = sessionHits.get(path) ?? [];
+      current.push(normalizeSessionPart(path, content));
+      sessionHits.set(path, current);
+    }
+  }
+  for (const path of uniquePaths) {
+    if (memoryHits.has(path)) {
+      result.set(path, memoryHits.get(path) ?? null);
+      continue;
+    }
+    const sessionParts = sessionHits.get(path) ?? [];
+    if (sessionParts.length > 0) {
+      result.set(path, sessionParts.join("\n"));
+    }
+  }
+  if (result.get("/index.md") === null && uniquePaths.includes("/index.md")) {
+    const fetchLimit = INDEX_LIMIT_PER_SECTION + 1;
+    const [summaryRows, sessionRows] = await Promise.all([
+      api.query(`SELECT path, project, description, creation_date, last_update_date FROM "${memoryTable}" WHERE path LIKE '/summaries/%' ORDER BY last_update_date DESC LIMIT ${fetchLimit}`).catch(() => []),
+      api.query(`SELECT path, MAX(description) AS description, MIN(creation_date) AS creation_date, MAX(last_update_date) AS last_update_date FROM "${sessionsTable}" WHERE path LIKE '/sessions/%' GROUP BY path ORDER BY MAX(last_update_date) DESC LIMIT ${fetchLimit}`).catch(() => [])
+    ]);
+    const summaryTruncated = summaryRows.length > INDEX_LIMIT_PER_SECTION;
+    const sessionTruncated = sessionRows.length > INDEX_LIMIT_PER_SECTION;
+    result.set("/index.md", buildVirtualIndexContent(summaryRows.slice(0, INDEX_LIMIT_PER_SECTION), sessionRows.slice(0, INDEX_LIMIT_PER_SECTION), { summaryTruncated, sessionTruncated }));
+  }
+  return result;
+}
+async function readVirtualPathContent(api, memoryTable, sessionsTable, virtualPath) {
+  return (await readVirtualPathContents(api, memoryTable, sessionsTable, [virtualPath])).get(virtualPath) ?? null;
+}
+
 // dist/src/hooks/hermes/pre-tool-use.js
 var log4 = (msg) => log("hermes-pre-tool-use", msg);
+function parseCatHeadTail(rewritten) {
+  const cmd = rewritten.replace(/\s+2>\S+/g, "").trim();
+  const catPipeHead = cmd.match(/^cat\s+(\S+?)\s*(?:\|[^|]*)*\|\s*head\s+(?:-n?\s*)?(-?\d+)\s*$/);
+  if (catPipeHead)
+    return { virtualPath: catPipeHead[1], lineLimit: Math.abs(parseInt(catPipeHead[2], 10)), fromEnd: false };
+  const catMatch = cmd.match(/^cat\s+(\S+)\s*$/);
+  if (catMatch)
+    return { virtualPath: catMatch[1], lineLimit: 0, fromEnd: false };
+  const headMatch = cmd.match(/^head\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ?? cmd.match(/^head\s+(\S+)\s*$/);
+  if (headMatch) {
+    if (headMatch[2])
+      return { virtualPath: headMatch[2], lineLimit: Math.abs(parseInt(headMatch[1], 10)), fromEnd: false };
+    return { virtualPath: headMatch[1], lineLimit: 10, fromEnd: false };
+  }
+  const tailMatch = cmd.match(/^tail\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ?? cmd.match(/^tail\s+(\S+)\s*$/);
+  if (tailMatch) {
+    if (tailMatch[2])
+      return { virtualPath: tailMatch[2], lineLimit: Math.abs(parseInt(tailMatch[1], 10)), fromEnd: true };
+    return { virtualPath: tailMatch[1], lineLimit: 10, fromEnd: true };
+  }
+  return null;
+}
 async function main() {
   const input = await readStdin();
   if (input.tool_name !== "terminal")
@@ -1682,29 +1899,49 @@ async function main() {
   if (!touchesMemory(command))
     return;
   const rewritten = rewritePaths(command);
-  const grepParams = parseBashGrep(rewritten);
-  if (!grepParams)
-    return;
   const config = loadConfig();
   if (!config) {
     log4("no config \u2014 falling through to Hermes");
     return;
   }
   const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+  const grepParams = parseBashGrep(rewritten);
+  if (grepParams) {
+    try {
+      const result = await handleGrepDirect(api, config.tableName, config.sessionsTableName, grepParams);
+      if (result === null)
+        return;
+      log4(`intercepted ${command.slice(0, 80)} \u2192 ${result.length} chars from SQL fast-path`);
+      const message = [
+        result,
+        "",
+        "(Hivemind: blocked the slow grep against ~/.deeplake/memory/ and ran a single SQL query instead. For future recalls, prefer the hivemind_search MCP tool \u2014 same accuracy, no terminal round-trip.)"
+      ].join("\n");
+      process.stdout.write(JSON.stringify({ action: "block", message }));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log4(`fast-path failed, falling through: ${msg}`);
+    }
+    return;
+  }
+  const readParams = parseCatHeadTail(rewritten);
+  if (!readParams)
+    return;
   try {
-    const result = await handleGrepDirect(api, config.tableName, config.sessionsTableName, grepParams);
-    if (result === null)
+    let content = await readVirtualPathContent(api, config.tableName, config.sessionsTableName, readParams.virtualPath);
+    if (content === null) {
+      log4(`fallthrough \u2014 readVirtualPathContent returned null for ${readParams.virtualPath}`);
       return;
-    log4(`intercepted ${command.slice(0, 80)} \u2192 ${result.length} chars from SQL fast-path`);
-    const message = [
-      result,
-      "",
-      "(Hivemind: blocked the slow grep against ~/.deeplake/memory/ and ran a single SQL query instead. For future recalls, prefer the hivemind_search MCP tool \u2014 same accuracy, no terminal round-trip.)"
-    ].join("\n");
-    process.stdout.write(JSON.stringify({ action: "block", message }));
+    }
+    if (readParams.lineLimit > 0) {
+      const lines = content.split("\n");
+      content = readParams.fromEnd ? lines.slice(-readParams.lineLimit).join("\n") : lines.slice(0, readParams.lineLimit).join("\n");
+    }
+    log4(`intercepted ${command.slice(0, 80)} \u2192 ${content.length} chars from virtual path`);
+    process.stdout.write(JSON.stringify({ action: "block", message: content }));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    log4(`fast-path failed, falling through: ${msg}`);
+    log4(`read fast-path failed, falling through: ${msg}`);
   }
 }
 main().catch((e) => {

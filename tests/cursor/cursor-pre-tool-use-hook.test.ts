@@ -19,6 +19,7 @@ const touchesMemoryMock = vi.fn();
 const rewritePathsMock = vi.fn();
 const parseBashGrepMock = vi.fn();
 const handleGrepDirectMock = vi.fn();
+const readVirtualPathContentMock = vi.fn();
 const stdoutWriteMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: unknown[]) => stdinMock(...a) }));
@@ -34,6 +35,9 @@ vi.mock("../../src/hooks/grep-direct.js", () => ({
 vi.mock("../../src/hooks/memory-path-utils.js", () => ({
   touchesMemory: (...a: unknown[]) => touchesMemoryMock(...a),
   rewritePaths: (...a: unknown[]) => rewritePathsMock(...a),
+}));
+vi.mock("../../src/hooks/virtual-table-query.js", () => ({
+  readVirtualPathContent: (...a: unknown[]) => readVirtualPathContentMock(...a),
 }));
 
 const validConfig = {
@@ -56,6 +60,7 @@ beforeEach(() => {
   rewritePathsMock.mockReset().mockImplementation((s: string) => s);
   parseBashGrepMock.mockReset().mockReturnValue({ pattern: "needle" });
   handleGrepDirectMock.mockReset().mockResolvedValue("ranked hits here");
+  readVirtualPathContentMock.mockReset().mockResolvedValue(null);
   stdoutWriteMock.mockReset();
   vi.spyOn(process.stdout, "write").mockImplementation(((s: string) => { stdoutWriteMock(s); return true; }) as any);
 });
@@ -122,9 +127,34 @@ describe("cursor pre-tool-use hook — happy path interception", () => {
     const payload = JSON.parse(stdoutText());
     expect(payload.permission).toBe("allow");
     expect(typeof payload.updated_input.command).toBe("string");
-    expect(payload.updated_input.command).toContain("__HIVEMIND_RESULT__");
+    // The heredoc terminator is randomized per-call to prevent payload-driven
+    // shell injection (see pickHeredocTerminator). We only check the marker
+    // shape (prefix + hex), not its literal value.
+    expect(payload.updated_input.command).toMatch(/cat <<'__HIVEMIND_RESULT_[a-f0-9]+__'/);
     expect(payload.updated_input.command).toContain("hit-line-1");
     expect(payload.agent_message).toContain("[Hivemind direct] needle");
+  });
+
+  it("randomizes the heredoc terminator across calls (no fixed marker)", async () => {
+    // Two calls in a row must produce different terminators — locks in the
+    // randomization so a future refactor can't silently regress to a fixed
+    // literal that user content could collide with.
+    stdinMock.mockResolvedValue({
+      tool_name: "Shell",
+      tool_input: { command: "grep needle ~/.deeplake/memory/" },
+    });
+    handleGrepDirectMock.mockResolvedValue("payload");
+
+    await runHook();
+    const first = JSON.parse(stdoutText()).updated_input.command;
+    stdoutWriteMock.mockReset();
+    await runHook();
+    const second = JSON.parse(stdoutText()).updated_input.command;
+
+    const markerOf = (s: string) => s.match(/__HIVEMIND_RESULT_[a-f0-9]+__/)?.[0];
+    expect(markerOf(first)).toBeTruthy();
+    expect(markerOf(second)).toBeTruthy();
+    expect(markerOf(first)).not.toEqual(markerOf(second));
   });
 
   it("returns null from handleGrepDirect → debug log fall-through, no stdout JSON", async () => {
@@ -167,5 +197,100 @@ describe("cursor pre-tool-use hook — happy path interception", () => {
     await runHook();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("fatal: stdin gone"));
     expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+});
+
+// ── cat / head / tail intercept (issue #88) ─────────────────────────────────
+//
+// Cursor's pre-tool-use historically only intercepted grep/rg. `cat
+// ~/.deeplake/memory/index.md` fell through to the real filesystem and
+// ENOENT'd even though the SessionStart preamble tells the agent to read
+// index.md first. The new parseCatHeadTail branch routes those reads
+// through readVirtualPathContent so the synthesized index is served.
+describe("cursor pre-tool-use hook — cat / head / tail intercept", () => {
+  // parseBashGrep returns null for non-grep commands; that's how the hook
+  // falls through to the new read-intercept path.
+  beforeEach(() => { parseBashGrepMock.mockReturnValue(null); });
+
+  it("cat <path> → emits virtual content via the heredoc shape", async () => {
+    stdinMock.mockResolvedValue({
+      tool_name: "Shell",
+      tool_input: { command: "cat ~/.deeplake/memory/index.md" },
+    });
+    readVirtualPathContentMock.mockResolvedValue("INDEX\nrow1\nrow2");
+
+    await runHook();
+
+    const payload = JSON.parse(stdoutText());
+    expect(payload.permission).toBe("allow");
+    expect(payload.updated_input.command).toContain("INDEX\nrow1\nrow2");
+    expect(payload.agent_message).toContain("cat");
+  });
+
+  it("head -N <path> → applies line limit", async () => {
+    stdinMock.mockResolvedValue({
+      tool_name: "Shell",
+      tool_input: { command: "head -n 2 ~/.deeplake/memory/index.md" },
+    });
+    readVirtualPathContentMock.mockResolvedValue("a\nb\nc\nd\ne");
+
+    await runHook();
+
+    const payload = JSON.parse(stdoutText());
+    // Heredoc body should hold just `a\nb`, not the full content.
+    expect(payload.updated_input.command).toMatch(/\na\nb\n__HIVEMIND_RESULT/);
+    expect(payload.agent_message).toContain("head -2");
+  });
+
+  it("tail -N <path> → takes last N lines", async () => {
+    stdinMock.mockResolvedValue({
+      tool_name: "Shell",
+      tool_input: { command: "tail -n 2 ~/.deeplake/memory/index.md" },
+    });
+    readVirtualPathContentMock.mockResolvedValue("a\nb\nc\nd\ne");
+
+    await runHook();
+
+    const payload = JSON.parse(stdoutText());
+    expect(payload.updated_input.command).toMatch(/\nd\ne\n__HIVEMIND_RESULT/);
+    expect(payload.agent_message).toContain("tail -2");
+  });
+
+  it("readVirtualPathContent returning null → fall-through (no JSON, debug log)", async () => {
+    stdinMock.mockResolvedValue({
+      tool_name: "Shell",
+      tool_input: { command: "cat ~/.deeplake/memory/missing.md" },
+    });
+    readVirtualPathContentMock.mockResolvedValue(null);
+
+    await runHook();
+
+    expect(stdoutText()).toBe("");
+    expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("fallthrough"));
+  });
+
+  it("readVirtualPathContent throwing → silent fall-through (no JSON, debug log)", async () => {
+    stdinMock.mockResolvedValue({
+      tool_name: "Shell",
+      tool_input: { command: "cat ~/.deeplake/memory/index.md" },
+    });
+    readVirtualPathContentMock.mockRejectedValue(new Error("api down"));
+
+    await runHook();
+
+    expect(stdoutText()).toBe("");
+    expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("read fast-path failed"));
+  });
+
+  it("unrecognized non-grep command → no-op (parseCatHeadTail returns null)", async () => {
+    stdinMock.mockResolvedValue({
+      tool_name: "Shell",
+      tool_input: { command: "wc -l ~/.deeplake/memory/index.md" },
+    });
+
+    await runHook();
+
+    expect(readVirtualPathContentMock).not.toHaveBeenCalled();
+    expect(stdoutText()).toBe("");
   });
 });

@@ -65,9 +65,10 @@ import { fileURLToPath } from "node:url";
 import { join as joinPath, dirname as dirnamePath } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import {
-  existsSync as fsExists, mkdirSync as fsMkdir, openSync as fsOpen,
-  closeSync as fsClose, writeFileSync as fsWriteFile, constants as fsConstants,
-  readFileSync as fsReadFile, renameSync as fsRename,
+  existsSync as fsExists, mkdirSync as fsMkdir,
+  writeFileSync as fsWriteFile,
+  readFileSync as fsReadFile, unlinkSync as fsUnlink,
+  renameSync as fsRename,
 } from "node:fs";
 import { createHash } from "node:crypto";
 // node:child_process is stubbed in the main openclaw bundle (see esbuild.config.mjs
@@ -189,7 +190,7 @@ async function checkForUpdate(logger: PluginLogger): Promise<void> {
   try {
     const current = getInstalledVersion();
     if (!current) return;
-    const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return;
     const latest = extractLatestVersion(await res.json());
     if (latest && isNewer(latest, current)) {
@@ -297,6 +298,13 @@ let memoryTable = "memory";
 let skillsTable = "skills";  // lazy-created on first INSERT by the worker
 let captureEnabled = true;
 const capturedCounts = new Map<string, number>();
+// Per-runtime memo: session_ids whose first agent_end already spawned the
+// skillify worker. Without this, every agent_end in a long session re-fires
+// the worker; the per-projectKey lock holds while a worker is running, but
+// once it exits the next agent_end re-acquires the lock and spawns a fresh
+// worker that does ~250ms of round-trip work to no-op (watermark already
+// advanced). One spawn per session is enough; subsequent turns add nothing.
+const skillifySpawnedFor = new Set<string>();
 const fallbackSessionId = crypto.randomUUID();
 
 // --- Skillify worker spawn (mirror of src/skillify/spawn-skillify-worker.ts) ---
@@ -350,15 +358,40 @@ function deriveOpenclawProjectKey(channel: string): { key: string; project: stri
   return { key, project };
 }
 
-function tryAcquireOpenclawSkillifyLock(projectKey: string): boolean {
+// Mirror of src/skillify/state.ts:tryAcquireWorkerLock — stamp the lock with
+// String(Date.now()) on create, treat any existing lock older than maxAgeMs
+// (or with unparseable contents) as stale and recreate it. Without this, an
+// openclaw worker that dies abnormally (OOM, host kill, segfault — anything
+// that skips the releaseWorkerLock finally-block) leaves an empty lock that
+// every subsequent agent_end skips on forever, halting mining for that
+// project_key until manual cleanup.
+//
+// Acquisition is single-syscall: `writeFileSync(path, ts, { flag: "wx" })`
+// atomically creates the file AND writes the timestamp in one operation.
+// An older two-step "exclusive-open then writeSync" sequence left a
+// zero-byte window where a concurrent acquirer could see the empty file,
+// classify it as stale (parseInt("") → NaN), unlink it, and acquire the
+// same projectKey — defeating the mutex and running two miners in parallel.
+function tryAcquireOpenclawSkillifyLock(projectKey: string, maxAgeMs = 10 * 60 * 1000): boolean {
+  migrateOpenclawSkillifyLegacyStateDir();
+  fsMkdir(OPENCLAW_SKILLIFY_STATE_DIR, { recursive: true });
+  const lockPath = joinPath(OPENCLAW_SKILLIFY_STATE_DIR, `${projectKey}.worker.lock`);
+  if (fsExists(lockPath)) {
+    let fresh = false;
+    try {
+      const ageMs = Date.now() - parseInt(fsReadFile(lockPath, "utf-8"), 10);
+      fresh = Number.isFinite(ageMs) && ageMs < maxAgeMs;
+    } catch { /* unreadable → treat as stale */ }
+    if (fresh) return false;
+    try { fsUnlink(lockPath); } catch { return false; }
+  }
   try {
-    migrateOpenclawSkillifyLegacyStateDir();
-    fsMkdir(OPENCLAW_SKILLIFY_STATE_DIR, { recursive: true });
-    const lockPath = joinPath(OPENCLAW_SKILLIFY_STATE_DIR, `${projectKey}.worker.lock`);
-    const fd = fsOpen(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY);
-    fsClose(fd);
+    fsWriteFile(lockPath, String(Date.now()), { flag: "wx" });
     return true;
-  } catch { return false; }
+  } catch {
+    // Lost the race to another acquirer between fsExists() and writeFile.
+    return false;
+  }
 }
 
 interface OpenclawSpawnArgs {
@@ -403,26 +436,32 @@ function detectOpenclawGateAgent(): GateAgent | null {
   return null;
 }
 
-function spawnOpenclawSkillifyWorker(a: OpenclawSpawnArgs): void {
+// Returns true ONLY when realSpawn actually launched a worker process — false
+// for any precondition skip (worker bundle missing, no delegate CLI, lock
+// contention, mkdir / config-write failure, spawn throw). Callers use the
+// return value to decide whether to memoize the session_id as "already
+// fired": a memoize-before-spawn would skip retries on transient failures
+// and lose mining for the rest of the session.
+function spawnOpenclawSkillifyWorker(a: OpenclawSpawnArgs): boolean {
   if (!fsExists(OPENCLAW_SKILLIFY_WORKER_PATH)) {
     a.loggerWarn?.(`skillify worker missing at ${OPENCLAW_SKILLIFY_WORKER_PATH} — reinstall openclaw plugin`);
-    return;
+    return false;
   }
   const gateAgent = detectOpenclawGateAgent();
   if (!gateAgent) {
     a.loggerWarn?.(`skillify spawn: no delegate gate CLI found on PATH (need one of: claude, codex, cursor-agent, hermes, pi). Mining skipped.`);
-    return;
+    return false;
   }
   const { key: projectKey, project } = deriveOpenclawProjectKey(a.channel);
   if (!tryAcquireOpenclawSkillifyLock(projectKey)) {
     // A worker is already running for this project — skip (next agent_end may
     // re-fire after the worker releases the lock, or the worker watermark
     // advance makes the re-fire a no-op).
-    return;
+    return false;
   }
   const tmpDir = joinPath(tmpdir(), `deeplake-skillify-openclaw-${projectKey}-${Date.now()}`);
   try { fsMkdir(tmpDir, { recursive: true, mode: 0o700 }); }
-  catch (e: any) { a.loggerWarn?.(`skillify spawn: mkdir failed: ${e?.message ?? e}`); return; }
+  catch (e: any) { a.loggerWarn?.(`skillify spawn: mkdir failed: ${e?.message ?? e}`); return false; }
   const configPath = joinPath(tmpDir, "config.json");
 
   // install: "global" — openclaw has no per-project filesystem cwd, so written
@@ -454,7 +493,7 @@ function spawnOpenclawSkillifyWorker(a: OpenclawSpawnArgs): void {
     currentSessionId: a.sessionId,
   };
   try { fsWriteFile(configPath, JSON.stringify(config), { mode: 0o600 }); }
-  catch (e: any) { a.loggerWarn?.(`skillify spawn: config write failed: ${e?.message ?? e}`); return; }
+  catch (e: any) { a.loggerWarn?.(`skillify spawn: config write failed: ${e?.message ?? e}`); return false; }
 
   try {
     realSpawn(process.execPath, [OPENCLAW_SKILLIFY_WORKER_PATH, configPath], {
@@ -462,8 +501,10 @@ function spawnOpenclawSkillifyWorker(a: OpenclawSpawnArgs): void {
       stdio: "ignore",
       env: { ...process.env, HIVEMIND_SKILLIFY_WORKER: "1", HIVEMIND_CAPTURE: "false" },
     }).unref();
+    return true;
   } catch (e: any) {
     a.loggerWarn?.(`skillify spawn: spawn failed: ${e?.message ?? e}`);
+    return false;
   }
 }
 
@@ -691,7 +732,7 @@ export default definePluginEntry({
           const current = getInstalledVersion();
           if (!current) return { text: "Could not determine installed version." };
           try {
-            const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(3000) });
+            const res = await fetch(VERSION_URL, { signal: AbortSignal.timeout(10000) });
             if (!res.ok) return { text: `Current version: ${current}. Could not check for updates.` };
             const latest = extractLatestVersion(await res.json());
             if (!latest) return { text: `Current version: ${current}. Could not parse latest version.` };
@@ -1149,20 +1190,30 @@ export default definePluginEntry({
           // become candidates for skill mining. Lock-protected, fire-and-forget,
           // never blocks the agent. Worker reads from the sessions table we
           // just wrote to. Non-fatal: a spawn failure here only loses one
-          // mining attempt, never breaks capture.
-          try {
-            spawnOpenclawSkillifyWorker({
-              apiUrl: cfg.apiUrl,
-              token: cfg.token,
-              orgId: cfg.orgId,
-              workspaceId: cfg.workspaceId,
-              userName: cfg.userName,
-              channel: ev.channel || "openclaw",
-              sessionId: sid,
-              loggerWarn: (msg) => logger.error(`Skillify spawn: ${msg}`),
-            });
-          } catch (e: any) {
-            logger.error(`Skillify spawn threw: ${e?.message ?? e}`);
+          // mining attempt, never breaks capture. Gated to one spawn per
+          // session_id per runtime — see skillifySpawnedFor declaration.
+          //
+          // The memoize bit is set ONLY after spawnOpenclawSkillifyWorker
+          // returns true (real process launched). Transient skips (lock
+          // contention, missing delegate CLI, mkdir/config-write fail) leave
+          // the session retryable on the next agent_end — otherwise we'd
+          // silently lose mining for the rest of a long session.
+          if (!skillifySpawnedFor.has(sid)) {
+            try {
+              const spawned = spawnOpenclawSkillifyWorker({
+                apiUrl: cfg.apiUrl,
+                token: cfg.token,
+                orgId: cfg.orgId,
+                workspaceId: cfg.workspaceId,
+                userName: cfg.userName,
+                channel: ev.channel || "openclaw",
+                sessionId: sid,
+                loggerWarn: (msg) => logger.error(`Skillify spawn: ${msg}`),
+              });
+              if (spawned) skillifySpawnedFor.add(sid);
+            } catch (e: any) {
+              logger.error(`Skillify spawn threw: ${e?.message ?? e}`);
+            }
           }
         } catch (err) {
           logger.error(`Auto-capture failed: ${err instanceof Error ? err.message : String(err)}`);

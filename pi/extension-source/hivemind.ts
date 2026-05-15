@@ -698,7 +698,17 @@ Three hivemind tools are registered:
   hivemind_read   { path }            read full content at a memory path
   hivemind_index  { prefix?, limit? } list summary entries
 
-Prefer these tools — one call returns ranked hits across all summaries and sessions in a single SQL query. Different paths under /summaries/<username>/ are different users; do NOT merge or alias them. Fall back to grep on ~/.deeplake/memory/ only if tools are unavailable.
+Prefer these tools — one call returns ranked hits across all summaries and sessions in a single SQL query. Different paths under /summaries/<username>/ are different users; do NOT merge or alias them.
+
+If you fall back to bash on ~/.deeplake/memory/, the memory has THREE tiers — pick the right one for the question:
+1. ~/.deeplake/memory/index.md   — auto-generated index, top 50 most-recently-updated entries with \`Created\` + \`Last Updated\` + \`Project\` + \`Description\` columns. ~5 KB. **For "what's recent / who did X this week / since <date>" queries, START HERE** and trust the \`Last Updated\` column over any \`Started:\` line in summary bodies.
+2. ~/.deeplake/memory/summaries/ — condensed wiki summaries per session (~3 KB each). For keyword/topic recall, search these.
+3. ~/.deeplake/memory/sessions/  — raw full-dialogue JSONL (~5 KB each). FALLBACK only — use when summaries don't contain the exact quote/turn you need.
+
+Search workflow (bash fallback):
+  - Time-based ("last week", "today", "since X"): \`cat ~/.deeplake/memory/index.md\` and read the most-recent rows.
+  - Keyword/topic recall: \`grep -ri "keyword" ~/.deeplake/memory/summaries/\`.
+  - Raw transcript fallback only: \`grep -ri "keyword" ~/.deeplake/memory/sessions/\` (use sparingly — JSONL is verbose).
 
 Organization management — each argument is SEPARATE (do NOT quote subcommands together):
 - hivemind login                              — SSO login

@@ -16,6 +16,7 @@ const touchesMemoryMock = vi.fn();
 const rewritePathsMock = vi.fn();
 const parseBashGrepMock = vi.fn();
 const handleGrepDirectMock = vi.fn();
+const readVirtualPathContentMock = vi.fn();
 const stdoutWriteMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: unknown[]) => stdinMock(...a) }));
@@ -31,6 +32,9 @@ vi.mock("../../src/hooks/grep-direct.js", () => ({
 vi.mock("../../src/hooks/memory-path-utils.js", () => ({
   touchesMemory: (...a: unknown[]) => touchesMemoryMock(...a),
   rewritePaths: (...a: unknown[]) => rewritePathsMock(...a),
+}));
+vi.mock("../../src/hooks/virtual-table-query.js", () => ({
+  readVirtualPathContent: (...a: unknown[]) => readVirtualPathContentMock(...a),
 }));
 
 const validConfig = {
@@ -52,6 +56,7 @@ beforeEach(() => {
   rewritePathsMock.mockReset().mockImplementation((s: string) => s);
   parseBashGrepMock.mockReset().mockReturnValue({ pattern: "needle" });
   handleGrepDirectMock.mockReset().mockResolvedValue("ranked hits here");
+  readVirtualPathContentMock.mockReset().mockResolvedValue(null);
   stdoutWriteMock.mockReset();
   vi.spyOn(process.stdout, "write").mockImplementation(((s: string) => { stdoutWriteMock(s); return true; }) as any);
 });
@@ -140,5 +145,80 @@ describe("hermes pre-tool-use hook — happy path", () => {
     await runHook();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("fatal: stdin gone"));
     expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+});
+
+// ── cat / head / tail intercept (issue #88) ─────────────────────────────────
+//
+// Hermes' preToolCall hook now also serves `cat <path>` / `head -N <path>` /
+// `tail -N <path>` reads via readVirtualPathContent, so the agent can
+// actually fetch /index.md without the terminal command ENOENTing.
+describe("hermes pre-tool-use hook — cat / head / tail intercept", () => {
+  beforeEach(() => { parseBashGrepMock.mockReturnValue(null); });
+
+  it("cat <path> → {action:'block', message:<content>}", async () => {
+    stdinMock.mockResolvedValue({
+      tool_name: "terminal",
+      tool_input: { command: "cat ~/.deeplake/memory/index.md" },
+    });
+    readVirtualPathContentMock.mockResolvedValue("INDEX\nrow1\nrow2");
+
+    await runHook();
+
+    const payload = JSON.parse(stdoutText());
+    expect(payload.action).toBe("block");
+    expect(payload.message).toBe("INDEX\nrow1\nrow2");
+  });
+
+  it("head -N <path> → message holds first N lines only", async () => {
+    stdinMock.mockResolvedValue({
+      tool_name: "terminal",
+      tool_input: { command: "head -n 2 ~/.deeplake/memory/index.md" },
+    });
+    readVirtualPathContentMock.mockResolvedValue("a\nb\nc\nd");
+    await runHook();
+    expect(JSON.parse(stdoutText()).message).toBe("a\nb");
+  });
+
+  it("tail -N <path> → message holds last N lines only", async () => {
+    stdinMock.mockResolvedValue({
+      tool_name: "terminal",
+      tool_input: { command: "tail -n 2 ~/.deeplake/memory/index.md" },
+    });
+    readVirtualPathContentMock.mockResolvedValue("a\nb\nc\nd");
+    await runHook();
+    expect(JSON.parse(stdoutText()).message).toBe("c\nd");
+  });
+
+  it("readVirtualPathContent null → silent fall-through", async () => {
+    stdinMock.mockResolvedValue({
+      tool_name: "terminal",
+      tool_input: { command: "cat ~/.deeplake/memory/missing.md" },
+    });
+    readVirtualPathContentMock.mockResolvedValue(null);
+    await runHook();
+    expect(stdoutText()).toBe("");
+    expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("fallthrough"));
+  });
+
+  it("readVirtualPathContent throws → silent fall-through with debug log", async () => {
+    stdinMock.mockResolvedValue({
+      tool_name: "terminal",
+      tool_input: { command: "cat ~/.deeplake/memory/index.md" },
+    });
+    readVirtualPathContentMock.mockRejectedValue(new Error("api down"));
+    await runHook();
+    expect(stdoutText()).toBe("");
+    expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("read fast-path failed"));
+  });
+
+  it("non-cat/head/tail command (e.g. wc) → no-op", async () => {
+    stdinMock.mockResolvedValue({
+      tool_name: "terminal",
+      tool_input: { command: "wc -l ~/.deeplake/memory/index.md" },
+    });
+    await runHook();
+    expect(readVirtualPathContentMock).not.toHaveBeenCalled();
+    expect(stdoutText()).toBe("");
   });
 });

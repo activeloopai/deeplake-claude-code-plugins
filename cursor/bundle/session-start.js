@@ -1333,8 +1333,16 @@ var log5 = (msg) => log("cursor-session-start", msg);
 var __bundleDir = dirname4(fileURLToPath(import.meta.url));
 var context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
 
-Structure: index.md (start here) \u2192 summaries/*.md \u2192 sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
-Search: use \`grep\` (NOT \`rg\`/ripgrep). Example: grep -ri "keyword" ~/.deeplake/memory/
+Deeplake memory has THREE tiers \u2014 pick the right one for the question:
+1. ~/.deeplake/memory/index.md   \u2014 auto-generated index, top 50 most-recently-updated entries with \`Created\` + \`Last Updated\` + \`Project\` + \`Description\` columns. ~5 KB. **For "what's recent / who did X this week / since <date>" queries, START HERE** and trust the \`Last Updated\` column over any \`Started:\` line in summary bodies.
+2. ~/.deeplake/memory/summaries/ \u2014 condensed wiki summaries per session (~3 KB each). For keyword/topic recall, search these.
+3. ~/.deeplake/memory/sessions/  \u2014 raw full-dialogue JSONL (~5 KB each). FALLBACK only \u2014 use when summaries don't contain the exact quote/turn you need.
+
+Search workflow:
+  - Time-based ("last week", "today", "since X"): \`cat ~/.deeplake/memory/index.md\` and read the most-recent rows.
+  - Keyword/topic recall: \`grep -ri "keyword" ~/.deeplake/memory/summaries/\` (use \`grep\`, NOT \`rg\`/ripgrep).
+  - Raw transcript fallback only: \`grep -ri "keyword" ~/.deeplake/memory/sessions/\` (use sparingly \u2014 JSONL is verbose).
+
 IMPORTANT: Only use these bash builtins to interact with ~/.deeplake/memory/: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find. Do NOT use rg/ripgrep, python, python3, node, curl, or other interpreters \u2014 they may not be installed and the memory filesystem only supports the listed builtins.
 Do NOT spawn subagents to read deeplake memory.
 

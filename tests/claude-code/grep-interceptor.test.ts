@@ -276,6 +276,25 @@ describe("grep interceptor", () => {
     expect(mockEmbed).not.toHaveBeenCalled();
   });
 
+  it("embeds synonym alternations like `foo|bar|baz` (issue #86)", async () => {
+    // `|` is the synonym-list use case embeddings are designed for: different
+    // surface forms of the same concept. The old metachar blacklist counted
+    // `|` and rejected anything with more than one — that meant
+    // `silent data loss|concurrent writer corruption|race condition` fell
+    // back to lexical even though it's the perfect semantic query.
+    mockEmbed.mockClear();
+    mockEmbed.mockResolvedValueOnce([0.4, 0.5, 0.6]);
+    const client = makeClient([{ path: "/memory/a.txt", content: "deploy" }]);
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    const searchSpy = vi.spyOn(grepCore, "searchDeeplakeTables").mockResolvedValue([]);
+
+    const cmd = createGrepCommand(client as never, fs, "test", "sessions");
+    await cmd.execute(["data loss|concurrent writer|race condition", "/memory"], makeCtx(fs) as never);
+
+    expect(mockEmbed).toHaveBeenCalled();
+    searchSpy.mockRestore();
+  });
+
   it("skips embedding on very short patterns (< 2 chars)", async () => {
     mockEmbed.mockClear();
     const client = makeClient([]);

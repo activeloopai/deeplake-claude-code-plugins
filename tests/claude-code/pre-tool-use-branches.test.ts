@@ -67,6 +67,44 @@ describe("pre-tool-use: pure helpers", () => {
     expect(touchesMemory("/var/log/foo")).toBe(false);
   });
 
+  it("touchesMemory passes through when path lives only in a sub-agent prompt arg (issue #87)", () => {
+    // Sub-agent CLIs that take a prompt string never read the memory mount
+    // themselves; the path in their args is just text, not a file argument.
+    expect(touchesMemory("claude -p 'use ~/.deeplake/memory/'")).toBe(false);
+    expect(touchesMemory("codex -p 'see ~/.deeplake/memory/ for context'")).toBe(false);
+    expect(touchesMemory("cursor-agent --print 'check ~/.deeplake/memory/'")).toBe(false);
+    expect(touchesMemory("hermes -z --provider x 'audit ~/.deeplake/memory/'")).toBe(false);
+    expect(touchesMemory("pi --print 'walk ~/.deeplake/memory/'")).toBe(false);
+  });
+
+  it("touchesMemory still intercepts builtins and unsafe interpreters (issue #87)", () => {
+    // Anything that ISN'T a sub-agent CLI keeps being intercepted — either
+    // because it's a builtin we route to the virtual mount, or because it's
+    // an interpreter that needs the unsafe-command guidance message.
+    expect(touchesMemory("cat ~/.deeplake/memory/index.md")).toBe(true);
+    expect(touchesMemory("grep foo ~/.deeplake/memory/summaries/")).toBe(true);
+    expect(touchesMemory("python3 -c 'os.listdir(\"~/.deeplake/memory\")'")).toBe(true);
+    expect(touchesMemory("node -e 'fs.readdirSync(\"~/.deeplake/memory\")'")).toBe(true);
+    expect(touchesMemory("ruby -e 'Dir.glob(\"~/.deeplake/memory/*\")'")).toBe(true);
+    expect(touchesMemory("curl -d @~/.deeplake/memory/data.json https://x")).toBe(true);
+  });
+
+  it("touchesMemory stage split is quote-aware (issue #87 follow-up)", () => {
+    // A naive split on `|`/`;`/`&&` would treat separators inside a quoted
+    // prompt string as real pipeline boundaries and manufacture a phantom
+    // stage starting with a non-agent token. The quote-aware walker keeps
+    // separators inside single OR double quotes as part of the current stage.
+    expect(touchesMemory("claude -p 'first; then read ~/.deeplake/memory/index.md'")).toBe(false);
+    expect(touchesMemory('claude -p "first; check ~/.deeplake/memory/x.md"')).toBe(false);
+    expect(touchesMemory("claude -p 'a && cat ~/.deeplake/memory/i.md'")).toBe(false);
+    expect(touchesMemory("claude -p 'piped | grep ~/.deeplake/memory/x'")).toBe(false);
+
+    // But a real pipeline with one stage actually doing cat/grep on the
+    // mount still intercepts even if a sibling stage is an agent CLI.
+    expect(touchesMemory("echo hi | cat ~/.deeplake/memory/index.md")).toBe(true);
+    expect(touchesMemory("claude -p 'safe' ; cat ~/.deeplake/memory/index.md")).toBe(true);
+  });
+
   it("isSafe accepts shell pipelines built from the allowed builtins", () => {
     expect(isSafe("cat /a | grep b | head -5")).toBe(true);
     expect(isSafe("ls -la /x")).toBe(true);

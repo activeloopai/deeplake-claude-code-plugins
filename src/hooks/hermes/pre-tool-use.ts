@@ -26,7 +26,33 @@ import { DeeplakeApi } from "../../deeplake-api.js";
 import { log as _log } from "../../utils/debug.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
 import { touchesMemory, rewritePaths } from "../memory-path-utils.js";
+import { readVirtualPathContent } from "../virtual-table-query.js";
 const log = (msg: string) => _log("hermes-pre-tool-use", msg);
+
+/**
+ * Same minimal cat/head/tail parser as cursor/pre-tool-use. Without this
+ * Hermes can't serve `cat ~/.deeplake/memory/index.md` from the virtual
+ * filesystem and the agent gets ENOENT for the very file SessionStart
+ * tells it to read first.
+ */
+function parseCatHeadTail(rewritten: string): { virtualPath: string; lineLimit: number; fromEnd: boolean } | null {
+  const cmd = rewritten.replace(/\s+2>\S+/g, "").trim();
+  const catPipeHead = cmd.match(/^cat\s+(\S+?)\s*(?:\|[^|]*)*\|\s*head\s+(?:-n?\s*)?(-?\d+)\s*$/);
+  if (catPipeHead) return { virtualPath: catPipeHead[1], lineLimit: Math.abs(parseInt(catPipeHead[2], 10)), fromEnd: false };
+  const catMatch = cmd.match(/^cat\s+(\S+)\s*$/);
+  if (catMatch) return { virtualPath: catMatch[1], lineLimit: 0, fromEnd: false };
+  const headMatch = cmd.match(/^head\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ?? cmd.match(/^head\s+(\S+)\s*$/);
+  if (headMatch) {
+    if (headMatch[2]) return { virtualPath: headMatch[2], lineLimit: Math.abs(parseInt(headMatch[1], 10)), fromEnd: false };
+    return { virtualPath: headMatch[1], lineLimit: 10, fromEnd: false };
+  }
+  const tailMatch = cmd.match(/^tail\s+(?:-n\s*)?(-?\d+)\s+(\S+)\s*$/) ?? cmd.match(/^tail\s+(\S+)\s*$/);
+  if (tailMatch) {
+    if (tailMatch[2]) return { virtualPath: tailMatch[2], lineLimit: Math.abs(parseInt(tailMatch[1], 10)), fromEnd: true };
+    return { virtualPath: tailMatch[1], lineLimit: 10, fromEnd: true };
+  }
+  return null;
+}
 
 interface HermesPreToolUseInput {
   hook_event_name?: string;
@@ -48,8 +74,6 @@ async function main(): Promise<void> {
   if (!touchesMemory(command)) return;
 
   const rewritten = rewritePaths(command);
-  const grepParams = parseBashGrep(rewritten);
-  if (!grepParams) return; // not grep/rg/egrep/fgrep — leave it alone
 
   const config = loadConfig();
   if (!config) {
@@ -65,23 +89,51 @@ async function main(): Promise<void> {
     config.tableName,
   );
 
+  const grepParams = parseBashGrep(rewritten);
+  if (grepParams) {
+    try {
+      const result = await handleGrepDirect(api, config.tableName, config.sessionsTableName, grepParams);
+      if (result === null) return;
+      log(`intercepted ${command.slice(0, 80)} → ${result.length} chars from SQL fast-path`);
+
+      const message = [
+        result,
+        "",
+        "(Hivemind: blocked the slow grep against ~/.deeplake/memory/ and ran a single SQL query instead. " +
+          "For future recalls, prefer the hivemind_search MCP tool — same accuracy, no terminal round-trip.)",
+      ].join("\n");
+
+      process.stdout.write(JSON.stringify({ action: "block", message }));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`fast-path failed, falling through: ${msg}`);
+      // Silent — Hermes runs the original command via its terminal tool.
+    }
+    return;
+  }
+
+  // Not a grep — try cat / head / tail of a virtual path (e.g. /index.md).
+  // Hermes' terminal tool can't read the virtual mount on its own; without
+  // this intercept `cat ~/.deeplake/memory/index.md` ENOENTs even though
+  // the SessionStart preamble tells the agent to start there.
+  const readParams = parseCatHeadTail(rewritten);
+  if (!readParams) return;
+
   try {
-    const result = await handleGrepDirect(api, config.tableName, config.sessionsTableName, grepParams);
-    if (result === null) return;
-    log(`intercepted ${command.slice(0, 80)} → ${result.length} chars from SQL fast-path`);
-
-    const message = [
-      result,
-      "",
-      "(Hivemind: blocked the slow grep against ~/.deeplake/memory/ and ran a single SQL query instead. " +
-        "For future recalls, prefer the hivemind_search MCP tool — same accuracy, no terminal round-trip.)",
-    ].join("\n");
-
-    process.stdout.write(JSON.stringify({ action: "block", message }));
+    let content = await readVirtualPathContent(api, config.tableName, config.sessionsTableName, readParams.virtualPath);
+    if (content === null) {
+      log(`fallthrough — readVirtualPathContent returned null for ${readParams.virtualPath}`);
+      return;
+    }
+    if (readParams.lineLimit > 0) {
+      const lines = content.split("\n");
+      content = readParams.fromEnd ? lines.slice(-readParams.lineLimit).join("\n") : lines.slice(0, readParams.lineLimit).join("\n");
+    }
+    log(`intercepted ${command.slice(0, 80)} → ${content.length} chars from virtual path`);
+    process.stdout.write(JSON.stringify({ action: "block", message: content }));
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`fast-path failed, falling through: ${msg}`);
-    // Silent — Hermes runs the original command via its terminal tool.
+    log(`read fast-path failed, falling through: ${msg}`);
   }
 }
 
