@@ -18,7 +18,7 @@ import { log as _log } from "../utils/debug.js";
 import { getInstalledVersion } from "../utils/version-check.js";
 import { makeWikiLogger } from "../utils/wiki-log.js";
 import { autoUpdate } from "./shared/autoupdate.js";
-import { autoPullSkills } from "../skilify/auto-pull.js";
+import { autoPullSkills } from "../skillify/auto-pull.js";
 const log = (msg: string) => _log("session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -59,23 +59,23 @@ Organization management — each argument is SEPARATE (do NOT quote subcommands 
 - hivemind remove <user-id>                   — remove member
 
 Skill management (mine + share reusable Claude skills across the org):
-- hivemind skilify                                  — show scope, team, install, per-project state
-- hivemind skilify pull                             — sync project skills from the org table to local FS
-- hivemind skilify pull --user <email>              — only skills authored by that user
-- hivemind skilify pull --users <a,b,c>             — only skills from those authors
-- hivemind skilify pull --all-users                 — explicit "no author filter" (default)
-- hivemind skilify pull --to <project|global>       — install location (project=cwd/.claude/skills, global=~/.claude/skills)
-- hivemind skilify pull --dry-run                   — preview without touching disk
-- hivemind skilify pull --force                     — overwrite local files even if up-to-date (creates .bak)
-- hivemind skilify pull <skill-name>                — pull only that one skill (combines with --user)
-- hivemind skilify unpull                           — remove every skill previously installed by pull
-- hivemind skilify unpull --user <email>            — remove only that author's pulls
-- hivemind skilify unpull --not-mine                — remove all pulls except your own
-- hivemind skilify unpull --dry-run                 — preview without touching disk
-- hivemind skilify scope <me|team|org>              — sharing scope for newly mined skills
-- hivemind skilify install <project|global>         — default install location for new skills
-- hivemind skilify promote <skill-name>             — move a project skill to the global location
-- hivemind skilify team add|remove|list <name>      — manage team member list
+- hivemind skillify                                  — show scope, team, install, per-project state
+- hivemind skillify pull                             — sync project skills from the org table to local FS
+- hivemind skillify pull --user <email>              — only skills authored by that user
+- hivemind skillify pull --users <a,b,c>             — only skills from those authors
+- hivemind skillify pull --all-users                 — explicit "no author filter" (default)
+- hivemind skillify pull --to <project|global>       — install location (project=cwd/.claude/skills, global=~/.claude/skills)
+- hivemind skillify pull --dry-run                   — preview without touching disk
+- hivemind skillify pull --force                     — overwrite local files even if up-to-date (creates .bak)
+- hivemind skillify pull <skill-name>                — pull only that one skill (combines with --user)
+- hivemind skillify unpull                           — remove every skill previously installed by pull
+- hivemind skillify unpull --user <email>            — remove only that author's pulls
+- hivemind skillify unpull --not-mine                — remove all pulls except your own
+- hivemind skillify unpull --dry-run                 — preview without touching disk
+- hivemind skillify scope <me|team>                  — sharing scope for newly mined skills
+- hivemind skillify install <project|global>         — default install location for new skills
+- hivemind skillify promote <skill-name>             — move a project skill to the global location
+- hivemind skillify team add|remove|list <name>      — manage team member list
 
 IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem. Avoid bash brace expansions like \`{1..10}\` (not fully supported); spell out paths explicitly. Bash output is capped at 10MB total — avoid \`for f in *.json; do cat $f\` style loops on the whole sessions dir.
 
@@ -87,7 +87,7 @@ const HOME = homedir();
 const { log: wikiLog } = makeWikiLogger(join(HOME, ".claude", "hooks"));
 
 /** Create a placeholder summary via direct SQL INSERT (no DeeplakeFs bootstrap needed). */
-async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
+async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string, pluginVersion: string): Promise<void> {
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
 
   const existing = await api.query(
@@ -112,9 +112,9 @@ async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: str
   const filename = `${sessionId}.md`;
 
   await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${now}', '${now}')`
+    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${sqlStr(pluginVersion)}', '${now}', '${now}')`
   );
 
   wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
@@ -157,6 +157,13 @@ async function main(): Promise<void> {
   // sees the upgrade notice promptly even when the API is down.
   await autoUpdate(creds, { agent: "claude" });
 
+  // Resolve the installed plugin version once up front — it's stamped on
+  // every row this session writes (placeholder + capture) and is also used
+  // for the user-visible update notice below.
+  // getInstalledVersion swallows its own fs errors and returns null.
+  const current = getInstalledVersion(__bundleDir, ".claude-plugin");
+  const pluginVersion = current ?? "";
+
   // Ensure tables exist and (when capture is enabled) create the placeholder
   // summary via direct SQL. Tables must always be synced so queries return
   // fresh data — only the placeholder INSERT is skipped when HIVEMIND_CAPTURE=false
@@ -173,7 +180,7 @@ async function main(): Promise<void> {
         await api.ensureTable();
         await api.ensureSessionsTable(sessionsTable);
         if (captureEnabled) {
-          await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
+          await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId, pluginVersion);
           log("placeholder created");
         } else {
           log("placeholder skipped (HIVEMIND_CAPTURE=false)");
@@ -199,9 +206,6 @@ async function main(): Promise<void> {
   // Version notice in additionalContext — informational only; the
   // upgrade-applied signal goes to stderr from inside autoUpdate (which
   // already fired earlier in main(), before the DB ensure-table calls).
-  // getInstalledVersion swallows its own fs errors and returns null, so
-  // no try/catch needed here.
-  const current = getInstalledVersion(__bundleDir, ".claude-plugin");
   const updateNotice = current ? `\n\n✅ Hivemind v${current}` : "";
 
   // No placeholder substitution needed — inject uses bare `hivemind <sub>` form.

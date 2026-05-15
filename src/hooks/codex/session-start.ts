@@ -17,7 +17,7 @@ import { loadCredentials } from "../../commands/auth.js";
 import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
-import { autoPullSkills } from "../../skilify/auto-pull.js";
+import { autoPullSkills } from "../../skillify/auto-pull.js";
 const log = (msg: string) => _log("codex-session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -53,23 +53,23 @@ Organization management — each argument is SEPARATE (do NOT quote subcommands 
 - hivemind members                            — list members
 - hivemind remove <user-id>                   — remove member
 
-SKILLS (skilify) — mine + share reusable skills across the org:
-- hivemind skilify                         — show scope/team/install + per-project state
-- hivemind skilify pull                    — sync project skills from the org table
-- hivemind skilify pull --user <email>     — only that author's skills
-- hivemind skilify pull --users a,b,c      — multiple authors (CSV)
-- hivemind skilify pull --all-users        — explicit "no author filter"
-- hivemind skilify pull --to project|global  — install location
-- hivemind skilify pull --dry-run          — preview only
-- hivemind skilify pull --force            — overwrite local (creates .bak)
-- hivemind skilify pull <skill-name>       — pull only that skill (combines with --user)
-- hivemind skilify unpull                  — remove every skill previously installed by pull
-- hivemind skilify unpull --user <email>   — remove only that author's pulls
-- hivemind skilify unpull --not-mine       — remove all pulls except your own
-- hivemind skilify unpull --dry-run        — preview without touching disk
-- hivemind skilify scope <me|team|org>     — sharing scope for new skills
-- hivemind skilify install <project|global>  — default install location
-- hivemind skilify team add|remove|list <name>  — manage team list`;
+SKILLS (skillify) — mine + share reusable skills across the org:
+- hivemind skillify                         — show scope/team/install + per-project state
+- hivemind skillify pull                    — sync project skills from the org table
+- hivemind skillify pull --user <email>     — only that author's skills
+- hivemind skillify pull --users a,b,c      — multiple authors (CSV)
+- hivemind skillify pull --all-users        — explicit "no author filter"
+- hivemind skillify pull --to project|global  — install location
+- hivemind skillify pull --dry-run          — preview only
+- hivemind skillify pull --force            — overwrite local (creates .bak)
+- hivemind skillify pull <skill-name>       — pull only that skill (combines with --user)
+- hivemind skillify unpull                  — remove every skill previously installed by pull
+- hivemind skillify unpull --user <email>   — remove only that author's pulls
+- hivemind skillify unpull --not-mine       — remove all pulls except your own
+- hivemind skillify unpull --dry-run        — preview without touching disk
+- hivemind skillify scope <me|team>         — sharing scope for new skills
+- hivemind skillify install <project|global>  — default install location
+- hivemind skillify team add|remove|list <name>  — manage team list`;
 
 interface CodexSessionStartInput {
   session_id: string;

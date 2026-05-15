@@ -10,7 +10,7 @@ import { log as _log } from "../../utils/debug.js";
 import { loadConfig } from "../../config.js";
 import { tryAcquireLock } from "../summary-state.js";
 import { bundleDirFromImportMeta, spawnHermesWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
-import { forceSessionEndTrigger } from "../../skilify/triggers.js";
+import { forceSessionEndTrigger } from "../../skillify/triggers.js";
 
 const log = (msg: string) => _log("hermes-session-end", msg);
 
@@ -35,7 +35,7 @@ async function main(): Promise<void> {
   const cwd = input.cwd ?? process.cwd();
 
   // Independent try blocks per worker — a failure in wiki spawn must not
-  // suppress the skilify trigger and vice versa.
+  // suppress the skillify trigger and vice versa.
   try {
     spawnHermesWikiWorker({
       config,
@@ -56,7 +56,7 @@ async function main(): Promise<void> {
       sessionId,
     });
   } catch (e: any) {
-    wikiLog(`SessionEnd: skilify trigger failed: ${e?.message ?? e}`);
+    wikiLog(`SessionEnd: skillify trigger failed: ${e?.message ?? e}`);
   }
 }
 

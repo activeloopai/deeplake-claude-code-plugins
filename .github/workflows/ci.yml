@@ -72,10 +72,10 @@ jobs:
         # ALSO produces the per-agent bundles AND `openclaw/dist/`. The
         # latter is gitignored, so it doesn't exist after a fresh
         # `actions/checkout` — and several bundle-scan tests under
-        # `claude-code/tests/skilify-session-start-injection.test.ts` read
-        # `openclaw/dist/index.js` and `openclaw/dist/skilify-worker.js`
+        # `claude-code/tests/skillify-session-start-injection.test.ts` read
+        # `openclaw/dist/index.js` and `openclaw/dist/skillify-worker.js`
         # directly. Without this rebuild they fail with ENOENT (see PR #98
-        # — first CI run after the openclaw skilify wiring landed).
+        # — first CI run after the openclaw skillify wiring landed).
         run: npm run build
 
       - name: Run tests with coverage

@@ -32,13 +32,17 @@ import {
   releaseLock,
 } from "../summary-state.js";
 import { bundleDirFromImportMeta, spawnCursorWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
-import { tryStopCounterTrigger } from "../../skilify/triggers.js";
+import { tryStopCounterTrigger } from "../../skillify/triggers.js";
 import type { Config } from "../../config.js";
+import { getInstalledVersion } from "../../utils/version-check.js";
 const log = (msg: string) => _log("cursor-capture", msg);
 
 function resolveEmbedDaemonPath(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
 }
+
+const __bundleDir = dirname(fileURLToPath(import.meta.url));
+const PLUGIN_VERSION = getInstalledVersion(__bundleDir, ".claude-plugin") ?? "";
 
 interface CursorCaptureInput {
   conversation_id?: string;
@@ -146,9 +150,9 @@ async function main(): Promise<void> {
   const embeddingSql = embeddingSqlLiteral(embedding);
 
   const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', 'cursor', '${ts}', '${ts}')`;
+    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', 'cursor', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}')`;
 
   try {
     await api.query(insertSql);
@@ -166,13 +170,13 @@ async function main(): Promise<void> {
 
   maybeTriggerPeriodicSummary(sessionId, cwd, config);
 
-  // Skilify Stop counter — afterAgentResponse is the assistant-complete event.
+  // Skillify Stop counter — afterAgentResponse is the assistant-complete event.
   // Same guards as the wiki periodic trigger: don't fire when this capture
-  // is running INSIDE the wiki/skilify workers (their spawned CLI inherits
+  // is running INSIDE the wiki/skillify workers (their spawned CLI inherits
   // env vars and would otherwise loop).
   if (event === "afterAgentResponse" &&
       process.env.HIVEMIND_WIKI_WORKER !== "1" &&
-      process.env.HIVEMIND_SKILIFY_WORKER !== "1") {
+      process.env.HIVEMIND_SKILLIFY_WORKER !== "1") {
     tryStopCounterTrigger({
       config,
       cwd,

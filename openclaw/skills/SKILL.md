@@ -45,28 +45,28 @@ Do NOT jump straight to reading raw JSONL files. Always start with `hivemind_ind
 - `/hivemind_update` — shows how to install (ask the agent, or run `hivemind update` in your terminal)
 - `/hivemind_autoupdate [on|off]` — toggle the agent-facing update nudge (on by default: when a newer version is available, the agent is prompted to install it via `exec` if you ask to update)
 
-## Skill Management (skilify)
+## Skill Management (skillify)
 
 Hivemind also mines reusable Claude skills from agent sessions and stores them in a per-org Deeplake table. Openclaw itself doesn't run sessions to mine, but you can pull skills others have already mined for the user. These run in the user's terminal (the openclaw plugin does not register them as `/hivemind_*` commands):
 
-- `hivemind skilify` — show scope/team/install + per-project state
-- `hivemind skilify pull` — sync skills for the current project from the org table
-- `hivemind skilify pull --user <email>` — only that author's skills
-- `hivemind skilify pull --users a,b,c` — multiple authors (CSV)
-- `hivemind skilify pull --all-users` — explicit "no author filter"
-- `hivemind skilify pull --to project|global` — install location (`<cwd>/.claude/skills/` vs `~/.claude/skills/`)
-- `hivemind skilify pull --dry-run` — preview without touching disk
-- `hivemind skilify pull --force` — overwrite local (creates `.bak`)
-- `hivemind skilify pull <skill-name>` — pull only that one skill (combines with `--user`)
-- `hivemind skilify unpull` — remove every skill previously installed by pull
-- `hivemind skilify unpull --user <email>` — remove only that author's pulls
-- `hivemind skilify unpull --not-mine` — remove all pulls except your own
-- `hivemind skilify unpull --dry-run` — preview without touching disk
-- `hivemind skilify scope <me|team|org>` — set sharing scope for new skills
-- `hivemind skilify install <project|global>` — default install location
-- `hivemind skilify team add|remove|list <name>` — manage team list
+- `hivemind skillify` — show scope/team/install + per-project state
+- `hivemind skillify pull` — sync skills for the current project from the org table
+- `hivemind skillify pull --user <email>` — only that author's skills
+- `hivemind skillify pull --users a,b,c` — multiple authors (CSV)
+- `hivemind skillify pull --all-users` — explicit "no author filter"
+- `hivemind skillify pull --to project|global` — install location (`<cwd>/.claude/skills/` vs `~/.claude/skills/`)
+- `hivemind skillify pull --dry-run` — preview without touching disk
+- `hivemind skillify pull --force` — overwrite local (creates `.bak`)
+- `hivemind skillify pull <skill-name>` — pull only that one skill (combines with `--user`)
+- `hivemind skillify unpull` — remove every skill previously installed by pull
+- `hivemind skillify unpull --user <email>` — remove only that author's pulls
+- `hivemind skillify unpull --not-mine` — remove all pulls except your own
+- `hivemind skillify unpull --dry-run` — preview without touching disk
+- `hivemind skillify scope <me|team>` — set sharing scope for new skills
+- `hivemind skillify install <project|global>` — default install location
+- `hivemind skillify team add|remove|list <name>` — manage team list
 
-If the user asks to "pull skills from X", "share skills with the team", or similar, suggest the matching `hivemind skilify` command. Run `hivemind skilify --help` for the full reference.
+If the user asks to "pull skills from X", "share skills with the team", or similar, suggest the matching `hivemind skillify` command. Run `hivemind skillify --help` for the full reference.
 
 ## Limits
 

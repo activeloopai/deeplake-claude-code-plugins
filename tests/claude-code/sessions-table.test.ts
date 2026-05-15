@@ -1,0 +1,433 @@
+import { describe, it, expect, vi } from "vitest";
+import { DeeplakeFs, guessMime } from "../../src/shell/deeplake-fs.js";
+
+// ── Mock client that simulates both memory and sessions tables ──────────────
+
+interface Row {
+  path: string;
+  text_content: string;
+  size_bytes: number;
+  mime_type: string;
+  creation_date: string;
+  [key: string]: unknown;
+}
+
+function makeClient(memoryRows: Row[] = [], sessionRows: Row[] = []) {
+  const client = {
+    query: vi.fn().mockImplementation(async (sql: string) => {
+      // Table sync — no-op
+      if (sql.includes("deeplake_sync_table")) return [];
+
+      // Determine which table is being queried
+      const isSessionsQuery = sql.includes('"sessions"');
+      const rows = isSessionsQuery ? sessionRows : memoryRows;
+
+      // Bootstrap: SELECT path, size_bytes, mime_type (memory table)
+      if (sql.includes("SELECT path, size_bytes, mime_type") && !isSessionsQuery) {
+        return rows.map(r => ({ path: r.path, size_bytes: r.size_bytes, mime_type: r.mime_type }));
+      }
+
+      // Bootstrap: SELECT path, MAX(size_bytes) ... GROUP BY path (sessions table).
+      // The production SQL uses MAX to work around a Deeplake backend quirk
+      // where SUM() returns NULL under GROUP BY (see deeplake-fs.ts), so the
+      // mock mirrors that by taking MAX per path as well.
+      if (sql.includes("MAX(size_bytes)") && sql.includes("GROUP BY")) {
+        const groups = new Map<string, number>();
+        for (const r of sessionRows) {
+          groups.set(r.path, Math.max(groups.get(r.path) ?? 0, r.size_bytes));
+        }
+        return [...groups.entries()].map(([path, total]) => ({ path, total_size: total }));
+      }
+
+      // Read session rows ordered by creation_date
+      if (sql.includes("SELECT message") && isSessionsQuery && sql.includes("ORDER BY creation_date")) {
+        const pathMatch = sql.match(/path = '([^']+)'/);
+        if (pathMatch) {
+          return sessionRows
+            .filter(r => r.path === pathMatch[1])
+            .sort((a, b) => a.creation_date.localeCompare(b.creation_date))
+            .map(r => ({ message: r.text_content, creation_date: r.creation_date }));
+        }
+      }
+
+      // Read from memory table
+      if (sql.includes("SELECT summary FROM") && !isSessionsQuery) {
+        const pathMatch = sql.match(/path = '([^']+)'/);
+        if (pathMatch) {
+          const row = memoryRows.find(r => r.path === pathMatch[1]);
+          return row ? [{ summary: row.text_content }] : [];
+        }
+      }
+
+      // Summary query for virtual index
+      if (sql.includes("SELECT path, project, description")) {
+        return memoryRows
+          .filter(r => r.path.startsWith("/summaries/"))
+          .map(r => ({ path: r.path, project: r.project ?? "", description: r.description ?? "", creation_date: r.creation_date, last_update_date: r.last_update_date ?? "" }));
+      }
+
+      // INSERT/UPDATE/DELETE — no-op for tests
+      if (sql.startsWith("INSERT") || sql.startsWith("UPDATE") || sql.startsWith("DELETE")) return [];
+
+      return [];
+    }),
+    listTables: vi.fn().mockResolvedValue(["memory", "sessions"]),
+    ensureTable: vi.fn().mockResolvedValue(undefined),
+  };
+  return client;
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+describe("DeeplakeFs — sessions table multi-row read", () => {
+  it("reads session file by normalizing rows ordered by creation_date", async () => {
+    const sessionRows: Row[] = [
+      { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"user_message","content":"hello"}', size_bytes: 40, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+      { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"assistant_message","content":"done"}', size_bytes: 44, mime_type: "application/json", creation_date: "2026-01-01T00:00:02Z" },
+      { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"user_message","content":"bye"}', size_bytes: 42, mime_type: "application/json", creation_date: "2026-01-01T00:00:03Z" },
+    ];
+
+    const client = makeClient([], sessionRows);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const content = await fs.readFile("/sessions/alice/alice_org_default_s1.jsonl");
+    const lines = content.split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe("[user] hello");
+    expect(lines[1]).toBe("[assistant] done");
+    expect(lines[2]).toBe("[user] bye");
+  });
+
+  it("preserves creation_date ordering even if inserted out of order", async () => {
+    const sessionRows: Row[] = [
+      { path: "/sessions/u/s1.jsonl", text_content: '{"seq":3}', size_bytes: 9, mime_type: "application/json", creation_date: "2026-01-01T00:00:03Z" },
+      { path: "/sessions/u/s1.jsonl", text_content: '{"seq":1}', size_bytes: 9, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+      { path: "/sessions/u/s1.jsonl", text_content: '{"seq":2}', size_bytes: 9, mime_type: "application/json", creation_date: "2026-01-01T00:00:02Z" },
+    ];
+
+    const client = makeClient([], sessionRows);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const content = await fs.readFile("/sessions/u/s1.jsonl");
+    const lines = content.split("\n");
+    expect(JSON.parse(lines[0]).seq).toBe(1);
+    expect(JSON.parse(lines[1]).seq).toBe(2);
+    expect(JSON.parse(lines[2]).seq).toBe(3);
+  });
+
+  it("handles JSONB message (object instead of string)", async () => {
+    const sessionRows: Row[] = [
+      { path: "/sessions/u/s1.jsonl", text_content: { type: "user_message", content: "hi" } as unknown as string, size_bytes: 30, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+    ];
+
+    const client = makeClient([], sessionRows);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const content = await fs.readFile("/sessions/u/s1.jsonl");
+    expect(content).toBe("[user] hi");
+  });
+
+  it("lists session files in directory listing", async () => {
+    const sessionRows: Row[] = [
+      { path: "/sessions/alice/s1.jsonl", text_content: "{}", size_bytes: 2, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+      { path: "/sessions/alice/s2.jsonl", text_content: "{}", size_bytes: 2, mime_type: "application/json", creation_date: "2026-01-01T00:00:02Z" },
+    ];
+
+    const client = makeClient([], sessionRows);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const entries = await fs.readdir("/sessions/alice");
+    expect(entries).toContain("s1.jsonl");
+    expect(entries).toContain("s2.jsonl");
+  });
+
+  it("session paths don't conflict with memory table paths", async () => {
+    const memoryRows: Row[] = [
+      { path: "/summaries/alice/s1.md", text_content: "# Summary", size_bytes: 9, mime_type: "text/markdown", creation_date: "2026-01-01T00:00:01Z" },
+    ];
+    const sessionRows: Row[] = [
+      { path: "/sessions/alice/s1.jsonl", text_content: '{"type":"user_message"}', size_bytes: 22, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+    ];
+
+    const client = makeClient(memoryRows, sessionRows);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const summary = await fs.readFile("/summaries/alice/s1.md");
+    expect(summary).toBe("# Summary");
+
+    const session = await fs.readFile("/sessions/alice/s1.jsonl");
+    expect(JSON.parse(session).type).toBe("user_message");
+  });
+
+  it("works without sessions table (backwards compatible)", async () => {
+    const memoryRows: Row[] = [
+      { path: "/test.txt", text_content: "hello", size_bytes: 5, mime_type: "text/plain", creation_date: "2026-01-01T00:00:01Z" },
+    ];
+
+    const client = makeClient(memoryRows);
+    // No sessions table passed
+    const fs = await DeeplakeFs.create(client as never, "memory", "/");
+
+    const content = await fs.readFile("/test.txt");
+    expect(content).toBe("hello");
+  });
+});
+
+describe("DeeplakeFs — multiple sessions in same table", () => {
+  it("different sessions have independent content", async () => {
+    const sessionRows: Row[] = [
+      { path: "/sessions/u/s1.jsonl", text_content: '{"session":"s1","msg":"hello"}', size_bytes: 30, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+      { path: "/sessions/u/s1.jsonl", text_content: '{"session":"s1","msg":"world"}', size_bytes: 30, mime_type: "application/json", creation_date: "2026-01-01T00:00:02Z" },
+      { path: "/sessions/u/s2.jsonl", text_content: '{"session":"s2","msg":"foo"}', size_bytes: 28, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+    ];
+
+    const client = makeClient([], sessionRows);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const s1 = await fs.readFile("/sessions/u/s1.jsonl");
+    const s2 = await fs.readFile("/sessions/u/s2.jsonl");
+
+    expect(s1.split("\n")).toHaveLength(2);
+    expect(s2.split("\n")).toHaveLength(1);
+    expect(s1).toContain("hello");
+    expect(s1).toContain("world");
+    expect(s2).toContain("foo");
+    expect(s2).not.toContain("hello");
+  });
+});
+
+describe("session files are read-only", () => {
+  async function makeFsWithSession() {
+    const sessionRows: Row[] = [
+      { path: "/sessions/alice/alice_org_default_s1.jsonl", text_content: '{"type":"user_message"}', size_bytes: 22, mime_type: "application/json", creation_date: "2026-01-01T00:00:01Z" },
+    ];
+    const memoryRows: Row[] = [
+      { path: "/notes.md", text_content: "hello", size_bytes: 5, mime_type: "text/markdown", creation_date: "2026-01-01" },
+    ];
+    const client = makeClient(memoryRows, sessionRows);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+    return { fs, client };
+  }
+
+  it("writeFile rejects session paths with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.writeFile("/sessions/alice/alice_org_default_s1.jsonl", "overwrite"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("appendFile rejects session paths with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.appendFile("/sessions/alice/alice_org_default_s1.jsonl", "append"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("rm rejects session paths with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.rm("/sessions/alice/alice_org_default_s1.jsonl"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("cp rejects session path as destination with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.cp("/notes.md", "/sessions/alice/alice_org_default_s1.jsonl"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("mv rejects session path as source with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.mv("/sessions/alice/alice_org_default_s1.jsonl", "/moved.jsonl"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("mv rejects session path as destination with EPERM", async () => {
+    const { fs } = await makeFsWithSession();
+    await expect(fs.mv("/notes.md", "/sessions/alice/alice_org_default_s1.jsonl"))
+      .rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("readFile still works on session paths", async () => {
+    const { fs } = await makeFsWithSession();
+    const content = await fs.readFile("/sessions/alice/alice_org_default_s1.jsonl");
+    expect(content).toContain("user_message");
+  });
+
+  it("cp from session path as source works (read-only source is fine)", async () => {
+    const { fs } = await makeFsWithSession();
+    await fs.cp("/sessions/alice/alice_org_default_s1.jsonl", "/copy.jsonl");
+    const content = await fs.readFile("/copy.jsonl");
+    expect(content).toContain("user_message");
+  });
+
+  it("rm -rf on parent dir skips session files", async () => {
+    const { fs } = await makeFsWithSession();
+    // rm -rf /sessions should not remove session files from the tree
+    await fs.rm("/sessions", { recursive: true, force: true });
+    // Session file should still be readable
+    const content = await fs.readFile("/sessions/alice/alice_org_default_s1.jsonl");
+    expect(content).toContain("user_message");
+  });
+});
+
+describe("ensureSkillsTable schema (skillify provenance table)", () => {
+  it("creates skills table with all expected columns when missing", async () => {
+    const { DeeplakeApi } = await import("../../src/deeplake-api.js");
+    const api = new DeeplakeApi("token", "https://api.test", "org", "ws", "memory");
+    const queryCalls: string[] = [];
+    api.query = vi.fn().mockImplementation(async (sql: string) => {
+      queryCalls.push(sql);
+      return [];
+    }) as typeof api.query;
+    api.listTables = vi.fn().mockResolvedValue([]) as typeof api.listTables;
+
+    await api.ensureSkillsTable("skills");
+
+    const createSql = queryCalls.find(s => s.includes("CREATE TABLE") && s.includes('"skills"'));
+    expect(createSql).toBeDefined();
+    // All required provenance columns
+    for (const col of [
+      "id ", "name ", "project ", "project_key ", "local_path ", "install ",
+      "source_sessions ", "source_agent ", "scope ", "author ",
+      "description ", "trigger_text ", "body ", "version ",
+      "created_at ", "updated_at ",
+    ]) {
+      expect(createSql, `missing column ${col}`).toContain(col);
+    }
+    // Append-only design: no message_embedding (sessions table specific)
+    expect(createSql).not.toContain("message_embedding");
+    // The (project_key, name) index is created via ensureLookupIndex, which
+    // skips the CREATE INDEX call when a fresh local marker exists from a
+    // previous test/run. We verify the CREATE TABLE itself instead.
+  });
+
+  it("rejects an invalid skills table name (HIVEMIND_SKILLS_TABLE config injection guard)", async () => {
+    const { DeeplakeApi } = await import("../../src/deeplake-api.js");
+    const api = new DeeplakeApi("token", "https://api.test", "org", "ws", "memory");
+    api.query = vi.fn() as typeof api.query;
+    api.listTables = vi.fn().mockResolvedValue([]) as typeof api.listTables;
+
+    // Stray quote — would otherwise interpolate into CREATE TABLE and corrupt the SQL
+    await expect(api.ensureSkillsTable(`skills"; DROP TABLE memory; --`)).rejects.toThrow(/Invalid SQL identifier/);
+    // Hyphens / spaces / dots also rejected (sqlIdent uses [A-Za-z_][A-Za-z0-9_]*)
+    await expect(api.ensureSkillsTable("skills-test")).rejects.toThrow(/Invalid SQL identifier/);
+    await expect(api.ensureSkillsTable("skills test")).rejects.toThrow(/Invalid SQL identifier/);
+    // No query should have been issued for any of these
+    expect(api.query).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid sessions table name (HIVEMIND_SESSIONS_TABLE config injection guard)", async () => {
+    const { DeeplakeApi } = await import("../../src/deeplake-api.js");
+    const api = new DeeplakeApi("token", "https://api.test", "org", "ws", "memory");
+    api.query = vi.fn() as typeof api.query;
+    api.listTables = vi.fn().mockResolvedValue([]) as typeof api.listTables;
+
+    await expect(api.ensureSessionsTable(`sessions"; DROP TABLE memory; --`)).rejects.toThrow(/Invalid SQL identifier/);
+    await expect(api.ensureSessionsTable("sessions-test")).rejects.toThrow(/Invalid SQL identifier/);
+    await expect(api.ensureSessionsTable("sessions test")).rejects.toThrow(/Invalid SQL identifier/);
+    expect(api.query).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid memory table name (HIVEMIND_TABLE config injection guard)", async () => {
+    const { DeeplakeApi } = await import("../../src/deeplake-api.js");
+    const api = new DeeplakeApi("token", "https://api.test", "org", "ws", `memory"; DROP TABLE x; --`);
+    api.query = vi.fn() as typeof api.query;
+    api.listTables = vi.fn().mockResolvedValue([]) as typeof api.listTables;
+
+    // Default ensureTable() uses constructor's tableName — should reject
+    await expect(api.ensureTable()).rejects.toThrow(/Invalid SQL identifier/);
+    // Explicit override also rejected
+    await expect(api.ensureTable("memory-test")).rejects.toThrow(/Invalid SQL identifier/);
+    await expect(api.ensureTable("memory test")).rejects.toThrow(/Invalid SQL identifier/);
+    expect(api.query).not.toHaveBeenCalled();
+  });
+
+  it("skips CREATE TABLE when the table already exists", async () => {
+    const { DeeplakeApi } = await import("../../src/deeplake-api.js");
+    const api = new DeeplakeApi("token", "https://api.test", "org", "ws", "memory");
+    const queryCalls: string[] = [];
+    api.query = vi.fn().mockImplementation(async (sql: string) => {
+      queryCalls.push(sql);
+      return [];
+    }) as typeof api.query;
+    // listTables claims skills already exists
+    api.listTables = vi.fn().mockResolvedValue(["skills"]) as typeof api.listTables;
+
+    await api.ensureSkillsTable("skills");
+    expect(queryCalls.find(s => s.includes("CREATE TABLE"))).toBeUndefined();
+  });
+});
+
+describe("ensureSessionsTable schema", () => {
+  it("creates table with JSONB message column", async () => {
+    const client = {
+      query: vi.fn().mockResolvedValue([]),
+      listTables: vi.fn().mockResolvedValue([]),
+      ensureTable: vi.fn(),
+      ensureSessionsTable: vi.fn(),
+    };
+
+    // Import and call ensureSessionsTable
+    // We test by checking the SQL passed to query
+    const { DeeplakeApi } = await import("../../src/deeplake-api.js");
+    const api = new DeeplakeApi("token", "https://api.test", "org", "ws", "memory");
+
+    // Mock listTables to return empty (table doesn't exist)
+    const origQuery = api.query.bind(api);
+    const queryCalls: string[] = [];
+    api.query = vi.fn().mockImplementation(async (sql: string) => {
+      queryCalls.push(sql);
+      return [];
+    }) as typeof api.query;
+    api.listTables = vi.fn().mockResolvedValue([]) as typeof api.listTables;
+
+    await api.ensureSessionsTable("sessions");
+
+    const createSql = queryCalls.find(s => s.includes("CREATE TABLE"));
+    expect(createSql).toBeDefined();
+    expect(createSql).toContain("message JSONB");
+    expect(createSql).toContain("author TEXT");
+    expect(createSql).toContain("application/json");
+    // Should NOT have content BYTEA column (sessions don't need binary)
+    expect(createSql).not.toContain("BYTEA");
+    // Should NOT use old column name
+    expect(createSql).not.toContain("content_text");
+  });
+
+  it("memory table uses summary column (not content_text)", async () => {
+    const { DeeplakeApi } = await import("../../src/deeplake-api.js");
+    const api = new DeeplakeApi("token", "https://api.test", "org", "ws", "memory");
+    const queryCalls: string[] = [];
+    api.query = vi.fn().mockImplementation(async (sql: string) => {
+      queryCalls.push(sql);
+      return [];
+    }) as typeof api.query;
+    api.listTables = vi.fn().mockResolvedValue([]) as typeof api.listTables;
+
+    await api.ensureTable();
+
+    const createSql = queryCalls.find(s => s.includes("CREATE TABLE"));
+    expect(createSql).toBeDefined();
+    expect(createSql).toContain("summary TEXT");
+    expect(createSql).toContain("author TEXT");
+    expect(createSql).not.toContain("content_text");
+    expect(createSql).not.toContain("BYTEA");
+  });
+
+  it("memory table creation includes agent column", async () => {
+    const { DeeplakeApi } = await import("../../src/deeplake-api.js");
+    const api = new DeeplakeApi("token", "https://api.test", "org", "ws", "memory");
+    const queryCalls: string[] = [];
+    api.query = vi.fn().mockImplementation(async (sql: string) => {
+      queryCalls.push(sql);
+      return [];
+    }) as typeof api.query;
+    // Table does not exist
+    api.listTables = vi.fn().mockResolvedValue([]) as typeof api.listTables;
+
+    await api.ensureTable();
+
+    const createCall = queryCalls.find(s => s.includes("CREATE TABLE"));
+    expect(createCall).toBeDefined();
+    expect(createCall).toContain("agent");
+    expect(createCall).toContain("author");
+  });
+});

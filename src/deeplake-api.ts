@@ -450,6 +450,7 @@ export class DeeplakeApi {
           `project TEXT NOT NULL DEFAULT '', ` +
           `description TEXT NOT NULL DEFAULT '', ` +
           `agent TEXT NOT NULL DEFAULT '', ` +
+          `plugin_version TEXT NOT NULL DEFAULT '', ` +
           `creation_date TEXT NOT NULL DEFAULT '', ` +
           `last_update_date TEXT NOT NULL DEFAULT ''` +
         `) USING deeplake`,
@@ -469,6 +470,7 @@ export class DeeplakeApi {
     // tables don't have it; without this ALTER, every INSERT fails with
     // `column "agent" does not exist` after upgrading over an old schema.
     await this.ensureColumn(tbl, "agent", "TEXT NOT NULL DEFAULT ''");
+    await this.ensureColumn(tbl, "plugin_version", "TEXT NOT NULL DEFAULT ''");
     // BM25 index disabled — CREATE INDEX causes intermittent oid errors on fresh tables.
     // See bm25-oid-bug.sh for reproduction. Re-enable once Deeplake fixes the oid invalidation.
     // try {
@@ -500,6 +502,7 @@ export class DeeplakeApi {
           `project TEXT NOT NULL DEFAULT '', ` +
           `description TEXT NOT NULL DEFAULT '', ` +
           `agent TEXT NOT NULL DEFAULT '', ` +
+          `plugin_version TEXT NOT NULL DEFAULT '', ` +
           `creation_date TEXT NOT NULL DEFAULT '', ` +
           `last_update_date TEXT NOT NULL DEFAULT ''` +
         `) USING deeplake`,
@@ -512,6 +515,7 @@ export class DeeplakeApi {
     await this.ensureEmbeddingColumn(safe, MESSAGE_EMBEDDING_COL);
     // Same fallback for the `agent` column (see ensureTable for rationale).
     await this.ensureColumn(safe, "agent", "TEXT NOT NULL DEFAULT ''");
+    await this.ensureColumn(safe, "plugin_version", "TEXT NOT NULL DEFAULT ''");
     await this.ensureLookupIndex(safe, "path_creation_date", `("path", "creation_date")`);
   }
 

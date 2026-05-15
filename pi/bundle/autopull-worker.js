@@ -486,13 +486,14 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', summary_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, tbl);
+      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', summary_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', plugin_version TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, tbl);
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
     }
     await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
     await this.ensureColumn(tbl, "agent", "TEXT NOT NULL DEFAULT ''");
+    await this.ensureColumn(tbl, "plugin_version", "TEXT NOT NULL DEFAULT ''");
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
   async ensureSessionsTable(name) {
@@ -500,13 +501,14 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(safe)) {
       log2(`table "${safe}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${safe}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, message_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, safe);
+      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${safe}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, message_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', plugin_version TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, safe);
       log2(`table "${safe}" created`);
       if (!tables.includes(safe))
         this._tablesCache = [...tables, safe];
     }
     await this.ensureEmbeddingColumn(safe, MESSAGE_EMBEDDING_COL);
     await this.ensureColumn(safe, "agent", "TEXT NOT NULL DEFAULT ''");
+    await this.ensureColumn(safe, "plugin_version", "TEXT NOT NULL DEFAULT ''");
     await this.ensureLookupIndex(safe, "path_creation_date", `("path", "creation_date")`);
   }
   /**
@@ -533,12 +535,12 @@ var DeeplakeApi = class {
   }
 };
 
-// dist/src/skilify/pull.js
-import { existsSync as existsSync6, readFileSync as readFileSync5, writeFileSync as writeFileSync4, mkdirSync as mkdirSync4, renameSync as renameSync2, lstatSync as lstatSync2, readlinkSync, symlinkSync, unlinkSync as unlinkSync2 } from "node:fs";
-import { homedir as homedir6 } from "node:os";
-import { dirname as dirname2, join as join7 } from "node:path";
+// dist/src/skillify/pull.js
+import { existsSync as existsSync7, readFileSync as readFileSync5, writeFileSync as writeFileSync4, mkdirSync as mkdirSync4, renameSync as renameSync3, lstatSync as lstatSync2, readlinkSync, symlinkSync, unlinkSync as unlinkSync2 } from "node:fs";
+import { homedir as homedir7 } from "node:os";
+import { dirname as dirname2, join as join8 } from "node:path";
 
-// dist/src/skilify/skill-writer.js
+// dist/src/skillify/skill-writer.js
 import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync3, readdirSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { join as join4 } from "node:path";
@@ -565,18 +567,25 @@ function parseFrontmatter(text) {
   const head = text.slice(4, end).trim();
   const body = text.slice(end + 4).replace(/^\r?\n/, "");
   const fm = { source_sessions: [] };
-  let mode = "kv";
+  let arrayKey = null;
   for (const raw of head.split(/\r?\n/)) {
-    if (mode === "sources") {
+    if (arrayKey) {
       const m2 = raw.match(/^\s+-\s+(.+)$/);
       if (m2) {
-        fm.source_sessions.push(m2[1].trim());
+        const arr = fm[arrayKey] ?? [];
+        arr.push(m2[1].trim());
+        fm[arrayKey] = arr;
         continue;
       }
-      mode = "kv";
+      arrayKey = null;
     }
     if (raw.startsWith("source_sessions:")) {
-      mode = "sources";
+      arrayKey = "source_sessions";
+      continue;
+    }
+    if (raw.startsWith("contributors:")) {
+      arrayKey = "contributors";
+      fm.contributors = [];
       continue;
     }
     const m = raw.match(/^([a-zA-Z_]+):\s*(.*)$/);
@@ -599,18 +608,51 @@ function parseFrontmatter(text) {
   return { fm, body };
 }
 
-// dist/src/skilify/manifest.js
-import { existsSync as existsSync4, lstatSync, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync, unlinkSync, writeFileSync as writeFileSync3 } from "node:fs";
+// dist/src/skillify/manifest.js
+import { existsSync as existsSync5, lstatSync, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync as renameSync2, unlinkSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { homedir as homedir5 } from "node:os";
+import { dirname, join as join6 } from "node:path";
+
+// dist/src/skillify/legacy-migration.js
+import { existsSync as existsSync4, renameSync } from "node:fs";
 import { homedir as homedir4 } from "node:os";
-import { dirname, join as join5 } from "node:path";
+import { join as join5 } from "node:path";
+var dlog = (msg) => log("skillify-migrate", msg);
+var attempted = false;
+function migrateLegacyStateDir() {
+  if (attempted)
+    return;
+  attempted = true;
+  const root = join5(homedir4(), ".deeplake", "state");
+  const legacy = join5(root, "skilify");
+  const current = join5(root, "skillify");
+  if (!existsSync4(legacy))
+    return;
+  if (existsSync4(current))
+    return;
+  try {
+    renameSync(legacy, current);
+    dlog(`migrated ${legacy} -> ${current}`);
+  } catch (err) {
+    const code = err.code;
+    if (code === "EXDEV" || code === "EPERM") {
+      dlog(`migration failed (${code}); leaving legacy dir in place`);
+      return;
+    }
+    throw err;
+  }
+}
+
+// dist/src/skillify/manifest.js
 function emptyManifest() {
   return { version: 1, entries: [] };
 }
 function manifestPath() {
-  return join5(homedir4(), ".deeplake", "state", "skilify", "pulled.json");
+  return join6(homedir5(), ".deeplake", "state", "skillify", "pulled.json");
 }
 function loadManifest(path = manifestPath()) {
-  if (!existsSync4(path))
+  migrateLegacyStateDir();
+  if (!existsSync5(path))
     return emptyManifest();
   let raw;
   try {
@@ -660,10 +702,11 @@ function loadManifest(path = manifestPath()) {
   }
 }
 function saveManifest(m, path = manifestPath()) {
+  migrateLegacyStateDir();
   mkdirSync3(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
   writeFileSync3(tmp, JSON.stringify(m, null, 2) + "\n", { mode: 384 });
-  renameSync(tmp, path);
+  renameSync2(tmp, path);
 }
 function recordPull(entry, path = manifestPath()) {
   const m = loadManifest(path);
@@ -698,7 +741,7 @@ function pruneOrphanedEntries(path = manifestPath()) {
   const live = [];
   let pruned = 0;
   for (const e of m.entries) {
-    if (existsSync4(join5(e.installRoot, e.dirName))) {
+    if (existsSync5(join6(e.installRoot, e.dirName))) {
       live.push(e);
       continue;
     }
@@ -710,31 +753,31 @@ function pruneOrphanedEntries(path = manifestPath()) {
   return pruned;
 }
 
-// dist/src/skilify/agent-roots.js
-import { existsSync as existsSync5 } from "node:fs";
-import { homedir as homedir5 } from "node:os";
-import { join as join6 } from "node:path";
+// dist/src/skillify/agent-roots.js
+import { existsSync as existsSync6 } from "node:fs";
+import { homedir as homedir6 } from "node:os";
+import { join as join7 } from "node:path";
 function resolveDetected(home) {
   const out = [];
-  const codexInstalled = existsSync5(join6(home, ".codex"));
-  const piInstalled = existsSync5(join6(home, ".pi", "agent"));
-  const hermesInstalled = existsSync5(join6(home, ".hermes"));
+  const codexInstalled = existsSync6(join7(home, ".codex"));
+  const piInstalled = existsSync6(join7(home, ".pi", "agent"));
+  const hermesInstalled = existsSync6(join7(home, ".hermes"));
   if (codexInstalled || piInstalled) {
-    out.push(join6(home, ".agents", "skills"));
+    out.push(join7(home, ".agents", "skills"));
   }
   if (hermesInstalled) {
-    out.push(join6(home, ".hermes", "skills"));
+    out.push(join7(home, ".hermes", "skills"));
   }
   if (piInstalled) {
-    out.push(join6(home, ".pi", "agent", "skills"));
+    out.push(join7(home, ".pi", "agent", "skills"));
   }
   return out;
 }
-function detectAgentSkillsRoots(canonicalRoot, home = homedir5()) {
+function detectAgentSkillsRoots(canonicalRoot, home = homedir6()) {
   return resolveDetected(home).filter((p) => p !== canonicalRoot);
 }
 
-// dist/src/skilify/pull.js
+// dist/src/skillify/pull.js
 function assertValidAuthor(author) {
   if (!author)
     throw new Error("author is empty");
@@ -757,24 +800,32 @@ function buildPullSql(args) {
     where.push(`name = '${esc(args.skillName)}'`);
   }
   const whereClause = where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "";
-  return `SELECT name, project, project_key, body, version, source_agent, scope, author, description, trigger_text, source_sessions, install, created_at, updated_at FROM "${args.tableName}"${whereClause} ORDER BY project_key ASC, name ASC, version DESC`;
+  const contributorsCol = args.includeContributors === false ? "" : "contributors, ";
+  return `SELECT name, project, project_key, body, version, source_agent, scope, author, ${contributorsCol}description, trigger_text, source_sessions, install, created_at, updated_at FROM "${args.tableName}"${whereClause} ORDER BY project_key ASC, name ASC, version DESC`;
+}
+function isMissingContributorsColumnError(message) {
+  if (!message)
+    return false;
+  return /contributors.*(?:does not exist|not found|unknown)/i.test(message) || /(?:does not exist|unknown column).*contributors/i.test(message);
 }
 function isMissingTableError(message) {
   if (!message)
+    return false;
+  if (/\bcolumn\b/i.test(message))
     return false;
   return /Table does not exist|relation .* does not exist|no such table/i.test(message);
 }
 function resolvePullDestination(install, cwd) {
   if (install === "global")
-    return join7(homedir6(), ".claude", "skills");
+    return join8(homedir7(), ".claude", "skills");
   if (!cwd)
     throw new Error("install=project requires a cwd");
-  return join7(cwd, ".claude", "skills");
+  return join8(cwd, ".claude", "skills");
 }
 function fanOutSymlinks(canonicalDir, dirName, agentRoots) {
   const out = [];
   for (const root of agentRoots) {
-    const link = join7(root, dirName);
+    const link = join8(root, dirName);
     let existing;
     try {
       existing = lstatSync2(link);
@@ -817,8 +868,8 @@ function backfillSymlinks(installRoot) {
     return;
   const detected = detectAgentSkillsRoots(installRoot);
   for (const entry of entries) {
-    const canonical = join7(entry.installRoot, entry.dirName);
-    if (!existsSync6(canonical))
+    const canonical = join8(entry.installRoot, entry.dirName);
+    if (!existsSync7(canonical))
       continue;
     const fresh = fanOutSymlinks(canonical, entry.dirName, detected);
     if (sameSorted(fresh, entry.symlinks))
@@ -857,11 +908,16 @@ function selectLatestPerName(rows) {
 }
 function renderSkillFile(row) {
   const sources = parseSourceSessions(row.source_sessions);
+  const author = typeof row.author === "string" && row.author.length > 0 ? row.author : void 0;
+  const contributors = parseContributors(row.contributors);
+  const renderedContributors = contributors.length > 0 ? contributors : author ? [author] : [];
   const fm = {
     name: String(row.name ?? ""),
     description: String(row.description ?? ""),
     trigger: typeof row.trigger_text === "string" && row.trigger_text.length > 0 ? String(row.trigger_text) : void 0,
+    author,
     source_sessions: sources,
+    contributors: renderedContributors,
     version: Number(row.version ?? 1),
     created_by_agent: String(row.source_agent ?? "unknown"),
     created_at: String(row.created_at ?? (/* @__PURE__ */ new Date()).toISOString()),
@@ -886,15 +942,35 @@ function parseSourceSessions(v) {
   }
   return [];
 }
+function parseContributors(v) {
+  if (Array.isArray(v))
+    return v.map(String);
+  if (typeof v === "string") {
+    try {
+      const parsed = JSON.parse(v);
+      if (Array.isArray(parsed))
+        return parsed.map(String);
+    } catch {
+    }
+  }
+  return [];
+}
 function renderFrontmatter(fm) {
   const lines = ["---"];
   lines.push(`name: ${fm.name}`);
   lines.push(`description: ${JSON.stringify(fm.description)}`);
   if (fm.trigger)
     lines.push(`trigger: ${JSON.stringify(fm.trigger)}`);
+  if (fm.author)
+    lines.push(`author: ${fm.author}`);
   lines.push(`source_sessions:`);
   for (const s of fm.source_sessions)
     lines.push(`  - ${s}`);
+  if (fm.contributors && fm.contributors.length > 0) {
+    lines.push(`contributors:`);
+    for (const c of fm.contributors)
+      lines.push(`  - ${c}`);
+  }
   lines.push(`version: ${fm.version}`);
   lines.push(`created_by_agent: ${fm.created_by_agent}`);
   lines.push(`created_at: ${fm.created_at}`);
@@ -903,7 +979,7 @@ function renderFrontmatter(fm) {
   return lines.join("\n");
 }
 function readLocalVersion(path) {
-  if (!existsSync6(path))
+  if (!existsSync7(path))
     return null;
   try {
     const text = readFileSync5(path, "utf-8");
@@ -934,10 +1010,19 @@ async function runPull(opts) {
   try {
     rows = await opts.query(sql);
   } catch (e) {
-    if (isMissingTableError(e?.message))
+    if (isMissingTableError(e?.message)) {
       rows = [];
-    else
+    } else if (isMissingContributorsColumnError(e?.message)) {
+      const legacySql = buildPullSql({
+        tableName: opts.tableName,
+        users: opts.users,
+        skillName: opts.skillName,
+        includeContributors: false
+      });
+      rows = await opts.query(legacySql);
+    } else {
       throw e;
+    }
   }
   const latest = selectLatestPerName(rows);
   const root = resolvePullDestination(opts.install, opts.cwd);
@@ -992,8 +1077,8 @@ async function runPull(opts) {
       summary.skipped++;
       continue;
     }
-    const skillDir = join7(root, dirName);
-    const skillFile = join7(skillDir, "SKILL.md");
+    const skillDir = join8(root, dirName);
+    const skillFile = join8(skillDir, "SKILL.md");
     const remoteVersion = Number(row.version ?? 1);
     const localVersion = readLocalVersion(skillFile);
     const action = decideAction({
@@ -1005,9 +1090,9 @@ async function runPull(opts) {
     let manifestError;
     if (action === "wrote") {
       mkdirSync4(skillDir, { recursive: true });
-      if (existsSync6(skillFile)) {
+      if (existsSync7(skillFile)) {
         try {
-          renameSync2(skillFile, `${skillFile}.bak`);
+          renameSync3(skillFile, `${skillFile}.bak`);
         } catch {
         }
       }
@@ -1052,8 +1137,8 @@ async function runPull(opts) {
   return summary;
 }
 
-// dist/src/skilify/auto-pull.js
-var log3 = (msg) => log("skilify-autopull", msg);
+// dist/src/skillify/auto-pull.js
+var log3 = (msg) => log("skillify-autopull", msg);
 var DEFAULT_TIMEOUT_MS = 5e3;
 function withTimeout(p, ms) {
   let timer = null;
@@ -1105,7 +1190,7 @@ async function autoPullSkills(deps = {}) {
   }
 }
 
-// dist/src/skilify/autopull-worker.js
+// dist/src/skillify/autopull-worker.js
 void (async () => {
   try {
     await autoPullSkills();

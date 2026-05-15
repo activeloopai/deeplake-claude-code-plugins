@@ -507,13 +507,14 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', summary_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, tbl);
+      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', summary_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', plugin_version TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, tbl);
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
     }
     await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
     await this.ensureColumn(tbl, "agent", "TEXT NOT NULL DEFAULT ''");
+    await this.ensureColumn(tbl, "plugin_version", "TEXT NOT NULL DEFAULT ''");
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
   async ensureSessionsTable(name) {
@@ -521,13 +522,14 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(safe)) {
       log2(`table "${safe}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${safe}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, message_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, safe);
+      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${safe}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, message_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', plugin_version TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, safe);
       log2(`table "${safe}" created`);
       if (!tables.includes(safe))
         this._tablesCache = [...tables, safe];
     }
     await this.ensureEmbeddingColumn(safe, MESSAGE_EMBEDDING_COL);
     await this.ensureColumn(safe, "agent", "TEXT NOT NULL DEFAULT ''");
+    await this.ensureColumn(safe, "plugin_version", "TEXT NOT NULL DEFAULT ''");
     await this.ensureLookupIndex(safe, "path_creation_date", `("path", "creation_date")`);
   }
   /**
@@ -839,7 +841,7 @@ function embeddingsDisabled() {
 
 // dist/src/hooks/codex/capture.js
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-import { dirname as dirname2, join as join9 } from "node:path";
+import { dirname as dirname3, join as join10 } from "node:path";
 
 // dist/src/hooks/summary-state.js
 import { readFileSync as readFileSync4, writeFileSync as writeFileSync2, writeSync as writeSync2, mkdirSync as mkdirSync2, renameSync, existsSync as existsSync4, unlinkSync as unlinkSync2, openSync as openSync2, closeSync as closeSync2 } from "node:fs";
@@ -978,7 +980,7 @@ function releaseLock(sessionId) {
 // dist/src/hooks/codex/spawn-wiki-worker.js
 import { spawn as spawn2, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join as join8 } from "node:path";
+import { dirname as dirname2, join as join9 } from "node:path";
 import { writeFileSync as writeFileSync3, mkdirSync as mkdirSync4 } from "node:fs";
 import { homedir as homedir6, tmpdir as tmpdir2 } from "node:os";
 
@@ -1000,9 +1002,51 @@ function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
   };
 }
 
+// dist/src/utils/version-check.js
+import { readFileSync as readFileSync5 } from "node:fs";
+import { dirname, join as join8 } from "node:path";
+function getInstalledVersion(bundleDir, pluginManifestDir) {
+  try {
+    const pluginJson = join8(bundleDir, "..", pluginManifestDir, "plugin.json");
+    const plugin = JSON.parse(readFileSync5(pluginJson, "utf-8"));
+    if (plugin.version)
+      return plugin.version;
+  } catch {
+  }
+  try {
+    const stamp = readFileSync5(join8(bundleDir, "..", ".hivemind_version"), "utf-8").trim();
+    if (stamp)
+      return stamp;
+  } catch {
+  }
+  const HIVEMIND_PKG_NAMES = /* @__PURE__ */ new Set([
+    "hivemind",
+    "hivemind-codex",
+    "@deeplake/hivemind",
+    "@deeplake/hivemind-codex",
+    "@activeloop/hivemind",
+    "@activeloop/hivemind-codex"
+  ]);
+  let dir = bundleDir;
+  for (let i = 0; i < 5; i++) {
+    const candidate = join8(dir, "package.json");
+    try {
+      const pkg = JSON.parse(readFileSync5(candidate, "utf-8"));
+      if (HIVEMIND_PKG_NAMES.has(pkg.name) && pkg.version)
+        return pkg.version;
+    } catch {
+    }
+    const parent = dirname(dir);
+    if (parent === dir)
+      break;
+    dir = parent;
+  }
+  return null;
+}
+
 // dist/src/hooks/codex/spawn-wiki-worker.js
 var HOME = homedir6();
-var wikiLogger = makeWikiLogger(join8(HOME, ".codex", "hooks"));
+var wikiLogger = makeWikiLogger(join9(HOME, ".codex", "hooks"));
 var WIKI_LOG = wikiLogger.path;
 var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry.
 
@@ -1064,9 +1108,10 @@ function findCodexBin() {
 function spawnCodexWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
   const projectName = cwd.split("/").pop() || "unknown";
-  const tmpDir = join8(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  const tmpDir = join9(tmpdir2(), `deeplake-wiki-${sessionId}-${Date.now()}`);
   mkdirSync4(tmpDir, { recursive: true });
-  const configFile = join8(tmpDir, "config.json");
+  const pluginVersion = getInstalledVersion(bundleDir, ".codex-plugin") ?? "";
+  const configFile = join9(tmpDir, "config.json");
   writeFileSync3(configFile, JSON.stringify({
     apiUrl: config.apiUrl,
     token: config.token,
@@ -1077,14 +1122,15 @@ function spawnCodexWikiWorker(opts) {
     sessionId,
     userName: config.userName,
     project: projectName,
+    pluginVersion,
     tmpDir,
     codexBin: findCodexBin(),
     wikiLog: WIKI_LOG,
-    hooksDir: join8(HOME, ".codex", "hooks"),
+    hooksDir: join9(HOME, ".codex", "hooks"),
     promptTemplate: WIKI_PROMPT_TEMPLATE
   }));
   wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
-  const workerPath = join8(bundleDir, "wiki-worker.js");
+  const workerPath = join9(bundleDir, "wiki-worker.js");
   spawn2("nohup", ["node", workerPath, configFile], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"]
@@ -1092,14 +1138,16 @@ function spawnCodexWikiWorker(opts) {
   wikiLog(`${reason}: spawned summary worker for ${sessionId}`);
 }
 function bundleDirFromImportMeta(importMetaUrl) {
-  return dirname(fileURLToPath(importMetaUrl));
+  return dirname2(fileURLToPath(importMetaUrl));
 }
 
 // dist/src/hooks/codex/capture.js
 var log4 = (msg) => log("codex-capture", msg);
 function resolveEmbedDaemonPath() {
-  return join9(dirname2(fileURLToPath2(import.meta.url)), "embeddings", "embed-daemon.js");
+  return join10(dirname3(fileURLToPath2(import.meta.url)), "embeddings", "embed-daemon.js");
 }
+var __bundleDir = dirname3(fileURLToPath2(import.meta.url));
+var PLUGIN_VERSION = getInstalledVersion(__bundleDir, ".codex-plugin") ?? "";
 var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 async function main() {
   if (!CAPTURE)
@@ -1154,7 +1202,7 @@ async function main() {
   const jsonForSql = line.replace(/'/g, "''");
   const embedding = embeddingsDisabled() ? null : await new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() }).embed(line, "document");
   const embeddingSql = embeddingSqlLiteral(embedding);
-  const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'codex', '${ts}', '${ts}')`;
+  const insertSql = `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'codex', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}')`;
   try {
     await api.query(insertSql);
   } catch (e) {

@@ -205,8 +205,8 @@ jobs:
       - name: Build bundles
         # Must run BEFORE the quality gate. `npm run ci` includes vitest,
         # and the bundle-scan tests under
-        # claude-code/tests/skilify-session-start-injection.test.ts read
-        # openclaw/dist/index.js + openclaw/dist/skilify-worker.js
+        # claude-code/tests/skillify-session-start-injection.test.ts read
+        # openclaw/dist/index.js + openclaw/dist/skillify-worker.js
         # directly. openclaw/dist/ is gitignored — it only exists after
         # `npm run build`. Without this step before the gate, vitest
         # fails with ENOENT and the publish aborts. Same root cause as

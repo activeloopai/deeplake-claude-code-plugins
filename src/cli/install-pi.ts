@@ -39,10 +39,10 @@ const VERSION_DIR = join(PI_AGENT_DIR, ".hivemind");
 // install it as a separate file alongside.
 const WIKI_WORKER_DIR = join(PI_AGENT_DIR, "hivemind");
 const WIKI_WORKER_PATH = join(WIKI_WORKER_DIR, "wiki-worker.js");
-// Skilify worker bundle, spawned by pi extension on session_shutdown to mine
+// Skillify worker bundle, spawned by pi extension on session_shutdown to mine
 // reusable Claude skills from the just-finished session. Sibling of
 // wiki-worker.js so a single ensureDir + cleanup covers both.
-const SKILIFY_WORKER_PATH = join(WIKI_WORKER_DIR, "skilify-worker.js");
+const SKILLIFY_WORKER_PATH = join(WIKI_WORKER_DIR, "skillify-worker.js");
 // Autopull worker bundle, spawned synchronously by pi extension on
 // session_start to fetch all-author skills from the org table. Same
 // shared autoPullSkills() codex/cursor/hermes call directly; pi can't
@@ -131,13 +131,13 @@ export function installPi(): void {
     copyFileSync(srcWorker, WIKI_WORKER_PATH);
   }
 
-  // 4. Skilify-worker bundle (spawned by extension on session_shutdown to
+  // 4. Skillify-worker bundle (spawned by extension on session_shutdown to
   //    mine reusable skills from the finished session). Same dir as
   //    wiki-worker, same shared ensureDir.
-  const srcSkilifyWorker = join(pkgRoot(), "pi", "bundle", "skilify-worker.js");
-  if (existsSync(srcSkilifyWorker)) {
+  const srcSkillifyWorker = join(pkgRoot(), "pi", "bundle", "skillify-worker.js");
+  if (existsSync(srcSkillifyWorker)) {
     ensureDir(WIKI_WORKER_DIR);
-    copyFileSync(srcSkilifyWorker, SKILIFY_WORKER_PATH);
+    copyFileSync(srcSkillifyWorker, SKILLIFY_WORKER_PATH);
   }
 
   // 5. Autopull-worker bundle (spawned synchronously by extension on
@@ -156,8 +156,8 @@ export function installPi(): void {
   if (existsSync(WIKI_WORKER_PATH)) {
     log(`  pi             wiki-worker installed -> ${WIKI_WORKER_PATH}`);
   }
-  if (existsSync(SKILIFY_WORKER_PATH)) {
-    log(`  pi             skilify-worker installed -> ${SKILIFY_WORKER_PATH}`);
+  if (existsSync(SKILLIFY_WORKER_PATH)) {
+    log(`  pi             skillify-worker installed -> ${SKILLIFY_WORKER_PATH}`);
   }
   if (existsSync(AUTOPULL_WORKER_PATH)) {
     log(`  pi             autopull-worker installed -> ${AUTOPULL_WORKER_PATH}`);

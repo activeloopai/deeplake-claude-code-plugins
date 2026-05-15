@@ -16,7 +16,7 @@ const ccHooks = [
   { entry: "dist/src/hooks/session-end.js", out: "session-end" },
   { entry: "dist/src/hooks/plugin-cache-gc.js", out: "plugin-cache-gc" },
   { entry: "dist/src/hooks/wiki-worker.js", out: "wiki-worker" },
-  { entry: "dist/src/skilify/skilify-worker.js", out: "skilify-worker" },
+  { entry: "dist/src/skillify/skillify-worker.js", out: "skillify-worker" },
 ];
 
 const ccShell = [
@@ -66,7 +66,7 @@ const codexHooks = [
   { entry: "dist/src/hooks/codex/pre-tool-use.js", out: "pre-tool-use" },
   { entry: "dist/src/hooks/codex/stop.js", out: "stop" },
   { entry: "dist/src/hooks/codex/wiki-worker.js", out: "wiki-worker" },
-  { entry: "dist/src/skilify/skilify-worker.js", out: "skilify-worker" },
+  { entry: "dist/src/skillify/skillify-worker.js", out: "skillify-worker" },
 ];
 
 const codexShell = [
@@ -115,7 +115,7 @@ const cursorHooks = [
   { entry: "dist/src/hooks/cursor/session-end.js", out: "session-end" },
   { entry: "dist/src/hooks/cursor/pre-tool-use.js", out: "pre-tool-use" },
   { entry: "dist/src/hooks/cursor/wiki-worker.js", out: "wiki-worker" },
-  { entry: "dist/src/skilify/skilify-worker.js", out: "skilify-worker" },
+  { entry: "dist/src/skillify/skillify-worker.js", out: "skillify-worker" },
 ];
 
 // Hermes Agent shell-hook bundles (matches Claude Code's wire protocol; see
@@ -126,7 +126,7 @@ const hermesHooks = [
   { entry: "dist/src/hooks/hermes/session-end.js", out: "session-end" },
   { entry: "dist/src/hooks/hermes/pre-tool-use.js", out: "pre-tool-use" },
   { entry: "dist/src/hooks/hermes/wiki-worker.js", out: "wiki-worker" },
-  { entry: "dist/src/skilify/skilify-worker.js", out: "skilify-worker" },
+  { entry: "dist/src/skillify/skillify-worker.js", out: "skillify-worker" },
 ];
 
 const cursorShell = [
@@ -205,20 +205,20 @@ for (const h of hermesAll) {
   chmodSync(`hermes/bundle/${h.out}.js`, 0o755);
 }
 
-// Pi (badlogic/pi-mono) — ships a wiki-worker bundle, a skilify-worker
+// Pi (badlogic/pi-mono) — ships a wiki-worker bundle, a skillify-worker
 // bundle, and an autopull-worker bundle. The pi extension itself is raw .ts
 // at pi/extension-source/hivemind.ts; we don't bundle it because pi's
 // runtime compiles + loads the .ts file directly. Embed daemon reuses the
 // canonical ~/.hivemind/embed-deps/embed-daemon.js — no per-pi embed
-// bundle needed. Skilify worker is the same shared module used by
+// bundle needed. Skillify worker is the same shared module used by
 // CC/Codex/Cursor/Hermes; pi spawns it from session_shutdown.
 // Autopull worker is the same maybeAutoPull() the other agents call
 // directly; pi can't import it (raw .ts, zero deps) so it spawns this
 // bundle synchronously from session_start.
 const piWorker = [
   { entry: "dist/src/hooks/pi/wiki-worker.js", out: "wiki-worker" },
-  { entry: "dist/src/skilify/skilify-worker.js", out: "skilify-worker" },
-  { entry: "dist/src/skilify/autopull-worker.js", out: "autopull-worker" },
+  { entry: "dist/src/skillify/skillify-worker.js", out: "skillify-worker" },
+  { entry: "dist/src/skillify/autopull-worker.js", out: "autopull-worker" },
 ];
 await build({
   entryPoints: Object.fromEntries(piWorker.map(h => [h.out, h.entry])),
@@ -303,7 +303,7 @@ await build({
 });
 writeFileSync("openclaw/dist/package.json", esmPackageJson);
 
-// OpenClaw skilify-worker bundle. Same shared module CC/Codex/Cursor/Hermes/Pi
+// OpenClaw skillify-worker bundle. Same shared module CC/Codex/Cursor/Hermes/Pi
 // use; openclaw spawns it from its agent_end hook to mine reusable skills out
 // of just-captured sessions. Built as a SEPARATE entry (not added to the main
 // openclaw build above) because:
@@ -312,11 +312,11 @@ writeFileSync("openclaw/dist/package.json", esmPackageJson);
 //      with no stubs.
 //   2. The main bundle uses code splitting (chunks/), and we don't want the
 //      worker's modules entangled with the gateway's chunk graph.
-// Lands at openclaw/dist/skilify-worker.js — install-openclaw.ts already
+// Lands at openclaw/dist/skillify-worker.js — install-openclaw.ts already
 // copies the entire dist/ recursively, so it ships to
-// ~/.openclaw/extensions/hivemind/dist/skilify-worker.js with no other change.
+// ~/.openclaw/extensions/hivemind/dist/skillify-worker.js with no other change.
 await build({
-  entryPoints: { "skilify-worker": "dist/src/skilify/skilify-worker.js" },
+  entryPoints: { "skillify-worker": "dist/src/skillify/skillify-worker.js" },
   bundle: true,
   platform: "node",
   format: "esm",
@@ -326,7 +326,7 @@ await build({
     __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
   },
 });
-chmodSync("openclaw/dist/skilify-worker.js", 0o755);
+chmodSync("openclaw/dist/skillify-worker.js", 0o755);
 
 // Hivemind MCP server (stdio). Reused by Cline / Roo / Kilo / any MCP-aware
 // agent. Lives at ~/.hivemind/mcp/server.js after install.

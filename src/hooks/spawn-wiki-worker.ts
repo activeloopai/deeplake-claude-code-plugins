@@ -10,6 +10,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import type { Config } from "../config.js";
 import { makeWikiLogger } from "../utils/wiki-log.js";
+import { getInstalledVersion } from "../utils/version-check.js";
 
 const HOME = homedir();
 const wikiLogger = makeWikiLogger(join(HOME, ".claude", "hooks"));
@@ -93,6 +94,8 @@ export function spawnWikiWorker(opts: SpawnOptions): void {
   const tmpDir = join(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
   mkdirSync(tmpDir, { recursive: true });
 
+  const pluginVersion = getInstalledVersion(bundleDir, ".claude-plugin") ?? "";
+
   const configFile = join(tmpDir, "config.json");
   writeFileSync(configFile, JSON.stringify({
     apiUrl: config.apiUrl,
@@ -104,6 +107,7 @@ export function spawnWikiWorker(opts: SpawnOptions): void {
     sessionId,
     userName: config.userName,
     project: projectName,
+    pluginVersion,
     tmpDir,
     claudeBin: findClaudeBin(),
     wikiLog: WIKI_LOG,

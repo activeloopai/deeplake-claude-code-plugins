@@ -13,7 +13,9 @@ import { loadConfig, type Config } from "../config.js";
 import { log as _log } from "../utils/debug.js";
 import { bundleDirFromImportMeta, spawnWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 import { tryAcquireLock, releaseLock } from "./summary-state.js";
-import { forceSessionEndTrigger } from "../skilify/triggers.js";
+import { forceSessionEndTrigger } from "../skillify/triggers.js";
+import { parseTranscript } from "../notifications/transcript-parser.js";
+import { appendUsageRecord } from "../notifications/usage-tracker.js";
 
 const log = (msg: string) => _log("session-end", msg);
 
@@ -21,6 +23,29 @@ interface StopInput {
   session_id: string;
   cwd?: string;
   hook_event_name?: string;
+  transcript_path?: string;
+}
+
+/**
+ * Parse the session transcript for memory-search activity and append one
+ * record to `~/.deeplake/usage-stats.jsonl`. Fail-soft on every step.
+ *
+ * Runs independent of the wiki-worker lock — even sessions where the
+ * wiki worker can't run still contribute to the savings recap (the recap
+ * only needs memory-grep activity, not summaries).
+ */
+function recordSessionUsage(transcriptPath: string | undefined, sessionId: string): void {
+  if (!transcriptPath) return;
+  try {
+    const record = parseTranscript(transcriptPath, sessionId);
+    if (record.memorySearchCount === 0 && record.memorySearchBytes === 0) {
+      log(`no memory searches in session ${sessionId} — skipping usage record`);
+      return;
+    }
+    appendUsageRecord(record);
+  } catch (e: any) {
+    log(`recordSessionUsage failed: ${e?.message ?? String(e)}`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -34,6 +59,12 @@ async function main(): Promise<void> {
 
   const config = loadConfig();
   if (!config) { log("no config"); return; }
+
+  // Record memory-search activity for the savings recap. Independent of the
+  // wiki-worker lock below: even sessions where the wiki worker can't run
+  // should still contribute to the recap (only need memory-grep counts,
+  // not summaries).
+  recordSessionUsage(input.transcript_path, sessionId);
 
   // Coordinate with the periodic worker: if one is already running for this
   // session, skip. Two workers writing the same summary row trip the

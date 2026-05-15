@@ -33,13 +33,17 @@ import {
   releaseLock,
 } from "../summary-state.js";
 import { bundleDirFromImportMeta, spawnHermesWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
-import { tryStopCounterTrigger } from "../../skilify/triggers.js";
+import { tryStopCounterTrigger } from "../../skillify/triggers.js";
 import type { Config } from "../../config.js";
+import { getInstalledVersion } from "../../utils/version-check.js";
 const log = (msg: string) => _log("hermes-capture", msg);
 
 function resolveEmbedDaemonPath(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
 }
+
+const __bundleDir = dirname(fileURLToPath(import.meta.url));
+const PLUGIN_VERSION = getInstalledVersion(__bundleDir, ".claude-plugin") ?? "";
 
 interface HermesCaptureInput {
   hook_event_name?: string;
@@ -126,9 +130,9 @@ async function main(): Promise<void> {
   const embeddingSql = embeddingSqlLiteral(embedding);
 
   const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', 'hermes', '${ts}', '${ts}')`;
+    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', 'hermes', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}')`;
 
   try {
     await api.query(insertSql);
@@ -146,14 +150,14 @@ async function main(): Promise<void> {
 
   maybeTriggerPeriodicSummary(sessionId, cwd, config);
 
-  // Skilify Stop counter — post_llm_call is the assistant-complete event.
+  // Skillify Stop counter — post_llm_call is the assistant-complete event.
   // Guard: don't fire when this capture is running INSIDE the wiki worker
-  // or skilify worker themselves (their spawned CLI inherits env vars and
-  // would otherwise loop). triggers.ts has the same SKILIFY_WORKER guard;
+  // or skillify worker themselves (their spawned CLI inherits env vars and
+  // would otherwise loop). triggers.ts has the same SKILLIFY_WORKER guard;
   // the WIKI_WORKER guard below covers the wiki-worker-calling-hermes case.
   if (event === "post_llm_call" &&
       process.env.HIVEMIND_WIKI_WORKER !== "1" &&
-      process.env.HIVEMIND_SKILIFY_WORKER !== "1") {
+      process.env.HIVEMIND_SKILLIFY_WORKER !== "1") {
     tryStopCounterTrigger({
       config,
       cwd,

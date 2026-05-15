@@ -19,9 +19,13 @@ export default defineConfig({
   },
   test: {
     include: [
-      "claude-code/tests/**/*.test.ts",
-      "codex/tests/**/*.test.ts",
-      "openclaw/tests/**/*.test.ts",
+      "tests/claude-code/**/*.test.ts",
+      "tests/cli/**/*.test.ts",
+      "tests/codex/**/*.test.ts",
+      "tests/cursor/**/*.test.ts",
+      "tests/hermes/**/*.test.ts",
+      "tests/openclaw/**/*.test.ts",
+      "tests/pi/**/*.test.ts",
     ],
     environment: "node",
     coverage: {
@@ -40,22 +44,22 @@ export default defineConfig({
         "src/**/*.js.map",
         // CLI entry points — `main()` calls process.exit(), so source-level
         // unit tests don't make sense. These files have subprocess-spawn
-        // coverage via claude-code/tests/shell-bundle-*.test.ts instead.
+        // coverage via tests/claude-code/shell-bundle-*.test.ts instead.
         "src/shell/deeplake-shell.ts",
-        // Skilify worker entry points: skilify-worker.ts parses cfg from
+        // Skillify worker entry points: skillify-worker.ts parses cfg from
         // process.argv[2] at top level then runs main() which spawns
-        // detached subprocesses; spawn-skilify-worker.ts is the spawner.
+        // detached subprocesses; spawn-skillify-worker.ts is the spawner.
         // Both are excluded from vitest because they need a live Deeplake
         // workspace + a real agent CLI to exercise meaningfully.
         // Coverage on the SHIPPED bundle is enforced indirectly by
-        // claude-code/tests/skilify-bundle-scan.test.ts (asserts the
-        // skilify-worker.js bundle exists per agent and contains the
+        // tests/claude-code/skillify-bundle-scan.test.ts (asserts the
+        // skillify-worker.js bundle exists per agent and contains the
         // required entry strings + agent labels). For full e2e in
         // development, see the manual matrix script described in the
-        // PR description (lives at /tmp/skilify-e2e-matrix.mjs in the
+        // PR description (lives at /tmp/skillify-e2e-matrix.mjs in the
         // author's worktree, not committed).
-        "src/skilify/skilify-worker.ts",
-        "src/skilify/spawn-skilify-worker.ts",
+        "src/skillify/skillify-worker.ts",
+        "src/skillify/spawn-skillify-worker.ts",
       ],
       // Per-file thresholds. Each PR that ships new files should append
       // its paths here with 80 / 80 / 80 / 80, so we prevent regressions
@@ -184,7 +188,7 @@ export default defineConfig({
         },
         // PR #76 — feat/openclaw-static-scan-clean. Two new files extracted
         // from auth.ts / deeplake-api.ts so the openclaw bundle could split
-        // fs reads from fetch calls. Tests in claude-code/tests/{auth-creds,
+        // fs reads from fetch calls. Tests in tests/claude-code/{auth-creds,
         // index-marker-store}.test.ts cover both source modules above 90%.
         "src/commands/auth-creds.ts": {
           statements: 90,
@@ -251,7 +255,7 @@ export default defineConfig({
         // + lines + functions held at 80; the gating + output-parsing logic
         // (the actually-load-bearing surface) is exhaustively tested.
         "src/hooks/shared/autoupdate.ts": { statements: 80, branches: 80, functions: 80, lines: 80 },
-        // feat/skilify — background skill-mining worker + CLI surface +
+        // feat/skillify — background skill-mining worker + CLI surface +
         // per-agent gate dispatch + Deeplake skills table for org provenance.
         // Most modules cleanly hit 90/90/90/90; the trio below sits a touch
         // lower on branches because their happy paths are well-covered but a
@@ -259,17 +263,21 @@ export default defineConfig({
         // inside detached subprocesses) are pragmatic to leave at 75-80.
         // feat/session-start-autopull-skills — auto-pull all-author skills
         // at every SessionStart, throttled + bounded.
-        "src/skilify/auto-pull.ts":         { statements: 90, branches: 70, functions: 90, lines: 90 },
-        "src/skilify/extractors/index.ts":  { statements: 90, branches: 90, functions: 90, lines: 90 },
-        "src/skilify/gate-parser.ts":       { statements: 90, branches: 90, functions: 90, lines: 90 },
-        "src/skilify/gate-runner.ts":       { statements: 90, branches: 60, functions: 90, lines: 90 },
-        "src/skilify/pull.ts":              { statements: 90, branches: 75, functions: 90, lines: 90 },
-        "src/skilify/scope-config.ts":      { statements: 90, branches: 90, functions: 90, lines: 90 },
-        "src/skilify/skill-writer.ts":      { statements: 90, branches: 80, functions: 90, lines: 90 },
-        "src/skilify/skills-table.ts":      { statements: 90, branches: 70, functions: 90, lines: 90 },
-        "src/skilify/state.ts":             { statements: 80, branches: 70, functions: 90, lines: 80 },
-        "src/skilify/triggers.ts":          { statements: 80, branches: 70, functions: 90, lines: 80 },
-        "src/commands/skilify.ts":          { statements: 80, branches: 70, functions: 80, lines: 80 },
+        "src/skillify/auto-pull.ts":         { statements: 90, branches: 70, functions: 90, lines: 90 },
+        "src/skillify/extractors/index.ts":  { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/skillify/gate-parser.ts":       { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/skillify/gate-runner.ts":       { statements: 90, branches: 60, functions: 90, lines: 90 },
+        // One-shot legacy state-dir migration. Branches at 80 because the
+        // EXDEV/EPERM error-recovery branch is mocked via vi.doMock("node:fs")
+        // and the uncaught-rethrow branch covers everything else implicitly.
+        "src/skillify/legacy-migration.ts":  { statements: 90, branches: 80, functions: 90, lines: 90 },
+        "src/skillify/pull.ts":              { statements: 90, branches: 75, functions: 90, lines: 90 },
+        "src/skillify/scope-config.ts":      { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/skillify/skill-writer.ts":      { statements: 90, branches: 80, functions: 90, lines: 90 },
+        "src/skillify/skills-table.ts":      { statements: 90, branches: 70, functions: 90, lines: 90 },
+        "src/skillify/state.ts":             { statements: 80, branches: 70, functions: 90, lines: 80 },
+        "src/skillify/triggers.ts":          { statements: 80, branches: 70, functions: 90, lines: 80 },
+        "src/commands/skillify.ts":          { statements: 80, branches: 70, functions: 80, lines: 80 },
         // PR #96 — feat/notifications-framework. Centralized push-notification
         // framework + Claude Code dual-channel adapter (systemMessage + addCtx).
         // Most files at 100% via notifications.test.ts and notifications-coverage.test.ts.
@@ -284,12 +292,19 @@ export default defineConfig({
         "src/notifications/format.ts":            { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/notifications/index.ts":             { statements: 90, branches: 80, functions: 90, lines: 90 },
         "src/notifications/queue.ts":             { statements: 90, branches: 70, functions: 90, lines: 90 },
-        "src/notifications/state.ts":             { statements: 90, branches: 80, functions: 90, lines: 90 },
+        "src/notifications/state.ts":             { statements: 90, branches: 75, functions: 90, lines: 90 },
         "src/notifications/rules/registry.ts":    { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/notifications/rules/welcome.ts":     { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/notifications/sources/backend.ts":   { statements: 90, branches: 90, functions: 80, lines: 90 },
         "src/notifications/delivery/index.ts":    { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/notifications/delivery/claude-code.ts": { statements: 90, branches: 90, functions: 90, lines: 90 },
+        // feat/hivemind-savings-recap — per-session "Hivemind has saved you Nk tokens"
+        // recap. Pure local arithmetic: parse session transcript for memory-grep
+        // bytes, accumulate in ~/.deeplake/usage-stats.jsonl, render at SessionStart
+        // using the published LoCoMo 1.7x multiplier (1,008 vs 1,700 tokens / Q).
+        "src/notifications/transcript-parser.ts":   { statements: 90, branches: 75, functions: 90, lines: 90 },
+        "src/notifications/usage-tracker.ts":       { statements: 90, branches: 75, functions: 90, lines: 90 },
+        "src/notifications/sources/local-usage.ts": { statements: 90, branches: 80, functions: 90, lines: 90 },
       },
     },
   },

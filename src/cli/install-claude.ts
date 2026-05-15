@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { log } from "./util.js";
 
 // Claude Code's plugin loader is a managed surface: it owns the cache layout,
@@ -72,6 +75,147 @@ function pluginAlreadyInstalled(): boolean {
 // activated will simply error out, which is fine.
 const PLUGIN_SCOPES = ["user", "project", "local", "managed"] as const;
 
+// ── Cleanup pass for a 0.7.23/0.7.24 regression ──────────────────────────────
+//
+// PR #128 shipped a `syncHivemindHooksToSettings()` helper that wrote
+// hardcoded literal paths (`~/.claude/plugins/hivemind/bundle/...`) into
+// `~/.claude/settings.json` at install/update time, replacing the
+// `${CLAUDE_PLUGIN_ROOT}` placeholder Claude Code resolves at runtime.
+// For users without a legacy install at that exact path, the resulting
+// entries pointed at non-existent files → every hivemind hook crashed
+// at session start.
+//
+// The helper has been removed (the marketplace plugin's hooks.json
+// auto-registers hooks via Claude Code's plugin loader — the helper
+// was redundant for marketplace users and actively harmful when the
+// hardcoded path didn't exist).
+//
+// This cleanup function removes those broken entries from settings.json
+// on every `hivemind update` so anyone who ran 0.7.23 or 0.7.24 gets
+// auto-healed. Narrowly scoped: only removes entries whose command
+// points at the literal legacy path AND that path doesn't exist on
+// disk. Entries on functioning legacy installs are preserved.
+
+interface HookEntry {
+  type?: string;
+  command?: string;
+  timeout?: number;
+  async?: boolean;
+}
+
+interface HookMatcher {
+  matcher?: string;
+  hooks: HookEntry[];
+}
+
+interface SettingsShape {
+  hooks?: Record<string, HookMatcher[]>;
+  [k: string]: unknown;
+}
+
+function settingsJsonPath(): string {
+  return join(homedir(), ".claude", "settings.json");
+}
+
+const LEGACY_PATH_FRAGMENT = ".claude/plugins/hivemind/bundle/";
+
+/**
+ * Return true if this hook entry was written by the buggy
+ * `syncHivemindHooksToSettings()` helper AND the file it points at
+ * doesn't exist. Both conditions must hold:
+ *   - command references the literal legacy path fragment
+ *   - the referenced file is missing from disk
+ *
+ * Why both? Legitimate legacy installs ALSO have entries pointing at
+ * that path, but the file exists for them. We only want to clean up
+ * entries that are actively broken.
+ */
+function isBrokenHivemindHookEntry(h: HookEntry): boolean {
+  if (typeof h.command !== "string") return false;
+  // Normalize backslashes for Windows compatibility (same reason the
+  // original helper had this — the bug shipped Windows-style paths too).
+  const normalized = h.command.replace(/\\/g, "/");
+  if (!normalized.includes(LEGACY_PATH_FRAGMENT)) return false;
+  // Extract the path between the first `"` after `node` and the closing `"`.
+  // Falls back to checking word-tokens if no quoted path is found.
+  const match = normalized.match(/"([^"]+\.claude\/plugins\/hivemind\/bundle\/[^"]+)"/);
+  const filePath = match ? match[1] : null;
+  if (!filePath) return false;
+  return !existsSync(filePath);
+}
+
+/**
+ * Walk settings.json, remove every hivemind hook entry that points at a
+ * non-existent legacy path. Entries that ARE legacy-but-functional stay.
+ * Entries written by Claude Code's marketplace plugin loader (which uses
+ * `${CLAUDE_PLUGIN_ROOT}/...` and resolves at runtime) are unaffected
+ * since they don't contain the literal legacy path fragment.
+ *
+ * Returns the count of entries removed; useful for the install log.
+ *
+ * Fail-safe: corrupt settings.json or unreadable file → return 0, no-op.
+ * NEVER deletes the entire matcher block; if a matcher's last hook gets
+ * removed, the matcher block is also dropped (no empty matchers).
+ */
+export function cleanupBrokenSettingsHooks(): { removed: number; events: string[] } {
+  const settingsPath = settingsJsonPath();
+  if (!existsSync(settingsPath)) return { removed: 0, events: [] };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(settingsPath, "utf-8"));
+  } catch {
+    return { removed: 0, events: [] };
+  }
+  // `JSON.parse` succeeds (returns null) for literal "null" — dereferencing
+  // `.hooks` would throw. Caught by CodeRabbit on PR #166.
+  if (!parsed || typeof parsed !== "object") return { removed: 0, events: [] };
+  const settings = parsed as SettingsShape;
+  if (!settings.hooks || typeof settings.hooks !== "object") return { removed: 0, events: [] };
+
+  let removed = 0;
+  const touchedEvents: string[] = [];
+
+  for (const [event, matchers] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(matchers)) continue;
+    const cleanedMatchers: HookMatcher[] = [];
+    let eventTouched = false;
+    for (const m of matchers) {
+      if (!m || !Array.isArray(m.hooks)) {
+        cleanedMatchers.push(m);
+        continue;
+      }
+      const keptHooks = m.hooks.filter(h => {
+        const broken = isBrokenHivemindHookEntry(h);
+        if (broken) {
+          removed += 1;
+          eventTouched = true;
+        }
+        return !broken;
+      });
+      // Drop the entire matcher block if all its hooks were removed.
+      if (keptHooks.length > 0) {
+        cleanedMatchers.push({ ...m, hooks: keptHooks });
+      } else if (m.hooks.length > 0) {
+        // Block was entirely hivemind-broken — dropping it. Counted via removed above.
+        eventTouched = true;
+      } else {
+        // Empty hooks array already; preserve verbatim.
+        cleanedMatchers.push(m);
+      }
+    }
+    if (eventTouched) {
+      settings.hooks[event] = cleanedMatchers;
+      touchedEvents.push(event);
+    }
+  }
+
+  if (removed > 0) {
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+  }
+  return { removed, events: touchedEvents };
+}
+
 export function installClaude(): void {
   requireClaudeCli();
 
@@ -113,6 +257,18 @@ export function installClaude(): void {
 
   // enable is idempotent in claude CLI — safe to run unconditionally
   runClaude(["plugin", "enable", PLUGIN_KEY]);
+
+  // Auto-heal settings.json on every install/update for users hit by the
+  // 0.7.23/0.7.24 sync-helper regression. See `cleanupBrokenSettingsHooks`
+  // for the failure mode this addresses. No-op on clean installs.
+  try {
+    const cleanup = cleanupBrokenSettingsHooks();
+    if (cleanup.removed > 0) {
+      log(`  Claude Code    settings.json cleaned: removed ${cleanup.removed} stale hook entr${cleanup.removed === 1 ? "y" : "ies"} (events: ${cleanup.events.join(", ")})`);
+    }
+  } catch (e: any) {
+    log(`  Claude Code    settings.json cleanup skipped: ${e?.message ?? String(e)}`);
+  }
 }
 
 export function uninstallClaude(): void {

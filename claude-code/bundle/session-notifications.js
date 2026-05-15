@@ -107,7 +107,8 @@ function writeQueue(q) {
 }
 
 // dist/src/notifications/state.js
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync3, renameSync as renameSync2, mkdirSync as mkdirSync3 } from "node:fs";
+import { closeSync, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync3, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { createHash } from "node:crypto";
 import { join as join4, resolve as resolve2 } from "node:path";
 import { homedir as homedir4 } from "node:os";
 var log3 = (msg) => log("notifications-state", msg);
@@ -151,6 +152,29 @@ function alreadyShown(state, n) {
   if (!prev)
     return false;
   return prev.dedupKey === JSON.stringify(n.dedupKey);
+}
+function tryClaim(n) {
+  const home = resolve2(homedir4());
+  const claimsDir = join4(home, ".deeplake", "notifications-claims");
+  try {
+    mkdirSync3(claimsDir, { recursive: true, mode: 448 });
+  } catch (e) {
+    log3(`tryClaim mkdir failed: ${e?.message ?? String(e)}`);
+    return true;
+  }
+  const keyHash = createHash("sha256").update(JSON.stringify(n.dedupKey)).digest("hex").slice(0, 12);
+  const safeId = n.id.replace(/[^a-zA-Z0-9_.:-]/g, "_");
+  const claimPath = join4(claimsDir, `${safeId}-${keyHash}`);
+  try {
+    const fd = openSync(claimPath, "wx", 384);
+    closeSync(fd);
+    return true;
+  } catch (e) {
+    if (e?.code === "EEXIST")
+      return false;
+    log3(`tryClaim open failed: ${e?.message ?? String(e)}`);
+    return true;
+  }
 }
 
 // dist/src/notifications/format.js
@@ -259,8 +283,151 @@ async function fetchBackendNotifications(creds) {
   }
 }
 
+// dist/src/notifications/usage-tracker.js
+import { appendFileSync as appendFileSync2, existsSync, mkdirSync as mkdirSync4, readFileSync as readFileSync4, readdirSync } from "node:fs";
+import { dirname, join as join5 } from "node:path";
+import { homedir as homedir5 } from "node:os";
+var log5 = (msg) => log("usage-tracker", msg);
+function statsFilePath() {
+  return join5(homedir5(), ".deeplake", "usage-stats.jsonl");
+}
+function readUsageRecords() {
+  try {
+    if (!existsSync(statsFilePath()))
+      return [];
+    const raw = readFileSync4(statsFilePath(), "utf-8");
+    const out = [];
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed)
+        continue;
+      try {
+        const rec = JSON.parse(trimmed);
+        if (typeof rec.endedAt === "string" && typeof rec.sessionId === "string") {
+          out.push({
+            endedAt: rec.endedAt,
+            sessionId: rec.sessionId,
+            memorySearchBytes: typeof rec.memorySearchBytes === "number" ? rec.memorySearchBytes : 0,
+            memorySearchCount: typeof rec.memorySearchCount === "number" ? rec.memorySearchCount : 0
+          });
+        }
+      } catch {
+      }
+    }
+    return out;
+  } catch (e) {
+    log5(`readUsageRecords failed: ${e?.message ?? String(e)}`);
+    return [];
+  }
+}
+function sumMetric(records, key) {
+  let total = 0;
+  for (const r of records) {
+    const v = r[key];
+    if (typeof v === "number" && Number.isFinite(v))
+      total += v;
+  }
+  return total;
+}
+function countUserGeneratedSkills(userName) {
+  if (!userName)
+    return 0;
+  const dir = join5(homedir5(), ".claude", "skills");
+  if (!existsSync(dir))
+    return 0;
+  const suffix = `--${userName}`;
+  try {
+    let count = 0;
+    for (const name of readdirSync(dir)) {
+      const idx = name.lastIndexOf(suffix);
+      if (idx > 0 && idx + suffix.length === name.length)
+        count += 1;
+    }
+    return count;
+  } catch (e) {
+    log5(`countUserGeneratedSkills readdir failed: ${e?.message ?? String(e)}`);
+    return 0;
+  }
+}
+
+// dist/src/notifications/sources/local-usage.js
+var log6 = (msg) => log("notifications-local-usage", msg);
+var BYTES_PER_TOKEN = 4;
+var SAVINGS_MULTIPLIER = 1.7;
+function minSessionsForRecap() {
+  const raw = process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS;
+  if (typeof raw === "string" && raw.length > 0) {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n >= 0)
+      return n;
+  }
+  return 100;
+}
+function formatTokens(n) {
+  if (!Number.isFinite(n) || n <= 0)
+    return "0";
+  if (n < 1e3)
+    return `${Math.round(n)}`;
+  if (n < 1e5)
+    return `${(n / 1e3).toFixed(1)}k`;
+  if (n < 1e6)
+    return `${Math.round(n / 1e3)}k`;
+  return `${(n / 1e6).toFixed(1)}M`;
+}
+function fetchLocalUsageNotifications(sessionId, userName) {
+  if (!sessionId) {
+    return [];
+  }
+  let records;
+  try {
+    records = readUsageRecords();
+  } catch (e) {
+    log6(`readUsageRecords threw: ${e?.message ?? String(e)}`);
+    return [];
+  }
+  if (records.length === 0) {
+    log6("no usage records yet \u2014 skipping recap");
+    return [];
+  }
+  const minSessions = minSessionsForRecap();
+  if (records.length < minSessions) {
+    log6(`only ${records.length} sessions, threshold is ${minSessions} \u2014 skipping recap`);
+    return [];
+  }
+  const memorySearchBytes = sumMetric(records, "memorySearchBytes");
+  if (memorySearchBytes <= 0) {
+    log6("memorySearchBytes total is 0 \u2014 skipping recap");
+    return [];
+  }
+  const yTokens = memorySearchBytes / BYTES_PER_TOKEN;
+  const zTokens = (SAVINGS_MULTIPLIER - 1) * yTokens;
+  const sessionCount = records.length;
+  const memorySearches = sumMetric(records, "memorySearchCount");
+  const skillsGenerated = countUserGeneratedSkills(userName);
+  const title = `Hivemind has saved you ~${formatTokens(zTokens)} tokens`;
+  const segments = [
+    `${sessionCount} ${sessionCount === 1 ? "session" : "sessions"}`,
+    `${memorySearches} memory ${memorySearches === 1 ? "search" : "searches"}`
+  ];
+  if (skillsGenerated > 0) {
+    segments.push(`${skillsGenerated} ${skillsGenerated === 1 ? "skill" : "skills"} generated`);
+  }
+  const body = `   ${segments.join(" \xB7 ")}`;
+  return [
+    {
+      id: "local-usage:savings-recap",
+      severity: "info",
+      title,
+      body,
+      // dedupKey on sessionId: same session's parallel hook fires dedupe;
+      // new sessions get fresh numbers.
+      dedupKey: { session: sessionId }
+    }
+  ];
+}
+
 // dist/src/notifications/index.js
-var log5 = (msg) => log("notifications", msg);
+var log7 = (msg) => log("notifications", msg);
 async function drainSessionStart(opts) {
   try {
     const state = readState();
@@ -269,24 +436,32 @@ async function drainSessionStart(opts) {
     const fromRules = evaluateRules("session_start", ctx);
     const fromQueue = queue.queue;
     const fromBackend = await fetchBackendNotifications(opts.creds);
-    const all = [...fromRules, ...fromQueue, ...fromBackend];
+    const fromLocalUsage = fetchLocalUsageNotifications(opts.sessionId, opts.creds?.userName);
+    const all = [...fromRules, ...fromQueue, ...fromBackend, ...fromLocalUsage];
     const fresh = all.filter((n) => !alreadyShown(state, n));
     if (fresh.length === 0) {
       if (queue.queue.length > 0)
         writeQueue({ queue: [] });
       return;
     }
-    const rendered = renderNotifications(fresh);
+    const claimed = fresh.filter((n) => tryClaim(n));
+    if (claimed.length === 0) {
+      if (queue.queue.length > 0)
+        writeQueue({ queue: [] });
+      log7(`all ${fresh.length} notification(s) claimed by another process`);
+      return;
+    }
+    const rendered = renderNotifications(claimed);
     emit(opts.agent, rendered);
     let nextState = state;
-    for (const n of fresh)
+    for (const n of claimed)
       nextState = markShown(nextState, n);
     writeState(nextState);
     if (queue.queue.length > 0)
       writeQueue({ queue: [] });
-    log5(`delivered ${fresh.length} notification(s) to ${opts.agent}`);
+    log7(`delivered ${claimed.length} notification(s) to ${opts.agent}`);
   } catch (e) {
-    log5(`drainSessionStart failed: ${e?.message ?? String(e)}`);
+    log7(`drainSessionStart failed: ${e?.message ?? String(e)}`);
   }
 }
 
@@ -311,16 +486,18 @@ var welcomeRule = {
 };
 
 // dist/src/hooks/session-notifications.js
-var log6 = (msg) => log("session-notifications", msg);
+var log8 = (msg) => log("session-notifications", msg);
 registerRule(welcomeRule);
 async function main() {
   if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
-  await readStdin().catch(() => ({}));
+  const input = await readStdin().catch(() => ({}));
+  const rawSessionId = typeof input?.session_id === "string" ? input.session_id.trim() : "";
+  const sessionId = rawSessionId.length > 0 ? rawSessionId : void 0;
   const creds = loadCredentials();
-  await drainSessionStart({ agent: "claude-code", creds });
+  await drainSessionStart({ agent: "claude-code", creds, sessionId });
 }
 main().catch((e) => {
-  log6(`fatal: ${e?.message ?? String(e)}`);
+  log8(`fatal: ${e?.message ?? String(e)}`);
   process.exit(0);
 });

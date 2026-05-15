@@ -15,7 +15,7 @@ import { log as _log } from "../../utils/debug.js";
 import { loadConfig } from "../../config.js";
 import { tryAcquireLock } from "../summary-state.js";
 import { bundleDirFromImportMeta, spawnCursorWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
-import { forceSessionEndTrigger } from "../../skilify/triggers.js";
+import { forceSessionEndTrigger } from "../../skillify/triggers.js";
 
 const log = (msg: string) => _log("cursor-session-end", msg);
 
@@ -42,7 +42,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   if (!config) { wikiLog(`SessionEnd: no config, skipping summary`); return; }
 
-  // Spawn the wiki and skilify workers independently — a failure of one
+  // Spawn the wiki and skillify workers independently — a failure of one
   // must not suppress the other. Each is wrapped in its own try.
   try {
     spawnCursorWikiWorker({
@@ -64,7 +64,7 @@ async function main(): Promise<void> {
       sessionId,
     });
   } catch (e: any) {
-    wikiLog(`SessionEnd: skilify trigger failed: ${e?.message ?? e}`);
+    wikiLog(`SessionEnd: skillify trigger failed: ${e?.message ?? e}`);
   }
 }
 

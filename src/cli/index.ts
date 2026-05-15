@@ -7,7 +7,7 @@ import { installPi, uninstallPi } from "./install-pi.js";
 import { enableEmbeddings, disableEmbeddings, statusEmbeddings } from "./embeddings.js";
 import { ensureLoggedIn, isLoggedIn, maybeShowOrgChoice } from "./auth.js";
 import { runAuthCommand } from "../commands/auth-login.js";
-import { runSkilifyCommand } from "../commands/skilify.js";
+import { runSkillifyCommand } from "../commands/skillify.js";
 import { detectPlatforms, allPlatformIds, log, warn, type PlatformId } from "./util.js";
 import { getVersion } from "./version.js";
 import { runUpdate } from "./update.js";
@@ -64,8 +64,8 @@ Semantic search (embeddings):
   to run "embeddings install" automatically after installing the agent(s).
 
 Skill management (mine + share reusable Claude skills across the org):
-  hivemind skilify                         Show scope, team, install, and per-project state.
-  hivemind skilify pull [skill-name]       Sync skills from the org table to local FS.
+  hivemind skillify                         Show scope, team, install, and per-project state.
+  hivemind skillify pull [skill-name]       Sync skills from the org table to local FS.
                                            Options: --user <email>, --users a,b,c,
                                            --all-users, --to <project|global>,
                                            --dry-run, --force.
@@ -75,17 +75,17 @@ Skill management (mine + share reusable Claude skills across the org):
                                            idempotent (skipped when local is
                                            at-or-newer than remote). Disable via
                                            HIVEMIND_AUTOPULL_DISABLED=1.
-  hivemind skilify unpull                  Remove skills previously installed by pull.
+  hivemind skillify unpull                  Remove skills previously installed by pull.
                                            Options: --user, --users, --not-mine,
                                            --to <project|global>, --dry-run,
                                            --all (also locally-mined),
                                            --legacy-cleanup (pre-suffix-author dirs).
-  hivemind skilify scope <me|team|org>     Set the sharing scope for newly mined skills.
-  hivemind skilify install <project|global>  Set where new skills are written.
-  hivemind skilify promote <name>          Move a project skill to the global location.
-  hivemind skilify team add <username>     Add a username to the team list.
-  hivemind skilify team remove <username>  Remove a username from the team list.
-  hivemind skilify team list               List current team members.
+  hivemind skillify scope <me|team>         Set the sharing scope for newly mined skills.
+  hivemind skillify install <project|global>  Set where new skills are written.
+  hivemind skillify promote <name>          Move a project skill to the global location.
+  hivemind skillify team add <username>     Add a username to the team list.
+  hivemind skillify team remove <username>  Remove a username from the team list.
+  hivemind skillify team list               List current team members.
 
 Account / org / workspace:
   hivemind whoami                          Show current user, org, workspace.
@@ -228,8 +228,8 @@ async function main(): Promise<void> {
     process.exit(code);
   }
 
-  if (cmd === "skilify") {
-    runSkilifyCommand(args.slice(1));
+  if (cmd === "skillify") {
+    runSkillifyCommand(args.slice(1));
     return;
   }
 

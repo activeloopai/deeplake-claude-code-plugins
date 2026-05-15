@@ -268,7 +268,7 @@ Hivemind **codifies recurring patterns from your team's recent sessions into reu
 
 ```bash
 hivemind skillify                            # show current scope, team, install, per-project state
-hivemind skillify scope <me|team|org>        # who counts as "in scope" for mining
+hivemind skillify scope <me|team>            # who counts as "in scope" for mining
 hivemind skillify pull                       # install teammates' skills locally
 hivemind skillify unpull                     # remove pulled skills
 ```

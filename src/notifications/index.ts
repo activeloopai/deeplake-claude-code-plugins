@@ -17,10 +17,11 @@ import type { Credentials } from "../commands/auth-creds.js";
 import type { Agent, Notification, NotificationContext } from "./types.js";
 import { evaluateRules } from "./rules/registry.js";
 import { readQueue, writeQueue } from "./queue.js";
-import { readState, writeState, alreadyShown, markShown } from "./state.js";
+import { readState, writeState, alreadyShown, markShown, tryClaim } from "./state.js";
 import { renderNotifications } from "./format.js";
 import { emit } from "./delivery/index.js";
 import { fetchBackendNotifications } from "./sources/backend.js";
+import { fetchLocalUsageNotifications } from "./sources/local-usage.js";
 import { log as _log } from "../utils/debug.js";
 
 const log = (msg: string) => _log("notifications", msg);
@@ -32,12 +33,23 @@ export { enqueueNotification } from "./queue.js";
 export interface DrainOptions {
   agent: Agent;
   creds: Credentials | null;
+  /** Claude Code session_id from the hook stdin. Used as the dedupKey
+   *  basis for the per-session savings recap so the same session's two
+   *  parallel hook invocations dedupe to one emission. */
+  sessionId?: string;
 }
 
 /**
  * Evaluate all session_start rules + drain the queue, dedup, render, deliver,
- * and persist updated state. Idempotent within a single (creds.savedAt,
- * dedupKey) window.
+ * and persist updated state.
+ *
+ * Concurrency note: the SessionStart hook is registered in BOTH
+ * ~/.claude/settings.json and the marketplace hooks.json, so two node
+ * processes can race this function. State dedup (`alreadyShown`) protects
+ * against duplicate emission ONLY if one process completes its write
+ * before the other reads — not guaranteed. We additionally call
+ * `tryClaim()` per notification: an atomic O_CREAT|O_EXCL on a claim file
+ * for each (id, dedupKey) pair. First process wins, second skips.
  *
  * Failures are caught and logged — never thrown. A broken notifications
  * pipeline must not abort the SessionStart hook process (the existing
@@ -54,7 +66,11 @@ export async function drainSessionStart(opts: DrainOptions): Promise<void> {
     // Backend fetch is fail-soft (returns [] on error/timeout) — its
     // failure must not abort the rules + queue path.
     const fromBackend = await fetchBackendNotifications(opts.creds);
-    const all: Notification[] = [...fromRules, ...fromQueue, ...fromBackend];
+    // Local-usage source: synchronous, reads ~/.deeplake/usage-stats.jsonl
+    // to render the cumulative savings recap. Returns [] when sessionId
+    // is missing OR there's no memory-search activity to claim.
+    const fromLocalUsage = fetchLocalUsageNotifications(opts.sessionId, opts.creds?.userName);
+    const all: Notification[] = [...fromRules, ...fromQueue, ...fromBackend, ...fromLocalUsage];
 
     const fresh = all.filter(n => !alreadyShown(state, n));
     if (fresh.length === 0) {
@@ -63,18 +79,28 @@ export async function drainSessionStart(opts: DrainOptions): Promise<void> {
       return;
     }
 
-    const rendered = renderNotifications(fresh);
+    // Per-notification atomic claim — prevents two concurrent SessionStart
+    // hook invocations (settings.json + marketplace hooks.json both fire)
+    // from emitting the same notification twice. See state.ts:tryClaim.
+    const claimed = fresh.filter(n => tryClaim(n));
+    if (claimed.length === 0) {
+      if (queue.queue.length > 0) writeQueue({ queue: [] });
+      log(`all ${fresh.length} notification(s) claimed by another process`);
+      return;
+    }
+
+    const rendered = renderNotifications(claimed);
     emit(opts.agent, rendered);
 
     let nextState = state;
-    for (const n of fresh) nextState = markShown(nextState, n);
+    for (const n of claimed) nextState = markShown(nextState, n);
     writeState(nextState);
 
     // Queue is fully drained whether or not its items were dedup-skipped:
     // they've been read once. If a producer needs to re-enqueue, it re-pushes.
     if (queue.queue.length > 0) writeQueue({ queue: [] });
 
-    log(`delivered ${fresh.length} notification(s) to ${opts.agent}`);
+    log(`delivered ${claimed.length} notification(s) to ${opts.agent}`);
   } catch (e: any) {
     log(`drainSessionStart failed: ${e?.message ?? String(e)}`);
   }

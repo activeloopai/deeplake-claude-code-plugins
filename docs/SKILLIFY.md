@@ -29,7 +29,7 @@ The `/skillify` slash command (Claude Code, Codex) and the `hivemind skillify` C
 
 ```bash
 hivemind skillify                            # show current scope, team, install, per-project state
-hivemind skillify scope <me|team|org>        # who counts as "in scope" for mining
+hivemind skillify scope <me|team>            # who counts as "in scope" for mining
 hivemind skillify install <project|global>   # where new skills are written
 hivemind skillify promote <skill-name>       # move a project skill to ~/.claude/skills/
 hivemind skillify team add <username>        # add to the team list (used when scope=team)
@@ -37,7 +37,7 @@ hivemind skillify team remove <username>     # remove from team
 hivemind skillify team list                  # list current team members
 ```
 
-The team list flows into the worker's session-fetch SQL: `scope=me` filters by your own username, `scope=team` filters by `author IN (<team>)`, `scope=org` applies no author filter.
+The team list flows into the worker's session-fetch SQL: `scope=me` filters by your own username, `scope=team` filters by `author IN (<team>)` (or falls back to `scope=me` when the team list is empty). A legacy `scope=org` value (no author filter, retired) is silently coerced to `team` on read for users who still have it in their config.
 
 Config persists at `~/.deeplake/state/skillify/config.json` (one global file shared across projects).
 

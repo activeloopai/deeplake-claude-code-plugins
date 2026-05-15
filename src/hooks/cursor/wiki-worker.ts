@@ -35,6 +35,7 @@ interface WorkerConfig {
   sessionId: string;
   userName: string;
   project: string;
+  pluginVersion?: string;
   tmpDir: string;
   cursorBin: string;
   cursorModel: string;
@@ -212,6 +213,7 @@ async function main(): Promise<void> {
           sessionId: cfg.sessionId,
           text,
           embedding,
+          pluginVersion: cfg.pluginVersion ?? "",
         });
         wlog(`uploaded ${vpath} (summary=${result.summaryLength}, desc=${result.descLength})`);
 

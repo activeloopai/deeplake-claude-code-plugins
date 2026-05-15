@@ -30,6 +30,15 @@ export interface UploadParams {
    * retrieval branch, it just won't show up in the semantic branch.
    */
   embedding?: number[] | null;
+  /**
+   * Hivemind plugin version that produced this summary.
+   * - INSERT: omitted lands the column default (''), schema-compatible.
+   * - UPDATE: omitted means "don't touch the column" — a refresh from a
+   *   legacy spawner that doesn't pass pluginVersion must NOT overwrite
+   *   a previously-stored real version with ''. Pass an explicit empty
+   *   string when you genuinely want to clear it.
+   */
+  pluginVersion?: string;
 }
 
 export interface UploadResult {
@@ -65,28 +74,41 @@ export async function uploadSummary(query: QueryFn, params: UploadParams): Promi
   const desc = extractDescription(text);
   const sizeBytes = Buffer.byteLength(text);
   const embSql = embeddingSqlLiteral(params.embedding ?? null);
+  // Keep undefined sentinel for UPDATE conditional. INSERT still defaults to ''.
+  const pluginVersion = params.pluginVersion;
 
   const existing = await query(
     `SELECT path FROM "${tableName}" WHERE path = '${esc(vpath)}' LIMIT 1`
   );
 
   if (existing.length > 0) {
+    // Only include plugin_version in the SET clause when the caller
+    // explicitly provided a value (including ''). A legacy spawner that
+    // omits pluginVersion would otherwise erase a previously-stored
+    // real version on every refresh. Keeping the column out of SET
+    // leaves the existing row value untouched.
+    const pluginVersionSet = pluginVersion === undefined
+      ? ""
+      : `plugin_version = '${esc(pluginVersion)}', `;
     const sql =
       `UPDATE "${tableName}" SET ` +
       `summary = E'${esc(text)}', ` +
       `summary_embedding = ${embSql}, ` +
       `size_bytes = ${sizeBytes}, ` +
       `description = E'${esc(desc)}', ` +
+      pluginVersionSet +
       `last_update_date = '${ts}' ` +
       `WHERE path = '${esc(vpath)}'`;
     await query(sql);
     return { path: "update", sql, descLength: desc.length, summaryLength: text.length };
   }
 
+  // INSERT path: new row, no previous value to preserve — default to ''.
+  const pluginVersionForInsert = pluginVersion ?? "";
   const sql =
-    `INSERT INTO "${tableName}" (id, path, filename, summary, summary_embedding, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `INSERT INTO "${tableName}" (id, path, filename, summary, summary_embedding, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `VALUES ('${randomUUID()}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', ${embSql}, '${esc(userName)}', 'text/markdown', ` +
-    `${sizeBytes}, '${esc(project)}', E'${esc(desc)}', '${esc(agent)}', '${ts}', '${ts}')`;
+    `${sizeBytes}, '${esc(project)}', E'${esc(desc)}', '${esc(agent)}', '${esc(pluginVersionForInsert)}', '${ts}', '${ts}')`;
   await query(sql);
   return { path: "insert", sql, descLength: desc.length, summaryLength: text.length };
 }

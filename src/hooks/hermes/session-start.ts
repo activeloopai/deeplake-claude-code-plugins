@@ -19,7 +19,7 @@ import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
 import { autoUpdate } from "../shared/autoupdate.js";
-import { autoPullSkills } from "../../skilify/auto-pull.js";
+import { autoPullSkills } from "../../skillify/auto-pull.js";
 const log = (msg: string) => _log("hermes-session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -52,23 +52,23 @@ Organization management — each argument is SEPARATE (do NOT quote subcommands 
 - hivemind members                            — list members
 - hivemind remove <user-id>                   — remove member
 
-SKILLS (skilify) — mine + share reusable skills across the org:
-- hivemind skilify                         — show scope/team/install + per-project state
-- hivemind skilify pull                    — sync project skills from the org table
-- hivemind skilify pull --user <email>     — only that author's skills
-- hivemind skilify pull --users a,b,c      — multiple authors (CSV)
-- hivemind skilify pull --all-users        — explicit "no author filter"
-- hivemind skilify pull --to project|global  — install location
-- hivemind skilify pull --dry-run          — preview only
-- hivemind skilify pull --force            — overwrite local (creates .bak)
-- hivemind skilify pull <skill-name>       — pull only that skill (combines with --user)
-- hivemind skilify unpull                  — remove every skill previously installed by pull
-- hivemind skilify unpull --user <email>   — remove only that author's pulls
-- hivemind skilify unpull --not-mine       — remove all pulls except your own
-- hivemind skilify unpull --dry-run        — preview without touching disk
-- hivemind skilify scope <me|team|org>     — sharing scope for new skills
-- hivemind skilify install <project|global>  — default install location
-- hivemind skilify team add|remove|list <name>  — manage team list`;
+SKILLS (skillify) — mine + share reusable skills across the org:
+- hivemind skillify                         — show scope/team/install + per-project state
+- hivemind skillify pull                    — sync project skills from the org table
+- hivemind skillify pull --user <email>     — only that author's skills
+- hivemind skillify pull --users a,b,c      — multiple authors (CSV)
+- hivemind skillify pull --all-users        — explicit "no author filter"
+- hivemind skillify pull --to project|global  — install location
+- hivemind skillify pull --dry-run          — preview only
+- hivemind skillify pull --force            — overwrite local (creates .bak)
+- hivemind skillify pull <skill-name>       — pull only that skill (combines with --user)
+- hivemind skillify unpull                  — remove every skill previously installed by pull
+- hivemind skillify unpull --user <email>   — remove only that author's pulls
+- hivemind skillify unpull --not-mine       — remove all pulls except your own
+- hivemind skillify unpull --dry-run        — preview without touching disk
+- hivemind skillify scope <me|team>         — sharing scope for new skills
+- hivemind skillify install <project|global>  — default install location
+- hivemind skillify team add|remove|list <name>  — manage team list`;
 
 interface HermesSessionStartInput {
   hook_event_name?: string;
@@ -85,6 +85,7 @@ async function createPlaceholder(
   userName: string,
   orgName: string,
   workspaceId: string,
+  pluginVersion: string,
 ): Promise<void> {
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
   const existing = await api.query(
@@ -106,9 +107,9 @@ async function createPlaceholder(
   const filename = `${sessionId}.md`;
 
   await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'hermes', '${now}', '${now}')`,
+    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'hermes', '${sqlStr(pluginVersion)}', '${now}', '${now}')`,
   );
 }
 
@@ -127,6 +128,10 @@ async function main(): Promise<void> {
   // sees the upgrade notice promptly even when the API is down.
   await autoUpdate(creds, { agent: "hermes" });
 
+  // Resolve plugin version once — also stamped on the placeholder row.
+  const current = getInstalledVersion(__bundleDir, ".claude-plugin");
+  const pluginVersion = current ?? "";
+
   if (creds?.token && captureEnabled) {
     try {
       const config = loadConfig();
@@ -134,7 +139,7 @@ async function main(): Promise<void> {
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
         await api.ensureTable();
         await api.ensureSessionsTable(config.sessionsTableName);
-        await createPlaceholder(api, config.tableName, sessionId, cwd, config.userName, config.orgName, config.workspaceId);
+        await createPlaceholder(api, config.tableName, sessionId, cwd, config.userName, config.orgName, config.workspaceId, pluginVersion);
         log("placeholder created");
       }
     } catch (e: any) {
@@ -152,7 +157,6 @@ async function main(): Promise<void> {
   log(`autopull: pulled=${pullResult.pulled} skipped=${pullResult.skipped}`);
 
   let versionNotice = "";
-  const current = getInstalledVersion(__bundleDir, ".claude-plugin");
   if (current) versionNotice = `\nHivemind v${current}`;
 
   // No placeholder substitution — inject already uses bare `hivemind <sub>` form.

@@ -110,7 +110,7 @@ function tryAcquireLock(sessionId, maxAgeMs = 10 * 60 * 1e3) {
 // dist/src/hooks/hermes/spawn-wiki-worker.js
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join as join5 } from "node:path";
+import { dirname as dirname2, join as join6 } from "node:path";
 import { writeFileSync as writeFileSync2, mkdirSync as mkdirSync3 } from "node:fs";
 import { homedir as homedir4, tmpdir } from "node:os";
 
@@ -132,9 +132,51 @@ function makeWikiLogger(hooksDir, filename = "deeplake-wiki.log") {
   };
 }
 
+// dist/src/utils/version-check.js
+import { readFileSync as readFileSync3 } from "node:fs";
+import { dirname, join as join5 } from "node:path";
+function getInstalledVersion(bundleDir, pluginManifestDir) {
+  try {
+    const pluginJson = join5(bundleDir, "..", pluginManifestDir, "plugin.json");
+    const plugin = JSON.parse(readFileSync3(pluginJson, "utf-8"));
+    if (plugin.version)
+      return plugin.version;
+  } catch {
+  }
+  try {
+    const stamp = readFileSync3(join5(bundleDir, "..", ".hivemind_version"), "utf-8").trim();
+    if (stamp)
+      return stamp;
+  } catch {
+  }
+  const HIVEMIND_PKG_NAMES = /* @__PURE__ */ new Set([
+    "hivemind",
+    "hivemind-codex",
+    "@deeplake/hivemind",
+    "@deeplake/hivemind-codex",
+    "@activeloop/hivemind",
+    "@activeloop/hivemind-codex"
+  ]);
+  let dir = bundleDir;
+  for (let i = 0; i < 5; i++) {
+    const candidate = join5(dir, "package.json");
+    try {
+      const pkg = JSON.parse(readFileSync3(candidate, "utf-8"));
+      if (HIVEMIND_PKG_NAMES.has(pkg.name) && pkg.version)
+        return pkg.version;
+    } catch {
+    }
+    const parent = dirname(dir);
+    if (parent === dir)
+      break;
+    dir = parent;
+  }
+  return null;
+}
+
 // dist/src/hooks/hermes/spawn-wiki-worker.js
 var HOME = homedir4();
-var wikiLogger = makeWikiLogger(join5(HOME, ".hermes", "hooks"));
+var wikiLogger = makeWikiLogger(join6(HOME, ".hermes", "hooks"));
 var WIKI_LOG = wikiLogger.path;
 var WIKI_PROMPT_TEMPLATE = `You are building a personal wiki from a coding session. Your goal is to extract every piece of knowledge \u2014 entities, decisions, relationships, and facts \u2014 into a structured, searchable wiki entry.
 
@@ -196,9 +238,10 @@ function findHermesBin() {
 function spawnHermesWikiWorker(opts) {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
   const projectName = cwd.split("/").pop() || "unknown";
-  const tmpDir = join5(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
+  const tmpDir = join6(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
   mkdirSync3(tmpDir, { recursive: true });
-  const configFile = join5(tmpDir, "config.json");
+  const pluginVersion = getInstalledVersion(bundleDir, ".claude-plugin") ?? "";
+  const configFile = join6(tmpDir, "config.json");
   writeFileSync2(configFile, JSON.stringify({
     apiUrl: config.apiUrl,
     token: config.token,
@@ -209,16 +252,17 @@ function spawnHermesWikiWorker(opts) {
     sessionId,
     userName: config.userName,
     project: projectName,
+    pluginVersion,
     tmpDir,
     hermesBin: findHermesBin(),
     hermesProvider: process.env.HIVEMIND_HERMES_PROVIDER ?? "openrouter",
     hermesModel: process.env.HIVEMIND_HERMES_MODEL ?? "anthropic/claude-haiku-4-5",
     wikiLog: WIKI_LOG,
-    hooksDir: join5(HOME, ".hermes", "hooks"),
+    hooksDir: join6(HOME, ".hermes", "hooks"),
     promptTemplate: WIKI_PROMPT_TEMPLATE
   }));
   wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
-  const workerPath = join5(bundleDir, "wiki-worker.js");
+  const workerPath = join6(bundleDir, "wiki-worker.js");
   spawn("nohup", ["node", workerPath, configFile], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"]
@@ -226,21 +270,21 @@ function spawnHermesWikiWorker(opts) {
   wikiLog(`${reason}: spawned summary worker for ${sessionId}`);
 }
 function bundleDirFromImportMeta(importMetaUrl) {
-  return dirname(fileURLToPath(importMetaUrl));
+  return dirname2(fileURLToPath(importMetaUrl));
 }
 
-// dist/src/skilify/spawn-skilify-worker.js
+// dist/src/skillify/spawn-skillify-worker.js
 import { spawn as spawn2 } from "node:child_process";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-import { dirname as dirname2, join as join7 } from "node:path";
+import { dirname as dirname3, join as join8 } from "node:path";
 import { writeFileSync as writeFileSync3, mkdirSync as mkdirSync4, appendFileSync as appendFileSync3, chmodSync } from "node:fs";
 import { homedir as homedir6, tmpdir as tmpdir2 } from "node:os";
 
-// dist/src/skilify/gate-runner.js
+// dist/src/skillify/gate-runner.js
 import { execFileSync } from "node:child_process";
 import { existsSync as existsSync3 } from "node:fs";
 import { homedir as homedir5 } from "node:os";
-import { join as join6 } from "node:path";
+import { join as join7 } from "node:path";
 function findAgentBin(agent) {
   const which = (name) => {
     try {
@@ -255,35 +299,35 @@ function findAgentBin(agent) {
   };
   switch (agent) {
     case "claude_code":
-      return which("claude") ?? join6(homedir5(), ".claude", "local", "claude");
+      return which("claude") ?? join7(homedir5(), ".claude", "local", "claude");
     case "codex":
       return which("codex") ?? "/usr/local/bin/codex";
     case "cursor":
       return which("cursor-agent") ?? "/usr/local/bin/cursor-agent";
     case "hermes":
-      return which("hermes") ?? join6(homedir5(), ".local", "bin", "hermes");
+      return which("hermes") ?? join7(homedir5(), ".local", "bin", "hermes");
     case "pi":
-      return which("pi") ?? join6(homedir5(), ".local", "bin", "pi");
+      return which("pi") ?? join7(homedir5(), ".local", "bin", "pi");
   }
 }
 
-// dist/src/skilify/spawn-skilify-worker.js
+// dist/src/skillify/spawn-skillify-worker.js
 var HOME2 = homedir6();
-var SKILIFY_LOG = join7(HOME2, ".claude", "hooks", "skilify.log");
-function skilifyLog(msg) {
+var SKILLIFY_LOG = join8(HOME2, ".claude", "hooks", "skillify.log");
+function skillifyLog(msg) {
   try {
-    mkdirSync4(dirname2(SKILIFY_LOG), { recursive: true });
-    appendFileSync3(SKILIFY_LOG, `[${utcTimestamp()}] ${msg}
+    mkdirSync4(dirname3(SKILLIFY_LOG), { recursive: true });
+    appendFileSync3(SKILLIFY_LOG, `[${utcTimestamp()}] ${msg}
 `);
   } catch {
   }
 }
-function spawnSkilifyWorker(opts) {
+function spawnSkillifyWorker(opts) {
   const { config, cwd, projectKey, project, bundleDir, agent, scopeConfig, currentSessionId, reason } = opts;
-  const tmpDir = join7(tmpdir2(), `deeplake-skilify-${projectKey}-${Date.now()}`);
+  const tmpDir = join8(tmpdir2(), `deeplake-skillify-${projectKey}-${Date.now()}`);
   mkdirSync4(tmpDir, { recursive: true, mode: 448 });
   const gateBin = findAgentBin(agent);
-  const configFile = join7(tmpDir, "config.json");
+  const configFile = join8(tmpDir, "config.json");
   writeFileSync3(configFile, JSON.stringify({
     apiUrl: config.apiUrl,
     token: config.token,
@@ -306,50 +350,108 @@ function spawnSkilifyWorker(opts) {
     hermesModel: process.env.HIVEMIND_HERMES_MODEL,
     piProvider: process.env.HIVEMIND_PI_PROVIDER,
     piModel: process.env.HIVEMIND_PI_MODEL,
-    skilifyLog: SKILIFY_LOG,
+    skillifyLog: SKILLIFY_LOG,
     currentSessionId
   }), { mode: 384 });
   try {
     chmodSync(configFile, 384);
   } catch {
   }
-  skilifyLog(`${reason}: spawning skilify worker for project=${project} key=${projectKey}`);
-  const workerPath = join7(bundleDir, "skilify-worker.js");
+  skillifyLog(`${reason}: spawning skillify worker for project=${project} key=${projectKey}`);
+  const workerPath = join8(bundleDir, "skillify-worker.js");
   spawn2("nohup", ["node", workerPath, configFile], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"]
   }).unref();
-  skilifyLog(`${reason}: spawned skilify worker for ${projectKey}`);
+  skillifyLog(`${reason}: spawned skillify worker for ${projectKey}`);
 }
 
-// dist/src/skilify/state.js
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync4, writeSync as writeSync2, mkdirSync as mkdirSync5, renameSync as renameSync2, existsSync as existsSync4, unlinkSync as unlinkSync2, openSync as openSync2, closeSync as closeSync2 } from "node:fs";
+// dist/src/skillify/state.js
+import { readFileSync as readFileSync4, writeFileSync as writeFileSync4, writeSync as writeSync2, mkdirSync as mkdirSync5, renameSync as renameSync3, existsSync as existsSync5, unlinkSync as unlinkSync2, openSync as openSync2, closeSync as closeSync2 } from "node:fs";
 import { execSync as execSync2 } from "node:child_process";
-import { homedir as homedir7 } from "node:os";
+import { homedir as homedir8 } from "node:os";
 import { createHash } from "node:crypto";
-import { join as join8, basename } from "node:path";
-var dlog2 = (msg) => log("skilify-state", msg);
-var STATE_DIR2 = join8(homedir7(), ".deeplake", "state", "skilify");
+import { join as join10, basename } from "node:path";
+
+// dist/src/skillify/legacy-migration.js
+import { existsSync as existsSync4, renameSync as renameSync2 } from "node:fs";
+import { homedir as homedir7 } from "node:os";
+import { join as join9 } from "node:path";
+var dlog2 = (msg) => log("skillify-migrate", msg);
+var attempted = false;
+function migrateLegacyStateDir() {
+  if (attempted)
+    return;
+  attempted = true;
+  const root = join9(homedir7(), ".deeplake", "state");
+  const legacy = join9(root, "skilify");
+  const current = join9(root, "skillify");
+  if (!existsSync4(legacy))
+    return;
+  if (existsSync4(current))
+    return;
+  try {
+    renameSync2(legacy, current);
+    dlog2(`migrated ${legacy} -> ${current}`);
+  } catch (err) {
+    const code = err.code;
+    if (code === "EXDEV" || code === "EPERM") {
+      dlog2(`migration failed (${code}); leaving legacy dir in place`);
+      return;
+    }
+    throw err;
+  }
+}
+
+// dist/src/skillify/state.js
+var dlog3 = (msg) => log("skillify-state", msg);
+var STATE_DIR2 = join10(homedir8(), ".deeplake", "state", "skillify");
 var YIELD_BUF2 = new Int32Array(new SharedArrayBuffer(4));
 var TRIGGER_THRESHOLD = (() => {
-  const n = Number(process.env.HIVEMIND_SKILIFY_EVERY_N_TURNS ?? "");
+  const n = Number(process.env.HIVEMIND_SKILLIFY_EVERY_N_TURNS ?? "");
   return Number.isInteger(n) && n > 0 ? n : 20;
 })();
 function statePath(projectKey) {
-  return join8(STATE_DIR2, `${projectKey}.json`);
+  return join10(STATE_DIR2, `${projectKey}.json`);
 }
 function lockPath2(projectKey) {
-  return join8(STATE_DIR2, `${projectKey}.lock`);
+  return join10(STATE_DIR2, `${projectKey}.lock`);
+}
+var DEFAULT_PORTS = {
+  http: "80",
+  https: "443",
+  ssh: "22",
+  git: "9418"
+};
+function normalizeGitRemoteUrl(url) {
+  let s = url.trim();
+  const schemeMatch = s.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+  const scheme = schemeMatch ? schemeMatch[1].toLowerCase() : null;
+  if (schemeMatch)
+    s = s.slice(schemeMatch[0].length);
+  if (!scheme) {
+    const scp = s.match(/^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/);
+    if (scp)
+      s = `${scp[1]}/${scp[2]}`;
+  }
+  s = s.replace(/^[^@/]+@/, "");
+  if (scheme && DEFAULT_PORTS[scheme]) {
+    s = s.replace(new RegExp(`^([^/]+):${DEFAULT_PORTS[scheme]}(/|$)`), "$1$2");
+  }
+  s = s.replace(/\.git\/?$/i, "");
+  s = s.replace(/\/+$/, "");
+  return s.toLowerCase();
 }
 function deriveProjectKey(cwd) {
   const project = basename(cwd) || "unknown";
   let signature = null;
   try {
-    signature = execSync2("git config --get remote.origin.url", {
+    const raw = execSync2("git config --get remote.origin.url", {
       cwd,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"]
-    }).trim() || null;
+    }).trim();
+    signature = raw ? normalizeGitRemoteUrl(raw) : null;
   } catch {
   }
   const input = signature ?? cwd;
@@ -357,23 +459,26 @@ function deriveProjectKey(cwd) {
   return { key, project };
 }
 function readState(projectKey) {
+  migrateLegacyStateDir();
   const p = statePath(projectKey);
-  if (!existsSync4(p))
+  if (!existsSync5(p))
     return null;
   try {
-    return JSON.parse(readFileSync3(p, "utf-8"));
+    return JSON.parse(readFileSync4(p, "utf-8"));
   } catch {
     return null;
   }
 }
 function writeState(projectKey, state) {
+  migrateLegacyStateDir();
   mkdirSync5(STATE_DIR2, { recursive: true });
   const p = statePath(projectKey);
   const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync4(tmp, JSON.stringify(state, null, 2));
-  renameSync2(tmp, p);
+  renameSync3(tmp, p);
 }
 function withRmwLock(projectKey, fn) {
+  migrateLegacyStateDir();
   mkdirSync5(STATE_DIR2, { recursive: true });
   const rmw = lockPath2(projectKey) + ".rmw";
   const deadline = Date.now() + 2e3;
@@ -385,11 +490,11 @@ function withRmwLock(projectKey, fn) {
       if (e.code !== "EEXIST")
         throw e;
       if (Date.now() > deadline) {
-        dlog2(`rmw lock deadline exceeded for ${projectKey}, reclaiming stale lock`);
+        dlog3(`rmw lock deadline exceeded for ${projectKey}, reclaiming stale lock`);
         try {
           unlinkSync2(rmw);
         } catch (unlinkErr) {
-          dlog2(`stale rmw lock unlink failed for ${projectKey}: ${unlinkErr.message}`);
+          dlog3(`stale rmw lock unlink failed for ${projectKey}: ${unlinkErr.message}`);
         }
         continue;
       }
@@ -403,7 +508,7 @@ function withRmwLock(projectKey, fn) {
     try {
       unlinkSync2(rmw);
     } catch (unlinkErr) {
-      dlog2(`rmw lock cleanup failed for ${projectKey}: ${unlinkErr.message}`);
+      dlog3(`rmw lock cleanup failed for ${projectKey}: ${unlinkErr.message}`);
     }
   }
 }
@@ -416,20 +521,21 @@ function resetCounter(projectKey) {
   });
 }
 function tryAcquireWorkerLock(projectKey, maxAgeMs = 10 * 60 * 1e3) {
+  migrateLegacyStateDir();
   mkdirSync5(STATE_DIR2, { recursive: true });
   const p = lockPath2(projectKey);
-  if (existsSync4(p)) {
+  if (existsSync5(p)) {
     try {
-      const ageMs = Date.now() - parseInt(readFileSync3(p, "utf-8"), 10);
+      const ageMs = Date.now() - parseInt(readFileSync4(p, "utf-8"), 10);
       if (Number.isFinite(ageMs) && ageMs < maxAgeMs)
         return false;
     } catch (readErr) {
-      dlog2(`worker lock unreadable for ${projectKey}, treating as stale: ${readErr.message}`);
+      dlog3(`worker lock unreadable for ${projectKey}, treating as stale: ${readErr.message}`);
     }
     try {
       unlinkSync2(p);
     } catch (unlinkErr) {
-      dlog2(`could not unlink stale worker lock for ${projectKey}: ${unlinkErr.message}`);
+      dlog3(`could not unlink stale worker lock for ${projectKey}: ${unlinkErr.message}`);
       return false;
     }
   }
@@ -453,19 +559,20 @@ function releaseWorkerLock(projectKey) {
   }
 }
 
-// dist/src/skilify/scope-config.js
-import { existsSync as existsSync5, mkdirSync as mkdirSync6, readFileSync as readFileSync4, writeFileSync as writeFileSync5 } from "node:fs";
-import { homedir as homedir8 } from "node:os";
-import { join as join9 } from "node:path";
-var STATE_DIR3 = join9(homedir8(), ".deeplake", "state", "skilify");
-var CONFIG_PATH = join9(STATE_DIR3, "config.json");
+// dist/src/skillify/scope-config.js
+import { existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync5, writeFileSync as writeFileSync5 } from "node:fs";
+import { homedir as homedir9 } from "node:os";
+import { join as join11 } from "node:path";
+var STATE_DIR3 = join11(homedir9(), ".deeplake", "state", "skillify");
+var CONFIG_PATH = join11(STATE_DIR3, "config.json");
 var DEFAULT = { scope: "me", team: [], install: "project" };
 function loadScopeConfig() {
-  if (!existsSync5(CONFIG_PATH))
+  migrateLegacyStateDir();
+  if (!existsSync6(CONFIG_PATH))
     return DEFAULT;
   try {
-    const raw = JSON.parse(readFileSync4(CONFIG_PATH, "utf-8"));
-    const scope = raw.scope === "team" || raw.scope === "org" ? raw.scope : "me";
+    const raw = JSON.parse(readFileSync5(CONFIG_PATH, "utf-8"));
+    const scope = raw.scope === "team" ? "team" : raw.scope === "org" ? "team" : "me";
     const team = Array.isArray(raw.team) ? raw.team.filter((s) => typeof s === "string") : [];
     const install = raw.install === "global" ? "global" : "project";
     return { scope, team, install };
@@ -474,24 +581,24 @@ function loadScopeConfig() {
   }
 }
 
-// dist/src/skilify/triggers.js
+// dist/src/skillify/triggers.js
 function forceSessionEndTrigger(opts) {
-  if (process.env.HIVEMIND_SKILIFY_WORKER === "1")
+  if (process.env.HIVEMIND_SKILLIFY_WORKER === "1")
     return;
   if (!opts.cwd)
     return;
   try {
     const { key: projectKey, project } = deriveProjectKey(opts.cwd);
     if (!tryAcquireWorkerLock(projectKey)) {
-      skilifyLog(`SessionEnd: skilify worker already running for ${projectKey}, skipping`);
+      skillifyLog(`SessionEnd: skillify worker already running for ${projectKey}, skipping`);
       return;
     }
     if (readState(projectKey)) {
       resetCounter(projectKey);
     }
-    skilifyLog(`SessionEnd: spawning skilify worker for project=${project} agent=${opts.agent}`);
+    skillifyLog(`SessionEnd: spawning skillify worker for project=${project} agent=${opts.agent}`);
     try {
-      spawnSkilifyWorker({
+      spawnSkillifyWorker({
         config: opts.config,
         cwd: opts.cwd,
         projectKey,
@@ -503,14 +610,14 @@ function forceSessionEndTrigger(opts) {
         reason: "SessionEnd"
       });
     } catch (e) {
-      skilifyLog(`SessionEnd spawn failed: ${e?.message ?? e}`);
+      skillifyLog(`SessionEnd spawn failed: ${e?.message ?? e}`);
       try {
         releaseWorkerLock(projectKey);
       } catch {
       }
     }
   } catch (e) {
-    skilifyLog(`SessionEnd trigger error: ${e?.message ?? e}`);
+    skillifyLog(`SessionEnd trigger error: ${e?.message ?? e}`);
   }
 }
 
@@ -554,7 +661,7 @@ async function main() {
       sessionId
     });
   } catch (e) {
-    wikiLog(`SessionEnd: skilify trigger failed: ${e?.message ?? e}`);
+    wikiLog(`SessionEnd: skillify trigger failed: ${e?.message ?? e}`);
   }
 }
 main().catch((e) => {
