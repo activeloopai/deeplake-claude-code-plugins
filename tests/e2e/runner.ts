@@ -138,17 +138,22 @@ async function runPoint(
       sessionId: "",
     };
   }
-  const ready = isReady(a, providerEnv);
-  if (!ready.ready) {
-    return {
-      case: c.id,
-      agent: a.id,
-      passed: true, // skip is not a failure
-      failure: `[skip] ${ready.reason}`,
-      costCents: null,
-      durationMs: 0,
-      sessionId: "",
-    };
+  // installOnly cases never spawn the agent → provider keys are
+  // irrelevant. Only gate on the key when we're actually going to
+  // run().
+  if (!c.installOnly) {
+    const ready = isReady(a, providerEnv);
+    if (!ready.ready) {
+      return {
+        case: c.id,
+        agent: a.id,
+        passed: true, // skip is not a failure
+        failure: `[skip] ${ready.reason}`,
+        costCents: null,
+        durationMs: 0,
+        sessionId: "",
+      };
+    }
   }
   const sandbox = createSandbox(a.id, creds);
   const seedSessionId = buildSessionId(c.id, a.id, runId);
