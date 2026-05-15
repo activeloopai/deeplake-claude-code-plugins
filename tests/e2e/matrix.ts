@@ -25,6 +25,9 @@ import { missingTableSelfHealCase } from "./cases/06-missing-table-self-heal.js"
 import { unicodeRoundtripCase } from "./cases/07-unicode-roundtrip.js";
 import { openclawToolsCase } from "./cases/08-openclaw-tools.js";
 import { installNoBrokenPathsCase } from "./cases/09-install-no-broken-paths.js";
+import { invalidIdentifierRejectionCase } from "./cases/10-invalid-identifier-rejection.js";
+import { pathTraversalRejectionCase } from "./cases/11-path-traversal-rejection.js";
+import { recursionGuardCase } from "./cases/12-recursion-guard.js";
 
 export const ALL_DRIVERS: AgentDriver[] = [
   claudeCodeDriver,
@@ -45,6 +48,9 @@ export const ALL_CASES: E2ECase[] = [
   unicodeRoundtripCase,
   openclawToolsCase,
   installNoBrokenPathsCase,
+  invalidIdentifierRejectionCase,
+  pathTraversalRejectionCase,
+  recursionGuardCase,
 ];
 
 export interface MatrixPoint {

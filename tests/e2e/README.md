@@ -36,8 +36,11 @@ Each case asserts on a specific behavioral surface, mapped back to `RELEASE_CHEC
 | `07-unicode-roundtrip` | Emoji + RTL + smart quotes + backslashes survive JSONB roundtrip byte-for-byte (§2 edge content) | all 6 | — |
 | `08-openclaw-tools` | `hivemind_search` returns seeded sentinel via openclaw tool registration (§3 openclaw row + §4 openclaw discoverability) | openclaw | 5 CLI (they don't register MCP tools the harness invokes directly; equivalents in 02/03) |
 | `09-install-no-broken-paths` | After `hivemind <agent> install`, every hook command in the resulting config file points at a file that exists on disk. Plus claude-code-only auto-heal check: pre-seeded broken entry was removed by `cleanupBrokenSettingsHooks`. Install-shape (no agent spawn). | 4 hooks-config agents | pi (TS extension ref, no command paths) / openclaw (gateway loader, no hooks.json) |
+| `10-invalid-identifier-rejection` | `HIVEMIND_SESSIONS_TABLE=bad-name-with-dashes` → `sqlIdent()` rejects → no SQL fires → no `bad-name-with-dashes` table exists in workspace afterward (§2 + §5 SQL identifiers) | all 6 | — |
+| `11-path-traversal-rejection` | `cat ~/.deeplake/memory/../../../../etc/passwd` → virtual mount rewrite rejects/blocks; agent's stdout does NOT contain `/etc/passwd` shape `root:x:0:0:` (§5 path traversal) | 5 CLI | openclaw (different tool-arg validation path; would need a dedicated case) |
+| `12-recursion-guard` | `HIVEMIND_WIKI_WORKER=1` pre-set in agent env → session-end wiki worker short-circuits → no summary row lands in memory table (§5 recursion guards) | 5 CLI | openclaw (in-band worker, different pattern) |
 
-Total: **54 matrix points** (44 live, 10 explicitly skipped with rationale).
+Total: **72 matrix points** (60 live, 12 explicitly skipped with rationale).
 
 ### Why case 09 matters specifically
 
