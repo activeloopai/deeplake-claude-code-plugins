@@ -73,13 +73,18 @@ export async function drainSessionStart(opts: DrainOptions): Promise<void> {
 
     const fromRules = evaluateRules("session_start", ctx);
     const fromQueue = queue.queue;
-    // Backend fetch is fail-soft (returns [] on error/timeout) — its
-    // failure must not abort the rules + queue path.
-    const fromBackend = await fetchBackendNotifications(opts.creds);
-    // Local-usage source: synchronous, reads ~/.deeplake/usage-stats.jsonl
-    // to render the cumulative savings recap. Returns [] when sessionId
-    // is missing OR there's no memory-search activity to claim.
-    const fromLocalUsage = fetchLocalUsageNotifications(opts.sessionId, opts.creds?.userName);
+    // Both server fetches are fail-soft (return null/[] on error/timeout)
+    // — neither can abort the rules + queue path. Fired in parallel since
+    // they hit independent endpoints with the same 1.5s timeout, so the
+    // upper bound on session-start latency stays ~1.5s rather than 3s.
+    const [fromBackend, fromLocalUsage] = await Promise.all([
+      fetchBackendNotifications(opts.creds),
+      // Local-usage source: tries GET /me/hivemind-stats first for the
+      // cross-machine "your team saved X" banner, falls back to local
+      // ~/.deeplake/usage-stats.jsonl if the server is unreachable or
+      // the caller hasn't met the personal-recall threshold.
+      fetchLocalUsageNotifications(opts.sessionId, opts.creds),
+    ]);
     const all: Notification[] = [...fromRules, ...fromQueue, ...fromBackend, ...fromLocalUsage];
 
     const fresh = all.filter(n => !alreadyShown(state, n));

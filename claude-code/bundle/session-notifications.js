@@ -291,19 +291,113 @@ async function fetchBackendNotifications(creds) {
   }
 }
 
-// dist/src/notifications/usage-tracker.js
-import { appendFileSync as appendFileSync2, existsSync, mkdirSync as mkdirSync4, readFileSync as readFileSync4, readdirSync } from "node:fs";
-import { dirname, join as join5 } from "node:path";
+// dist/src/notifications/sources/org-stats.js
+import { existsSync, readFileSync as readFileSync4, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir5 } from "node:os";
-var log5 = (msg) => log("usage-tracker", msg);
+import { join as join5 } from "node:path";
+var log5 = (msg) => log("notifications-org-stats", msg);
+var FETCH_TIMEOUT_MS2 = 1500;
+var DEFAULT_API_URL2 = "https://api.deeplake.ai";
+var CACHE_TTL_MS = 60 * 60 * 1e3;
+function cacheFilePath() {
+  return join5(homedir5(), ".deeplake", "hivemind-stats-cache.json");
+}
+function scopeFromServer(s) {
+  const n = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+  return {
+    sessionsCount: n(s?.sessions_count),
+    memoryRecallCount: n(s?.memory_recall_count),
+    memorySearchBytes: n(s?.memory_search_bytes)
+  };
+}
+function readCache(apiUrl) {
+  if (!existsSync(cacheFilePath()))
+    return {};
+  try {
+    const parsed = JSON.parse(readFileSync4(cacheFilePath(), "utf-8"));
+    if (!parsed || typeof parsed !== "object")
+      return {};
+    if (parsed.apiUrl !== apiUrl)
+      return {};
+    if (typeof parsed.fetchedAt !== "number")
+      return {};
+    const age = Date.now() - parsed.fetchedAt;
+    const data = parsed.data;
+    if (!data || typeof data !== "object" || !data.org || !data.user)
+      return {};
+    if (age >= 0 && age < CACHE_TTL_MS)
+      return { fresh: data };
+    return { stale: data };
+  } catch (e) {
+    log5(`cache read failed: ${e?.message ?? String(e)}`);
+    return {};
+  }
+}
+function writeCache(apiUrl, data) {
+  try {
+    const body = { fetchedAt: Date.now(), apiUrl, data };
+    writeFileSync4(cacheFilePath(), JSON.stringify(body), "utf-8");
+  } catch (e) {
+    log5(`cache write failed: ${e?.message ?? String(e)}`);
+  }
+}
+async function fetchOrgStats(creds) {
+  if (!creds?.token)
+    return null;
+  const apiUrl = creds.apiUrl ?? DEFAULT_API_URL2;
+  const { fresh, stale } = readCache(apiUrl);
+  if (fresh) {
+    log5("cache hit \u2014 returning fresh org stats");
+    return fresh;
+  }
+  const url = `${apiUrl}/me/hivemind-stats`;
+  const ctrl = new AbortController();
+  const timeoutHandle = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS2);
+  try {
+    const resp = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${creds.token}`,
+        ...creds.orgId ? { "X-Activeloop-Org-Id": creds.orgId } : {}
+      },
+      signal: ctrl.signal
+    });
+    if (!resp.ok) {
+      log5(`fetch ${url} returned ${resp.status}`);
+      return stale ?? null;
+    }
+    const body = await resp.json();
+    if (!body || typeof body !== "object") {
+      log5(`fetch ${url} returned malformed body`);
+      return stale ?? null;
+    }
+    const data = {
+      org: scopeFromServer(body.org),
+      user: scopeFromServer(body.user)
+    };
+    writeCache(apiUrl, data);
+    log5(`fetched org stats from ${apiUrl}`);
+    return data;
+  } catch (e) {
+    log5(`fetch ${url} failed: ${e?.message ?? String(e)}`);
+    return stale ?? null;
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
+// dist/src/notifications/usage-tracker.js
+import { appendFileSync as appendFileSync2, existsSync as existsSync2, mkdirSync as mkdirSync4, readFileSync as readFileSync5, readdirSync } from "node:fs";
+import { dirname, join as join6 } from "node:path";
+import { homedir as homedir6 } from "node:os";
+var log6 = (msg) => log("usage-tracker", msg);
 function statsFilePath() {
-  return join5(homedir5(), ".deeplake", "usage-stats.jsonl");
+  return join6(homedir6(), ".deeplake", "usage-stats.jsonl");
 }
 function readUsageRecords() {
   try {
-    if (!existsSync(statsFilePath()))
+    if (!existsSync2(statsFilePath()))
       return [];
-    const raw = readFileSync4(statsFilePath(), "utf-8");
+    const raw = readFileSync5(statsFilePath(), "utf-8");
     const out = [];
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
@@ -324,7 +418,7 @@ function readUsageRecords() {
     }
     return out;
   } catch (e) {
-    log5(`readUsageRecords failed: ${e?.message ?? String(e)}`);
+    log6(`readUsageRecords failed: ${e?.message ?? String(e)}`);
     return [];
   }
 }
@@ -340,8 +434,8 @@ function sumMetric(records, key) {
 function countUserGeneratedSkills(userName) {
   if (!userName)
     return 0;
-  const dir = join5(homedir5(), ".claude", "skills");
-  if (!existsSync(dir))
+  const dir = join6(homedir6(), ".claude", "skills");
+  if (!existsSync2(dir))
     return 0;
   const suffix = `--${userName}`;
   try {
@@ -353,23 +447,24 @@ function countUserGeneratedSkills(userName) {
     }
     return count;
   } catch (e) {
-    log5(`countUserGeneratedSkills readdir failed: ${e?.message ?? String(e)}`);
+    log6(`countUserGeneratedSkills readdir failed: ${e?.message ?? String(e)}`);
     return 0;
   }
 }
 
 // dist/src/notifications/sources/local-usage.js
-var log6 = (msg) => log("notifications-local-usage", msg);
+var log7 = (msg) => log("notifications-local-usage", msg);
 var BYTES_PER_TOKEN = 4;
 var SAVINGS_MULTIPLIER = 1.7;
-function minSessionsForRecap() {
+var MIN_PERSONAL_RECALLS = 5;
+function minLocalRecordsForRecap() {
   const raw = process.env.HIVEMIND_NOTIFICATIONS_MIN_SESSIONS;
   if (typeof raw === "string" && raw.length > 0) {
     const n = Number(raw);
     if (Number.isInteger(n) && n >= 0)
       return n;
   }
-  return 100;
+  return 20;
 }
 function formatTokens(n) {
   if (!Number.isFinite(n) || n <= 0)
@@ -382,33 +477,77 @@ function formatTokens(n) {
     return `${Math.round(n / 1e3)}k`;
   return `${(n / 1e6).toFixed(1)}M`;
 }
-function fetchLocalUsageNotifications(sessionId, userName) {
+function formatCount(n) {
+  return Math.round(n).toLocaleString("en-US");
+}
+function bytesToSavedTokens(bytes) {
+  const y = bytes / BYTES_PER_TOKEN;
+  return (SAVINGS_MULTIPLIER - 1) * y;
+}
+async function fetchLocalUsageNotifications(sessionId, creds) {
   if (!sessionId) {
     return [];
   }
+  const userName = creds?.userName;
+  const orgStats = await fetchOrgStats(creds ?? null);
+  if (orgStats && orgStats.user.memoryRecallCount >= MIN_PERSONAL_RECALLS) {
+    return renderOnlineRecap(sessionId, orgStats, userName);
+  }
+  if (orgStats) {
+    log7(`server stats present but personal recalls ${orgStats.user.memoryRecallCount} < ${MIN_PERSONAL_RECALLS} \u2014 falling through to local`);
+  }
+  return renderOfflineRecap(sessionId, userName);
+}
+function renderOnlineRecap(sessionId, s, userName) {
+  const zOrg = bytesToSavedTokens(s.org.memorySearchBytes);
+  const zUser = bytesToSavedTokens(s.user.memorySearchBytes);
+  const title = `Hivemind has saved your team ~${formatTokens(zOrg)} tokens`;
+  const segments = [
+    `${formatCount(s.org.memoryRecallCount)} memory ${s.org.memoryRecallCount === 1 ? "recall" : "recalls"}`,
+    `across ${formatCount(s.org.sessionsCount)} ${s.org.sessionsCount === 1 ? "session" : "sessions"}`,
+    `you contributed ~${formatTokens(zUser)} saved`
+  ];
+  const skillsGenerated = countUserGeneratedSkills(userName);
+  if (skillsGenerated > 0) {
+    segments.push(`${skillsGenerated} ${skillsGenerated === 1 ? "skill" : "skills"} generated`);
+  }
+  const body = `   ${segments.join(" \xB7 ")}`;
+  return [
+    {
+      id: "local-usage:savings-recap",
+      severity: "info",
+      title,
+      body,
+      // Bump dedupKey shape so a switch from offline → online (or vice
+      // versa) on the same session doesn't suppress the new mode's
+      // emission via stale state from the prior session.
+      dedupKey: { session: sessionId, mode: "online" }
+    }
+  ];
+}
+function renderOfflineRecap(sessionId, userName) {
   let records;
   try {
     records = readUsageRecords();
   } catch (e) {
-    log6(`readUsageRecords threw: ${e?.message ?? String(e)}`);
+    log7(`readUsageRecords threw: ${e?.message ?? String(e)}`);
     return [];
   }
   if (records.length === 0) {
-    log6("no usage records yet \u2014 skipping recap");
+    log7("no usage records yet \u2014 skipping recap");
     return [];
   }
-  const minSessions = minSessionsForRecap();
-  if (records.length < minSessions) {
-    log6(`only ${records.length} sessions, threshold is ${minSessions} \u2014 skipping recap`);
+  const minRecords = minLocalRecordsForRecap();
+  if (records.length < minRecords) {
+    log7(`only ${records.length} records, threshold is ${minRecords} \u2014 skipping recap`);
     return [];
   }
   const memorySearchBytes = sumMetric(records, "memorySearchBytes");
   if (memorySearchBytes <= 0) {
-    log6("memorySearchBytes total is 0 \u2014 skipping recap");
+    log7("memorySearchBytes total is 0 \u2014 skipping recap");
     return [];
   }
-  const yTokens = memorySearchBytes / BYTES_PER_TOKEN;
-  const zTokens = (SAVINGS_MULTIPLIER - 1) * yTokens;
+  const zTokens = bytesToSavedTokens(memorySearchBytes);
   const sessionCount = records.length;
   const memorySearches = sumMetric(records, "memorySearchCount");
   const skillsGenerated = countUserGeneratedSkills(userName);
@@ -427,15 +566,13 @@ function fetchLocalUsageNotifications(sessionId, userName) {
       severity: "info",
       title,
       body,
-      // dedupKey on sessionId: same session's parallel hook fires dedupe;
-      // new sessions get fresh numbers.
-      dedupKey: { session: sessionId }
+      dedupKey: { session: sessionId, mode: "offline" }
     }
   ];
 }
 
 // dist/src/notifications/index.js
-var log7 = (msg) => log("notifications", msg);
+var log8 = (msg) => log("notifications", msg);
 async function drainSessionStart(opts) {
   try {
     const state = readState();
@@ -448,8 +585,14 @@ async function drainSessionStart(opts) {
     };
     const fromRules = evaluateRules("session_start", ctx);
     const fromQueue = queue.queue;
-    const fromBackend = await fetchBackendNotifications(opts.creds);
-    const fromLocalUsage = fetchLocalUsageNotifications(opts.sessionId, opts.creds?.userName);
+    const [fromBackend, fromLocalUsage] = await Promise.all([
+      fetchBackendNotifications(opts.creds),
+      // Local-usage source: tries GET /me/hivemind-stats first for the
+      // cross-machine "your team saved X" banner, falls back to local
+      // ~/.deeplake/usage-stats.jsonl if the server is unreachable or
+      // the caller hasn't met the personal-recall threshold.
+      fetchLocalUsageNotifications(opts.sessionId, opts.creds)
+    ]);
     const all = [...fromRules, ...fromQueue, ...fromBackend, ...fromLocalUsage];
     const fresh = all.filter((n) => !alreadyShown(state, n));
     if (fresh.length === 0) {
@@ -461,7 +604,7 @@ async function drainSessionStart(opts) {
     if (claimed.length === 0) {
       if (queue.queue.length > 0)
         writeQueue({ queue: [] });
-      log7(`all ${fresh.length} notification(s) claimed by another process`);
+      log8(`all ${fresh.length} notification(s) claimed by another process`);
       return;
     }
     const rendered = renderNotifications(claimed);
@@ -472,9 +615,9 @@ async function drainSessionStart(opts) {
     writeState(nextState);
     if (queue.queue.length > 0)
       writeQueue({ queue: [] });
-    log7(`delivered ${claimed.length} notification(s) to ${opts.agent}`);
+    log8(`delivered ${claimed.length} notification(s) to ${opts.agent}`);
   } catch (e) {
-    log7(`drainSessionStart failed: ${e?.message ?? String(e)}`);
+    log8(`drainSessionStart failed: ${e?.message ?? String(e)}`);
   }
 }
 
@@ -539,7 +682,7 @@ function countLocalManifestEntries(path = LOCAL_MANIFEST_PATH) {
 }
 
 // dist/src/hooks/session-notifications.js
-var log8 = (msg) => log("session-notifications", msg);
+var log9 = (msg) => log("session-notifications", msg);
 registerRule(welcomeRule);
 registerRule(localMinedRule);
 async function main() {
@@ -557,6 +700,6 @@ async function main() {
   await drainSessionStart({ agent: "claude-code", creds, sessionId, localSkillsCount });
 }
 main().catch((e) => {
-  log8(`fatal: ${e?.message ?? String(e)}`);
+  log9(`fatal: ${e?.message ?? String(e)}`);
   process.exit(0);
 });
