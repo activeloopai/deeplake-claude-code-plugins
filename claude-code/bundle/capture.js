@@ -54,13 +54,13 @@ var init_index_marker_store = __esm({
 
 // dist/src/utils/stdin.js
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let data = "";
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => data += chunk);
     process.stdin.on("end", () => {
       try {
-        resolve(JSON.parse(data));
+        resolve2(JSON.parse(data));
       } catch (err) {
         reject(new Error(`Failed to parse hook input: ${err}`));
       }
@@ -172,7 +172,7 @@ var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
 var QUERY_TIMEOUT_MS = Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 1e4);
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 function isTimeoutError(error) {
   const name = error instanceof Error ? error.name.toLowerCase() : "";
@@ -202,7 +202,7 @@ var Semaphore = class {
       this.active++;
       return;
     }
-    await new Promise((resolve) => this.waiting.push(resolve));
+    await new Promise((resolve2) => this.waiting.push(resolve2));
   }
   release() {
     this.active--;
@@ -1231,9 +1231,9 @@ function tryStopCounterTrigger(opts) {
 // dist/src/embeddings/client.js
 import { connect } from "node:net";
 import { spawn as spawn3 } from "node:child_process";
-import { openSync as openSync3, closeSync as closeSync3, writeSync as writeSync3, unlinkSync as unlinkSync3, existsSync as existsSync8, readFileSync as readFileSync7 } from "node:fs";
-import { homedir as homedir10 } from "node:os";
-import { join as join13 } from "node:path";
+import { openSync as openSync3, closeSync as closeSync3, writeSync as writeSync3, unlinkSync as unlinkSync3, existsSync as existsSync9, readFileSync as readFileSync9 } from "node:fs";
+import { homedir as homedir13 } from "node:os";
+import { join as join16 } from "node:path";
 
 // dist/src/embeddings/protocol.js
 var DEFAULT_SOCKET_DIR = "/tmp";
@@ -1246,13 +1246,171 @@ function pidPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
   return `${dir}/hivemind-embed-${uid}.pid`;
 }
 
+// dist/src/notifications/queue.js
+import { readFileSync as readFileSync7, writeFileSync as writeFileSync7, renameSync as renameSync4, mkdirSync as mkdirSync8 } from "node:fs";
+import { join as join13, resolve } from "node:path";
+import { homedir as homedir10 } from "node:os";
+var log3 = (msg) => log("notifications-queue", msg);
+function queuePath() {
+  return join13(homedir10(), ".deeplake", "notifications-queue.json");
+}
+function readQueue() {
+  try {
+    const raw = readFileSync7(queuePath(), "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.queue)) {
+      log3(`queue malformed \u2192 treating as empty`);
+      return { queue: [] };
+    }
+    return { queue: parsed.queue };
+  } catch {
+    return { queue: [] };
+  }
+}
+function writeQueue(q) {
+  const path = queuePath();
+  const home = resolve(homedir10());
+  if (!resolve(path).startsWith(home + "/") && resolve(path) !== home) {
+    throw new Error(`notifications-queue write blocked: ${path} is outside ${home}`);
+  }
+  mkdirSync8(join13(home, ".deeplake"), { recursive: true, mode: 448 });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync7(tmp, JSON.stringify(q, null, 2), { mode: 384 });
+  renameSync4(tmp, path);
+}
+function enqueueNotification(n) {
+  const q = readQueue();
+  q.queue.push(n);
+  writeQueue(q);
+}
+
+// dist/src/embeddings/disable.js
+import { createRequire } from "node:module";
+import { homedir as homedir12 } from "node:os";
+import { join as join15 } from "node:path";
+import { pathToFileURL } from "node:url";
+
+// dist/src/user-config.js
+import { existsSync as existsSync8, mkdirSync as mkdirSync9, readFileSync as readFileSync8, renameSync as renameSync5, writeFileSync as writeFileSync8 } from "node:fs";
+import { homedir as homedir11 } from "node:os";
+import { dirname as dirname4, join as join14 } from "node:path";
+var _configPath = () => process.env.HIVEMIND_CONFIG_PATH ?? join14(homedir11(), ".deeplake", "config.json");
+var _cache = null;
+var _migrated = false;
+function readUserConfig() {
+  if (_cache !== null)
+    return _cache;
+  const path = _configPath();
+  if (!existsSync8(path)) {
+    _cache = {};
+    return _cache;
+  }
+  try {
+    const raw = readFileSync8(path, "utf-8");
+    const parsed = JSON.parse(raw);
+    _cache = isPlainObject(parsed) ? parsed : {};
+  } catch {
+    _cache = {};
+  }
+  return _cache;
+}
+function writeUserConfig(patch) {
+  const current = readUserConfig();
+  const merged = deepMerge(current, patch);
+  const path = _configPath();
+  const dir = dirname4(path);
+  if (!existsSync8(dir))
+    mkdirSync9(dir, { recursive: true });
+  const tmp = `${path}.tmp.${process.pid}`;
+  writeFileSync8(tmp, JSON.stringify(merged, null, 2) + "\n", "utf-8");
+  renameSync5(tmp, path);
+  _cache = merged;
+  return merged;
+}
+function getEmbeddingsEnabled() {
+  const cfg = readUserConfig();
+  if (cfg.embeddings && typeof cfg.embeddings.enabled === "boolean") {
+    return cfg.embeddings.enabled;
+  }
+  if (_migrated) {
+    return migrationValueFromEnv();
+  }
+  _migrated = true;
+  const enabled = migrationValueFromEnv();
+  try {
+    writeUserConfig({ embeddings: { enabled } });
+  } catch {
+    _cache = { ...cfg ?? {}, embeddings: { ...cfg?.embeddings ?? {}, enabled } };
+  }
+  return enabled;
+}
+function migrationValueFromEnv() {
+  const raw = process.env.HIVEMIND_EMBEDDINGS;
+  if (raw === void 0)
+    return false;
+  if (raw === "false")
+    return false;
+  return true;
+}
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function deepMerge(base, patch) {
+  const out = { ...base };
+  for (const key of Object.keys(patch)) {
+    const patchVal = patch[key];
+    const baseVal = base[key];
+    if (isPlainObject(patchVal) && isPlainObject(baseVal)) {
+      out[key] = { ...baseVal, ...patchVal };
+    } else if (patchVal !== void 0) {
+      out[key] = patchVal;
+    }
+  }
+  return out;
+}
+
+// dist/src/embeddings/disable.js
+var cachedStatus = null;
+function defaultResolveTransformers() {
+  const sharedDir = join15(homedir12(), ".hivemind", "embed-deps");
+  try {
+    createRequire(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
+    return;
+  } catch {
+  }
+  createRequire(import.meta.url).resolve("@huggingface/transformers");
+}
+var _resolve = defaultResolveTransformers;
+var _readEnabled = getEmbeddingsEnabled;
+function detectStatus() {
+  if (!_readEnabled())
+    return "user-disabled";
+  try {
+    _resolve();
+    return "enabled";
+  } catch {
+    return "no-transformers";
+  }
+}
+function embeddingsStatus() {
+  if (cachedStatus !== null)
+    return cachedStatus;
+  cachedStatus = detectStatus();
+  return cachedStatus;
+}
+function embeddingsDisabled() {
+  return embeddingsStatus() !== "enabled";
+}
+
 // dist/src/embeddings/client.js
-var SHARED_DAEMON_PATH = join13(homedir10(), ".hivemind", "embed-deps", "embed-daemon.js");
-var log3 = (m) => log("embed-client", m);
+var SHARED_DAEMON_PATH = join16(homedir13(), ".hivemind", "embed-deps", "embed-daemon.js");
+var log4 = (m) => log("embed-client", m);
 function getUid() {
   const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
   return uid !== void 0 ? String(uid) : process.env.USER ?? "default";
 }
+var _signalledMissingDeps = false;
+var _recycledStuckDaemon = false;
 var EmbedClient = class {
   socketPath;
   pidPath;
@@ -1261,13 +1419,14 @@ var EmbedClient = class {
   autoSpawn;
   spawnWaitMs;
   nextId = 0;
+  helloVerified = false;
   constructor(opts = {}) {
     const uid = getUid();
     const dir = opts.socketDir ?? "/tmp";
     this.socketPath = socketPathFor(uid, dir);
     this.pidPath = pidPathFor(uid, dir);
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS;
-    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON ?? (existsSync8(SHARED_DAEMON_PATH) ? SHARED_DAEMON_PATH : void 0);
+    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON ?? (existsSync9(SHARED_DAEMON_PATH) ? SHARED_DAEMON_PATH : void 0);
     this.autoSpawn = opts.autoSpawn ?? true;
     this.spawnWaitMs = opts.spawnWaitMs ?? 5e3;
   }
@@ -1277,6 +1436,13 @@ var EmbedClient = class {
    *
    * Fire-and-forget spawn on miss: if the daemon isn't up, this call returns
    * null AND kicks off a background spawn. The next call finds a ready daemon.
+   *
+   * Stuck-daemon recycle: if the daemon returns a transformers-missing
+   * error (typical after a marketplace upgrade left an older daemon process
+   * alive but with no node_modules accessible from its bundle path), we
+   * SIGTERM it and clear its sock/pid so the very next call spawns a fresh
+   * daemon from the current bundle. Without this, the stuck daemon would
+   * keep poisoning every session until its 10-minute idle-out fires.
    */
   async embed(text, kind = "document") {
     let sock;
@@ -1288,23 +1454,128 @@ var EmbedClient = class {
       return null;
     }
     try {
+      await this.verifyDaemonOnce(sock);
       const id = String(++this.nextId);
       const req = { op: "embed", id, kind, text };
       const resp = await this.sendAndWait(sock, req);
       if (resp.error || !("embedding" in resp) || !resp.embedding) {
-        log3(`embed err: ${resp.error ?? "no embedding"}`);
+        const err = resp.error ?? "no embedding";
+        log4(`embed err: ${err}`);
+        if (isTransformersMissingError(err)) {
+          this.handleTransformersMissing(err);
+        }
         return null;
       }
       return resp.embedding;
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
-      log3(`embed failed: ${err}`);
+      log4(`embed failed: ${err}`);
       return null;
     } finally {
       try {
         sock.end();
       } catch {
       }
+    }
+  }
+  /**
+   * Send a `hello` on first successful connect per EmbedClient instance.
+   * If the daemon answers with a path that doesn't match our configured
+   * daemonEntry — typical after a marketplace upgrade replaced the bundle
+   * — SIGTERM the daemon + clear sock/pid so the next call spawns from the
+   * current bundle. We mark `helloVerified` even on mismatch so we don't
+   * re-issue the hello against the next, fresh connection.
+   */
+  async verifyDaemonOnce(sock) {
+    if (this.helloVerified)
+      return;
+    this.helloVerified = true;
+    if (!this.daemonEntry)
+      return;
+    const id = String(++this.nextId);
+    const req = { op: "hello", id };
+    let resp;
+    try {
+      resp = await this.sendAndWait(sock, req);
+    } catch (e) {
+      log4(`hello probe failed (treating as compatible): ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    const hello = resp;
+    if (!hello.daemonPath) {
+      log4(`hello returned no daemonPath; skipping mismatch check`);
+      return;
+    }
+    if (hello.daemonPath === this.daemonEntry)
+      return;
+    if (_recycledStuckDaemon)
+      return;
+    _recycledStuckDaemon = true;
+    log4(`daemon path mismatch \u2014 running=${hello.daemonPath} expected=${this.daemonEntry}; recycling`);
+    this.recycleDaemon(hello.pid);
+  }
+  /**
+   * On a transformers-missing error from the daemon, SIGTERM the stuck
+   * daemon (the bundle daemon that can't find its deps) and clear
+   * sock/pid so the next call spawns fresh. Also enqueue a one-time
+   * notification telling the user to run `hivemind embeddings install`
+   * — but only when the user has opted in. Suppressed when
+   * embeddingsStatus() === "user-disabled" so we don't nag users who
+   * explicitly chose to turn embeddings off.
+   */
+  handleTransformersMissing(detail) {
+    if (!_recycledStuckDaemon) {
+      _recycledStuckDaemon = true;
+      this.recycleDaemon(null);
+    }
+    if (_signalledMissingDeps)
+      return;
+    _signalledMissingDeps = true;
+    let status;
+    try {
+      status = embeddingsStatus();
+    } catch {
+      status = "enabled";
+    }
+    if (status === "user-disabled")
+      return;
+    try {
+      enqueueNotification({
+        id: "embed-deps-missing",
+        severity: "warn",
+        title: "Hivemind embeddings disabled \u2014 deps missing",
+        body: `Semantic memory search is off because @huggingface/transformers is not installed where the daemon can find it. Run \`hivemind embeddings install\` to enable.`,
+        dedupKey: { reason: "transformers-missing", detail: detail.slice(0, 200) }
+      });
+    } catch (e) {
+      log4(`enqueue embed-deps-missing failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  /**
+   * Best-effort SIGTERM + sock/pid cleanup. Tolerant of every missing-file
+   * combination and dead-PID cases.
+   */
+  recycleDaemon(reportedPid) {
+    let pid = reportedPid;
+    if (pid === null) {
+      try {
+        pid = Number.parseInt(readFileSync9(this.pidPath, "utf-8").trim(), 10);
+      } catch {
+      }
+    }
+    if (Number.isFinite(pid) && pid !== null && pid > 0) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+      }
+    }
+    try {
+      unlinkSync3(this.socketPath);
+    } catch {
+    }
+    try {
+      unlinkSync3(this.pidPath);
+    } catch {
     }
   }
   /**
@@ -1330,7 +1601,7 @@ var EmbedClient = class {
     }
   }
   connectOnce() {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const sock = connect(this.socketPath);
       const to = setTimeout(() => {
         sock.destroy();
@@ -1338,7 +1609,7 @@ var EmbedClient = class {
       }, this.timeoutMs);
       sock.once("connect", () => {
         clearTimeout(to);
-        resolve(sock);
+        resolve2(sock);
       });
       sock.once("error", (e) => {
         clearTimeout(to);
@@ -1367,8 +1638,8 @@ var EmbedClient = class {
         return;
       }
     }
-    if (!this.daemonEntry || !existsSync8(this.daemonEntry)) {
-      log3(`daemonEntry not configured or missing: ${this.daemonEntry}`);
+    if (!this.daemonEntry || !existsSync9(this.daemonEntry)) {
+      log4(`daemonEntry not configured or missing: ${this.daemonEntry}`);
       try {
         closeSync3(fd);
         unlinkSync3(this.pidPath);
@@ -1383,14 +1654,14 @@ var EmbedClient = class {
         env: process.env
       });
       child.unref();
-      log3(`spawned daemon pid=${child.pid}`);
+      log4(`spawned daemon pid=${child.pid}`);
     } finally {
       closeSync3(fd);
     }
   }
   isPidFileStale() {
     try {
-      const raw = readFileSync7(this.pidPath, "utf-8").trim();
+      const raw = readFileSync9(this.pidPath, "utf-8").trim();
       const pid = Number(raw);
       if (!pid || Number.isNaN(pid))
         return true;
@@ -1410,7 +1681,7 @@ var EmbedClient = class {
     while (Date.now() < deadline) {
       await sleep2(delay);
       delay = Math.min(delay * 1.5, 300);
-      if (!existsSync8(this.socketPath))
+      if (!existsSync9(this.socketPath))
         continue;
       try {
         return await this.connectOnce();
@@ -1420,7 +1691,7 @@ var EmbedClient = class {
     throw new Error("daemon did not become ready within spawnWaitMs");
   }
   sendAndWait(sock, req) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       let buf = "";
       const to = setTimeout(() => {
         sock.destroy();
@@ -1435,7 +1706,7 @@ var EmbedClient = class {
         const line = buf.slice(0, nl);
         clearTimeout(to);
         try {
-          resolve(JSON.parse(line));
+          resolve2(JSON.parse(line));
         } catch (e) {
           reject(e);
         }
@@ -1455,6 +1726,9 @@ var EmbedClient = class {
 function sleep2(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
+function isTransformersMissingError(err) {
+  return /(@huggingface\/transformers|hivemind embeddings install|MODULE_NOT_FOUND)/i.test(err);
+}
 
 // dist/src/embeddings/sql.js
 function embeddingSqlLiteral(vec) {
@@ -1469,51 +1743,82 @@ function embeddingSqlLiteral(vec) {
   return `ARRAY[${parts.join(",")}]::float4[]`;
 }
 
-// dist/src/embeddings/disable.js
-import { createRequire } from "node:module";
-import { homedir as homedir11 } from "node:os";
-import { join as join14 } from "node:path";
-import { pathToFileURL } from "node:url";
-var cachedStatus = null;
-function defaultResolveTransformers() {
-  try {
-    createRequire(import.meta.url).resolve("@huggingface/transformers");
-    return;
-  } catch {
+// dist/src/embeddings/self-heal.js
+import { existsSync as existsSync10, lstatSync, mkdirSync as mkdirSync10, readlinkSync, renameSync as renameSync6, rmSync, symlinkSync, statSync } from "node:fs";
+import { homedir as homedir14 } from "node:os";
+import { basename as basename2, dirname as dirname5, join as join17 } from "node:path";
+function ensurePluginNodeModulesLink(opts) {
+  if (basename2(opts.bundleDir) !== "bundle") {
+    return { kind: "not-bundle-layout", bundleDir: opts.bundleDir };
   }
-  const sharedDir = join14(homedir11(), ".hivemind", "embed-deps");
-  createRequire(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
-}
-var _resolve = defaultResolveTransformers;
-function detectStatus() {
-  if (process.env.HIVEMIND_EMBEDDINGS === "false")
-    return "env-disabled";
-  try {
-    _resolve();
-    return "enabled";
-  } catch {
-    return "no-transformers";
+  const target = opts.sharedNodeModules ?? join17(homedir14(), ".hivemind", "embed-deps", "node_modules");
+  const pluginDir = dirname5(opts.bundleDir);
+  const link = join17(pluginDir, "node_modules");
+  if (!existsSync10(target)) {
+    return { kind: "shared-deps-missing", target };
   }
+  let linkStat;
+  try {
+    linkStat = lstatSync(link);
+  } catch {
+    return createSymlinkAtomic(target, link);
+  }
+  if (linkStat.isSymbolicLink()) {
+    let existingTarget;
+    try {
+      existingTarget = readlinkSync(link);
+    } catch (e) {
+      return { kind: "error", detail: `readlink failed: ${e instanceof Error ? e.message : String(e)}` };
+    }
+    if (existingTarget === target) {
+      return { kind: "already-linked", target, link };
+    }
+    try {
+      statSync(link);
+      return { kind: "linked-elsewhere", link, existingTarget };
+    } catch {
+      try {
+        rmSync(link);
+      } catch {
+      }
+      return { kind: "stale-link-removed", link, danglingTarget: existingTarget };
+    }
+  }
+  return { kind: "plugin-owns-node-modules", link };
 }
-function embeddingsStatus() {
-  if (cachedStatus !== null)
-    return cachedStatus;
-  cachedStatus = detectStatus();
-  return cachedStatus;
-}
-function embeddingsDisabled() {
-  return embeddingsStatus() !== "enabled";
+function createSymlinkAtomic(target, link) {
+  try {
+    const parent = dirname5(link);
+    if (!existsSync10(parent))
+      mkdirSync10(parent, { recursive: true });
+    const tmp = `${link}.tmp.${process.pid}`;
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+    }
+    symlinkSync(target, tmp);
+    renameSync6(tmp, link);
+    return { kind: "linked", target, link };
+  } catch (e) {
+    return { kind: "error", detail: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 // dist/src/hooks/capture.js
 import { fileURLToPath as fileURLToPath3 } from "node:url";
-import { dirname as dirname4, join as join15 } from "node:path";
-var log4 = (msg) => log("capture", msg);
+import { dirname as dirname6, join as join18 } from "node:path";
+var log5 = (msg) => log("capture", msg);
 function resolveEmbedDaemonPath() {
-  return join15(dirname4(fileURLToPath3(import.meta.url)), "embeddings", "embed-daemon.js");
+  return join18(dirname6(fileURLToPath3(import.meta.url)), "embeddings", "embed-daemon.js");
 }
-var __bundleDir = dirname4(fileURLToPath3(import.meta.url));
+var __bundleDir = dirname6(fileURLToPath3(import.meta.url));
 var PLUGIN_VERSION = getInstalledVersion(__bundleDir, ".claude-plugin") ?? "";
+if (!embeddingsDisabled()) {
+  try {
+    ensurePluginNodeModulesLink({ bundleDir: __bundleDir });
+  } catch {
+  }
+}
 var CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 async function main() {
   if (!CAPTURE)
@@ -1521,7 +1826,7 @@ async function main() {
   const input = await readStdin();
   const config = loadConfig();
   if (!config) {
-    log4("no config");
+    log5("no config");
     return;
   }
   const sessionsTable = config.sessionsTableName;
@@ -1539,7 +1844,7 @@ async function main() {
   };
   let entry;
   if (input.prompt !== void 0) {
-    log4(`user session=${input.session_id}`);
+    log5(`user session=${input.session_id}`);
     entry = {
       id: crypto.randomUUID(),
       ...meta,
@@ -1547,7 +1852,7 @@ async function main() {
       content: input.prompt
     };
   } else if (input.tool_name !== void 0) {
-    log4(`tool=${input.tool_name} session=${input.session_id}`);
+    log5(`tool=${input.tool_name} session=${input.session_id}`);
     entry = {
       id: crypto.randomUUID(),
       ...meta,
@@ -1558,7 +1863,7 @@ async function main() {
       tool_response: JSON.stringify(input.tool_response)
     };
   } else if (input.last_assistant_message !== void 0) {
-    log4(`assistant session=${input.session_id}`);
+    log5(`assistant session=${input.session_id}`);
     entry = {
       id: crypto.randomUUID(),
       ...meta,
@@ -1567,12 +1872,12 @@ async function main() {
       ...input.agent_transcript_path ? { agent_transcript_path: input.agent_transcript_path } : {}
     };
   } else {
-    log4("unknown event, skipping");
+    log5("unknown event, skipping");
     return;
   }
   const sessionPath = buildSessionPath(config, input.session_id);
   const line = JSON.stringify(entry);
-  log4(`writing to ${sessionPath}`);
+  log5(`writing to ${sessionPath}`);
   const projectName = (input.cwd ?? "").split("/").pop() || "unknown";
   const filename = sessionPath.split("/").pop() ?? "";
   const jsonForSql = line.replace(/'/g, "''");
@@ -1583,14 +1888,14 @@ async function main() {
     await api.query(insertSql);
   } catch (e) {
     if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
-      log4("table missing, creating and retrying");
+      log5("table missing, creating and retrying");
       await api.ensureSessionsTable(sessionsTable);
       await api.query(insertSql);
     } else {
       throw e;
     }
   }
-  log4("capture ok \u2192 cloud");
+  log5("capture ok \u2192 cloud");
   maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
   if (input.hook_event_name === "Stop") {
     if (process.env.HIVEMIND_WIKI_WORKER === "1")
@@ -1613,7 +1918,7 @@ function maybeTriggerPeriodicSummary(sessionId, cwd, config) {
     if (!shouldTrigger(state, cfg))
       return;
     if (!tryAcquireLock(sessionId)) {
-      log4(`periodic trigger suppressed (lock held) session=${sessionId}`);
+      log5(`periodic trigger suppressed (lock held) session=${sessionId}`);
       return;
     }
     wikiLog(`Periodic: threshold hit (total=${state.totalCount}, since=${state.totalCount - state.lastSummaryCount}, N=${cfg.everyNMessages}, hours=${cfg.everyHours})`);
@@ -1626,19 +1931,19 @@ function maybeTriggerPeriodicSummary(sessionId, cwd, config) {
         reason: "Periodic"
       });
     } catch (e) {
-      log4(`periodic spawn failed: ${e.message}`);
+      log5(`periodic spawn failed: ${e.message}`);
       try {
         releaseLock(sessionId);
       } catch (releaseErr) {
-        log4(`releaseLock after periodic spawn failure also failed: ${releaseErr.message}`);
+        log5(`releaseLock after periodic spawn failure also failed: ${releaseErr.message}`);
       }
       throw e;
     }
   } catch (e) {
-    log4(`periodic trigger error: ${e.message}`);
+    log5(`periodic trigger error: ${e.message}`);
   }
 }
 main().catch((e) => {
-  log4(`fatal: ${e.message}`);
+  log5(`fatal: ${e.message}`);
   process.exit(0);
 });

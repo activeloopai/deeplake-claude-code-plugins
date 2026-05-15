@@ -1407,6 +1407,13 @@ Skill management (mine + share reusable Claude skills across the org):
 - hivemind skillify promote <skill-name>             \u2014 move a project skill to the global location
 - hivemind skillify team add|remove|list <name>      \u2014 manage team member list
 
+Embeddings (semantic memory search) \u2014 opt-in, persisted in ~/.deeplake/config.json:
+- hivemind embeddings install                        \u2014 download deps (~600MB), symlink agents, set enabled:true
+- hivemind embeddings enable                         \u2014 flip enabled:true (run install first if deps missing)
+- hivemind embeddings disable                        \u2014 flip enabled:false + SIGTERM daemon (deps stay on disk)
+- hivemind embeddings uninstall [--prune]            \u2014 remove agent symlinks + disable; --prune wipes deps too
+- hivemind embeddings status                         \u2014 show config + deps + per-agent link state
+
 IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem. Avoid bash brace expansions like \`{1..10}\` (not fully supported); spell out paths explicitly. Bash output is capped at 10MB total \u2014 avoid \`for f in *.json; do cat $f\` style loops on the whole sessions dir.
 
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.

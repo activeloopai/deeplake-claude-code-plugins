@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 // dist/src/hooks/cursor/wiki-worker.js
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync2, existsSync as existsSync3, appendFileSync as appendFileSync2, mkdirSync as mkdirSync2, rmSync } from "node:fs";
+import { readFileSync as readFileSync5, writeFileSync as writeFileSync4, existsSync as existsSync4, appendFileSync as appendFileSync2, mkdirSync as mkdirSync4, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, join as join5 } from "node:path";
+import { dirname as dirname2, join as join7 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // dist/src/hooks/summary-state.js
@@ -152,9 +152,9 @@ async function uploadSummary(query2, params) {
 // dist/src/embeddings/client.js
 import { connect } from "node:net";
 import { spawn } from "node:child_process";
-import { openSync as openSync2, closeSync as closeSync2, writeSync as writeSync2, unlinkSync as unlinkSync2, existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
-import { homedir as homedir3 } from "node:os";
-import { join as join3 } from "node:path";
+import { openSync as openSync2, closeSync as closeSync2, writeSync as writeSync2, unlinkSync as unlinkSync2, existsSync as existsSync3, readFileSync as readFileSync4 } from "node:fs";
+import { homedir as homedir6 } from "node:os";
+import { join as join6 } from "node:path";
 
 // dist/src/embeddings/protocol.js
 var DEFAULT_SOCKET_DIR = "/tmp";
@@ -167,13 +167,171 @@ function pidPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
   return `${dir}/hivemind-embed-${uid}.pid`;
 }
 
+// dist/src/notifications/queue.js
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, renameSync as renameSync2, mkdirSync as mkdirSync2 } from "node:fs";
+import { join as join3, resolve } from "node:path";
+import { homedir as homedir3 } from "node:os";
+var log2 = (msg) => log("notifications-queue", msg);
+function queuePath() {
+  return join3(homedir3(), ".deeplake", "notifications-queue.json");
+}
+function readQueue() {
+  try {
+    const raw = readFileSync2(queuePath(), "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.queue)) {
+      log2(`queue malformed \u2192 treating as empty`);
+      return { queue: [] };
+    }
+    return { queue: parsed.queue };
+  } catch {
+    return { queue: [] };
+  }
+}
+function writeQueue(q) {
+  const path = queuePath();
+  const home = resolve(homedir3());
+  if (!resolve(path).startsWith(home + "/") && resolve(path) !== home) {
+    throw new Error(`notifications-queue write blocked: ${path} is outside ${home}`);
+  }
+  mkdirSync2(join3(home, ".deeplake"), { recursive: true, mode: 448 });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync2(tmp, JSON.stringify(q, null, 2), { mode: 384 });
+  renameSync2(tmp, path);
+}
+function enqueueNotification(n) {
+  const q = readQueue();
+  q.queue.push(n);
+  writeQueue(q);
+}
+
+// dist/src/embeddings/disable.js
+import { createRequire } from "node:module";
+import { homedir as homedir5 } from "node:os";
+import { join as join5 } from "node:path";
+import { pathToFileURL } from "node:url";
+
+// dist/src/user-config.js
+import { existsSync as existsSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { homedir as homedir4 } from "node:os";
+import { dirname, join as join4 } from "node:path";
+var _configPath = () => process.env.HIVEMIND_CONFIG_PATH ?? join4(homedir4(), ".deeplake", "config.json");
+var _cache = null;
+var _migrated = false;
+function readUserConfig() {
+  if (_cache !== null)
+    return _cache;
+  const path = _configPath();
+  if (!existsSync2(path)) {
+    _cache = {};
+    return _cache;
+  }
+  try {
+    const raw = readFileSync3(path, "utf-8");
+    const parsed = JSON.parse(raw);
+    _cache = isPlainObject(parsed) ? parsed : {};
+  } catch {
+    _cache = {};
+  }
+  return _cache;
+}
+function writeUserConfig(patch) {
+  const current = readUserConfig();
+  const merged = deepMerge(current, patch);
+  const path = _configPath();
+  const dir = dirname(path);
+  if (!existsSync2(dir))
+    mkdirSync3(dir, { recursive: true });
+  const tmp = `${path}.tmp.${process.pid}`;
+  writeFileSync3(tmp, JSON.stringify(merged, null, 2) + "\n", "utf-8");
+  renameSync3(tmp, path);
+  _cache = merged;
+  return merged;
+}
+function getEmbeddingsEnabled() {
+  const cfg2 = readUserConfig();
+  if (cfg2.embeddings && typeof cfg2.embeddings.enabled === "boolean") {
+    return cfg2.embeddings.enabled;
+  }
+  if (_migrated) {
+    return migrationValueFromEnv();
+  }
+  _migrated = true;
+  const enabled = migrationValueFromEnv();
+  try {
+    writeUserConfig({ embeddings: { enabled } });
+  } catch {
+    _cache = { ...cfg2 ?? {}, embeddings: { ...cfg2?.embeddings ?? {}, enabled } };
+  }
+  return enabled;
+}
+function migrationValueFromEnv() {
+  const raw = process.env.HIVEMIND_EMBEDDINGS;
+  if (raw === void 0)
+    return false;
+  if (raw === "false")
+    return false;
+  return true;
+}
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function deepMerge(base, patch) {
+  const out = { ...base };
+  for (const key of Object.keys(patch)) {
+    const patchVal = patch[key];
+    const baseVal = base[key];
+    if (isPlainObject(patchVal) && isPlainObject(baseVal)) {
+      out[key] = { ...baseVal, ...patchVal };
+    } else if (patchVal !== void 0) {
+      out[key] = patchVal;
+    }
+  }
+  return out;
+}
+
+// dist/src/embeddings/disable.js
+var cachedStatus = null;
+function defaultResolveTransformers() {
+  const sharedDir = join5(homedir5(), ".hivemind", "embed-deps");
+  try {
+    createRequire(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
+    return;
+  } catch {
+  }
+  createRequire(import.meta.url).resolve("@huggingface/transformers");
+}
+var _resolve = defaultResolveTransformers;
+var _readEnabled = getEmbeddingsEnabled;
+function detectStatus() {
+  if (!_readEnabled())
+    return "user-disabled";
+  try {
+    _resolve();
+    return "enabled";
+  } catch {
+    return "no-transformers";
+  }
+}
+function embeddingsStatus() {
+  if (cachedStatus !== null)
+    return cachedStatus;
+  cachedStatus = detectStatus();
+  return cachedStatus;
+}
+function embeddingsDisabled() {
+  return embeddingsStatus() !== "enabled";
+}
+
 // dist/src/embeddings/client.js
-var SHARED_DAEMON_PATH = join3(homedir3(), ".hivemind", "embed-deps", "embed-daemon.js");
-var log2 = (m) => log("embed-client", m);
+var SHARED_DAEMON_PATH = join6(homedir6(), ".hivemind", "embed-deps", "embed-daemon.js");
+var log3 = (m) => log("embed-client", m);
 function getUid() {
   const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
   return uid !== void 0 ? String(uid) : process.env.USER ?? "default";
 }
+var _signalledMissingDeps = false;
+var _recycledStuckDaemon = false;
 var EmbedClient = class {
   socketPath;
   pidPath;
@@ -182,13 +340,14 @@ var EmbedClient = class {
   autoSpawn;
   spawnWaitMs;
   nextId = 0;
+  helloVerified = false;
   constructor(opts = {}) {
     const uid = getUid();
     const dir = opts.socketDir ?? "/tmp";
     this.socketPath = socketPathFor(uid, dir);
     this.pidPath = pidPathFor(uid, dir);
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS;
-    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON ?? (existsSync2(SHARED_DAEMON_PATH) ? SHARED_DAEMON_PATH : void 0);
+    this.daemonEntry = opts.daemonEntry ?? process.env.HIVEMIND_EMBED_DAEMON ?? (existsSync3(SHARED_DAEMON_PATH) ? SHARED_DAEMON_PATH : void 0);
     this.autoSpawn = opts.autoSpawn ?? true;
     this.spawnWaitMs = opts.spawnWaitMs ?? 5e3;
   }
@@ -198,6 +357,13 @@ var EmbedClient = class {
    *
    * Fire-and-forget spawn on miss: if the daemon isn't up, this call returns
    * null AND kicks off a background spawn. The next call finds a ready daemon.
+   *
+   * Stuck-daemon recycle: if the daemon returns a transformers-missing
+   * error (typical after a marketplace upgrade left an older daemon process
+   * alive but with no node_modules accessible from its bundle path), we
+   * SIGTERM it and clear its sock/pid so the very next call spawns a fresh
+   * daemon from the current bundle. Without this, the stuck daemon would
+   * keep poisoning every session until its 10-minute idle-out fires.
    */
   async embed(text, kind = "document") {
     let sock;
@@ -209,23 +375,128 @@ var EmbedClient = class {
       return null;
     }
     try {
+      await this.verifyDaemonOnce(sock);
       const id = String(++this.nextId);
       const req = { op: "embed", id, kind, text };
       const resp = await this.sendAndWait(sock, req);
       if (resp.error || !("embedding" in resp) || !resp.embedding) {
-        log2(`embed err: ${resp.error ?? "no embedding"}`);
+        const err = resp.error ?? "no embedding";
+        log3(`embed err: ${err}`);
+        if (isTransformersMissingError(err)) {
+          this.handleTransformersMissing(err);
+        }
         return null;
       }
       return resp.embedding;
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
-      log2(`embed failed: ${err}`);
+      log3(`embed failed: ${err}`);
       return null;
     } finally {
       try {
         sock.end();
       } catch {
       }
+    }
+  }
+  /**
+   * Send a `hello` on first successful connect per EmbedClient instance.
+   * If the daemon answers with a path that doesn't match our configured
+   * daemonEntry — typical after a marketplace upgrade replaced the bundle
+   * — SIGTERM the daemon + clear sock/pid so the next call spawns from the
+   * current bundle. We mark `helloVerified` even on mismatch so we don't
+   * re-issue the hello against the next, fresh connection.
+   */
+  async verifyDaemonOnce(sock) {
+    if (this.helloVerified)
+      return;
+    this.helloVerified = true;
+    if (!this.daemonEntry)
+      return;
+    const id = String(++this.nextId);
+    const req = { op: "hello", id };
+    let resp;
+    try {
+      resp = await this.sendAndWait(sock, req);
+    } catch (e) {
+      log3(`hello probe failed (treating as compatible): ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    const hello = resp;
+    if (!hello.daemonPath) {
+      log3(`hello returned no daemonPath; skipping mismatch check`);
+      return;
+    }
+    if (hello.daemonPath === this.daemonEntry)
+      return;
+    if (_recycledStuckDaemon)
+      return;
+    _recycledStuckDaemon = true;
+    log3(`daemon path mismatch \u2014 running=${hello.daemonPath} expected=${this.daemonEntry}; recycling`);
+    this.recycleDaemon(hello.pid);
+  }
+  /**
+   * On a transformers-missing error from the daemon, SIGTERM the stuck
+   * daemon (the bundle daemon that can't find its deps) and clear
+   * sock/pid so the next call spawns fresh. Also enqueue a one-time
+   * notification telling the user to run `hivemind embeddings install`
+   * — but only when the user has opted in. Suppressed when
+   * embeddingsStatus() === "user-disabled" so we don't nag users who
+   * explicitly chose to turn embeddings off.
+   */
+  handleTransformersMissing(detail) {
+    if (!_recycledStuckDaemon) {
+      _recycledStuckDaemon = true;
+      this.recycleDaemon(null);
+    }
+    if (_signalledMissingDeps)
+      return;
+    _signalledMissingDeps = true;
+    let status;
+    try {
+      status = embeddingsStatus();
+    } catch {
+      status = "enabled";
+    }
+    if (status === "user-disabled")
+      return;
+    try {
+      enqueueNotification({
+        id: "embed-deps-missing",
+        severity: "warn",
+        title: "Hivemind embeddings disabled \u2014 deps missing",
+        body: `Semantic memory search is off because @huggingface/transformers is not installed where the daemon can find it. Run \`hivemind embeddings install\` to enable.`,
+        dedupKey: { reason: "transformers-missing", detail: detail.slice(0, 200) }
+      });
+    } catch (e) {
+      log3(`enqueue embed-deps-missing failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  /**
+   * Best-effort SIGTERM + sock/pid cleanup. Tolerant of every missing-file
+   * combination and dead-PID cases.
+   */
+  recycleDaemon(reportedPid) {
+    let pid = reportedPid;
+    if (pid === null) {
+      try {
+        pid = Number.parseInt(readFileSync4(this.pidPath, "utf-8").trim(), 10);
+      } catch {
+      }
+    }
+    if (Number.isFinite(pid) && pid !== null && pid > 0) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+      }
+    }
+    try {
+      unlinkSync2(this.socketPath);
+    } catch {
+    }
+    try {
+      unlinkSync2(this.pidPath);
+    } catch {
     }
   }
   /**
@@ -251,7 +522,7 @@ var EmbedClient = class {
     }
   }
   connectOnce() {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const sock = connect(this.socketPath);
       const to = setTimeout(() => {
         sock.destroy();
@@ -259,7 +530,7 @@ var EmbedClient = class {
       }, this.timeoutMs);
       sock.once("connect", () => {
         clearTimeout(to);
-        resolve(sock);
+        resolve2(sock);
       });
       sock.once("error", (e) => {
         clearTimeout(to);
@@ -288,8 +559,8 @@ var EmbedClient = class {
         return;
       }
     }
-    if (!this.daemonEntry || !existsSync2(this.daemonEntry)) {
-      log2(`daemonEntry not configured or missing: ${this.daemonEntry}`);
+    if (!this.daemonEntry || !existsSync3(this.daemonEntry)) {
+      log3(`daemonEntry not configured or missing: ${this.daemonEntry}`);
       try {
         closeSync2(fd);
         unlinkSync2(this.pidPath);
@@ -304,14 +575,14 @@ var EmbedClient = class {
         env: process.env
       });
       child.unref();
-      log2(`spawned daemon pid=${child.pid}`);
+      log3(`spawned daemon pid=${child.pid}`);
     } finally {
       closeSync2(fd);
     }
   }
   isPidFileStale() {
     try {
-      const raw = readFileSync2(this.pidPath, "utf-8").trim();
+      const raw = readFileSync4(this.pidPath, "utf-8").trim();
       const pid = Number(raw);
       if (!pid || Number.isNaN(pid))
         return true;
@@ -331,7 +602,7 @@ var EmbedClient = class {
     while (Date.now() < deadline) {
       await sleep(delay);
       delay = Math.min(delay * 1.5, 300);
-      if (!existsSync2(this.socketPath))
+      if (!existsSync3(this.socketPath))
         continue;
       try {
         return await this.connectOnce();
@@ -341,7 +612,7 @@ var EmbedClient = class {
     throw new Error("daemon did not become ready within spawnWaitMs");
   }
   sendAndWait(sock, req) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       let buf = "";
       const to = setTimeout(() => {
         sock.destroy();
@@ -356,7 +627,7 @@ var EmbedClient = class {
         const line = buf.slice(0, nl);
         clearTimeout(to);
         try {
-          resolve(JSON.parse(line));
+          resolve2(JSON.parse(line));
         } catch (e) {
           reject(e);
         }
@@ -376,41 +647,8 @@ var EmbedClient = class {
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
-
-// dist/src/embeddings/disable.js
-import { createRequire } from "node:module";
-import { homedir as homedir4 } from "node:os";
-import { join as join4 } from "node:path";
-import { pathToFileURL } from "node:url";
-var cachedStatus = null;
-function defaultResolveTransformers() {
-  try {
-    createRequire(import.meta.url).resolve("@huggingface/transformers");
-    return;
-  } catch {
-  }
-  const sharedDir = join4(homedir4(), ".hivemind", "embed-deps");
-  createRequire(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
-}
-var _resolve = defaultResolveTransformers;
-function detectStatus() {
-  if (process.env.HIVEMIND_EMBEDDINGS === "false")
-    return "env-disabled";
-  try {
-    _resolve();
-    return "enabled";
-  } catch {
-    return "no-transformers";
-  }
-}
-function embeddingsStatus() {
-  if (cachedStatus !== null)
-    return cachedStatus;
-  cachedStatus = detectStatus();
-  return cachedStatus;
-}
-function embeddingsDisabled() {
-  return embeddingsStatus() !== "enabled";
+function isTransformersMissingError(err) {
+  return /(@huggingface\/transformers|hivemind embeddings install|MODULE_NOT_FOUND)/i.test(err);
 }
 
 // dist/src/utils/client-header.js
@@ -424,13 +662,13 @@ function deeplakeClientHeader() {
 
 // dist/src/hooks/cursor/wiki-worker.js
 var dlog2 = (msg) => log("cursor-wiki-worker", msg);
-var cfg = JSON.parse(readFileSync3(process.argv[2], "utf-8"));
+var cfg = JSON.parse(readFileSync5(process.argv[2], "utf-8"));
 var tmpDir = cfg.tmpDir;
-var tmpJsonl = join5(tmpDir, "session.jsonl");
-var tmpSummary = join5(tmpDir, "summary.md");
+var tmpJsonl = join7(tmpDir, "session.jsonl");
+var tmpSummary = join7(tmpDir, "summary.md");
 function wlog(msg) {
   try {
-    mkdirSync2(cfg.hooksDir, { recursive: true });
+    mkdirSync4(cfg.hooksDir, { recursive: true });
     appendFileSync2(cfg.wikiLog, `[${(/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19)}] wiki-worker(${cfg.sessionId}): ${msg}
 `);
   } catch {
@@ -462,7 +700,7 @@ async function query(sql, retries = 4) {
       const base = Math.min(3e4, 2e3 * Math.pow(2, attempt));
       const delay = base + Math.floor(Math.random() * 1e3);
       wlog(`API ${r.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await new Promise((resolve2) => setTimeout(resolve2, delay));
       continue;
     }
     throw new Error(`API ${r.status}: ${(await r.text()).slice(0, 200)}`);
@@ -488,7 +726,7 @@ async function main() {
     const jsonlLines = rows.length;
     const pathRows = await query(`SELECT DISTINCT path FROM "${cfg.sessionsTable}" WHERE path LIKE '${esc2(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`);
     const jsonlServerPath = pathRows.length > 0 ? pathRows[0].path : `/sessions/unknown/${cfg.sessionId}.jsonl`;
-    writeFileSync2(tmpJsonl, jsonlContent);
+    writeFileSync4(tmpJsonl, jsonlContent);
     wlog(`found ${jsonlLines} events at ${jsonlServerPath}`);
     let prevOffset = 0;
     try {
@@ -498,7 +736,7 @@ async function main() {
         const match = existing.match(/\*\*JSONL offset\*\*:\s*(\d+)/);
         if (match)
           prevOffset = parseInt(match[1], 10);
-        writeFileSync2(tmpSummary, existing);
+        writeFileSync4(tmpSummary, existing);
         wlog(`existing summary found, offset=${prevOffset}`);
       }
     } catch {
@@ -523,15 +761,15 @@ async function main() {
     } catch (e) {
       wlog(`cursor-agent --print failed: ${e.status ?? e.message}`);
     }
-    if (existsSync3(tmpSummary)) {
-      const text = readFileSync3(tmpSummary, "utf-8");
+    if (existsSync4(tmpSummary)) {
+      const text = readFileSync5(tmpSummary, "utf-8");
       if (text.trim()) {
         const fname = `${cfg.sessionId}.md`;
         const vpath = `/summaries/${cfg.userName}/${fname}`;
         let embedding = null;
         if (!embeddingsDisabled()) {
           try {
-            const daemonEntry = join5(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
+            const daemonEntry = join7(dirname2(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
             embedding = await new EmbedClient({ daemonEntry }).embed(text, "document");
           } catch (e) {
             wlog(`summary embedding failed, writing NULL: ${e.message}`);

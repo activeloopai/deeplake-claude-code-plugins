@@ -4,7 +4,14 @@
 import { createServer } from "node:net";
 import { unlinkSync, writeFileSync, existsSync, mkdirSync, chmodSync } from "node:fs";
 
+// dist/src/embeddings/nomic.js
+import { createRequire } from "node:module";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
 // dist/src/embeddings/protocol.js
+var PROTOCOL_VERSION = 1;
 var DEFAULT_SOCKET_DIR = "/tmp";
 var DEFAULT_MODEL_REPO = "nomic-ai/nomic-embed-text-v1.5";
 var DEFAULT_DTYPE = "q8";
@@ -20,6 +27,31 @@ function pidPathFor(uid, dir = DEFAULT_SOCKET_DIR) {
 }
 
 // dist/src/embeddings/nomic.js
+async function importFromCanonicalSharedDeps() {
+  const sharedDir = join(homedir(), ".hivemind", "embed-deps");
+  const base = pathToFileURL(`${sharedDir}/`).href;
+  const absMain = createRequire(base).resolve("@huggingface/transformers");
+  return await import(pathToFileURL(absMain).href);
+}
+async function importFromBareSpecifier() {
+  return await import("@huggingface/transformers");
+}
+async function defaultImportTransformers(canonical = importFromCanonicalSharedDeps, bare = importFromBareSpecifier) {
+  let canonicalErr;
+  try {
+    return await canonical();
+  } catch (err) {
+    canonicalErr = err;
+  }
+  try {
+    return await bare();
+  } catch (bareErr) {
+    const detail = bareErr instanceof Error ? bareErr.message : String(bareErr);
+    const canonicalDetail = canonicalErr instanceof Error ? canonicalErr.message : String(canonicalErr);
+    throw new Error(`@huggingface/transformers is not installed anywhere reachable. Run \`hivemind embeddings install\` to install it. (canonical: ${canonicalDetail}; bare: ${detail})`);
+  }
+}
+var _importTransformers = () => defaultImportTransformers();
 var NomicEmbedder = class {
   pipeline = null;
   loading = null;
@@ -37,7 +69,7 @@ var NomicEmbedder = class {
     if (this.loading)
       return this.loading;
     this.loading = (async () => {
-      const mod = await import("@huggingface/transformers");
+      const mod = await _importTransformers();
       mod.env.allowLocalModels = false;
       mod.env.useFSCache = true;
       this.pipeline = await mod.pipeline("feature-extraction", this.repo, { dtype: this.dtype });
@@ -94,10 +126,10 @@ var NomicEmbedder = class {
 
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
+import { join as join2 } from "node:path";
+import { homedir as homedir2 } from "node:os";
 var DEBUG = process.env.HIVEMIND_DEBUG === "1";
-var LOG = join(homedir(), ".deeplake", "hook-debug.log");
+var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
 function log(tag, msg) {
   if (!DEBUG)
     return;
@@ -118,6 +150,7 @@ var EmbedDaemon = class {
   pidPath;
   idleTimeoutMs;
   idleTimer = null;
+  daemonPath;
   constructor(opts = {}) {
     const uid = getUid();
     const dir = opts.socketDir ?? "/tmp";
@@ -125,6 +158,7 @@ var EmbedDaemon = class {
     this.pidPath = pidPathFor(uid, dir);
     this.idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.embedder = new NomicEmbedder({ repo: opts.repo, dtype: opts.dtype, dims: opts.dims });
+    this.daemonPath = opts.daemonPath ?? process.argv[1] ?? "";
   }
   async start() {
     mkdirSync(this.socketPath.replace(/\/[^/]+$/, ""), { recursive: true });
@@ -216,6 +250,15 @@ var EmbedDaemon = class {
     }
   }
   async dispatch(req) {
+    if (req.op === "hello") {
+      const h = req;
+      return {
+        id: h.id,
+        daemonPath: this.daemonPath,
+        pid: process.pid,
+        protocolVersion: PROTOCOL_VERSION
+      };
+    }
     if (req.op === "ping") {
       const p = req;
       return { id: p.id, ready: true, model: this.embedder.repo, dims: this.embedder.dims };

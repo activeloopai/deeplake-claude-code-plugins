@@ -1365,7 +1365,14 @@ SKILLS (skillify) \u2014 mine + share reusable skills across the org:
 - hivemind skillify unpull --dry-run        \u2014 preview without touching disk
 - hivemind skillify scope <me|team>         \u2014 sharing scope for new skills
 - hivemind skillify install <project|global>  \u2014 default install location
-- hivemind skillify team add|remove|list <name>  \u2014 manage team list`;
+- hivemind skillify team add|remove|list <name>  \u2014 manage team list
+
+Embeddings (semantic memory search) \u2014 opt-in, persisted in ~/.deeplake/config.json:
+- hivemind embeddings install               \u2014 download deps (~600MB), symlink agents, set enabled:true
+- hivemind embeddings enable                \u2014 flip enabled:true (run install first if deps missing)
+- hivemind embeddings disable               \u2014 flip enabled:false + SIGTERM daemon (deps stay on disk)
+- hivemind embeddings uninstall [--prune]   \u2014 remove agent symlinks + disable; --prune wipes deps too
+- hivemind embeddings status                \u2014 show config + deps + per-agent link state`;
 function resolveSessionId(input) {
   return input.session_id ?? input.conversation_id ?? `cursor-${Date.now()}`;
 }
