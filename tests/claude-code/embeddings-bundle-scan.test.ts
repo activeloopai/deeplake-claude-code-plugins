@@ -98,6 +98,53 @@ describe("shipped capture.js — self-heal + visible-failure notification", () =
   }
 });
 
+describe("shipped shell/deeplake-shell.js — embed daemon path resolves to an existing file", () => {
+  // Regression guard for CodeRabbit #6/#7/#11: the in-bundle resolver
+  // computed `dirname(import.meta.url) + "embeddings/embed-daemon.js"`,
+  // which when run from `<agent>/bundle/shell/` pointed at the missing
+  // path `<agent>/bundle/shell/embeddings/embed-daemon.js`. The fix
+  // adds `..` so it correctly lands at `<agent>/bundle/embeddings/`.
+  // We verify both literally (the `..` survived bundling) AND
+  // structurally (the actual bundled daemon file exists where the
+  // bundled shell would look for it).
+  const SHELL_BUNDLES: Array<[string, string, string]> = [
+    ["claude-code",
+      join(repoRoot, "claude-code", "bundle", "shell", "deeplake-shell.js"),
+      join(repoRoot, "claude-code", "bundle", "embeddings", "embed-daemon.js")],
+    ["codex",
+      join(repoRoot, "codex", "bundle", "shell", "deeplake-shell.js"),
+      join(repoRoot, "codex", "bundle", "embeddings", "embed-daemon.js")],
+    ["cursor",
+      join(repoRoot, "cursor", "bundle", "shell", "deeplake-shell.js"),
+      join(repoRoot, "cursor", "bundle", "embeddings", "embed-daemon.js")],
+  ];
+
+  it.each(SHELL_BUNDLES)("%s shell bundle exists", (_label, shellPath) => {
+    expect(existsSync(shellPath), `missing: ${shellPath}`).toBe(true);
+  });
+
+  it.each(SHELL_BUNDLES)(
+    "%s daemon sibling exists at the parent-of-shell path",
+    (_label, _shellPath, daemonPath) => {
+      expect(existsSync(daemonPath), `missing: ${daemonPath}`).toBe(true);
+    },
+  );
+
+  it.each(SHELL_BUNDLES)(
+    "%s shell bundle resolves daemonEntry via parent-of-shell (`..` survived bundling)",
+    (_label, shellPath) => {
+      const src = readFileSync(shellPath, "utf-8");
+      // The resolver builds a path like:
+      //   join(dirname(import.meta.url), "..", "embeddings", "embed-daemon.js")
+      // After esbuild minification the literals "..", "embeddings",
+      // "embed-daemon.js" stay intact. Without the `..` we'd see
+      // `"embeddings", "embed-daemon.js"` adjacent. Match the corrected
+      // shape: a `..` immediately followed by `embeddings`.
+      expect(src).toMatch(/"\.\.",\s*"embeddings",\s*"embed-daemon\.js"/);
+    },
+  );
+});
+
 describe("shipped bundle/cli.js — full embeddings subcommand surface", () => {
   const cliPath = join(repoRoot, "bundle", "cli.js");
 

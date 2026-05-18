@@ -68291,7 +68291,7 @@ function normalizeSessionMessage(path2, message) {
   return normalizeContent(path2, raw);
 }
 function resolveEmbedDaemonPath() {
-  return join11(dirname5(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
+  return join11(dirname5(fileURLToPath(import.meta.url)), "..", "embeddings", "embed-daemon.js");
 }
 function joinSessionMessages(path2, messages) {
   return messages.map((message) => normalizeSessionMessage(path2, message)).join("\n");
