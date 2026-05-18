@@ -314,6 +314,9 @@ ${s.body}
 import { randomUUID } from "node:crypto";
 
 // dist/src/utils/sql.js
+function sqlStr(value) {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\0/g, "").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+}
 function sqlIdent(name) {
   if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
     throw new Error(`Invalid SQL identifier: ${JSON.stringify(name)}`);
@@ -321,29 +324,142 @@ function sqlIdent(name) {
   return name;
 }
 
-// dist/src/skillify/skills-table.js
-function createSkillsTableSql(tableName) {
-  const safe = sqlIdent(tableName);
-  return `CREATE TABLE IF NOT EXISTS "${safe}" (id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL DEFAULT '', local_path TEXT NOT NULL DEFAULT '', install TEXT NOT NULL DEFAULT 'project', source_sessions TEXT NOT NULL DEFAULT '[]', source_agent TEXT NOT NULL DEFAULT '', scope TEXT NOT NULL DEFAULT 'me', author TEXT NOT NULL DEFAULT '', contributors TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', trigger_text TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '', version BIGINT NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '') USING deeplake`;
+// dist/src/deeplake-schema.js
+var MEMORY_COLUMNS = Object.freeze([
+  { name: "id", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "path", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "filename", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "summary", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "summary_embedding", sql: "FLOAT4[]" },
+  { name: "author", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "mime_type", sql: "TEXT NOT NULL DEFAULT 'text/plain'" },
+  { name: "size_bytes", sql: "BIGINT NOT NULL DEFAULT 0" },
+  { name: "project", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "description", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "agent", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "plugin_version", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "creation_date", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "last_update_date", sql: "TEXT NOT NULL DEFAULT ''" }
+]);
+var SESSIONS_COLUMNS = Object.freeze([
+  { name: "id", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "path", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "filename", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "message", sql: "JSONB" },
+  { name: "message_embedding", sql: "FLOAT4[]" },
+  { name: "author", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "mime_type", sql: "TEXT NOT NULL DEFAULT 'application/json'" },
+  { name: "size_bytes", sql: "BIGINT NOT NULL DEFAULT 0" },
+  { name: "project", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "description", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "agent", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "plugin_version", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "creation_date", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "last_update_date", sql: "TEXT NOT NULL DEFAULT ''" }
+]);
+var SKILLS_COLUMNS = Object.freeze([
+  { name: "id", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "name", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "project", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "project_key", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "local_path", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "install", sql: "TEXT NOT NULL DEFAULT 'project'" },
+  { name: "source_sessions", sql: "TEXT NOT NULL DEFAULT '[]'" },
+  { name: "source_agent", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "scope", sql: "TEXT NOT NULL DEFAULT 'me'" },
+  { name: "author", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "contributors", sql: "TEXT NOT NULL DEFAULT '[]'" },
+  { name: "description", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "trigger_text", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "body", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "version", sql: "BIGINT NOT NULL DEFAULT 1" },
+  { name: "created_at", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "updated_at", sql: "TEXT NOT NULL DEFAULT ''" }
+]);
+function validateSchema(label, cols) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const col of cols) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(col.name)) {
+      throw new Error(`${label}: column name "${col.name}" is not a valid SQL identifier`);
+    }
+    if (seen.has(col.name)) {
+      throw new Error(`${label}: duplicate column "${col.name}"`);
+    }
+    seen.add(col.name);
+    const notNull = /\bNOT\s+NULL\b/i.test(col.sql);
+    const hasDefault = /\bDEFAULT\b/i.test(col.sql);
+    if (notNull && !hasDefault) {
+      throw new Error(`${label}: column "${col.name}" is NOT NULL but has no DEFAULT \u2014 ALTER TABLE ADD COLUMN on a populated table would fail.`);
+    }
+  }
 }
-function addContributorsColumnSql(tableName) {
+validateSchema("MEMORY_COLUMNS", MEMORY_COLUMNS);
+validateSchema("SESSIONS_COLUMNS", SESSIONS_COLUMNS);
+validateSchema("SKILLS_COLUMNS", SKILLS_COLUMNS);
+function buildCreateTableSql(tableName, cols) {
   const safe = sqlIdent(tableName);
-  return `ALTER TABLE "${safe}" ADD COLUMN IF NOT EXISTS contributors TEXT NOT NULL DEFAULT '[]'`;
+  const colSql = cols.map((c) => `${c.name} ${c.sql}`).join(", ");
+  return `CREATE TABLE IF NOT EXISTS "${safe}" (${colSql}) USING deeplake`;
 }
-function esc(s) {
-  return s.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+function buildIntrospectionSql(tableName, workspaceId) {
+  return `SELECT column_name FROM information_schema.columns WHERE table_name = '${sqlStr(tableName)}' AND table_schema = '${sqlStr(workspaceId)}'`;
+}
+async function healMissingColumns(args) {
+  const safeTable = sqlIdent(args.tableName);
+  const introspectSql = buildIntrospectionSql(args.tableName, args.workspaceId);
+  const rows = await args.query(introspectSql);
+  const existing = /* @__PURE__ */ new Set();
+  for (const row of rows) {
+    const v = row?.column_name;
+    if (typeof v === "string")
+      existing.add(v.toLowerCase());
+  }
+  const missingCols = args.columns.filter((c) => !existing.has(c.name.toLowerCase()));
+  const missing = missingCols.map((c) => c.name);
+  if (missingCols.length === 0)
+    return { missing, altered: [] };
+  const altered = [];
+  for (const col of missingCols) {
+    try {
+      await args.query(`ALTER TABLE "${safeTable}" ADD COLUMN ${col.name} ${col.sql}`);
+      altered.push(col.name);
+      args.log?.(`schema-heal: added "${args.tableName}"."${col.name}"`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/already exists/i.test(msg))
+        throw e;
+      const recheck = await args.query(introspectSql);
+      const present = recheck.some((r) => {
+        const v = r?.column_name;
+        return typeof v === "string" && v.toLowerCase() === col.name.toLowerCase();
+      });
+      if (!present)
+        throw e;
+      args.log?.(`schema-heal: "${args.tableName}"."${col.name}" appeared via race, treating as success`);
+    }
+  }
+  return { missing, altered };
 }
 function isMissingTableError(message) {
   if (!message)
+    return false;
+  if (/permission denied|must be owner/i.test(message))
     return false;
   if (/\bcolumn\b/i.test(message))
     return false;
   return /Table does not exist|relation .* does not exist|no such table/i.test(message);
 }
-function isMissingContributorsColumnError(message) {
+function isMissingColumnError(message) {
   if (!message)
     return false;
-  return /contributors.*(?:does not exist|not found|unknown)/i.test(message) || /(?:does not exist|unknown column).*contributors/i.test(message);
+  if (/permission denied|must be owner/i.test(message))
+    return false;
+  return /column ["']?[A-Za-z_][A-Za-z0-9_]*["']? .*does not exist/i.test(message) || /unknown column/i.test(message) || /no such column/i.test(message);
+}
+
+// dist/src/skillify/skills-table.js
+function esc(s) {
+  return s.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 async function insertSkillRow(args) {
   const id = args.id ?? randomUUID();
@@ -352,14 +468,23 @@ async function insertSkillRow(args) {
   const sql = `INSERT INTO "${sqlIdent(args.tableName)}" (id, name, project, project_key, local_path, install, source_sessions, source_agent, scope, author, contributors, description, trigger_text, body, version, created_at, updated_at) VALUES ('${esc(id)}', '${esc(args.name)}', '${esc(args.project)}', '${esc(args.projectKey)}', '${esc(args.localPath)}', '${esc(args.install)}', '${esc(sourceSessionsJson)}', '${esc(args.sourceAgent)}', '${esc(args.scope)}', '${esc(args.author)}', '${esc(contributorsJson)}', '${esc(args.description)}', '${esc(args.trigger ?? "")}', '${esc(args.body)}', ${args.version}, '${esc(args.createdAt)}', '${esc(args.updatedAt)}')`;
   try {
     await args.query(sql);
+    return;
   } catch (e) {
-    if (isMissingTableError(e?.message)) {
-      await args.query(createSkillsTableSql(args.tableName));
+    const msg = e instanceof Error ? e.message : String(e);
+    if (isMissingTableError(msg)) {
+      await args.query(buildCreateTableSql(args.tableName, SKILLS_COLUMNS));
       await args.query(sql);
       return;
     }
-    if (isMissingContributorsColumnError(e?.message)) {
-      await args.query(addContributorsColumnSql(args.tableName));
+    if (isMissingColumnError(msg)) {
+      const result = await healMissingColumns({
+        query: args.query,
+        tableName: args.tableName,
+        workspaceId: args.workspaceId,
+        columns: SKILLS_COLUMNS
+      });
+      if (result.missing.length === 0)
+        throw e;
       await args.query(sql);
       return;
     }
@@ -954,6 +1079,7 @@ async function main() {
         await insertSkillRow({
           query,
           tableName: cfg.skillsTable,
+          workspaceId: cfg.workspaceId,
           name: verdict2.name,
           project: cfg.project,
           projectKey: cfg.projectKey,
