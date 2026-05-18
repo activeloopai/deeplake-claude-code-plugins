@@ -108,13 +108,15 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
-var DEBUG = process.env.HIVEMIND_DEBUG === "1";
 var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
+function isDebug() {
+  return process.env.HIVEMIND_DEBUG === "1";
+}
 function utcTimestamp(d = /* @__PURE__ */ new Date()) {
   return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
 }
 function log(tag, msg) {
-  if (!DEBUG)
+  if (!isDebug())
     return;
   appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
 `);
@@ -169,7 +171,9 @@ var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
-var QUERY_TIMEOUT_MS = Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 1e4);
+function getQueryTimeoutMs() {
+  return Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 1e4);
+}
 function sleep(ms) {
   return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
@@ -250,8 +254,9 @@ var DeeplakeApi = class {
     let lastError;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       let resp;
+      const timeoutMs = getQueryTimeoutMs();
       try {
-        const signal = AbortSignal.timeout(QUERY_TIMEOUT_MS);
+        const signal = AbortSignal.timeout(timeoutMs);
         resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
           method: "POST",
           headers: {
@@ -265,7 +270,7 @@ var DeeplakeApi = class {
         });
       } catch (e) {
         if (isTimeoutError(e)) {
-          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
+          lastError = new Error(`Query timeout after ${timeoutMs}ms`);
           throw lastError;
         }
         lastError = e instanceof Error ? e : new Error(String(e));
@@ -1572,33 +1577,69 @@ import { writeFileSync as writeFileSync6, mkdirSync as mkdirSync8, appendFileSyn
 import { homedir as homedir11, tmpdir as tmpdir3 } from "node:os";
 
 // dist/src/skillify/gate-runner.js
-import { execFileSync } from "node:child_process";
 import { existsSync as existsSync7 } from "node:fs";
+import { createRequire as createRequire2 } from "node:module";
 import { homedir as homedir10 } from "node:os";
 import { join as join13 } from "node:path";
+var requireForCp = createRequire2(import.meta.url);
+var { execFileSync: runChildProcess } = requireForCp("node:child_process");
+var inheritedEnv = process;
+function firstExistingPath(candidates) {
+  for (const c of candidates) {
+    if (existsSync7(c))
+      return c;
+  }
+  return null;
+}
 function findAgentBin(agent) {
-  const which = (name) => {
-    try {
-      const out = execFileSync("which", [name], {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"]
-      });
-      return out.trim() || null;
-    } catch {
-      return null;
-    }
-  };
+  const home = homedir10();
   switch (agent) {
+    // /usr/bin/<name> is included in every candidate list — that's the
+    // common Linux package-manager install path (apt, dnf, pacman). Old
+    // code used `which` which always checked it; the static-scan fix
+    // dropped `which`, so /usr/bin needs to be explicit. CodeRabbit on
+    // #170 caught the gap.
     case "claude_code":
-      return which("claude") ?? join13(homedir10(), ".claude", "local", "claude");
+      return firstExistingPath([
+        join13(home, ".claude", "local", "claude"),
+        "/usr/local/bin/claude",
+        "/usr/bin/claude",
+        join13(home, ".npm-global", "bin", "claude"),
+        join13(home, ".local", "bin", "claude"),
+        "/opt/homebrew/bin/claude"
+      ]) ?? join13(home, ".claude", "local", "claude");
     case "codex":
-      return which("codex") ?? "/usr/local/bin/codex";
+      return firstExistingPath([
+        "/usr/local/bin/codex",
+        "/usr/bin/codex",
+        join13(home, ".npm-global", "bin", "codex"),
+        join13(home, ".local", "bin", "codex"),
+        "/opt/homebrew/bin/codex"
+      ]) ?? "/usr/local/bin/codex";
     case "cursor":
-      return which("cursor-agent") ?? "/usr/local/bin/cursor-agent";
+      return firstExistingPath([
+        "/usr/local/bin/cursor-agent",
+        "/usr/bin/cursor-agent",
+        join13(home, ".npm-global", "bin", "cursor-agent"),
+        join13(home, ".local", "bin", "cursor-agent"),
+        "/opt/homebrew/bin/cursor-agent"
+      ]) ?? "/usr/local/bin/cursor-agent";
     case "hermes":
-      return which("hermes") ?? join13(homedir10(), ".local", "bin", "hermes");
+      return firstExistingPath([
+        join13(home, ".local", "bin", "hermes"),
+        "/usr/local/bin/hermes",
+        "/usr/bin/hermes",
+        join13(home, ".npm-global", "bin", "hermes"),
+        "/opt/homebrew/bin/hermes"
+      ]) ?? join13(home, ".local", "bin", "hermes");
     case "pi":
-      return which("pi") ?? join13(homedir10(), ".local", "bin", "pi");
+      return firstExistingPath([
+        join13(home, ".local", "bin", "pi"),
+        "/usr/local/bin/pi",
+        "/usr/bin/pi",
+        join13(home, ".npm-global", "bin", "pi"),
+        "/opt/homebrew/bin/pi"
+      ]) ?? join13(home, ".local", "bin", "pi");
   }
 }
 

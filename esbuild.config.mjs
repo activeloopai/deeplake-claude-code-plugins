@@ -260,9 +260,24 @@ await build({
   format: "esm",
   outdir: "openclaw/dist",
   external: ["node:*"],
+  // Guarantee `globalThis.__hivemind_tuning__` exists as an object before any
+  // bundled module's lazy env reads execute. esbuild's `define` rewrites
+  // `process.env.HIVEMIND_X` → `globalThis.__hivemind_tuning__.HIVEMIND_X`
+  // (no optional chaining — esbuild rejects it as a define value). The
+  // openclaw plugin's `applyOpenclawTuning()` replaces this object with the
+  // user's `plugins.entries.hivemind.config.tuning` values in register();
+  // until then, reads against the empty object resolve to `undefined` and
+  // the call-site `??` fallback applies.
+  banner: { js: "globalThis.__hivemind_tuning__ ??= {};" },
   define: {
     __HIVEMIND_VERSION__: JSON.stringify(openclawVersion),
     __HIVEMIND_SKILL__: JSON.stringify(openclawSkillBody),
+    // ----- Credentials / identity: openclaw-managed via the auth flow -----
+    // These are owned by the openclaw plugin's login + plugin-config paths,
+    // not by user-tunable env vars. Inline to `undefined` so any rogue
+    // `process.env.X` read in shared code can't accidentally leak or be
+    // injected. Keep these `undefined` — do NOT migrate them to the tuning
+    // dispatch.
     "process.env.HIVEMIND_TOKEN": "undefined",
     "process.env.HIVEMIND_ORG_ID": "undefined",
     "process.env.HIVEMIND_WORKSPACE_ID": "undefined",
@@ -270,12 +285,29 @@ await build({
     "process.env.HIVEMIND_TABLE": "undefined",
     "process.env.HIVEMIND_SESSIONS_TABLE": "undefined",
     "process.env.HIVEMIND_MEMORY_PATH": "undefined",
-    "process.env.HIVEMIND_DEBUG": "undefined",
     "process.env.HIVEMIND_CAPTURE": "undefined",
-    "process.env.HIVEMIND_TRACE_SQL": "undefined",
-    "process.env.HIVEMIND_QUERY_TIMEOUT_MS": "undefined",
-    "process.env.HIVEMIND_INDEX_MARKER_TTL_MS": "undefined",
-    "process.env.HIVEMIND_INDEX_MARKER_DIR": "undefined",
+    // ----- User-tunable knobs: routed through a globalThis dispatch -----
+    // Every read of `process.env.HIVEMIND_X` in transitively-bundled code is
+    // rewritten by esbuild to `globalThis.__hivemind_tuning__.HIVEMIND_X`.
+    // The openclaw plugin's `register()` populates that object from
+    // `pluginApi.pluginConfig.tuning` (i.e. what the user wrote under
+    // `plugins.entries.hivemind.config.tuning` in `openclaw.json`). So the
+    // bundle has zero `process.env.X` substrings (ClawHub scan passes), AND
+    // the user can still tune at runtime by editing openclaw.json + restart.
+    // CodeRabbit + @efenocchi on #170 pushed back on the previous
+    // inline-to-undefined approach because it removed the env-override
+    // surface entirely. This restores it via a different mechanism.
+    "process.env.HIVEMIND_DEBUG": "globalThis.__hivemind_tuning__.HIVEMIND_DEBUG",
+    "process.env.HIVEMIND_TRACE_SQL": "globalThis.__hivemind_tuning__.HIVEMIND_TRACE_SQL",
+    "process.env.HIVEMIND_QUERY_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_QUERY_TIMEOUT_MS",
+    "process.env.HIVEMIND_INDEX_MARKER_TTL_MS": "globalThis.__hivemind_tuning__.HIVEMIND_INDEX_MARKER_TTL_MS",
+    "process.env.HIVEMIND_INDEX_MARKER_DIR": "globalThis.__hivemind_tuning__.HIVEMIND_INDEX_MARKER_DIR",
+    "process.env.HIVEMIND_SEMANTIC_LIMIT": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_LIMIT",
+    "process.env.HIVEMIND_HYBRID_LEXICAL_LIMIT": "globalThis.__hivemind_tuning__.HIVEMIND_HYBRID_LEXICAL_LIMIT",
+    "process.env.HIVEMIND_GREP_LIKE": "globalThis.__hivemind_tuning__.HIVEMIND_GREP_LIKE",
+    "process.env.HIVEMIND_SEMANTIC_SEARCH": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_SEARCH",
+    "process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS",
+    "process.env.HIVEMIND_SEMANTIC_EMIT_ALL": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_EMIT_ALL",
   },
   plugins: [{
     // Dead-code elimination for transitively bundled CC/Codex-only features.
@@ -322,8 +354,52 @@ await build({
   format: "esm",
   outdir: "openclaw/dist",
   external: ["node:*"],
+  // Same banner as the main openclaw bundle — see the comment there for
+  // the rationale. The worker entry itself overwrites this with the
+  // tuning passed in via the config JSON before any shared module's
+  // lazy env read fires.
+  banner: { js: "globalThis.__hivemind_tuning__ ??= {};" },
   define: {
     __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
+    // Every `process.env.HIVEMIND_X` read in transitively-bundled code is
+    // rewritten by esbuild to `globalThis.__hivemind_tuning__.HIVEMIND_X`.
+    // The worker entry (src/skillify/skillify-worker.ts) populates that
+    // object from its config JSON before any shared code path runs (the
+    // openclaw plugin writes the user's `pluginConfig.tuning` into the
+    // config JSON when spawning the worker). Net result:
+    //   - openclaw bundle has zero `process.env.X` substrings (ClawHub scan
+    //     passes per the env-harvesting rule)
+    //   - user-tunable knobs (timeouts, debug, skillify cadence, agent
+    //     models, etc.) still take effect at runtime via openclaw.json's
+    //     `plugins.entries.hivemind.config.tuning` section
+    //   - HIVEMIND_SKILLIFY_WORKER=1 is set by the worker entry so the
+    //     recursion guard inside trigger code short-circuits correctly
+    //
+    // CodeRabbit + @efenocchi pushed back on the prior inline-to-undefined
+    // version because it silently removed every env-override surface. This
+    // restores them via a build-time-friendly dispatch.
+    //
+    // The list below MUST cover every `process.env.HIVEMIND_*` that may be
+    // transitively imported into the worker bundle. Source of truth:
+    //   grep -rn "process\.env\.HIVEMIND_" src/skillify src/shell \
+    //       src/deeplake-api.ts src/utils src/hooks/virtual-table-query.ts
+    "process.env.HIVEMIND_DEBUG": "globalThis.__hivemind_tuning__.HIVEMIND_DEBUG",
+    "process.env.HIVEMIND_TRACE_SQL": "globalThis.__hivemind_tuning__.HIVEMIND_TRACE_SQL",
+    "process.env.HIVEMIND_QUERY_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_QUERY_TIMEOUT_MS",
+    "process.env.HIVEMIND_SEMANTIC_LIMIT": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_LIMIT",
+    "process.env.HIVEMIND_SEMANTIC_SEARCH": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_SEARCH",
+    "process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS",
+    "process.env.HIVEMIND_SEMANTIC_EMIT_ALL": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_EMIT_ALL",
+    "process.env.HIVEMIND_INDEX_MARKER_TTL_MS": "globalThis.__hivemind_tuning__.HIVEMIND_INDEX_MARKER_TTL_MS",
+    "process.env.HIVEMIND_INDEX_MARKER_DIR": "globalThis.__hivemind_tuning__.HIVEMIND_INDEX_MARKER_DIR",
+    "process.env.HIVEMIND_CURSOR_MODEL": "globalThis.__hivemind_tuning__.HIVEMIND_CURSOR_MODEL",
+    "process.env.HIVEMIND_HERMES_PROVIDER": "globalThis.__hivemind_tuning__.HIVEMIND_HERMES_PROVIDER",
+    "process.env.HIVEMIND_HERMES_MODEL": "globalThis.__hivemind_tuning__.HIVEMIND_HERMES_MODEL",
+    "process.env.HIVEMIND_PI_PROVIDER": "globalThis.__hivemind_tuning__.HIVEMIND_PI_PROVIDER",
+    "process.env.HIVEMIND_PI_MODEL": "globalThis.__hivemind_tuning__.HIVEMIND_PI_MODEL",
+    "process.env.HIVEMIND_SKILLIFY_WORKER": "globalThis.__hivemind_tuning__.HIVEMIND_SKILLIFY_WORKER",
+    "process.env.HIVEMIND_SKILLIFY_EVERY_N_TURNS": "globalThis.__hivemind_tuning__.HIVEMIND_SKILLIFY_EVERY_N_TURNS",
+    "process.env.HIVEMIND_AUTOPULL_DISABLED": "globalThis.__hivemind_tuning__.HIVEMIND_AUTOPULL_DISABLED",
   },
 });
 chmodSync("openclaw/dist/skillify-worker.js", 0o755);

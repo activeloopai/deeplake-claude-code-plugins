@@ -262,7 +262,9 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     // openclaw bundle's child_process stub doesn't apply, and so the chunk
     // graph stays isolated from the gateway's split chunks).
     expect(cfg).toMatch(/"skillify-worker":\s*"dist\/src\/skillify\/skillify-worker\.js"/);
-    expect(cfg).toMatch(/outdir:\s*"openclaw\/dist"[\s\S]{0,200}skillify-worker/);
+    // Window is generous to leave room for the bundle's comments + the
+    // env-var → globalThis.__hivemind_tuning__ define dispatch table.
+    expect(cfg).toMatch(/outdir:\s*"openclaw\/dist"[\s\S]{0,2000}skillify-worker/);
   });
 
   it("openclaw/src/index.ts bypasses the child_process stub via createRequire", () => {

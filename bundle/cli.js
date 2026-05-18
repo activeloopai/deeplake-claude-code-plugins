@@ -500,6 +500,7 @@ function installOpenclaw() {
     throw new Error(`OpenClaw bundle missing at ${srcDist}. Run 'npm run build' first.`);
   }
   ensureDir(PLUGIN_DIR2);
+  rmSync(join5(PLUGIN_DIR2, "dist"), { recursive: true, force: true });
   copyDir(srcDist, join5(PLUGIN_DIR2, "dist"));
   if (existsSync4(srcManifest))
     copyFileSync(srcManifest, join5(PLUGIN_DIR2, "openclaw.plugin.json"));
@@ -4208,10 +4209,12 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { join as join15 } from "node:path";
 import { homedir as homedir6 } from "node:os";
-var DEBUG = process.env.HIVEMIND_DEBUG === "1";
 var LOG = join15(homedir6(), ".deeplake", "hook-debug.log");
+function isDebug() {
+  return process.env.HIVEMIND_DEBUG === "1";
+}
 function log2(tag, msg) {
-  if (!DEBUG)
+  if (!isDebug())
     return;
   appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
 `);
@@ -4257,7 +4260,9 @@ var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
-var QUERY_TIMEOUT_MS = Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 1e4);
+function getQueryTimeoutMs() {
+  return Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 1e4);
+}
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -4338,8 +4343,9 @@ var DeeplakeApi = class {
     let lastError;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       let resp;
+      const timeoutMs = getQueryTimeoutMs();
       try {
-        const signal = AbortSignal.timeout(QUERY_TIMEOUT_MS);
+        const signal = AbortSignal.timeout(timeoutMs);
         resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
           method: "POST",
           headers: {
@@ -4353,7 +4359,7 @@ var DeeplakeApi = class {
         });
       } catch (e) {
         if (isTimeoutError(e)) {
-          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
+          lastError = new Error(`Query timeout after ${timeoutMs}ms`);
           throw lastError;
         }
         lastError = e instanceof Error ? e : new Error(String(e));
@@ -6084,33 +6090,69 @@ function extractPairs(rows) {
 }
 
 // dist/src/skillify/gate-runner.js
-import { execFileSync as execFileSync4 } from "node:child_process";
 import { existsSync as existsSync22 } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir as homedir15 } from "node:os";
 import { join as join25 } from "node:path";
+var requireForCp = createRequire(import.meta.url);
+var { execFileSync: runChildProcess } = requireForCp("node:child_process");
+var inheritedEnv = process;
+function firstExistingPath(candidates) {
+  for (const c of candidates) {
+    if (existsSync22(c))
+      return c;
+  }
+  return null;
+}
 function findAgentBin(agent) {
-  const which = (name) => {
-    try {
-      const out = execFileSync4("which", [name], {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"]
-      });
-      return out.trim() || null;
-    } catch {
-      return null;
-    }
-  };
+  const home = homedir15();
   switch (agent) {
+    // /usr/bin/<name> is included in every candidate list — that's the
+    // common Linux package-manager install path (apt, dnf, pacman). Old
+    // code used `which` which always checked it; the static-scan fix
+    // dropped `which`, so /usr/bin needs to be explicit. CodeRabbit on
+    // #170 caught the gap.
     case "claude_code":
-      return which("claude") ?? join25(homedir15(), ".claude", "local", "claude");
+      return firstExistingPath([
+        join25(home, ".claude", "local", "claude"),
+        "/usr/local/bin/claude",
+        "/usr/bin/claude",
+        join25(home, ".npm-global", "bin", "claude"),
+        join25(home, ".local", "bin", "claude"),
+        "/opt/homebrew/bin/claude"
+      ]) ?? join25(home, ".claude", "local", "claude");
     case "codex":
-      return which("codex") ?? "/usr/local/bin/codex";
+      return firstExistingPath([
+        "/usr/local/bin/codex",
+        "/usr/bin/codex",
+        join25(home, ".npm-global", "bin", "codex"),
+        join25(home, ".local", "bin", "codex"),
+        "/opt/homebrew/bin/codex"
+      ]) ?? "/usr/local/bin/codex";
     case "cursor":
-      return which("cursor-agent") ?? "/usr/local/bin/cursor-agent";
+      return firstExistingPath([
+        "/usr/local/bin/cursor-agent",
+        "/usr/bin/cursor-agent",
+        join25(home, ".npm-global", "bin", "cursor-agent"),
+        join25(home, ".local", "bin", "cursor-agent"),
+        "/opt/homebrew/bin/cursor-agent"
+      ]) ?? "/usr/local/bin/cursor-agent";
     case "hermes":
-      return which("hermes") ?? join25(homedir15(), ".local", "bin", "hermes");
+      return firstExistingPath([
+        join25(home, ".local", "bin", "hermes"),
+        "/usr/local/bin/hermes",
+        "/usr/bin/hermes",
+        join25(home, ".npm-global", "bin", "hermes"),
+        "/opt/homebrew/bin/hermes"
+      ]) ?? join25(home, ".local", "bin", "hermes");
     case "pi":
-      return which("pi") ?? join25(homedir15(), ".local", "bin", "pi");
+      return firstExistingPath([
+        join25(home, ".local", "bin", "pi"),
+        "/usr/local/bin/pi",
+        "/usr/bin/pi",
+        join25(home, ".npm-global", "bin", "pi"),
+        "/opt/homebrew/bin/pi"
+      ]) ?? join25(home, ".local", "bin", "pi");
   }
 }
 
@@ -7087,7 +7129,7 @@ if (process.argv[1] && process.argv[1].endsWith("skillify.js")) {
 }
 
 // dist/src/cli/update.js
-import { execFileSync as execFileSync5 } from "node:child_process";
+import { execFileSync as execFileSync4 } from "node:child_process";
 import { existsSync as existsSync26, readFileSync as readFileSync21, realpathSync } from "node:fs";
 import { dirname as dirname9, sep } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -7161,7 +7203,7 @@ async function getLatestNpmVersion(timeoutMs = 5e3) {
   }
 }
 var defaultSpawn = (cmd, args) => {
-  execFileSync5(cmd, args, { stdio: "inherit" });
+  execFileSync4(cmd, args, { stdio: "inherit" });
 };
 async function runUpdate(opts = {}) {
   const current = opts.currentVersionOverride ?? getVersion();

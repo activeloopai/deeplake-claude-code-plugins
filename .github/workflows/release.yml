@@ -222,6 +222,33 @@ jobs:
       - name: Pack-check (refuse forbidden filenames in tarball)
         run: npm run pack:check
 
+      - name: Audit openclaw bundle against ClawHub static-scan rules
+        # Hard gate before ANY publish step. The local audit script
+        # (scripts/audit-openclaw-bundle.mjs) replicates ClawHub's
+        # per-file regex rules — env-harvesting, dangerous-exec,
+        # potential-exfiltration, etc. — so we catch a flagged bundle
+        # in CI instead of after ClawHub's post-publish moderation
+        # removes the package from the store. Filed in #169 after a
+        # silent takedown of 0.7.26.
+        #
+        # Ordering: this step runs BEFORE `Publish to npm` AND before
+        # the ClawHub publish (CodeRabbit on #170 caught the earlier
+        # ordering, which would have npm-published a flagged bundle
+        # and only blocked ClawHub — partial release, mismatched
+        # versions across channels). Now a critical finding fails the
+        # whole release path.
+        #
+        # `--criticals-only`: block on `critical` findings only; surface
+        # `warn` findings as advisory log output but do not fail. The
+        # `potential-exfiltration` warn for the openclaw skillify-worker
+        # bundle is irreducible without splitting the worker into multiple
+        # shipped files (it reads its config from disk AND queries Deeplake
+        # over fetch — fundamental to skill mining). ClawHub historically
+        # accepted similar warns when the previous source-split fix
+        # `b277e0b` landed. If warns later become takedown triggers, fix
+        # the irreducible cases at the source layer and drop this flag.
+        run: npm run audit:openclaw -- --criticals-only
+
       - name: Publish to npm with Sigstore provenance
         # --provenance uses the GitHub OIDC token (id-token: write above)
         # to sign the artifact via Sigstore. Even if NPM_TOKEN later leaks,

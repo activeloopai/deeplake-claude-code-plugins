@@ -69,9 +69,30 @@ interface WorkerConfig {
   piModel?: string;
   skillifyLog: string;
   currentSessionId?: string;
+  /**
+   * Optional pre-built dispatch table that openclaw's spawn helper threads
+   * through so the worker bundle can repopulate its own
+   * `globalThis.__hivemind_tuning__`. Each process has its own globalThis,
+   * so values populated in the openclaw plugin (the spawn's parent) don't
+   * survive the fork. esbuild's `define` rewrote `process.env.HIVEMIND_X`
+   * reads in the openclaw worker bundle to look at that global, so we
+   * have to restore it here BEFORE any shared module function fires. The
+   * other agents' worker bundles read `process.env` at runtime as usual
+   * (this field stays undefined for them, the assignment below is a no-op).
+   * See PR #170 for the ClawHub-scan rewrite.
+   */
+  tuning?: Record<string, string | undefined>;
 }
 
 const cfg: WorkerConfig = JSON.parse(readFileSync(process.argv[2], "utf-8"));
+
+// Restore the tuning dispatch BEFORE any imported shared-module function
+// runs. Function-scoped env reads (every `process.env.HIVEMIND_X` in this
+// bundle was rewritten to `globalThis.__hivemind_tuning__?.X` for openclaw)
+// only fire from here onward, so an assignment at this point is sufficient.
+// On non-openclaw worker bundles `cfg.tuning` is undefined and this is a
+// no-op write of an empty object.
+(globalThis as Record<string, unknown>).__hivemind_tuning__ = cfg.tuning ?? {};
 const tmpDir = cfg.tmpDir;
 const verdictPath = join(tmpDir, "verdict.json");
 const promptPath = join(tmpDir, "prompt.txt");

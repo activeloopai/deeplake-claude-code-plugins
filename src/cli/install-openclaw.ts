@@ -16,6 +16,18 @@ export function installOpenclaw(): void {
   }
 
   ensureDir(PLUGIN_DIR);
+  // Wipe `dist/` before re-copying so we don't leave orphan files from a
+  // previous install behind. Discovered live during the #170 E2E: the
+  // skilify→skillify rename in #116 means an older bundle drops
+  // `skilify-worker.js` (single-L), and copyDir (cpSync recursive) ADDS
+  // files but never REMOVES ones missing from the source. The stale
+  // single-L chunk then sits alongside the new double-L
+  // `skillify-worker.js` and re-introduces ClawHub static-scan critical
+  // findings (process.env reads + execFileSync) that the new build had
+  // eliminated. Same risk for any future renamed/deleted chunk —
+  // orphan-cleanup makes the installer's output deterministic regardless
+  // of what was there before.
+  rmSync(join(PLUGIN_DIR, "dist"), { recursive: true, force: true });
   copyDir(srcDist, join(PLUGIN_DIR, "dist"));
   // copyDir uses cpSync({ recursive: true }) and is for directories. It
   // works on files today, but if a directory ever exists at the
