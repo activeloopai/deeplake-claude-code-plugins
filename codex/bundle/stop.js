@@ -1033,7 +1033,7 @@ function tryAcquireWorkerLock(projectKey, maxAgeMs = 10 * 60 * 1e3) {
     try {
       unlinkSync(p);
     } catch (unlinkErr) {
-      if (unlinkErr?.code !== "EISDIR") {
+      if (unlinkErr?.code !== "EISDIR" && unlinkErr?.code !== "EPERM") {
         dlog2(`could not unlink stale worker lock for ${projectKey}: ${unlinkErr.message}`);
         return false;
       }
@@ -1046,8 +1046,7 @@ function tryAcquireWorkerLock(projectKey, maxAgeMs = 10 * 60 * 1e3) {
         try {
           rmdirSync(p);
         } catch (rmErr) {
-          dlog2(`could not rmdir stale lock for ${projectKey}: ${rmErr.message}`);
-          return false;
+          dlog2(`rmdir stale lock skipped for ${projectKey}: ${rmErr.message}`);
         }
       }
     }
