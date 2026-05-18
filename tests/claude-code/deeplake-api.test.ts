@@ -615,6 +615,27 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
     expect(indexSql).toContain(`("path", "creation_date")`);
   });
 
+  it("heals after CREATE: race-detected legacy sessions table gets ALTERed before returning", async () => {
+    // Same race shape as ensureTable: listTables() reports the table
+    // missing (cache stale), CREATE TABLE IF NOT EXISTS no-ops against a
+    // concurrent writer's legacy table, and the unconditional heal pass
+    // discovers + repairs the older schema before ensureLookupIndex runs.
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [] }),
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                              // CREATE (no-op vs legacy)
+    const legacy = allOf(SESSIONS_COLUMNS).filter(c => c !== "message_embedding");
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(legacy));                    // heal SELECT
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                              // ALTER
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                              // CREATE INDEX
+    const api = makeApi();
+    await api.ensureSessionsTable("sessions");
+    expect(mockFetch).toHaveBeenCalledTimes(5);
+    const alterSql = JSON.parse(mockFetch.mock.calls[3][1].body).query;
+    expect(alterSql).toBe(`ALTER TABLE "sessions" ADD COLUMN message_embedding FLOAT4[]`);
+  });
+
   it("on existing sessions table: ONE SELECT info_schema, then targeted ALTER for any missing columns", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
@@ -702,6 +723,28 @@ describe("DeeplakeApi.ensureSkillsTable", () => {
     expect(createSql).toContain(`CREATE TABLE IF NOT EXISTS "skills"`);
     expect(createSql).toContain("contributors TEXT NOT NULL DEFAULT '[]'");
     expect(createSql).toContain("version BIGINT NOT NULL DEFAULT 1");
+  });
+
+  it("heals after CREATE: race-detected legacy skills table gets ALTERed before returning", async () => {
+    // Same race shape as ensureTable / ensureSessionsTable: stale
+    // listTables() + concurrent CREATE from another writer turns this
+    // CREATE TABLE IF NOT EXISTS into a no-op against an older schema.
+    // The unconditional heal pass adds the missing column before
+    // ensureLookupIndex fires.
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [] }),
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                            // CREATE (no-op vs legacy)
+    const legacy = allOf(SKILLS_COLUMNS).filter(c => c !== "contributors");
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(legacy));                  // heal SELECT
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                            // ALTER
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                            // CREATE INDEX
+    const api = makeApi();
+    await api.ensureSkillsTable("skills");
+    expect(mockFetch).toHaveBeenCalledTimes(5);
+    const alterSql = JSON.parse(mockFetch.mock.calls[3][1].body).query;
+    expect(alterSql).toBe(`ALTER TABLE "skills" ADD COLUMN contributors TEXT NOT NULL DEFAULT '[]'`);
   });
 
   it("on existing skills table: SELECT info_schema + ALTER missing columns", async () => {
