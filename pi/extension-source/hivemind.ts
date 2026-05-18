@@ -820,6 +820,9 @@ const PI_SKILLIFY_COMMANDS: { cmd: string; desc: string }[] = [
   { cmd: "hivemind skillify promote <skill-name>",        desc: "move a project skill to the global location" },
   { cmd: "hivemind skillify team add|remove|list <name>", desc: "manage team member list" },
   { cmd: "hivemind skillify mine-local",                  desc: "one-shot: mine skills from local sessions (no auth needed)" },
+  { cmd: "hivemind skillify mine-local --n <num|all>",    desc: "how many sessions to mine (default: 8)" },
+  { cmd: "hivemind skillify mine-local --force",          desc: "re-run even if the manifest sentinel exists" },
+  { cmd: "hivemind skillify mine-local --dry-run",        desc: "stop before calling the LLM gate" },
 ];
 
 function piRenderSkillifyCommands(): string {

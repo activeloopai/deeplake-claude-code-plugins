@@ -580,7 +580,10 @@ var SKILLIFY_COMMANDS = [
   { cmd: "hivemind skillify install <project|global>", desc: "default install location for new skills" },
   { cmd: "hivemind skillify promote <skill-name>", desc: "move a project skill to the global location" },
   { cmd: "hivemind skillify team add|remove|list <name>", desc: "manage team member list" },
-  { cmd: "hivemind skillify mine-local", desc: "one-shot: mine skills from local sessions (no auth needed)" }
+  { cmd: "hivemind skillify mine-local", desc: "one-shot: mine skills from local sessions (no auth needed)" },
+  { cmd: "hivemind skillify mine-local --n <num|all>", desc: "how many sessions to mine (default: 8)" },
+  { cmd: "hivemind skillify mine-local --force", desc: "re-run even if the manifest sentinel exists" },
+  { cmd: "hivemind skillify mine-local --dry-run", desc: "stop before calling the LLM gate" }
 ];
 function renderSkillifyCommands() {
   const maxLen = Math.max(...SKILLIFY_COMMANDS.map((c) => c.cmd.length));

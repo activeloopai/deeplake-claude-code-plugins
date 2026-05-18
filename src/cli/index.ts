@@ -11,6 +11,7 @@ import { runSkillifyCommand } from "../commands/skillify.js";
 import { detectPlatforms, allPlatformIds, log, warn, type PlatformId } from "./util.js";
 import { getVersion } from "./version.js";
 import { runUpdate } from "./update.js";
+import { renderCliHelpBlock } from "./skillify-spec.js";
 
 const AUTH_SUBCOMMANDS = new Set([
   "whoami",
@@ -64,28 +65,7 @@ Semantic search (embeddings):
   to run "embeddings install" automatically after installing the agent(s).
 
 Skill management (mine + share reusable Claude skills across the org):
-  hivemind skillify                         Show scope, team, install, and per-project state.
-  hivemind skillify pull [skill-name]       Sync skills from the org table to local FS.
-                                           Options: --user <email>, --users a,b,c,
-                                           --all-users, --to <project|global>,
-                                           --dry-run, --force.
-                                           Note: every agent's SessionStart hook
-                                           auto-runs 'pull --all-users --to global'
-                                           on every session. File writes are
-                                           idempotent (skipped when local is
-                                           at-or-newer than remote). Disable via
-                                           HIVEMIND_AUTOPULL_DISABLED=1.
-  hivemind skillify unpull                  Remove skills previously installed by pull.
-                                           Options: --user, --users, --not-mine,
-                                           --to <project|global>, --dry-run,
-                                           --all (also locally-mined),
-                                           --legacy-cleanup (pre-suffix-author dirs).
-  hivemind skillify scope <me|team>         Set the sharing scope for newly mined skills.
-  hivemind skillify install <project|global>  Set where new skills are written.
-  hivemind skillify promote <name>          Move a project skill to the global location.
-  hivemind skillify team add <username>     Add a username to the team list.
-  hivemind skillify team remove <username>  Remove a username from the team list.
-  hivemind skillify team list               List current team members.
+${renderCliHelpBlock()}
 
 Account / org / workspace:
   hivemind whoami                          Show current user, org, workspace.

@@ -6474,6 +6474,127 @@ async function runMineLocalImpl(args) {
   console.log(`Sign in with 'hivemind login' to share with your team later.`);
 }
 
+// dist/src/cli/skillify-spec.js
+var SKILLIFY_SPEC = [
+  {
+    cmd: "hivemind skillify",
+    desc: "show scope, team, install, per-project state"
+  },
+  {
+    cmd: "hivemind skillify pull",
+    desc: "sync project skills from the org table to local FS",
+    options: [
+      { flag: "--user <email>", desc: "only skills authored by that user" },
+      { flag: "--users <a,b,c>", desc: "only skills from those authors" },
+      { flag: "--all-users", desc: 'explicit "no author filter" (default)' },
+      { flag: "--to <project|global>", desc: "install location (project=cwd/.claude/skills, global=~/.claude/skills)" },
+      { flag: "--dry-run", desc: "preview without touching disk" },
+      { flag: "--force", desc: "overwrite local files even if up-to-date (creates .bak)" },
+      { flag: "<skill-name>", desc: "pull only that one skill (combines with --user)" }
+    ],
+    note: "every agent's SessionStart hook auto-runs 'pull --all-users --to global' on every session. File writes are idempotent (skipped when local is at-or-newer than remote). Disable via HIVEMIND_AUTOPULL_DISABLED=1."
+  },
+  {
+    cmd: "hivemind skillify unpull",
+    desc: "remove every skill previously installed by pull",
+    options: [
+      { flag: "--user <email>", desc: "remove only that author's pulls" },
+      { flag: "--not-mine", desc: "remove all pulls except your own" },
+      { flag: "--dry-run", desc: "preview without touching disk" }
+    ]
+  },
+  {
+    cmd: "hivemind skillify scope",
+    args: "<me|team|org>",
+    desc: "sharing scope for newly mined skills"
+  },
+  {
+    cmd: "hivemind skillify install",
+    args: "<project|global>",
+    desc: "default install location for new skills"
+  },
+  {
+    cmd: "hivemind skillify promote",
+    args: "<skill-name>",
+    desc: "move a project skill to the global location"
+  },
+  {
+    cmd: "hivemind skillify team add|remove|list",
+    args: "<name>",
+    desc: "manage team member list"
+  },
+  {
+    cmd: "hivemind skillify mine-local",
+    desc: "one-shot: mine skills from local sessions (no auth needed)",
+    options: [
+      { flag: "--n <num|all>", desc: "how many sessions to mine (default: 8)" },
+      { flag: "--force", desc: "re-run even if the manifest sentinel exists" },
+      { flag: "--dry-run", desc: "stop before calling the LLM gate" }
+    ]
+  }
+];
+function renderCliHelpBlock() {
+  const INDENT = "  ";
+  const CMD_COL_WIDTH = 42;
+  const lines = [];
+  for (const sub of SKILLIFY_SPEC) {
+    const left = sub.args ? `${sub.cmd} ${sub.args}` : sub.cmd;
+    lines.push(`${INDENT}${left.padEnd(CMD_COL_WIDTH)}${capitalize(sub.desc)}.`);
+    if (sub.options && sub.options.length > 0) {
+      const optsList = sub.options.map((o) => o.flag).join(", ");
+      lines.push(`${INDENT}${" ".repeat(CMD_COL_WIDTH)}Options: ${optsList}.`);
+    }
+    if (sub.note) {
+      const noteWrapped = wrapAt(sub.note, 72);
+      for (const noteLine of noteWrapped) {
+        lines.push(`${INDENT}${" ".repeat(CMD_COL_WIDTH)}${noteLine}`);
+      }
+    }
+  }
+  return lines.join("\n");
+}
+function renderSubcommandUsageBlock() {
+  const INDENT = "  ";
+  const SUB_INDENT = "    ";
+  const FLAG_INDENT = "      ";
+  const CMD_COL_WIDTH = 44;
+  const FLAG_COL_WIDTH = 26;
+  const lines = [];
+  for (const sub of SKILLIFY_SPEC) {
+    const left = sub.args ? `${sub.cmd} ${sub.args}` : sub.cmd;
+    lines.push(`${INDENT}${left.padEnd(CMD_COL_WIDTH)}${sub.desc}`);
+    if (sub.options && sub.options.length > 0) {
+      const tail = sub.cmd.split(" ").slice(-1)[0];
+      lines.push(`${SUB_INDENT}Options for ${tail}:`);
+      for (const opt of sub.options) {
+        lines.push(`${FLAG_INDENT}${opt.flag.padEnd(FLAG_COL_WIDTH)}${opt.desc}`);
+      }
+    }
+  }
+  return lines.join("\n");
+}
+function capitalize(s) {
+  return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
+}
+function wrapAt(s, max) {
+  const words = s.split(/\s+/);
+  const out = [];
+  let cur = "";
+  for (const w of words) {
+    if (cur.length === 0) {
+      cur = w;
+    } else if (cur.length + 1 + w.length > max) {
+      out.push(cur);
+      cur = w;
+    } else {
+      cur += " " + w;
+    }
+  }
+  if (cur)
+    out.push(cur);
+  return out;
+}
+
 // dist/src/commands/skillify.js
 function stateDir() {
   return join27(homedir17(), ".deeplake", "state", "skillify");
@@ -6584,36 +6705,7 @@ function teamList() {
 }
 function usage() {
   console.log("Usage:");
-  console.log("  hivemind skillify                            show current scope, team, install, and per-project state");
-  console.log("  hivemind skillify scope <me|team>            set the mining scope");
-  console.log("  hivemind skillify install <project|global>   set where new skills are written");
-  console.log("  hivemind skillify promote <skill-name>       move a project skill to the global location");
-  console.log("  hivemind skillify team add <username>        add a username to the team list");
-  console.log("  hivemind skillify team remove <username>     remove a username from the team list");
-  console.log("  hivemind skillify team list                  list current team members");
-  console.log("  hivemind skillify pull [skill-name] [opts]   fetch skills from Deeplake to local FS");
-  console.log("    Options for pull:");
-  console.log("      --to <project|global>     destination (default: global)");
-  console.log("      --user <name>             only skills authored by this user");
-  console.log("      --users <a,b,c>           only skills authored by these users");
-  console.log("      --all-users               all authors (default \u2014 equivalent to no filter)");
-  console.log("      --dry-run                 show what would be written, don't touch disk");
-  console.log("      --force                   overwrite even when local version >= remote");
-  console.log("  hivemind skillify unpull [opts]              remove skills previously installed by pull");
-  console.log("    Options for unpull:");
-  console.log("      --to <project|global>     where to scan (default: global)");
-  console.log("      --user <name>             only entries authored by this user");
-  console.log("      --users <a,b,c>           only entries authored by these users");
-  console.log("      --not-mine                remove all pulled entries except your own");
-  console.log("      --dry-run                 show what would be removed");
-  console.log("      --all                     also remove flat-layout (locally-mined) entries");
-  console.log("      --legacy-cleanup          also remove pre-`--author`-layout legacy `<projectKey>/` dirs");
-  console.log("  hivemind skillify status                     show per-project state");
-  console.log("  hivemind skillify mine-local [opts]          one-shot: seed skills from local sessions (no auth needed)");
-  console.log("    Options for mine-local:");
-  console.log("      --n <num|all>             how many sessions to mine (default: 8)");
-  console.log("      --force                   re-run even if the manifest sentinel exists");
-  console.log("      --dry-run                 stop before calling the LLM gate");
+  console.log(renderSubcommandUsageBlock());
 }
 function takeFlagValue2(args, flag) {
   const idx = args.indexOf(flag);
@@ -7031,28 +7123,7 @@ Semantic search (embeddings):
   to run "embeddings install" automatically after installing the agent(s).
 
 Skill management (mine + share reusable Claude skills across the org):
-  hivemind skillify                         Show scope, team, install, and per-project state.
-  hivemind skillify pull [skill-name]       Sync skills from the org table to local FS.
-                                           Options: --user <email>, --users a,b,c,
-                                           --all-users, --to <project|global>,
-                                           --dry-run, --force.
-                                           Note: every agent's SessionStart hook
-                                           auto-runs 'pull --all-users --to global'
-                                           on every session. File writes are
-                                           idempotent (skipped when local is
-                                           at-or-newer than remote). Disable via
-                                           HIVEMIND_AUTOPULL_DISABLED=1.
-  hivemind skillify unpull                  Remove skills previously installed by pull.
-                                           Options: --user, --users, --not-mine,
-                                           --to <project|global>, --dry-run,
-                                           --all (also locally-mined),
-                                           --legacy-cleanup (pre-suffix-author dirs).
-  hivemind skillify scope <me|team>         Set the sharing scope for newly mined skills.
-  hivemind skillify install <project|global>  Set where new skills are written.
-  hivemind skillify promote <name>          Move a project skill to the global location.
-  hivemind skillify team add <username>     Add a username to the team list.
-  hivemind skillify team remove <username>  Remove a username from the team list.
-  hivemind skillify team list               List current team members.
+${renderCliHelpBlock()}
 
 Account / org / workspace:
   hivemind whoami                          Show current user, org, workspace.

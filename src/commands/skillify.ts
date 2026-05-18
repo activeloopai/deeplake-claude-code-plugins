@@ -30,6 +30,7 @@ import { runUnpull } from "../skillify/unpull.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { runMineLocal } from "./mine-local.js";
+import { renderSubcommandUsageBlock } from "../cli/skillify-spec.js";
 
 // Compute lazily so tests that swap `process.env.HOME` actually affect the
 // path. A module-level `const STATE_DIR = join(homedir(), ...)` would
@@ -167,37 +168,11 @@ function teamList(): void {
 }
 
 function usage(): void {
+  // Body rendered from SKILLIFY_SPEC in src/cli/skillify-spec.ts. See that
+  // file to add a new subcommand or option — `hivemind --help` and the
+  // SessionStart inject blocks update automatically.
   console.log("Usage:");
-  console.log("  hivemind skillify                            show current scope, team, install, and per-project state");
-  console.log("  hivemind skillify scope <me|team>            set the mining scope");
-  console.log("  hivemind skillify install <project|global>   set where new skills are written");
-  console.log("  hivemind skillify promote <skill-name>       move a project skill to the global location");
-  console.log("  hivemind skillify team add <username>        add a username to the team list");
-  console.log("  hivemind skillify team remove <username>     remove a username from the team list");
-  console.log("  hivemind skillify team list                  list current team members");
-  console.log("  hivemind skillify pull [skill-name] [opts]   fetch skills from Deeplake to local FS");
-  console.log("    Options for pull:");
-  console.log("      --to <project|global>     destination (default: global)");
-  console.log("      --user <name>             only skills authored by this user");
-  console.log("      --users <a,b,c>           only skills authored by these users");
-  console.log("      --all-users               all authors (default — equivalent to no filter)");
-  console.log("      --dry-run                 show what would be written, don't touch disk");
-  console.log("      --force                   overwrite even when local version >= remote");
-  console.log("  hivemind skillify unpull [opts]              remove skills previously installed by pull");
-  console.log("    Options for unpull:");
-  console.log("      --to <project|global>     where to scan (default: global)");
-  console.log("      --user <name>             only entries authored by this user");
-  console.log("      --users <a,b,c>           only entries authored by these users");
-  console.log("      --not-mine                remove all pulled entries except your own");
-  console.log("      --dry-run                 show what would be removed");
-  console.log("      --all                     also remove flat-layout (locally-mined) entries");
-  console.log("      --legacy-cleanup          also remove pre-`--author`-layout legacy `<projectKey>/` dirs");
-  console.log("  hivemind skillify status                     show per-project state");
-  console.log("  hivemind skillify mine-local [opts]          one-shot: seed skills from local sessions (no auth needed)");
-  console.log("    Options for mine-local:");
-  console.log("      --n <num|all>             how many sessions to mine (default: 8)");
-  console.log("      --force                   re-run even if the manifest sentinel exists");
-  console.log("      --dry-run                 stop before calling the LLM gate");
+  console.log(renderSubcommandUsageBlock());
 }
 
 /** Parse a single string flag value out of `args`, removing the matched tokens. */
