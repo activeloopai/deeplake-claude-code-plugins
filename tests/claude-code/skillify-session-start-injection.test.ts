@@ -289,10 +289,12 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     expect(src).toMatch(/const skillifySpawnedFor = new Set<string>\(\)/);
     expect(src).toMatch(/if \(!skillifySpawnedFor\.has\(sid\)\)/);
     expect(src).toMatch(/skillifySpawnedFor\.add\(sid\)/);
-    // agent_end hook calls it after the capture loop. Distance bumped
-    // from 500→1500 to accommodate the per-runtime spawn-dedup comment
-    // block landed for #100 between `Auto-captured` and the spawn site.
-    expect(src).toMatch(/agent_end[\s\S]{0,3500}Auto-captured[\s\S]{0,1500}spawnOpenclawSkillifyWorker/);
+    // agent_end hook calls it after the capture loop. Window 1: from
+    // agent_end to `Auto-captured` covers the INSERT loop including
+    // its column-shape comment. Window 2: from `Auto-captured` to the
+    // spawn site covers the dedup + spawn-handling block. Both have
+    // grown over time as documentation accreted; resize when it trips.
+    expect(src).toMatch(/agent_end[\s\S]{0,4500}Auto-captured[\s\S]{0,2500}spawnOpenclawSkillifyWorker/);
     // install: "global" — no per-project cwd, skills land under ~/.claude/skills/
     expect(src).toMatch(/install:\s*"global"/);
   });

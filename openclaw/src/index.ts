@@ -1258,9 +1258,19 @@ export default definePluginEntry({
             // For JSONB: only escape single quotes, keep JSON structure intact
             const jsonForSql = line.replace(/'/g, "''");
 
+            // Include `message_embedding` with explicit NULL even though
+            // openclaw can't generate embeddings (the bundle stubs
+            // node:child_process, so we can't spawn the embed daemon).
+            // Omitting the column entirely makes deeplake-api's storage
+            // layer hit an internal `vector::at out of range` on the
+            // FLOAT4[] column — pre-PR-#168 claude-code captured NULL
+            // embeddings successfully because its INSERT NAMED the column
+            // with a NULL value (see embeddingSqlLiteral → "NULL"). The
+            // delta is "missing column" vs "named column with NULL value"
+            // — column-store backends treat these differently.
             const insertSql =
-              `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-              `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(cfg.userName)}', ` +
+              `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
+              `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, NULL, '${sqlStr(cfg.userName)}', ` +
               `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(msg.role)}', 'openclaw', '${sqlStr(getInstalledVersion() ?? "")}', '${ts}', '${ts}')`;
 
             try {
