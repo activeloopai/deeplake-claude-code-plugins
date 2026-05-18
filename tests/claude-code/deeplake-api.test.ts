@@ -387,87 +387,85 @@ describe("DeeplakeApi.listTables", () => {
   });
 });
 
+// ── ensureXxxTable helpers (new schema-heal flow) ───────────────────────────
+
+import {
+  MEMORY_COLUMNS,
+  SESSIONS_COLUMNS,
+  SKILLS_COLUMNS,
+} from "../../src/deeplake-schema.js";
+
+/** Render an info_schema response shape: `[{ column_name: "<name>" }, ...]`. */
+function infoSchemaResponse(present: string[]) {
+  return jsonResponse({
+    columns: ["column_name"],
+    rows: present.map(c => [c]),
+  });
+}
+
+/** Convenience: every column of a schema is present. */
+const allOf = (cols: readonly { name: string }[]) => cols.map(c => c.name);
+
 // ── ensureTable ─────────────────────────────────────────────────────────────
 
 describe("DeeplakeApi.ensureTable", () => {
-  it("creates table when it does not exist, then post-CREATE info_schema confirms column is present", async () => {
-    // listTables returns empty
+  it("creates table when it does not exist, then runs an unconditional heal pass (covers stale-listTables race)", async () => {
+    // listTables: empty → CREATE TABLE → heal pass (SELECT info_schema)
+    // The post-CREATE heal pass is mandatory even on a fresh table:
+    // `listTables()` is cached, so a concurrent writer may have created
+    // an older table just before our CREATE no-op'd. SELECT sees the
+    // canonical schema we created → 0 ALTERs.
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: async () => ({ tables: [] }),
     });
-    // CREATE TABLE query
-    mockFetch.mockResolvedValueOnce(jsonResponse({}));
-    // post-CREATE SELECT info_schema → column present (CREATE landed embedding-ready)
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
-    // post-CREATE SELECT info_schema for agent column → present (CREATE included it)
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
-    // post-CREATE SELECT info_schema for plugin_version column → present (CREATE included it)
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                            // CREATE TABLE
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(allOf(MEMORY_COLUMNS)));    // heal SELECT
     const api = makeApi("my_table");
     await api.ensureTable();
-    expect(mockFetch).toHaveBeenCalledTimes(5);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
     const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
-    expect(createSql).toContain("CREATE TABLE IF NOT EXISTS");
-    expect(createSql).toContain("my_table");
+    expect(createSql).toContain(`CREATE TABLE IF NOT EXISTS "my_table"`);
     expect(createSql).toContain("USING deeplake");
+    expect(createSql).toContain("summary_embedding FLOAT4[]");
     expect(createSql).toContain("plugin_version TEXT NOT NULL DEFAULT ''");
-    const schemaSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
-    expect(schemaSql).toContain("information_schema.columns");
-    expect(schemaSql).toContain("summary_embedding");
-    const agentSchemaSql = JSON.parse(mockFetch.mock.calls[3][1].body).query;
-    expect(agentSchemaSql).toContain("information_schema.columns");
-    expect(agentSchemaSql).toContain("agent");
-    const pvSchemaSql = JSON.parse(mockFetch.mock.calls[4][1].body).query;
-    expect(pvSchemaSql).toContain("information_schema.columns");
-    expect(pvSchemaSql).toContain("plugin_version");
+    const allSql = mockFetch.mock.calls.filter(c => c[1]?.body).map(c => JSON.parse(c[1].body).query).join(" | ");
+    expect(allSql).not.toContain("ALTER TABLE");
   });
 
-  it("on existing table: checks information_schema first, then issues ALTER ADD COLUMN when the column is missing", async () => {
+  it("on existing table: ONE SELECT info_schema, then ALTER only the genuinely missing columns", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "my_table" }] }),
     });
-    // information_schema reports column missing → fall through to ALTER
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [] }));
-    mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER summary_embedding succeeds
-    // agent SELECT info_schema → present (focus this test on the embedding flow)
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
-    // plugin_version SELECT info_schema → present (focus this test on the embedding flow)
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
+    // Table missing summary_embedding only. SELECT returns every other column.
+    const presentCols = allOf(MEMORY_COLUMNS).filter(c => c !== "summary_embedding");
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(presentCols));
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER summary_embedding
     const api = makeApi("my_table");
     await api.ensureTable();
-    expect(mockFetch).toHaveBeenCalledTimes(5); // listTables + SELECT_emb + ALTER_emb + SELECT_agent + SELECT_pv
-    const schemaSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
-    expect(schemaSql).toContain("information_schema.columns");
-    expect(schemaSql).toContain("summary_embedding");
-    expect(schemaSql).toContain("my_table");
+    expect(mockFetch).toHaveBeenCalledTimes(3); // listTables + SELECT + 1 ALTER
+
+    const selectSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    expect(selectSql).toMatch(/^SELECT column_name FROM information_schema\.columns/);
+    expect(selectSql).toContain(`table_name = 'my_table'`);
+    expect(selectSql).toContain(`table_schema = 'ws1'`);
+
     const alterSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
-    expect(alterSql).toContain("ALTER TABLE");
-    expect(alterSql).toContain("my_table");
-    expect(alterSql).toContain("ADD COLUMN summary_embedding FLOAT4[]");
-    expect(alterSql).not.toContain("IF NOT EXISTS"); // strict: SELECT confirmed missing, no fallback guard
+    expect(alterSql).toBe(`ALTER TABLE "my_table" ADD COLUMN summary_embedding FLOAT4[]`);
+    expect(alterSql).not.toContain("IF NOT EXISTS"); // strict: SELECT confirmed missing
   });
 
-  it("on existing table with the column already present: SELECT info_schema returns row → NO ALTER fires", async () => {
+  it("on existing table where SELECT info_schema reports every column present: NO ALTER fires", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "my_table" }] }),
     });
-    // information_schema reports column present → ensureEmbeddingColumn returns
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
-    // agent SELECT info_schema → present (post-2026-04-11 schema is current)
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
-    // plugin_version SELECT info_schema → present (current schema)
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(allOf(MEMORY_COLUMNS)));
     const api = makeApi("my_table");
     await api.ensureTable();
-    expect(mockFetch).toHaveBeenCalledTimes(4); // listTables + SELECT_emb + SELECT_agent + SELECT_pv — NO ALTER
-    const schemaSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
-    expect(schemaSql).toContain("information_schema.columns");
-    // Regression guard: scenario 5 (fully migrated workspace) used to send a
-    // wasted ALTER on every SessionStart and tickle the post-ALTER
-    // vector::at window — must not happen anymore.
+    // listTables + SELECT — no ALTER, no extra round-trips.
+    expect(mockFetch).toHaveBeenCalledTimes(2);
     const allSql = mockFetch.mock.calls.filter(c => c[1]?.body).map(c => JSON.parse(c[1].body).query).join(" | ");
     expect(allSql).not.toContain("ALTER TABLE");
   });
@@ -477,10 +475,10 @@ describe("DeeplakeApi.ensureTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "my_table" }] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse("syntax error", 400)); // SELECT fails
+    mockFetch.mockResolvedValueOnce(jsonResponse("syntax error", 400));
     const api = makeApi("my_table");
     await expect(api.ensureTable()).rejects.toThrow();
-    expect(mockFetch).toHaveBeenCalledTimes(2); // listTables + failed SELECT, no ALTER fallback
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
   it("propagates non-race ALTER errors instead of swallowing them", async () => {
@@ -488,48 +486,43 @@ describe("DeeplakeApi.ensureTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "my_table" }] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [] })); // SELECT: missing
-    mockFetch.mockResolvedValueOnce(jsonResponse("syntax error", 400)); // ALTER fails (not 'already exists')
+    const presentCols = allOf(MEMORY_COLUMNS).filter(c => c !== "summary_embedding");
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(presentCols));
+    mockFetch.mockResolvedValueOnce(jsonResponse("syntax error", 400));
     const api = makeApi("my_table");
     await expect(api.ensureTable()).rejects.toThrow();
   });
 
-  it("tolerates 'Column already exists' on ALTER ONLY when re-SELECT confirms the race winner landed", async () => {
+  it("tolerates 'Column already exists' on ALTER when re-SELECT confirms the race winner landed", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "my_table" }] }),
     });
-    // SELECT misses (concurrent run hasn't added the column yet)
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [] }));
-    // ALTER fails with the deterministic "already exists" — race lost
+    const presentBefore = allOf(MEMORY_COLUMNS).filter(c => c !== "summary_embedding");
+    const presentAfter = allOf(MEMORY_COLUMNS); // race winner added it
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(presentBefore));
     mockFetch.mockResolvedValueOnce(
       jsonResponse(`{"error":"Database error: Failed to add column 'summary_embedding' to deeplake dataset: Column 'summary_embedding' already exists","code":"QUERY_ERROR"}`, 500),
     );
-    // Re-SELECT confirms the column is now present (race winner's ALTER landed)
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
-    // agent SELECT info_schema → present
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
-    // plugin_version SELECT info_schema → present
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }));
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(presentAfter)); // re-SELECT confirms
+
     const api = makeApi("my_table");
     await expect(api.ensureTable()).resolves.toBeUndefined();
-    expect(mockFetch).toHaveBeenCalledTimes(6);
-    // 2nd call to ensureTable: listTables cached AND all column markers cached → 0 new fetches
-    mockFetch.mockReset();
-    await api.ensureTable();
-    expect(mockFetch).toHaveBeenCalledTimes(0);
+    // listTables + SELECT(miss) + ALTER(race) + re-SELECT(confirm)
+    expect(mockFetch).toHaveBeenCalledTimes(4);
   });
 
-  it("rejects 'Column already exists' on ALTER when re-SELECT still reports missing (genuine schema problem)", async () => {
+  it("rejects 'Column already exists' on ALTER when re-SELECT still reports the column missing", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "my_table" }] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [] })); // SELECT 1: missing
+    const presentBefore = allOf(MEMORY_COLUMNS).filter(c => c !== "summary_embedding");
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(presentBefore));
     mockFetch.mockResolvedValueOnce(
       jsonResponse(`{"error":"Database error: Column 'summary_embedding' already exists","code":"QUERY_ERROR"}`, 500),
     );
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [] })); // re-SELECT: still missing
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(presentBefore)); // still missing
     const api = makeApi("my_table");
     await expect(api.ensureTable()).rejects.toThrow();
   });
@@ -539,110 +532,140 @@ describe("DeeplakeApi.ensureTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // post-CREATE SELECT info_schema PRESENT (embedding)
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // post-CREATE SELECT info_schema PRESENT (agent)
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // post-CREATE SELECT info_schema PRESENT (plugin_version)
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                            // CREATE TABLE
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(allOf(MEMORY_COLUMNS)));    // post-CREATE heal SELECT
     const api = makeApi("default_table");
     await api.ensureTable("custom_table");
     const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
-    expect(createSql).toContain("custom_table");
+    expect(createSql).toContain(`CREATE TABLE IF NOT EXISTS "custom_table"`);
   });
 
-  it("reuses cached listTables across ensureTable and ensureSessionsTable", async () => {
+  it("heals after CREATE: race-detected legacy table gets ALTERed before returning", async () => {
+    // Regression for the CodeRabbit-flagged race: listTables() reports
+    // the table missing (cache stale), we run CREATE TABLE IF NOT EXISTS
+    // (no-op against a concurrent writer's older table), and the
+    // unconditional heal pass discovers + repairs the legacy schema.
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [] }),
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                                // CREATE (no-op)
+    // Heal SELECT returns the *legacy* shape (missing summary_embedding)
+    const legacy = allOf(MEMORY_COLUMNS).filter(c => c !== "summary_embedding");
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(legacy));
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                                // ALTER
+    const api = makeApi("my_table");
+    await api.ensureTable();
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+    const alterSql = JSON.parse(mockFetch.mock.calls[3][1].body).query;
+    expect(alterSql).toBe(`ALTER TABLE "my_table" ADD COLUMN summary_embedding FLOAT4[]`);
+  });
+
+  it("reuses cached listTables across ensureTable and ensureSessionsTable; each gets its own SELECT info_schema", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "memory" }] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT memory embedding: present
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT memory agent: present
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT memory plugin_version: present
-    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE sessions
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT sessions embedding post-CREATE: present
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT sessions agent post-CREATE: present
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT sessions plugin_version post-CREATE: present
-    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(allOf(MEMORY_COLUMNS)));    // memory: all present
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                              // CREATE sessions
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(allOf(SESSIONS_COLUMNS)));   // post-CREATE heal SELECT for sessions
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                              // CREATE INDEX
     const api = makeApi("memory");
 
     await api.ensureTable();
     await api.ensureSessionsTable("sessions");
 
-    expect(mockFetch).toHaveBeenCalledTimes(9);
-    const schemaSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
-    expect(schemaSql).toContain("information_schema.columns");
-    expect(schemaSql).toContain("summary_embedding");
-    const createSql = JSON.parse(mockFetch.mock.calls[4][1].body).query;
-    expect(createSql).toContain("CREATE TABLE IF NOT EXISTS");
-    expect(createSql).toContain("sessions");
-    const indexSql = JSON.parse(mockFetch.mock.calls[8][1].body).query;
+    // listTables (cached for the 2nd call) + memory SELECT + sessions CREATE
+    // + sessions heal SELECT + INDEX
+    expect(mockFetch).toHaveBeenCalledTimes(5);
+    const sessionsCreate = JSON.parse(mockFetch.mock.calls[2][1].body).query;
+    expect(sessionsCreate).toContain(`CREATE TABLE IF NOT EXISTS "sessions"`);
+    const indexSql = JSON.parse(mockFetch.mock.calls[4][1].body).query;
     expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
-    expect(indexSql).toContain("\"path\"");
-    expect(indexSql).toContain("\"creation_date\"");
+    expect(indexSql).toContain(`"path"`);
+    expect(indexSql).toContain(`"creation_date"`);
   });
 });
 
 // ── ensureSessionsTable ─────────────────────────────────────────────────────
 
 describe("DeeplakeApi.ensureSessionsTable", () => {
-  it("creates sessions table when it does not exist", async () => {
+  it("creates sessions table when it does not exist; heals unconditionally after CREATE", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: async () => ({ tables: [] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // post-CREATE SELECT info_schema embedding PRESENT
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // post-CREATE SELECT info_schema agent PRESENT
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // post-CREATE SELECT info_schema plugin_version PRESENT
-    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                              // CREATE TABLE
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(allOf(SESSIONS_COLUMNS)));    // post-CREATE heal SELECT
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                              // CREATE INDEX
     const api = makeApi();
     await api.ensureSessionsTable("sessions");
+    expect(mockFetch).toHaveBeenCalledTimes(4); // listTables + CREATE + heal SELECT + CREATE INDEX
+
     const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
-    expect(createSql).toContain("CREATE TABLE IF NOT EXISTS");
-    expect(createSql).toContain("sessions");
+    expect(createSql).toContain(`CREATE TABLE IF NOT EXISTS "sessions"`);
     expect(createSql).toContain("JSONB");
     expect(createSql).toContain("USING deeplake");
+    expect(createSql).toContain("message_embedding FLOAT4[]");
     expect(createSql).toContain("plugin_version TEXT NOT NULL DEFAULT ''");
-    const indexSql = JSON.parse(mockFetch.mock.calls[5][1].body).query;
+
+    const indexSql = JSON.parse(mockFetch.mock.calls[3][1].body).query;
     expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
-    expect(indexSql).toContain("\"sessions\"");
-    expect(indexSql).toContain("(\"path\", \"creation_date\")");
+    expect(indexSql).toContain(`"sessions"`);
+    expect(indexSql).toContain(`("path", "creation_date")`);
   });
 
-  it("adds message_embedding column (SELECT info_schema misses, ALTER fires) and ensures the lookup index when sessions table already exists", async () => {
+  it("heals after CREATE: race-detected legacy sessions table gets ALTERed before returning", async () => {
+    // Same race shape as ensureTable: listTables() reports the table
+    // missing (cache stale), CREATE TABLE IF NOT EXISTS no-ops against a
+    // concurrent writer's legacy table, and the unconditional heal pass
+    // discovers + repairs the older schema before ensureLookupIndex runs.
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
-      json: async () => ({ tables: [{ table_name: "sessions" }] }),
+      json: async () => ({ tables: [] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [] })); // SELECT info_schema embedding: missing
-    mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER embedding
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT agent: present (focus this test on the embedding flow)
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT plugin_version: present
-    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX
-    const api = makeApi();
-    await api.ensureSessionsTable("sessions");
-    expect(mockFetch).toHaveBeenCalledTimes(6);
-    const schemaSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
-    expect(schemaSql).toContain("information_schema.columns");
-    expect(schemaSql).toContain("message_embedding");
-    const alterSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
-    expect(alterSql).toContain("ALTER TABLE");
-    expect(alterSql).toContain("message_embedding FLOAT4[]");
-    const indexSql = JSON.parse(mockFetch.mock.calls[5][1].body).query;
-    expect(indexSql).toContain("CREATE INDEX IF NOT EXISTS");
-  });
-
-  it("skips ALTER on sessions when info_schema reports message_embedding already present", async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true, status: 200,
-      json: async () => ({ tables: [{ table_name: "sessions" }] }),
-    });
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT embedding: present
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT agent: present
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT plugin_version: present
-    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                              // CREATE (no-op vs legacy)
+    const legacy = allOf(SESSIONS_COLUMNS).filter(c => c !== "message_embedding");
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(legacy));                    // heal SELECT
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                              // ALTER
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                              // CREATE INDEX
     const api = makeApi();
     await api.ensureSessionsTable("sessions");
     expect(mockFetch).toHaveBeenCalledTimes(5);
+    const alterSql = JSON.parse(mockFetch.mock.calls[3][1].body).query;
+    expect(alterSql).toBe(`ALTER TABLE "sessions" ADD COLUMN message_embedding FLOAT4[]`);
+  });
+
+  it("on existing sessions table: ONE SELECT info_schema, then targeted ALTER for any missing columns", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [{ table_name: "sessions" }] }),
+    });
+    // Pre-existing table missing message_embedding only.
+    const present = allOf(SESSIONS_COLUMNS).filter(c => c !== "message_embedding");
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(present));
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER message_embedding
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX
+    const api = makeApi();
+    await api.ensureSessionsTable("sessions");
+    expect(mockFetch).toHaveBeenCalledTimes(4); // listTables + SELECT + 1 ALTER + INDEX
+
+    const alterSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
+    expect(alterSql).toBe(`ALTER TABLE "sessions" ADD COLUMN message_embedding FLOAT4[]`);
+    expect(alterSql).not.toContain("IF NOT EXISTS");
+  });
+
+  it("skips ALTER on sessions when info_schema reports every column already present", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [{ table_name: "sessions" }] }),
+    });
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(allOf(SESSIONS_COLUMNS)));
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX (always runs, marker-gated)
+    const api = makeApi();
+    await api.ensureSessionsTable("sessions");
+    expect(mockFetch).toHaveBeenCalledTimes(3); // listTables + SELECT + INDEX
+
     const allSql = mockFetch.mock.calls.filter(c => c[1]?.body).map(c => JSON.parse(c[1].body).query).join(" | ");
     expect(allSql).not.toContain("ALTER TABLE");
   });
@@ -652,15 +675,11 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "sessions" }] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [] })); // SELECT info_schema embedding: missing
-    mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER embedding ok
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT agent: present
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT plugin_version: present
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(allOf(SESSIONS_COLUMNS)));
     mockFetch.mockResolvedValueOnce(jsonResponse("forbidden", 403));
     const api = makeApi();
-
     await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
-    expect(mockFetch).toHaveBeenCalledTimes(6);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 
   it("treats duplicate concurrent index creation errors as success and records a local marker", async () => {
@@ -668,23 +687,93 @@ describe("DeeplakeApi.ensureSessionsTable", () => {
       ok: true, status: 200,
       json: async () => ({ tables: [{ table_name: "sessions" }] }),
     });
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [] })); // SELECT info_schema embedding: missing
-    mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER embedding ok
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT agent: present
-    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] })); // SELECT plugin_version: present
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(allOf(SESSIONS_COLUMNS)));
     mockFetch.mockResolvedValueOnce(jsonResponse("duplicate key value violates unique constraint \"pg_class_relname_nsp_index\"", 400));
-
     const api = makeApi();
     await expect(api.ensureSessionsTable("sessions")).resolves.toBeUndefined();
 
+    // 2nd call: listTables cached, SELECT info_schema still runs (no column
+    // marker any more — we trade those few SELECTs for clearer logic and
+    // remove a stale on-disk cache that could mislead diagnostics).
+    // CREATE INDEX is gated by the lookup-index marker, which was set on
+    // the first call's "duplicate" race-tolerance branch → 0 INDEX fetch.
     mockFetch.mockReset();
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(allOf(SESSIONS_COLUMNS)));
     await api.ensureSessionsTable("sessions");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+});
 
-    // On the second call: listTables cached, both column markers cached
-    // (set after the first ALTER + agent SELECT), and the index marker
-    // short-circuits CREATE INDEX → zero new round-trips. Regression guard
-    // for the previous behaviour where ALTER fired on every SessionStart.
-    expect(mockFetch).toHaveBeenCalledTimes(0);
+// ── ensureSkillsTable ───────────────────────────────────────────────────────
+
+describe("DeeplakeApi.ensureSkillsTable", () => {
+  it("creates skills table when it does not exist; heals unconditionally after CREATE", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [] }),
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                            // CREATE TABLE
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(allOf(SKILLS_COLUMNS)));    // post-CREATE heal SELECT
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                            // CREATE INDEX
+    const api = makeApi();
+    await api.ensureSkillsTable("skills");
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+
+    const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    expect(createSql).toContain(`CREATE TABLE IF NOT EXISTS "skills"`);
+    expect(createSql).toContain("contributors TEXT NOT NULL DEFAULT '[]'");
+    expect(createSql).toContain("version BIGINT NOT NULL DEFAULT 1");
+  });
+
+  it("heals after CREATE: race-detected legacy skills table gets ALTERed before returning", async () => {
+    // Same race shape as ensureTable / ensureSessionsTable: stale
+    // listTables() + concurrent CREATE from another writer turns this
+    // CREATE TABLE IF NOT EXISTS into a no-op against an older schema.
+    // The unconditional heal pass adds the missing column before
+    // ensureLookupIndex fires.
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [] }),
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                            // CREATE (no-op vs legacy)
+    const legacy = allOf(SKILLS_COLUMNS).filter(c => c !== "contributors");
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(legacy));                  // heal SELECT
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                            // ALTER
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                            // CREATE INDEX
+    const api = makeApi();
+    await api.ensureSkillsTable("skills");
+    expect(mockFetch).toHaveBeenCalledTimes(5);
+    const alterSql = JSON.parse(mockFetch.mock.calls[3][1].body).query;
+    expect(alterSql).toBe(`ALTER TABLE "skills" ADD COLUMN contributors TEXT NOT NULL DEFAULT '[]'`);
+  });
+
+  it("on existing skills table: SELECT info_schema + ALTER missing columns", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [{ table_name: "skills" }] }),
+    });
+    const present = allOf(SKILLS_COLUMNS).filter(c => c !== "contributors");
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(present));
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // ALTER contributors
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX
+    const api = makeApi();
+    await api.ensureSkillsTable("skills");
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+    const alterSql = JSON.parse(mockFetch.mock.calls[2][1].body).query;
+    expect(alterSql).toBe(`ALTER TABLE "skills" ADD COLUMN contributors TEXT NOT NULL DEFAULT '[]'`);
+  });
+
+  it("on existing skills table fully up-to-date: no ALTER fires", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [{ table_name: "skills" }] }),
+    });
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(allOf(SKILLS_COLUMNS)));
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX (marker-gated)
+    const api = makeApi();
+    await api.ensureSkillsTable("skills");
+    const allSql = mockFetch.mock.calls.filter(c => c[1]?.body).map(c => JSON.parse(c[1].body).query).join(" | ");
+    expect(allSql).not.toContain("ALTER TABLE");
   });
 });
 
@@ -728,13 +817,11 @@ describe("lookup-index marker with invalid updatedAt", () => {
       JSON.stringify({ updatedAt: "not-a-date" }),
     );
 
-    // Queue responses for: listTables (sessions present) + SELECT info_schema embedding (PRESENT, no ALTER) + SELECT info_schema agent (PRESENT, no ALTER) + SELECT info_schema plugin_version (PRESENT, no ALTER) + CREATE INDEX
+    // listTables (sessions present) + SELECT info_schema (all columns present, no ALTER) + CREATE INDEX
     mockFetch
-      .mockResolvedValueOnce(jsonResponse({ tables: [{ table_name: "sessions" }] }))         // listTables: sessions exists
-      .mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }))           // message_embedding PRESENT → no ALTER
-      .mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }))           // agent PRESENT → no ALTER
-      .mockResolvedValueOnce(jsonResponse({ columns: ["?column?"], rows: [[1]] }))           // plugin_version PRESENT → no ALTER
-      .mockResolvedValueOnce(jsonResponse({ columns: [], rows: [] }));                       // CREATE INDEX (marker invalid → re-run)
+      .mockResolvedValueOnce(jsonResponse({ tables: [{ table_name: "sessions" }] }))
+      .mockResolvedValueOnce(infoSchemaResponse(allOf(SESSIONS_COLUMNS)))
+      .mockResolvedValueOnce(jsonResponse({ columns: [], rows: [] }));
 
     const api = makeApi();
     await api.ensureSessionsTable("sessions");

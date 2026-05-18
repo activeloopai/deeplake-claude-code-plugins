@@ -37,18 +37,24 @@ describe("shipped bundles include embedding columns", () => {
 });
 
 describe("src-level schema includes new embedding columns", () => {
-  const apiSrc = read("src/deeplake-api.ts");
+  // Schemas moved from inline strings in deeplake-api.ts to structured
+  // arrays in deeplake-schema.ts. The bundles still need to inline these
+  // columns, but the source of truth is now the new module.
+  const schemaSrc = read("src/deeplake-schema.ts");
 
-  it("memory table CREATE includes summary_embedding FLOAT4[]", () => {
-    expect(apiSrc).toMatch(/summary_embedding FLOAT4\[\]/);
+  // Scope each regex to a single object literal (`[^}]*`) so a later
+  // entry's SQL can't accidentally satisfy the match.
+
+  it("MEMORY_COLUMNS includes summary_embedding FLOAT4[]", () => {
+    expect(schemaSrc).toMatch(/name:\s*"summary_embedding"[^}]*FLOAT4\[\]/);
   });
 
-  it("sessions table CREATE includes message_embedding FLOAT4[]", () => {
-    expect(apiSrc).toMatch(/message_embedding FLOAT4\[\]/);
+  it("SESSIONS_COLUMNS includes message_embedding FLOAT4[]", () => {
+    expect(schemaSrc).toMatch(/name:\s*"message_embedding"[^}]*FLOAT4\[\]/);
   });
 
   it("embedding columns do NOT use TEXT (regression guard)", () => {
-    expect(apiSrc).not.toMatch(/summary_embedding TEXT/);
-    expect(apiSrc).not.toMatch(/message_embedding TEXT/);
+    expect(schemaSrc).not.toMatch(/name:\s*"summary_embedding"[^}]*TEXT/);
+    expect(schemaSrc).not.toMatch(/name:\s*"message_embedding"[^}]*TEXT/);
   });
 });

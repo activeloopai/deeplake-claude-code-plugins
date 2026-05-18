@@ -1,8 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { log as _log } from "./utils/debug.js";
 import { sqlStr, sqlIdent } from "./utils/sql.js";
-import { SUMMARY_EMBEDDING_COL, MESSAGE_EMBEDDING_COL } from "./embeddings/columns.js";
+import { SUMMARY_EMBEDDING_COL } from "./embeddings/columns.js";
 import { deeplakeClientHeader } from "./utils/client-header.js";
+import {
+  MEMORY_COLUMNS,
+  SESSIONS_COLUMNS,
+  SKILLS_COLUMNS,
+  buildCreateTableSql,
+  healMissingColumns,
+} from "./deeplake-schema.js";
 
 // index-marker-store touches node:fs. Load it lazily so bundlers that split
 // chunks (e.g. the openclaw plugin build) can put fs operations in a separate
@@ -295,74 +302,33 @@ export class DeeplakeApi {
   }
 
   /**
-   * Ensure a vector column exists on the given table.
+   * Heal any missing columns on a table so it matches one of the schema
+   * definitions in `deeplake-schema.ts`. One SELECT against
+   * `information_schema.columns` per call, then `ALTER TABLE ADD COLUMN`
+   * only the genuinely missing ones — never blanket, never `IF NOT
+   * EXISTS`.
    *
-   * The previous implementation always issued `ALTER TABLE ADD COLUMN IF NOT
-   * EXISTS …` on every SessionStart. On a long-running workspace that's
-   * already migrated, every call returns 500 "Column already exists" — noisy
-   * in the log and a wasted round-trip. Worse, the very first call after the
-   * column is genuinely added triggers Deeplake's post-ALTER `vector::at`
-   * window (~30s) during which subsequent INSERTs fail; minimising the
-   * number of ALTER calls minimises exposure to that window.
-   *
-   * New flow:
-   *   1. Check the local marker file (mirrors ensureLookupIndex). If fresh,
-   *      return — zero network calls.
-   *   2. SELECT 1 FROM information_schema.columns WHERE table_name = T AND
-   *      column_name = C. Read-only, idempotent, can't tickle the post-ALTER
-   *      bug. If the column is present → mark + return.
-   *   3. Only if step 2 says the column is missing, fall back to ALTER ADD
-   *      COLUMN IF NOT EXISTS. Mark on success, also mark if Deeplake reports
-   *      "already exists" (race: another client added it between our SELECT
-   *      and ALTER).
-   *
-   * Marker uses the same dir / TTL as ensureLookupIndex so both schema
-   * caches share an opt-out (HIVEMIND_INDEX_MARKER_DIR) and a TTL knob.
+   * History: an earlier path used a local marker file (`col_<name>` under
+   * the index-marker dir) to skip even the SELECT after the first
+   * confirmation, plus per-column ALTERs for `summary_embedding`,
+   * `message_embedding`, `agent`, `plugin_version`. The marker existed
+   * because Deeplake used to expose a ~30s post-ALTER bug where
+   * subsequent INSERTs failed, so we wanted to keep ALTER traffic to a
+   * minimum. The bug was re-verified on 2026-05-18 against
+   * `api.deeplake.ai` (`test_plugin` org) and no longer reproduces
+   * (71/71 INSERTs OK, first success 2ms after ALTER). The single SELECT
+   * + targeted ALTER pattern survives the marker removal because: each
+   * ALTER still costs ~800ms (so blanket sweeps are wasteful) and the
+   * diff produces clearer logs than "ALTER all with IF NOT EXISTS".
    */
-  private async ensureEmbeddingColumn(table: string, column: string): Promise<void> {
-    await this.ensureColumn(table, column, "FLOAT4[]");
-  }
-
-  /**
-   * Generic marker-gated column migration. Same SELECT-then-ALTER flow as
-   * ensureEmbeddingColumn, parameterized by SQL type so it can patch up any
-   * column that was added to the schema after the table was originally
-   * created. Used today for `summary_embedding`, `message_embedding`, and
-   * the `agent` column (added 2026-04-11) — the latter has no fallback if
-   * a user upgraded over a pre-2026-04-11 table, so every INSERT fails
-   * with `column "agent" does not exist`.
-   */
-  private async ensureColumn(table: string, column: string, sqlType: string): Promise<void> {
-    const markers = await getIndexMarkerStore();
-    const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, `col_${column}`);
-    if (markers.hasFreshIndexMarker(markerPath)) return;
-
-    // Include table_schema = workspaceId to disambiguate across tenants — Deeplake's
-    // information_schema.columns is multi-workspace, so a same-named table in another
-    // workspace that already has the column would otherwise produce a false-positive
-    // PRESENT and skip the ALTER on this workspace's actual table.
-    const colCheck = `SELECT 1 FROM information_schema.columns ` +
-      `WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' AND table_schema = '${sqlStr(this.workspaceId)}' LIMIT 1`;
-
-    const rows = await this.query(colCheck);
-    if (rows.length > 0) {
-      markers.writeIndexMarker(markerPath);
-      return;
-    }
-
-    // Column confirmed missing: ALTER without IF NOT EXISTS so any failure is
-    // surfaced. The single tolerated exception is a race with another writer
-    // that adds the column between our SELECT and our ALTER — re-SELECT to
-    // confirm and treat as success. Everything else propagates.
-    try {
-      await this.query(`ALTER TABLE "${table}" ADD COLUMN ${column} ${sqlType}`);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (!/already exists/i.test(msg)) throw e;
-      const recheck = await this.query(colCheck);
-      if (recheck.length === 0) throw e;
-    }
-    markers.writeIndexMarker(markerPath);
+  private async healSchema(table: string, columns: typeof MEMORY_COLUMNS): Promise<void> {
+    await healMissingColumns({
+      query: sql => this.query(sql) as Promise<unknown>,
+      tableName: table,
+      workspaceId: this.workspaceId,
+      columns,
+      log,
+    });
   }
 
   /** List all tables in the workspace (with retry). */
@@ -436,58 +402,35 @@ export class DeeplakeApi {
     throw lastErr;
   }
 
-  /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
+  /** Create the memory table if it doesn't already exist. Heal missing columns on existing tables. */
   async ensureTable(name?: string): Promise<void> {
+    // Drift guard runs *before* any SQL: ensures fresh tables can't be
+    // created with a MEMORY_COLUMNS that has drifted from
+    // SUMMARY_EMBEDDING_COL (used by the SDK on the write path).
+    if (!MEMORY_COLUMNS.some(c => c.name === SUMMARY_EMBEDDING_COL)) {
+      throw new Error(`MEMORY_COLUMNS missing "${SUMMARY_EMBEDDING_COL}" (embeddings/columns.ts drift)`);
+    }
     // sqlIdent throws on anything outside [A-Za-z_][A-Za-z0-9_]* — protects
     // against HIVEMIND_TABLE config injection (a stray quote would otherwise
     // break CREATE TABLE / ALTER COLUMN / CREATE INDEX startup, and widen the
-    // SQL-injection surface for config-driven values). Mirror of the
-    // ensureSkillsTable guard (commit c0e77b8).
+    // SQL-injection surface for config-driven values).
     const tbl = sqlIdent(name ?? this.tableName);
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log(`table "${tbl}" not found, creating`);
-      await this.createTableWithRetry(
-        `CREATE TABLE IF NOT EXISTS "${tbl}" (` +
-          `id TEXT NOT NULL DEFAULT '', ` +
-          `path TEXT NOT NULL DEFAULT '', ` +
-          `filename TEXT NOT NULL DEFAULT '', ` +
-          `summary TEXT NOT NULL DEFAULT '', ` +
-          `summary_embedding FLOAT4[], ` +
-          `author TEXT NOT NULL DEFAULT '', ` +
-          `mime_type TEXT NOT NULL DEFAULT 'text/plain', ` +
-          `size_bytes BIGINT NOT NULL DEFAULT 0, ` +
-          `project TEXT NOT NULL DEFAULT '', ` +
-          `description TEXT NOT NULL DEFAULT '', ` +
-          `agent TEXT NOT NULL DEFAULT '', ` +
-          `plugin_version TEXT NOT NULL DEFAULT '', ` +
-          `creation_date TEXT NOT NULL DEFAULT '', ` +
-          `last_update_date TEXT NOT NULL DEFAULT ''` +
-        `) USING deeplake`,
-        tbl,
-      );
+      await this.createTableWithRetry(buildCreateTableSql(tbl, MEMORY_COLUMNS), tbl);
       log(`table "${tbl}" created`);
       if (!tables.includes(tbl)) this._tablesCache = [...tables, tbl];
     }
-    // Always verify the embedding column is present, regardless of who created
-    // the table. CREATE TABLE may have raced with another plugin's CREATE that
-    // used an older schema without summary_embedding (e.g. a stale bundle of
-    // a sibling plugin sharing the same memory table). ensureEmbeddingColumn
-    // is idempotent and steady-state-cheap: SELECT info_schema, ALTER only if
-    // the column is genuinely missing.
-    await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
-    // Same fallback for the `agent` column (added 2026-04-11). Pre-2026-04-11
-    // tables don't have it; without this ALTER, every INSERT fails with
-    // `column "agent" does not exist` after upgrading over an old schema.
-    await this.ensureColumn(tbl, "agent", "TEXT NOT NULL DEFAULT ''");
-    await this.ensureColumn(tbl, "plugin_version", "TEXT NOT NULL DEFAULT ''");
+    // Always heal after the create/exists decision. Reason: `listTables()`
+    // is cached, so a stale cache plus a concurrent CREATE from another
+    // writer means `CREATE TABLE IF NOT EXISTS` here can silently no-op
+    // against a legacy table. Running healSchema unconditionally covers
+    // that race; on a genuinely fresh CREATE the SELECT sees the canonical
+    // column set and triggers zero ALTERs (one extra SELECT, ~250ms).
+    await this.healSchema(tbl, MEMORY_COLUMNS);
     // BM25 index disabled — CREATE INDEX causes intermittent oid errors on fresh tables.
     // See bm25-oid-bug.sh for reproduction. Re-enable once Deeplake fixes the oid invalidation.
-    // try {
-    //   await this.query(
-    //     `CREATE INDEX IF NOT EXISTS idx_${tbl}_summary_bm25 ON "${this.workspaceId}"."${tbl}" USING deeplake_index (summary) WITH (index_type = 'bm25')`
-    //   );
-    // } catch { /* index may already exist or not be supported */ }
   }
 
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
@@ -499,33 +442,13 @@ export class DeeplakeApi {
     const tables = await this.listTables();
     if (!tables.includes(safe)) {
       log(`table "${safe}" not found, creating`);
-      await this.createTableWithRetry(
-        `CREATE TABLE IF NOT EXISTS "${safe}" (` +
-          `id TEXT NOT NULL DEFAULT '', ` +
-          `path TEXT NOT NULL DEFAULT '', ` +
-          `filename TEXT NOT NULL DEFAULT '', ` +
-          `message JSONB, ` +
-          `message_embedding FLOAT4[], ` +
-          `author TEXT NOT NULL DEFAULT '', ` +
-          `mime_type TEXT NOT NULL DEFAULT 'application/json', ` +
-          `size_bytes BIGINT NOT NULL DEFAULT 0, ` +
-          `project TEXT NOT NULL DEFAULT '', ` +
-          `description TEXT NOT NULL DEFAULT '', ` +
-          `agent TEXT NOT NULL DEFAULT '', ` +
-          `plugin_version TEXT NOT NULL DEFAULT '', ` +
-          `creation_date TEXT NOT NULL DEFAULT '', ` +
-          `last_update_date TEXT NOT NULL DEFAULT ''` +
-        `) USING deeplake`,
-        safe,
-      );
+      await this.createTableWithRetry(buildCreateTableSql(safe, SESSIONS_COLUMNS), safe);
       log(`table "${safe}" created`);
       if (!tables.includes(safe)) this._tablesCache = [...tables, safe];
     }
-    // Always verify message_embedding is present (same rationale as ensureTable).
-    await this.ensureEmbeddingColumn(safe, MESSAGE_EMBEDDING_COL);
-    // Same fallback for the `agent` column (see ensureTable for rationale).
-    await this.ensureColumn(safe, "agent", "TEXT NOT NULL DEFAULT ''");
-    await this.ensureColumn(safe, "plugin_version", "TEXT NOT NULL DEFAULT ''");
+    // Always heal — covers the stale-listTables race the same way as
+    // ensureTable. Cheap when the table was genuinely fresh.
+    await this.healSchema(safe, SESSIONS_COLUMNS);
     await this.ensureLookupIndex(safe, "path_creation_date", `("path", "creation_date")`);
   }
 
@@ -548,30 +471,12 @@ export class DeeplakeApi {
     const tables = await this.listTables();
     if (!tables.includes(safe)) {
       log(`table "${safe}" not found, creating`);
-      await this.createTableWithRetry(
-        `CREATE TABLE IF NOT EXISTS "${safe}" (` +
-          `id TEXT NOT NULL DEFAULT '', ` +
-          `name TEXT NOT NULL DEFAULT '', ` +
-          `project TEXT NOT NULL DEFAULT '', ` +
-          `project_key TEXT NOT NULL DEFAULT '', ` +
-          `local_path TEXT NOT NULL DEFAULT '', ` +
-          `install TEXT NOT NULL DEFAULT 'project', ` +
-          `source_sessions TEXT NOT NULL DEFAULT '[]', ` +
-          `source_agent TEXT NOT NULL DEFAULT '', ` +
-          `scope TEXT NOT NULL DEFAULT 'me', ` +
-          `author TEXT NOT NULL DEFAULT '', ` +
-          `description TEXT NOT NULL DEFAULT '', ` +
-          `trigger_text TEXT NOT NULL DEFAULT '', ` +
-          `body TEXT NOT NULL DEFAULT '', ` +
-          `version BIGINT NOT NULL DEFAULT 1, ` +
-          `created_at TEXT NOT NULL DEFAULT '', ` +
-          `updated_at TEXT NOT NULL DEFAULT ''` +
-        `) USING deeplake`,
-        safe,
-      );
+      await this.createTableWithRetry(buildCreateTableSql(safe, SKILLS_COLUMNS), safe);
       log(`table "${safe}" created`);
       if (!tables.includes(safe)) this._tablesCache = [...tables, safe];
     }
+    // Always heal — same rationale as ensureTable / ensureSessionsTable.
+    await this.healSchema(safe, SKILLS_COLUMNS);
     await this.ensureLookupIndex(safe, "project_key_name", `("project_key", "name")`);
   }
 }

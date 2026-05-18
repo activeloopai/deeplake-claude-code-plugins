@@ -55,9 +55,11 @@ describe("createTableWithRetry (via ensureTable)", () => {
     fetchMock.mockRejectedValueOnce(new TypeError("fetch failed"));
     // 6. After ~2s outer backoff: outer attempt 2 → succeeds (CREATE OK)
     fetchMock.mockResolvedValueOnce(ok({ columns: [], rows: [], row_count: 0 }));
-    // 7. ensureLookupIndex flow: hasFreshIndexMarker probably returns false on
-    //    a fresh dir → CREATE INDEX call → succeeds
-    fetchMock.mockResolvedValue(ok({ columns: [], rows: [], row_count: 0 }));
+    // 7. post-CREATE heal pass: SELECT info_schema returns the canonical
+    //    column set, so 0 ALTERs fire. Then CREATE INDEX. Use
+    //    mockImplementation so each call gets a fresh Response (a single
+    //    Response body can only be read once before going "unusable").
+    fetchMock.mockImplementation(async () => ok({ columns: [], rows: [], row_count: 0 }));
 
     const restoreTimer = instantTimers();
     try {

@@ -150,7 +150,123 @@ function sqlIdent(name) {
 
 // dist/src/embeddings/columns.js
 var SUMMARY_EMBEDDING_COL = "summary_embedding";
-var MESSAGE_EMBEDDING_COL = "message_embedding";
+
+// dist/src/deeplake-schema.js
+var MEMORY_COLUMNS = Object.freeze([
+  { name: "id", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "path", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "filename", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "summary", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "summary_embedding", sql: "FLOAT4[]" },
+  { name: "author", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "mime_type", sql: "TEXT NOT NULL DEFAULT 'text/plain'" },
+  { name: "size_bytes", sql: "BIGINT NOT NULL DEFAULT 0" },
+  { name: "project", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "description", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "agent", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "plugin_version", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "creation_date", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "last_update_date", sql: "TEXT NOT NULL DEFAULT ''" }
+]);
+var SESSIONS_COLUMNS = Object.freeze([
+  { name: "id", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "path", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "filename", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "message", sql: "JSONB" },
+  { name: "message_embedding", sql: "FLOAT4[]" },
+  { name: "author", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "mime_type", sql: "TEXT NOT NULL DEFAULT 'application/json'" },
+  { name: "size_bytes", sql: "BIGINT NOT NULL DEFAULT 0" },
+  { name: "project", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "description", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "agent", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "plugin_version", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "creation_date", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "last_update_date", sql: "TEXT NOT NULL DEFAULT ''" }
+]);
+var SKILLS_COLUMNS = Object.freeze([
+  { name: "id", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "name", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "project", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "project_key", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "local_path", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "install", sql: "TEXT NOT NULL DEFAULT 'project'" },
+  { name: "source_sessions", sql: "TEXT NOT NULL DEFAULT '[]'" },
+  { name: "source_agent", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "scope", sql: "TEXT NOT NULL DEFAULT 'me'" },
+  { name: "author", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "contributors", sql: "TEXT NOT NULL DEFAULT '[]'" },
+  { name: "description", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "trigger_text", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "body", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "version", sql: "BIGINT NOT NULL DEFAULT 1" },
+  { name: "created_at", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "updated_at", sql: "TEXT NOT NULL DEFAULT ''" }
+]);
+function validateSchema(label, cols) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const col of cols) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(col.name)) {
+      throw new Error(`${label}: column name "${col.name}" is not a valid SQL identifier`);
+    }
+    if (seen.has(col.name)) {
+      throw new Error(`${label}: duplicate column "${col.name}"`);
+    }
+    seen.add(col.name);
+    const notNull = /\bNOT\s+NULL\b/i.test(col.sql);
+    const hasDefault = /\bDEFAULT\b/i.test(col.sql);
+    if (notNull && !hasDefault) {
+      throw new Error(`${label}: column "${col.name}" is NOT NULL but has no DEFAULT \u2014 ALTER TABLE ADD COLUMN on a populated table would fail.`);
+    }
+  }
+}
+validateSchema("MEMORY_COLUMNS", MEMORY_COLUMNS);
+validateSchema("SESSIONS_COLUMNS", SESSIONS_COLUMNS);
+validateSchema("SKILLS_COLUMNS", SKILLS_COLUMNS);
+function buildCreateTableSql(tableName, cols) {
+  const safe = sqlIdent(tableName);
+  const colSql = cols.map((c) => `${c.name} ${c.sql}`).join(", ");
+  return `CREATE TABLE IF NOT EXISTS "${safe}" (${colSql}) USING deeplake`;
+}
+function buildIntrospectionSql(tableName, workspaceId) {
+  return `SELECT column_name FROM information_schema.columns WHERE table_name = '${sqlStr(tableName)}' AND table_schema = '${sqlStr(workspaceId)}'`;
+}
+async function healMissingColumns(args) {
+  const safeTable = sqlIdent(args.tableName);
+  const introspectSql = buildIntrospectionSql(args.tableName, args.workspaceId);
+  const rows = await args.query(introspectSql);
+  const existing = /* @__PURE__ */ new Set();
+  for (const row of rows) {
+    const v = row?.column_name;
+    if (typeof v === "string")
+      existing.add(v.toLowerCase());
+  }
+  const missingCols = args.columns.filter((c) => !existing.has(c.name.toLowerCase()));
+  const missing = missingCols.map((c) => c.name);
+  if (missingCols.length === 0)
+    return { missing, altered: [] };
+  const altered = [];
+  for (const col of missingCols) {
+    try {
+      await args.query(`ALTER TABLE "${safeTable}" ADD COLUMN ${col.name} ${col.sql}`);
+      altered.push(col.name);
+      args.log?.(`schema-heal: added "${args.tableName}"."${col.name}"`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/already exists/i.test(msg))
+        throw e;
+      const recheck = await args.query(introspectSql);
+      const present = recheck.some((r) => {
+        const v = r?.column_name;
+        return typeof v === "string" && v.toLowerCase() === col.name.toLowerCase();
+      });
+      if (!present)
+        throw e;
+      args.log?.(`schema-heal: "${args.tableName}"."${col.name}" appeared via race, treating as success`);
+    }
+  }
+  return { missing, altered };
+}
 
 // dist/src/deeplake-api.js
 var indexMarkerStorePromise = null;
@@ -383,64 +499,33 @@ var DeeplakeApi = class {
     }
   }
   /**
-   * Ensure a vector column exists on the given table.
+   * Heal any missing columns on a table so it matches one of the schema
+   * definitions in `deeplake-schema.ts`. One SELECT against
+   * `information_schema.columns` per call, then `ALTER TABLE ADD COLUMN`
+   * only the genuinely missing ones — never blanket, never `IF NOT
+   * EXISTS`.
    *
-   * The previous implementation always issued `ALTER TABLE ADD COLUMN IF NOT
-   * EXISTS …` on every SessionStart. On a long-running workspace that's
-   * already migrated, every call returns 500 "Column already exists" — noisy
-   * in the log and a wasted round-trip. Worse, the very first call after the
-   * column is genuinely added triggers Deeplake's post-ALTER `vector::at`
-   * window (~30s) during which subsequent INSERTs fail; minimising the
-   * number of ALTER calls minimises exposure to that window.
-   *
-   * New flow:
-   *   1. Check the local marker file (mirrors ensureLookupIndex). If fresh,
-   *      return — zero network calls.
-   *   2. SELECT 1 FROM information_schema.columns WHERE table_name = T AND
-   *      column_name = C. Read-only, idempotent, can't tickle the post-ALTER
-   *      bug. If the column is present → mark + return.
-   *   3. Only if step 2 says the column is missing, fall back to ALTER ADD
-   *      COLUMN IF NOT EXISTS. Mark on success, also mark if Deeplake reports
-   *      "already exists" (race: another client added it between our SELECT
-   *      and ALTER).
-   *
-   * Marker uses the same dir / TTL as ensureLookupIndex so both schema
-   * caches share an opt-out (HIVEMIND_INDEX_MARKER_DIR) and a TTL knob.
+   * History: an earlier path used a local marker file (`col_<name>` under
+   * the index-marker dir) to skip even the SELECT after the first
+   * confirmation, plus per-column ALTERs for `summary_embedding`,
+   * `message_embedding`, `agent`, `plugin_version`. The marker existed
+   * because Deeplake used to expose a ~30s post-ALTER bug where
+   * subsequent INSERTs failed, so we wanted to keep ALTER traffic to a
+   * minimum. The bug was re-verified on 2026-05-18 against
+   * `api.deeplake.ai` (`test_plugin` org) and no longer reproduces
+   * (71/71 INSERTs OK, first success 2ms after ALTER). The single SELECT
+   * + targeted ALTER pattern survives the marker removal because: each
+   * ALTER still costs ~800ms (so blanket sweeps are wasteful) and the
+   * diff produces clearer logs than "ALTER all with IF NOT EXISTS".
    */
-  async ensureEmbeddingColumn(table, column) {
-    await this.ensureColumn(table, column, "FLOAT4[]");
-  }
-  /**
-   * Generic marker-gated column migration. Same SELECT-then-ALTER flow as
-   * ensureEmbeddingColumn, parameterized by SQL type so it can patch up any
-   * column that was added to the schema after the table was originally
-   * created. Used today for `summary_embedding`, `message_embedding`, and
-   * the `agent` column (added 2026-04-11) — the latter has no fallback if
-   * a user upgraded over a pre-2026-04-11 table, so every INSERT fails
-   * with `column "agent" does not exist`.
-   */
-  async ensureColumn(table, column, sqlType) {
-    const markers = await getIndexMarkerStore();
-    const markerPath = markers.buildIndexMarkerPath(this.workspaceId, this.orgId, table, `col_${column}`);
-    if (markers.hasFreshIndexMarker(markerPath))
-      return;
-    const colCheck = `SELECT 1 FROM information_schema.columns WHERE table_name = '${sqlStr(table)}' AND column_name = '${sqlStr(column)}' AND table_schema = '${sqlStr(this.workspaceId)}' LIMIT 1`;
-    const rows = await this.query(colCheck);
-    if (rows.length > 0) {
-      markers.writeIndexMarker(markerPath);
-      return;
-    }
-    try {
-      await this.query(`ALTER TABLE "${table}" ADD COLUMN ${column} ${sqlType}`);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (!/already exists/i.test(msg))
-        throw e;
-      const recheck = await this.query(colCheck);
-      if (recheck.length === 0)
-        throw e;
-    }
-    markers.writeIndexMarker(markerPath);
+  async healSchema(table, columns) {
+    await healMissingColumns({
+      query: (sql) => this.query(sql),
+      tableName: table,
+      workspaceId: this.workspaceId,
+      columns,
+      log: log2
+    });
   }
   /** List all tables in the workspace (with retry). */
   async listTables(forceRefresh = false) {
@@ -511,20 +596,21 @@ var DeeplakeApi = class {
     }
     throw lastErr;
   }
-  /** Create the memory table if it doesn't already exist. Migrate columns on existing tables. */
+  /** Create the memory table if it doesn't already exist. Heal missing columns on existing tables. */
   async ensureTable(name) {
+    if (!MEMORY_COLUMNS.some((c) => c.name === SUMMARY_EMBEDDING_COL)) {
+      throw new Error(`MEMORY_COLUMNS missing "${SUMMARY_EMBEDDING_COL}" (embeddings/columns.ts drift)`);
+    }
     const tbl = sqlIdent(name ?? this.tableName);
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
       log2(`table "${tbl}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${tbl}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', summary_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', plugin_version TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, tbl);
+      await this.createTableWithRetry(buildCreateTableSql(tbl, MEMORY_COLUMNS), tbl);
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
     }
-    await this.ensureEmbeddingColumn(tbl, SUMMARY_EMBEDDING_COL);
-    await this.ensureColumn(tbl, "agent", "TEXT NOT NULL DEFAULT ''");
-    await this.ensureColumn(tbl, "plugin_version", "TEXT NOT NULL DEFAULT ''");
+    await this.healSchema(tbl, MEMORY_COLUMNS);
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
   async ensureSessionsTable(name) {
@@ -532,14 +618,12 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(safe)) {
       log2(`table "${safe}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${safe}" (id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '', message JSONB, message_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', plugin_version TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT '') USING deeplake`, safe);
+      await this.createTableWithRetry(buildCreateTableSql(safe, SESSIONS_COLUMNS), safe);
       log2(`table "${safe}" created`);
       if (!tables.includes(safe))
         this._tablesCache = [...tables, safe];
     }
-    await this.ensureEmbeddingColumn(safe, MESSAGE_EMBEDDING_COL);
-    await this.ensureColumn(safe, "agent", "TEXT NOT NULL DEFAULT ''");
-    await this.ensureColumn(safe, "plugin_version", "TEXT NOT NULL DEFAULT ''");
+    await this.healSchema(safe, SESSIONS_COLUMNS);
     await this.ensureLookupIndex(safe, "path_creation_date", `("path", "creation_date")`);
   }
   /**
@@ -557,11 +641,12 @@ var DeeplakeApi = class {
     const tables = await this.listTables();
     if (!tables.includes(safe)) {
       log2(`table "${safe}" not found, creating`);
-      await this.createTableWithRetry(`CREATE TABLE IF NOT EXISTS "${safe}" (id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL DEFAULT '', local_path TEXT NOT NULL DEFAULT '', install TEXT NOT NULL DEFAULT 'project', source_sessions TEXT NOT NULL DEFAULT '[]', source_agent TEXT NOT NULL DEFAULT '', scope TEXT NOT NULL DEFAULT 'me', author TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', trigger_text TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '', version BIGINT NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '') USING deeplake`, safe);
+      await this.createTableWithRetry(buildCreateTableSql(safe, SKILLS_COLUMNS), safe);
       log2(`table "${safe}" created`);
       if (!tables.includes(safe))
         this._tablesCache = [...tables, safe];
     }
+    await this.healSchema(safe, SKILLS_COLUMNS);
     await this.ensureLookupIndex(safe, "project_key_name", `("project_key", "name")`);
   }
 };

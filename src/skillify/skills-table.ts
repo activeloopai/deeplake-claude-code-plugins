@@ -1,52 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { sqlIdent } from "../utils/sql.js";
-
-/**
- * SQL to create the `skills` table. Mirror of ensureSkillsTable() in
- * deeplake-api.ts — kept inline so the worker can run it via its own
- * query() fn on first-INSERT-fails-because-missing, without dragging the
- * full DeeplakeApi class into the worker bundle.
- */
-export function createSkillsTableSql(tableName: string): string {
-  // sqlIdent throws on anything outside [A-Za-z_][A-Za-z0-9_]* — protects
-  // against HIVEMIND_SKILLS_TABLE config injection (a stray quote would
-  // otherwise break CREATE TABLE / CREATE INDEX startup).
-  const safe = sqlIdent(tableName);
-  return (
-    `CREATE TABLE IF NOT EXISTS "${safe}" (` +
-      `id TEXT NOT NULL DEFAULT '', ` +
-      `name TEXT NOT NULL DEFAULT '', ` +
-      `project TEXT NOT NULL DEFAULT '', ` +
-      `project_key TEXT NOT NULL DEFAULT '', ` +
-      `local_path TEXT NOT NULL DEFAULT '', ` +
-      `install TEXT NOT NULL DEFAULT 'project', ` +
-      `source_sessions TEXT NOT NULL DEFAULT '[]', ` +
-      `source_agent TEXT NOT NULL DEFAULT '', ` +
-      `scope TEXT NOT NULL DEFAULT 'me', ` +
-      `author TEXT NOT NULL DEFAULT '', ` +
-      // JSON array, e.g. ["alice","emanuele"]. Ordered chronologically by
-      // edit. Issue #118: lets the gate track cross-author edits and
-      // auto-promote scope=me -> scope=team when the editor != author.
-      `contributors TEXT NOT NULL DEFAULT '[]', ` +
-      `description TEXT NOT NULL DEFAULT '', ` +
-      `trigger_text TEXT NOT NULL DEFAULT '', ` +
-      `body TEXT NOT NULL DEFAULT '', ` +
-      `version BIGINT NOT NULL DEFAULT 1, ` +
-      `created_at TEXT NOT NULL DEFAULT '', ` +
-      `updated_at TEXT NOT NULL DEFAULT ''` +
-    `) USING deeplake`
-  );
-}
-
-/**
- * SQL to add the `contributors` column to a table that pre-dates the
- * column. Runs lazily on first INSERT-fails-because-column-missing, so
- * existing deployments keep working without an explicit migration step.
- */
-export function addContributorsColumnSql(tableName: string): string {
-  const safe = sqlIdent(tableName);
-  return `ALTER TABLE "${safe}" ADD COLUMN IF NOT EXISTS contributors TEXT NOT NULL DEFAULT '[]'`;
-}
+import {
+  SKILLS_COLUMNS,
+  buildCreateTableSql,
+  healMissingColumns,
+  isMissingTableError,
+  isMissingColumnError,
+} from "../deeplake-schema.js";
 
 /**
  * Insert one row into the Deeplake `skills` table per skill version.
@@ -61,6 +21,10 @@ export interface InsertSkillRowArgs {
   /** Async SQL executor (the worker's own `query` fn, the API client, or a test mock). */
   query: (sql: string) => Promise<unknown>;
   tableName: string;
+  /** Deeplake workspace id — needed for the heal-pass introspection so the
+   *  SELECT against `information_schema.columns` targets *this* workspace's
+   *  copy of the table (multi-tenant catalog disambiguation). */
+  workspaceId: string;
   /** Skill metadata. */
   name: string;
   project: string;
@@ -96,35 +60,6 @@ function esc(s: string): string {
     .replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 
-function isMissingTableError(message: string | undefined): boolean {
-  if (!message) return false;
-  // Match phrases that unambiguously indicate "the table itself isn't there".
-  // Notably we do NOT treat 'permission denied' as missing-table — it's a
-  // different problem (auth scope) and re-running CREATE TABLE wouldn't help.
-  //
-  // Postgres' missing-column error includes `relation "x" does not exist`
-  // as part of `column "y" of relation "x" does not exist`, which would
-  // otherwise false-match the second alternative below. Discriminate by
-  // bailing out when the word "column" appears anywhere in the message —
-  // a column-level error should route to isMissingContributorsColumnError
-  // (or rethrow), not to the CREATE TABLE retry.
-  if (/\bcolumn\b/i.test(message)) return false;
-  return /Table does not exist|relation .* does not exist|no such table/i.test(message);
-}
-
-/**
- * Recognises errors the backend emits when the `contributors` column is
- * missing — typically deployments that predate this column. Narrow on
- * purpose: we only want to react to "this column doesn't exist", not
- * other 400s. Tested against both Deeplake's wording and Postgres'
- * (`column "contributors" of relation "skills" does not exist`).
- */
-function isMissingContributorsColumnError(message: string | undefined): boolean {
-  if (!message) return false;
-  return /contributors.*(?:does not exist|not found|unknown)/i.test(message)
-    || /(?:does not exist|unknown column).*contributors/i.test(message);
-}
-
 export async function insertSkillRow(args: InsertSkillRowArgs): Promise<void> {
   const id = args.id ?? randomUUID();
   const sourceSessionsJson = JSON.stringify(args.sourceSessions);
@@ -155,18 +90,43 @@ export async function insertSkillRow(args: InsertSkillRowArgs): Promise<void> {
     `)`;
   try {
     await args.query(sql);
-  } catch (e: any) {
-    if (isMissingTableError(e?.message)) {
-      // Lazy-create the table on first use, then retry the insert once.
-      await args.query(createSkillsTableSql(args.tableName));
+    return;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (isMissingTableError(msg)) {
+      // Lazy-create on first use. Then run a heal pass before retrying:
+      // if another worker raced us and pre-created an older `skills`
+      // table between our INSERT and this CREATE, `CREATE TABLE IF NOT
+      // EXISTS` silently no-op'd against the legacy schema, and the
+      // retry would otherwise fail with the same missing-column error.
+      // healMissingColumns is cheap on a freshly-created table (1
+      // SELECT info_schema, 0 ALTERs).
+      await args.query(buildCreateTableSql(args.tableName, SKILLS_COLUMNS));
+      await healMissingColumns({
+        query: args.query,
+        tableName: args.tableName,
+        workspaceId: args.workspaceId,
+        columns: SKILLS_COLUMNS,
+      });
       await args.query(sql);
       return;
     }
-    if (isMissingContributorsColumnError(e?.message)) {
-      // Lazy ALTER for deployments that predate the contributors column
-      // (issue #118). One-shot retry — if the second INSERT still fails
-      // for any reason, the original error propagates.
-      await args.query(addContributorsColumnSql(args.tableName));
+    if (isMissingColumnError(msg)) {
+      // Any missing column — not just `contributors`. Run a heal pass over
+      // the full schema (one SELECT info_schema, ALTER only the missing
+      // ones — see deeplake-schema.ts) and retry the INSERT once. If the
+      // diff said nothing was missing, the original error came from a
+      // column outside our schema knowledge; rethrow rather than loop on
+      // a retry that can't help. (`altered` being empty isn't enough on
+      // its own — a race with another writer can heal every missing
+      // column for us, and we still want to retry the INSERT.)
+      const result = await healMissingColumns({
+        query: args.query,
+        tableName: args.tableName,
+        workspaceId: args.workspaceId,
+        columns: SKILLS_COLUMNS,
+      });
+      if (result.missing.length === 0) throw e;
       await args.query(sql);
       return;
     }
