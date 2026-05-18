@@ -37,6 +37,7 @@
     "cli": "tsx src/cli/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "e2e": "tsx tests/e2e/runner.ts",
     "dup": "jscpd src",
     "audit:openclaw": "node scripts/audit-openclaw-bundle.mjs",
     "pack:check": "node scripts/pack-check.mjs",

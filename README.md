@@ -316,6 +316,13 @@ Interactive shell against Deeplake:
 npm run shell
 ```
 
+Cross-agent end-to-end matrix — drives all six agent runtimes (five CLI subprocess, OpenClaw via programmatic event firing) through real prompts against a Deeplake test workspace; manually triggered, not on every PR:
+
+```bash
+npm run e2e            # full matrix; see tests/e2e/README.md for env vars
+npm run e2e -- --list  # print the matrix without spawning
+```
+
 ## License
 
 Apache License 2.0 — © Activeloop, Inc. See [LICENSE](LICENSE) for details.

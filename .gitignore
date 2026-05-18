@@ -18,3 +18,5 @@ bun.lock
 deploy-to-cache.sh
 .followups-pr97.md
 .followups-pr98.md
+# e2e harness per-run output artifacts (summary.json + sandbox dumps)
+tests/e2e/results/

@@ -1,0 +1,87 @@
+name: E2E (cross-agent matrix)
+
+# Manual trigger only. This workflow spawns real agent CLIs against real
+# provider APIs and a dedicated Deeplake test workspace — every run costs
+# real money and takes ~10 minutes. We deliberately do NOT run it on
+# every PR; the source + bundle byte-checks in `npm test` keep gating
+# merges. Use this workflow as a release-readiness gate by triggering it
+# manually from the Actions tab against your feature branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      case_filter:
+        description: "Only run this case id (e.g. 01-capture-smoke). Leave blank for all."
+        required: false
+        type: string
+      agent_filter:
+        description: "Only run this agent id (e.g. claude-code). Leave blank for all."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Tier-1 cross-agent matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Gate the job on creds being present. Forks without the e2e secret
+    # see a clean skip in the Actions UI rather than a misleading red.
+    if: ${{ github.event.repository.full_name == 'activeloopai/hivemind' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build bundles
+        # The harness drives the actual bundles for codex/cursor/hermes/pi
+        # (claude-code uses --plugin-dir against the source tree). Without
+        # build, `hivemind <agent> install` would copy stale or missing
+        # bundle files into the tmp HOME.
+        run: npm run build
+
+      - name: Install agent CLIs
+        # Each tier-1 agent CLI must be on PATH for its driver to spawn.
+        # We install the npm-distributed CLIs here; cursor-agent and
+        # hermes are typically installed via the agent vendor's own
+        # installer outside the npm ecosystem. If those binaries are
+        # not on a CI runner, their driver will fail with a clear
+        # "spawn error" and the matrix continues.
+        run: |
+          npm install -g @anthropic-ai/claude-code @openai/codex
+          # Pi ships via npm too.
+          npm install -g @piapp/cli || true
+          # cursor-agent and hermes — install via curl when available;
+          # if not, their points fail loudly rather than silently skip.
+          curl -fsSL https://cursor.com/install-cli.sh | bash -s -- --print 2>/dev/null || echo "cursor-agent install skipped"
+          # Hermes install would go here; install method varies by vendor.
+          which claude codex pi cursor-agent hermes 2>&1 || true
+
+      - name: Run e2e matrix
+        env:
+          HIVEMIND_E2E_CREDS_JSON: ${{ secrets.HIVEMIND_E2E_CREDS_JSON }}
+          ANTHROPIC_API_KEY: ${{ secrets.HIVEMIND_E2E_ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.HIVEMIND_E2E_OPENAI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.HIVEMIND_E2E_GOOGLE_API_KEY }}
+        run: |
+          args=()
+          if [ -n "${{ inputs.case_filter }}" ]; then args+=(--case "${{ inputs.case_filter }}"); fi
+          if [ -n "${{ inputs.agent_filter }}" ]; then args+=(--agent "${{ inputs.agent_filter }}"); fi
+          npm run e2e -- "${args[@]}"
+
+      - name: Upload summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-summary
+          path: tests/e2e/results/
+          if-no-files-found: warn
+          retention-days: 30
