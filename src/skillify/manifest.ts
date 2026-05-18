@@ -18,10 +18,10 @@
  */
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { migrateLegacyStateDir } from "./legacy-migration.js";
 import type { InstallLocation } from "./scope-config.js";
+import { getStateDir } from "./state-dir.js";
 
 export interface PulledEntry {
   /** Directory name on disk (e.g. "meta-harness-continual-learning--d"). */
@@ -63,8 +63,14 @@ function emptyManifest(): PulledManifest {
   return { version: 1, entries: [] };
 }
 
+// Routed through `getStateDir()` so the pulled-skills manifest lives next
+// to the rest of skillify state (`HIVEMIND_STATE_DIR`-aware). Without
+// this, tests that called `recordPull` / `unlinkSymlinks` would still
+// write `pulled.json` into the developer's real `~/.deeplake` while the
+// lock and counter state landed in the tmp dir — inconsistent state
+// across the same directory tree.
 export function manifestPath(): string {
-  return join(homedir(), ".deeplake", "state", "skillify", "pulled.json");
+  return join(getStateDir(), "pulled.json");
 }
 
 export function loadManifest(path: string = manifestPath()): PulledManifest {

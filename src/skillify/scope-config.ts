@@ -16,9 +16,9 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { migrateLegacyStateDir } from "./legacy-migration.js";
+import { getStateDir } from "./state-dir.js";
 
 export type Scope = "me" | "team";
 export type InstallLocation = "project" | "global";
@@ -34,13 +34,18 @@ export interface ScopeConfig {
   install: InstallLocation;
 }
 
-const STATE_DIR = join(homedir(), ".deeplake", "state", "skillify");
-const CONFIG_PATH = join(STATE_DIR, "config.json");
+// Resolved per call so `HIVEMIND_STATE_DIR` redirects from tests and
+// alternate installs land in the same dir as the worker's lock/state files
+// instead of leaking into the developer's real `~/.deeplake`.
+function configPath(): string {
+  return join(getStateDir(), "config.json");
+}
 
 const DEFAULT: ScopeConfig = { scope: "me", team: [], install: "project" };
 
 export function loadScopeConfig(): ScopeConfig {
   migrateLegacyStateDir();
+  const CONFIG_PATH = configPath();
   if (!existsSync(CONFIG_PATH)) return DEFAULT;
   try {
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
@@ -64,6 +69,6 @@ export function loadScopeConfig(): ScopeConfig {
 
 export function saveScopeConfig(cfg: ScopeConfig): void {
   migrateLegacyStateDir();
-  mkdirSync(STATE_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+  mkdirSync(getStateDir(), { recursive: true });
+  writeFileSync(configPath(), JSON.stringify(cfg, null, 2));
 }
