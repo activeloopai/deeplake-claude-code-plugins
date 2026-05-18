@@ -67282,6 +67282,9 @@ var DeeplakeApi = class {
   }
   /** Create the memory table if it doesn't already exist. Heal missing columns on existing tables. */
   async ensureTable(name) {
+    if (!MEMORY_COLUMNS.some((c15) => c15.name === SUMMARY_EMBEDDING_COL)) {
+      throw new Error(`MEMORY_COLUMNS missing "${SUMMARY_EMBEDDING_COL}" (embeddings/columns.ts drift)`);
+    }
     const tbl = sqlIdent(name ?? this.tableName);
     const tables = await this.listTables();
     if (!tables.includes(tbl)) {
@@ -67290,12 +67293,8 @@ var DeeplakeApi = class {
       log2(`table "${tbl}" created`);
       if (!tables.includes(tbl))
         this._tablesCache = [...tables, tbl];
-      return;
     }
     await this.healSchema(tbl, MEMORY_COLUMNS);
-    if (!MEMORY_COLUMNS.some((c15) => c15.name === SUMMARY_EMBEDDING_COL)) {
-      throw new Error(`MEMORY_COLUMNS missing "${SUMMARY_EMBEDDING_COL}" (embeddings/columns.ts drift)`);
-    }
   }
   /** Create the sessions table (uses JSONB for message since every row is a JSON event). */
   async ensureSessionsTable(name) {
@@ -67307,9 +67306,8 @@ var DeeplakeApi = class {
       log2(`table "${safe}" created`);
       if (!tables.includes(safe))
         this._tablesCache = [...tables, safe];
-    } else {
-      await this.healSchema(safe, SESSIONS_COLUMNS);
     }
+    await this.healSchema(safe, SESSIONS_COLUMNS);
     await this.ensureLookupIndex(safe, "path_creation_date", `("path", "creation_date")`);
   }
   /**
@@ -67331,9 +67329,8 @@ var DeeplakeApi = class {
       log2(`table "${safe}" created`);
       if (!tables.includes(safe))
         this._tablesCache = [...tables, safe];
-    } else {
-      await this.healSchema(safe, SKILLS_COLUMNS);
     }
+    await this.healSchema(safe, SKILLS_COLUMNS);
     await this.ensureLookupIndex(safe, "project_key_name", `("project_key", "name")`);
   }
 };

@@ -473,6 +473,12 @@ async function insertSkillRow(args) {
     const msg = e instanceof Error ? e.message : String(e);
     if (isMissingTableError(msg)) {
       await args.query(buildCreateTableSql(args.tableName, SKILLS_COLUMNS));
+      await healMissingColumns({
+        query: args.query,
+        tableName: args.tableName,
+        workspaceId: args.workspaceId,
+        columns: SKILLS_COLUMNS
+      });
       await args.query(sql);
       return;
     }
