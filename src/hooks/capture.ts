@@ -25,6 +25,7 @@ import { tryStopCounterTrigger } from "../skillify/triggers.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingSqlLiteral } from "../embeddings/sql.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
+import { ensurePluginNodeModulesLink } from "../embeddings/self-heal.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { getInstalledVersion } from "../utils/version-check.js";
@@ -36,6 +37,15 @@ function resolveEmbedDaemonPath(): string {
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_VERSION = getInstalledVersion(__bundleDir, ".claude-plugin") ?? "";
+
+// Self-heal the shared-deps symlink for this plugin version. Marketplace
+// auto-upgrades drop new versioned cache dirs without the symlink that
+// `hivemind embeddings install` originally created; this restores it on
+// first capture after each upgrade. No-op when the symlink already exists,
+// shared deps are not installed, or the user has disabled embeddings.
+if (!embeddingsDisabled()) {
+  try { ensurePluginNodeModulesLink({ bundleDir: __bundleDir }); } catch { /* best-effort */ }
+}
 
 interface HookInput {
   session_id: string;

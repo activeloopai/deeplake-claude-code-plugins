@@ -6,28 +6,28 @@ Research notes on each agent's harness behavior — what stdout / stderr / JSON 
 
 ## Current implementation status
 
-**Only Claude Code has a real delivery adapter.** Other agents will be added one at a time as we expand based on usage:
+**Claude Code uses the `delivery/claude-code.ts` adapter via the notifications framework. Codex emits the same `systemMessage` JSON shape directly from its own session-start hook (no shared adapter — it's a per-hook concern, not a framework concern).** Other agents either lack a user-visible channel entirely (Cursor, Pi) or are blocked by upstream bugs (Hermes).
 
-| Agent | Adapter shipped? | Roadmap order |
-|---|---|---|
-| Claude Code | ✅ `delivery/claude-code.ts` (dual-channel: `systemMessage` + `additionalContext`) | shipped |
-| openclaw | ❌ — | next |
-| Codex | ❌ — | TBD |
-| Cursor | ❌ — | TBD |
-| Hermes | ❌ — | TBD |
-| Pi | ❌ — no SessionStart hook upstream | TBD |
+| Agent | User-visible CTA shipped? | How | Roadmap |
+|---|---|---|---|
+| Claude Code | ✅ `delivery/claude-code.ts` via notifications framework (dual-channel JSON) | `systemMessage` + nested `hookSpecificOutput.additionalContext` | shipped |
+| Codex | ✅ in `src/hooks/codex/session-start.ts` directly | `systemMessage` + nested `hookSpecificOutput.additionalContext` | shipped |
+| Cursor | ❌ — Cursor's `sessionStart` hook API does not expose a user-visible channel (only `env` + `additional_context`) | model-visible only | not feasible without upstream change |
+| Hermes | ❌ — upstream bug: `on_session_start` return value discarded at `run_agent.py:9777-9786` | nothing surfaces | needs `pre_llm_call` migration or upstream fix |
+| Pi | ❌ — extension API has no user-visible session-start channel | model-visible via the extension's own context injection | not feasible without upstream change |
+| openclaw | TBD — research before implementing | TBD | TBD |
 
 When a new adapter lands: add the agent string to the `Agent` union in `types.ts`, create `delivery/<agent>.ts`, wire it into the dispatch table in `delivery/index.ts`. The notes below tell you exactly what shape each agent's harness needs.
 
 ## TL;DR — per-agent harness behavior
 
-| Agent | Multi-hook → distinct context blocks? | Stderr → user? | Recommended delivery shape |
-|---|---|---|---|
-| **Claude Code** | ✅ YES — additionalContext from each hook collected into an array | ❌ stderr captured but NOT rendered as of CC 2.1.131 — use `systemMessage` instead | dual-channel JSON: top-level `systemMessage` (user-visible: renders as `SessionStart:startup says: <text>`) + nested `hookSpecificOutput.additionalContext` (model-visible) |
-| **Codex** | ❌ NO — flattened `Vec<String>`, joined with `\n\n` downstream | ❌ NO — discarded | inline-append into existing session-start.js with a clear divider section |
-| **Hermes** | ❌ NO — `on_session_start` return value DISCARDED entirely at `run_agent.py:9777-9786` | ❌ NO — captured to `logger.debug` only | register a `pre_llm_call` hook with framework-side per-`session_id` dedup (fire only on first turn) |
-| **Cursor** | ⚠️ Unknown (closed-source GUI; docs imply concat) | ⚠️ Unknown | run `probe-cursor.js` first to verify; expected to follow the Codex inline-append pattern |
-| **openclaw** | TBD — research before implementing | TBD | TBD |
+| Agent | Multi-hook → distinct context blocks? | Stderr → user? | User-visible JSON field | Recommended delivery shape |
+|---|---|---|---|---|
+| **Claude Code** | ✅ YES — additionalContext from each hook collected into an array | ❌ stderr captured but NOT rendered as of CC 2.1.131 — use `systemMessage` instead | ✅ top-level `systemMessage` → renders as `SessionStart:startup says: <text>` | dual-channel JSON: top-level `systemMessage` (user-visible) + nested `hookSpecificOutput.additionalContext` (model-visible) |
+| **Codex** | ❌ NO — flattened `Vec<String>`, joined with `\n\n` downstream | ❌ NO — discarded | ✅ top-level `systemMessage` (since 0.130.0, schema-strict) → renders as `warning: <text>` inside `• SessionStart hook (completed)` history cell after the first turn | dual-channel JSON: top-level `systemMessage` + nested `hookSpecificOutput.additionalContext`. `#[serde(deny_unknown_fields)]` on the wire type means ANY unknown field fails the parse → falls back to plain-text into additional_context (silent loss of `systemMessage`). |
+| **Hermes** | ❌ NO — `on_session_start` return value DISCARDED entirely at `run_agent.py:9777-9786` | ❌ NO — captured to `logger.debug` only | ❌ none | register a `pre_llm_call` hook with framework-side per-`session_id` dedup (fire only on first turn) |
+| **Cursor** | ⚠️ docs imply concat into `additional_context` | ⚠️ Unknown | ❌ none — only `env` + `additional_context` per cursor.com docs (May 2026) | model-visible only via `additional_context` |
+| **openclaw** | TBD — research before implementing | TBD | TBD | TBD |
 
 ## Findings (source-level)
 
@@ -47,13 +47,32 @@ Empirical evidence preserved in the session JSONL captured by the probe — see 
 
 **Caveat:** the VS Code extension does not render `systemMessage` (issue #15344). Terminal CLI users get the full UX; IDE users get model-only delivery.
 
-### Codex — verified upstream source (`openai/codex@main`)
+### Codex — verified empirically against 0.130.0 + upstream source (`openai/codex@main`)
 
-- `codex-rs/hooks/src/events/session_start.rs` parses each command's stdout (JSON first, plain text fallback into `additional_context`).
-- `codex-rs/hooks/src/events/common.rs::flatten_additional_contexts` collects all hooks' contexts as a `Vec<String>` of separate items.
-- Downstream those entries are joined with `"\n\n"` for the model — **concatenation, not separate blocks**.
+**This section was wrong in the first pass** — the original research was done against an older Codex (~0.118.0) when JSON output was rejected entirely and stdout was always treated as plain text. As of 0.130.0 the wire schema accepts a full hook output object:
+
+- `codex-rs/hooks/src/schema.rs::HookUniversalOutputWire` is `#[serde(rename_all = "camelCase")]` + `#[serde(deny_unknown_fields)]` with fields `continue`, `stopReason`, `suppressOutput`, **`systemMessage`** (Option<String>).
+- `codex-rs/hooks/src/schema.rs::SessionStartCommandOutputWire` flattens the universal output and adds `hookSpecificOutput` containing `{ hookEventName: "SessionStart", additionalContext }`.
+- `codex-rs/hooks/src/events/session_start.rs::parse_completed`:
+  - JSON parse success → if `system_message` is present, push `HookOutputEntry { kind: Warning, text: system_message }`; if `additional_context` is present, push it as `Context` and into `additional_contexts_for_model`.
+  - JSON parse failure but `looks_like_json` → mark `HookRunStatus::Failed` with an Error entry "hook returned invalid session start JSON output".
+  - Plain text fallback → whole stdout goes into `additional_context` (model-visible only — `systemMessage` is silently lost).
+- `codex-rs/tui/src/history_cell/hook_cell.rs` renders Warning entries with prefix `"warning: "`, Context entries with `"hook context: "`. The hook bullet `• SessionStart hook (completed)` appears in the conversation history **after the first user prompt** (no rendering on the empty splash screen).
 - `parse_completed()` only reads stdout; `result.stderr` field exists but is never inspected — **stderr discarded**.
-- **v1 implication:** registering a second hook command does NOT produce a distinct context block — the user's "but not DEEPLAKE MEMORY, HIVEMIND" requirement cannot be honored at the harness level.
+
+**Hook execution requires both:**
+1. `[features].hooks = true` in `config.toml` (or `--enable hooks` flag). The legacy `[features].codex_hooks = true` is deprecated as of 0.130.0 and prints a warning. Without either, hooks are silently disabled.
+2. Per-hook approval: codex computes a `sha256` of the hook command + writes a `[hooks.state."<path>:<event>:<idx>:<idx>"]` trusted_hash entry in `config.toml`. Users approve unapproved hooks via `/hooks` in the TUI. Until approved, a `⚠ N hooks need review before they can run` banner appears and the hook is skipped.
+
+**Verified live** with the `localMinedRule` injection: rendering produces
+
+```
+• SessionStart hook (completed)
+  warning: 💡 5 skills mined from your local sessions live in ~/.claude/skills/. Run 'hivemind login' to share them with your team.
+  hook context: DEEPLAKE MEMORY: ...
+```
+
+**v1 implication:** Codex has the SAME systemMessage user-visible channel as Claude Code. `src/hooks/codex/session-start.ts` was migrated from plain-text stdout to JSON output mirroring CC's dual-channel shape. No shared `delivery/codex.ts` adapter needed — the hook itself emits the JSON.
 
 ### Hermes — verified upstream source (`~/.hermes/hermes-agent/`)
 

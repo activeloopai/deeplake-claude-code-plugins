@@ -445,4 +445,58 @@ describe("usage", () => {
     expectExit(1, () => runSkillifyCommand(["totally-unknown"]));
     expect(erred.join("\n")).toMatch(/Unknown skillify subcommand/);
   });
+
+  it("--help mentions the mine-local subcommand", () => {
+    runSkillifyCommand(["--help"]);
+    expect(logged.join("\n")).toMatch(/mine-local/);
+  });
+
+  it("--help documents the correct --n default (matches DEFAULT_N = 8)", () => {
+    runSkillifyCommand(["--help"]);
+    // DEFAULT_N in src/commands/mine-local.ts is 8 — help text must agree.
+    expect(logged.join("\n")).toMatch(/--n.*default: 8/);
+    expect(logged.join("\n")).not.toMatch(/--n.*default: 3/);
+  });
+});
+
+// ── mine-local subcommand wiring ──────────────────────────────────────────
+//
+// The mine-local orchestrator is exhaustively tested in
+// mine-local-orchestrator.test.ts. Here we only assert the CLI surface:
+// the subcommand dispatch forwards remaining args to runMineLocal and
+// catches errors via process.exit(1).
+
+describe("mine-local subcommand", () => {
+  it("dispatches to runMineLocal with the remaining args", async () => {
+    vi.doMock("../../src/commands/mine-local.js", () => ({
+      runMineLocal: vi.fn().mockResolvedValue(undefined),
+    }));
+    vi.resetModules();
+    const { runSkillifyCommand: cmd } = await import("../../src/commands/skillify.js");
+    const mod = await import("../../src/commands/mine-local.js");
+    cmd(["mine-local", "--dry-run", "--n", "3"]);
+    await new Promise(r => setImmediate(r));
+    expect((mod.runMineLocal as any)).toHaveBeenCalledWith(["--dry-run", "--n", "3"]);
+  });
+
+  it("rejected runMineLocal triggers process.exit(1) via .catch handler", async () => {
+    // Swap the default `throw`-on-exit mock for this test only: the .catch
+    // arrow in skillify.ts calls process.exit(1) WITHOUT a surrounding
+    // try/catch, so a throwing mock surfaces as an unhandled rejection and
+    // fails CI. Track the call without throwing.
+    const exitCalls: number[] = [];
+    exitSpy.mockImplementation(((code?: number) => { exitCalls.push(code ?? 0); }) as any);
+
+    vi.doMock("../../src/commands/mine-local.js", () => ({
+      runMineLocal: vi.fn().mockRejectedValue(new Error("synthetic mine-local fail")),
+    }));
+    vi.resetModules();
+    const { runSkillifyCommand: cmd } = await import("../../src/commands/skillify.js");
+    cmd(["mine-local"]);
+    // Wait for the rejected promise to flush through the chain.
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    expect(exitCalls).toContain(1);
+    expect(erred.join("\n")).toMatch(/synthetic mine-local fail/);
+  });
 });

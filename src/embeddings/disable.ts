@@ -3,57 +3,59 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { getEmbeddingsEnabled } from "../user-config.js";
+
 /**
  * Master opt-out for the embedding feature.
  *
  * Embeddings are off when EITHER:
  *
- * 1. `HIVEMIND_EMBEDDINGS=false` is set — explicit opt-out for air-gapped /
- *    no-network installs, CI / benchmarks that want pure-lexical retrieval,
- *    and users who don't want the ~110 MB nomic download.
+ * 1. The user has opted out via `~/.deeplake/config.json` →
+ *    `embeddings.enabled: false`. Set by `hivemind embeddings disable` or
+ *    `hivemind embeddings uninstall`, or by the one-shot migration that
+ *    seeds the config from `HIVEMIND_EMBEDDINGS` on first run.
  *
- * 2. `@huggingface/transformers` is not resolvable from this bundle — the
- *    plugin ships without it (it has native deps that can't be bundled into
- *    the daemon). A fresh marketplace install lacks it; the README documents
- *    the optional `npm install @huggingface/transformers` step. When absent,
- *    we degrade silently to lexical-only mode rather than spawning a daemon
- *    that will crash on `import("@huggingface/transformers")` and emit
- *    confusing logs.
+ * 2. `@huggingface/transformers` is not resolvable — the plugin ships
+ *    without it (native deps can't be bundled). A fresh marketplace install
+ *    lacks it until the user runs `hivemind embeddings install`. When
+ *    absent, we degrade silently to lexical-only mode rather than spawning
+ *    a daemon that will crash on import.
  *
- * In either case: SessionStart skips the warmup, capture / wiki-worker write
- * rows with NULL in the embedding column, and `Grep` falls back to BM25 /
- * ILIKE matching on text columns. Existing rows' embeddings remain readable.
+ * In either case: SessionStart skips the warmup, capture / wiki-worker
+ * write rows with NULL in the embedding column, and `Grep` falls back to
+ * BM25 / ILIKE matching on text columns. Existing rows' embeddings remain
+ * readable.
  *
- * Read-once: cached for the lifetime of the (short-lived) hook process so a
- * live `export HIVEMIND_EMBEDDINGS=...` takes effect on the next session.
+ * Read-once: the status is cached for the lifetime of the (short-lived)
+ * hook process. `hivemind embeddings enable|disable` takes effect on the
+ * next session, after the daemon is recycled.
  */
 
-export type EmbeddingsStatus = "enabled" | "env-disabled" | "no-transformers";
+export type EmbeddingsStatus = "enabled" | "user-disabled" | "no-transformers";
 
 let cachedStatus: EmbeddingsStatus | null = null;
 
 function defaultResolveTransformers(): void {
-  // Resolve from this module's location — the same node_modules walk Node
-  // would do for the spawned daemon, since the daemon lives in the same
-  // bundle dir tree (true for CC/codex/cursor/hermes which symlink their
-  // plugin's node_modules to the shared deps).
+  // Try the canonical shared-deps location first — this is the location
+  // `hivemind embeddings install` populates, and the location the daemon
+  // resolves from in production. Probing here matches what will actually
+  // be loaded at runtime, eliminating the previous probe/use asymmetry
+  // (probe said enabled, daemon then failed with MODULE_NOT_FOUND).
+  const sharedDir = join(homedir(), ".hivemind", "embed-deps");
   try {
-    createRequire(import.meta.url).resolve("@huggingface/transformers");
+    createRequire(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
     return;
   } catch { /* fall through */ }
-  // Fall back to the canonical shared deps location. Pi (and any future
-  // agent that doesn't ship a per-agent bundle adjacent to a node_modules)
-  // lands here: the shared deps at ~/.hivemind/embed-deps/node_modules
-  // are populated by `hivemind embeddings install`, and the daemon spawn
-  // resolves transformers via that exact dir.
-  const sharedDir = join(homedir(), ".hivemind", "embed-deps");
-  createRequire(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
+  // Bundle-relative walk for the dev tree or any future install layout
+  // that colocates `node_modules` next to the running file.
+  createRequire(import.meta.url).resolve("@huggingface/transformers");
 }
 
 let _resolve: () => void = defaultResolveTransformers;
+let _readEnabled: () => boolean = getEmbeddingsEnabled;
 
 function detectStatus(): EmbeddingsStatus {
-  if (process.env.HIVEMIND_EMBEDDINGS === "false") return "env-disabled";
+  if (!_readEnabled()) return "user-disabled";
   try {
     _resolve();
     return "enabled";
@@ -73,16 +75,22 @@ export function embeddingsDisabled(): boolean {
 }
 
 // ── Test helpers ────────────────────────────────────────────────────────────
-// Exposed so unit tests can simulate "transformers not installed" without
-// actually uninstalling the package. Underscore-prefixed and intentionally
-// not re-exported from any public entry point — runtime never calls these.
+// Exposed so unit tests can simulate "transformers not installed" or
+// "user opted out" without touching real env or disk. Underscore-prefixed
+// and intentionally not re-exported from any public entry point.
 
 export function _setResolveForTesting(fn: () => void): void {
   _resolve = fn;
   cachedStatus = null;
 }
 
+export function _setEnabledReaderForTesting(fn: () => boolean): void {
+  _readEnabled = fn;
+  cachedStatus = null;
+}
+
 export function _resetForTesting(): void {
   _resolve = defaultResolveTransformers;
+  _readEnabled = getEmbeddingsEnabled;
   cachedStatus = null;
 }

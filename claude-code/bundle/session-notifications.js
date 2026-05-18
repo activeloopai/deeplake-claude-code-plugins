@@ -59,18 +59,21 @@ function evaluateRules(trigger, ctx) {
 }
 
 // dist/src/notifications/queue.js
-import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, renameSync, mkdirSync as mkdirSync2 } from "node:fs";
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, renameSync, mkdirSync as mkdirSync2, openSync, closeSync, unlinkSync as unlinkSync2, statSync } from "node:fs";
 import { join as join3, resolve } from "node:path";
 import { homedir as homedir3 } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 
 // dist/src/utils/debug.js
 import { appendFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
-var DEBUG = process.env.HIVEMIND_DEBUG === "1";
 var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
+function isDebug() {
+  return process.env.HIVEMIND_DEBUG === "1";
+}
 function log(tag, msg) {
-  if (!DEBUG)
+  if (!isDebug())
     return;
   appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
 `);
@@ -94,10 +97,15 @@ function readQueue() {
     return { queue: [] };
   }
 }
+function _isQueuePathInsideHome(path, home) {
+  const r = resolve(path);
+  const h = resolve(home);
+  return r.startsWith(h + "/") || r === h;
+}
 function writeQueue(q) {
   const path = queuePath();
   const home = resolve(homedir3());
-  if (!resolve(path).startsWith(home + "/") && resolve(path) !== home) {
+  if (!_isQueuePathInsideHome(path, home)) {
     throw new Error(`notifications-queue write blocked: ${path} is outside ${home}`);
   }
   mkdirSync2(join3(home, ".deeplake"), { recursive: true, mode: 448 });
@@ -107,7 +115,7 @@ function writeQueue(q) {
 }
 
 // dist/src/notifications/state.js
-import { closeSync, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync3, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { closeSync as closeSync2, mkdirSync as mkdirSync3, openSync as openSync2, readFileSync as readFileSync3, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
 import { createHash } from "node:crypto";
 import { join as join4, resolve as resolve2 } from "node:path";
 import { homedir as homedir4 } from "node:os";
@@ -166,8 +174,8 @@ function tryClaim(n) {
   const safeId = n.id.replace(/[^a-zA-Z0-9_.:-]/g, "_");
   const claimPath = join4(claimsDir, `${safeId}-${keyHash}`);
   try {
-    const fd = openSync(claimPath, "wx", 384);
-    closeSync(fd);
+    const fd = openSync2(claimPath, "wx", 384);
+    closeSync2(fd);
     return true;
   } catch (e) {
     if (e?.code === "EEXIST")
@@ -432,7 +440,12 @@ async function drainSessionStart(opts) {
   try {
     const state = readState();
     const queue = readQueue();
-    const ctx = { agent: opts.agent, creds: opts.creds, state };
+    const ctx = {
+      agent: opts.agent,
+      creds: opts.creds,
+      state,
+      localSkillsCount: opts.localSkillsCount ?? null
+    };
     const fromRules = evaluateRules("session_start", ctx);
     const fromQueue = queue.queue;
     const fromBackend = await fetchBackendNotifications(opts.creds);
@@ -485,9 +498,50 @@ var welcomeRule = {
   }
 };
 
+// dist/src/notifications/rules/local-mined.js
+var localMinedRule = {
+  id: "local-mined-surfaced",
+  trigger: "session_start",
+  evaluate({ creds, localSkillsCount }) {
+    if (creds?.token)
+      return null;
+    if (typeof localSkillsCount !== "number" || localSkillsCount <= 0)
+      return null;
+    const noun = localSkillsCount === 1 ? "skill" : "skills";
+    return {
+      id: "local-mined-surfaced",
+      severity: "info",
+      title: `\u{1F389} ${localSkillsCount} ${noun} mined from your local sessions`,
+      body: `Run 'hivemind login' to share new mining results with your team.`,
+      dedupKey: { count: localSkillsCount }
+    };
+  }
+};
+
+// dist/src/skillify/local-manifest.js
+import { existsSync as existsSync2, mkdirSync as mkdirSync5, readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "node:fs";
+import { homedir as homedir6 } from "node:os";
+import { dirname as dirname2, join as join6 } from "node:path";
+var LOCAL_MANIFEST_PATH = join6(homedir6(), ".claude", "hivemind", "local-mined.json");
+var LOCAL_MINE_LOCK_PATH = join6(homedir6(), ".claude", "hivemind", "local-mined.lock");
+function readLocalManifest(path = LOCAL_MANIFEST_PATH) {
+  if (!existsSync2(path))
+    return null;
+  try {
+    return JSON.parse(readFileSync5(path, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+function countLocalManifestEntries(path = LOCAL_MANIFEST_PATH) {
+  const m = readLocalManifest(path);
+  return Array.isArray(m?.entries) ? m.entries.length : 0;
+}
+
 // dist/src/hooks/session-notifications.js
 var log8 = (msg) => log("session-notifications", msg);
 registerRule(welcomeRule);
+registerRule(localMinedRule);
 async function main() {
   if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
@@ -495,7 +549,12 @@ async function main() {
   const rawSessionId = typeof input?.session_id === "string" ? input.session_id.trim() : "";
   const sessionId = rawSessionId.length > 0 ? rawSessionId : void 0;
   const creds = loadCredentials();
-  await drainSessionStart({ agent: "claude-code", creds, sessionId });
+  let localSkillsCount = null;
+  try {
+    localSkillsCount = countLocalManifestEntries();
+  } catch {
+  }
+  await drainSessionStart({ agent: "claude-code", creds, sessionId, localSkillsCount });
 }
 main().catch((e) => {
   log8(`fatal: ${e?.message ?? String(e)}`);

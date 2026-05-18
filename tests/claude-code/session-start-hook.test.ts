@@ -58,6 +58,16 @@ vi.mock("../../src/utils/version-check.js", async (importOriginal) => {
   return { ...actual, getInstalledVersion: (...a: unknown[]) => getInstalledVersionMock(...a) };
 });
 
+// countLocalManifestEntries mocked so we can drive the three branches of
+// the not-logged-in `localMinedNote` ternary (0 → empty, 1 → "1 local skill",
+// N>1 → "N local skills") without depending on the developer's real
+// ~/.claude/hivemind/local-mined.json.
+const countLocalManifestEntriesMock = vi.fn();
+vi.mock("../../src/skillify/local-manifest.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/skillify/local-manifest.js")>();
+  return { ...actual, countLocalManifestEntries: (...a: unknown[]) => countLocalManifestEntriesMock(...a) };
+});
+
 let stdoutLines: string[] = [];
 const stdoutSpy = vi.spyOn(process.stdout, "write");
 
@@ -107,6 +117,8 @@ beforeEach(() => {
   queryMock.mockReset().mockResolvedValue([]); // "no existing summary"
   autoUpdateMock.mockReset().mockResolvedValue(undefined);
   getInstalledVersionMock.mockReset().mockReturnValue("9.9.9");
+  // Default: no manifest → 0 mined skills. Individual tests override.
+  countLocalManifestEntriesMock.mockReset().mockReturnValue(0);
   // Disable auto-pull during this test: autoPullSkills would otherwise issue
   // an extra SQL query (against `skills`) through the same DeeplakeApi mock,
   // breaking the placeholder-branching call-count assertions. The auto-pull
@@ -317,5 +329,62 @@ describe("session-start hook — context shape edge cases", () => {
     const out = await runHook();
     const parsed = JSON.parse(out!);
     expect(parsed.hookSpecificOutput.additionalContext).toContain("workspace: default");
+  });
+
+  // ── Not-logged-in localMinedNote ternary branches ───────────────────────────
+  // Three branches in src/hooks/session-start.ts ~line 216:
+  //   1. localMined === 0  → note is empty, no mention of skills
+  //   2. localMined === 1  → singular "1 local skill from past..."
+  //   3. localMined  >  1  → plural "N local skills from past..."
+
+  it("omits the mined-skills note in the not-logged-in branch when manifest is empty", async () => {
+    loadCredsMock.mockReturnValue(null);
+    countLocalManifestEntriesMock.mockReturnValue(0);
+    const out = await runHook();
+    const parsed = JSON.parse(out!);
+    const ctx = parsed.hookSpecificOutput.additionalContext;
+    expect(ctx).toContain("Not logged in to Deeplake");
+    // The localMinedNote has a unique phrase that only appears in the
+    // count-driven note, not in the static skillify command list.
+    expect(ctx).not.toContain("live in ~/.claude/skills");
+    expect(ctx).not.toContain("local skill from past");
+    expect(ctx).not.toContain("local skills from past");
+  });
+
+  it("uses SINGULAR noun in the not-logged-in note when exactly 1 skill is mined", async () => {
+    loadCredsMock.mockReturnValue(null);
+    countLocalManifestEntriesMock.mockReturnValue(1);
+    const out = await runHook();
+    const parsed = JSON.parse(out!);
+    const ctx = parsed.hookSpecificOutput.additionalContext;
+    expect(ctx).toContain("1 local skill from past");
+    expect(ctx).not.toContain("1 local skills from past");
+    expect(ctx).toContain("hivemind login");
+  });
+
+  it("uses PLURAL noun in the not-logged-in note when more than 1 skill is mined", async () => {
+    loadCredsMock.mockReturnValue(null);
+    countLocalManifestEntriesMock.mockReturnValue(5);
+    const out = await runHook();
+    const parsed = JSON.parse(out!);
+    const ctx = parsed.hookSpecificOutput.additionalContext;
+    expect(ctx).toContain("5 local skills from past");
+    expect(ctx).toContain("hivemind login");
+  });
+
+  it("does NOT append the mined-skills note when user is logged in (even with manifest present)", async () => {
+    // Logged-in users see the welcomeRule notification instead; the
+    // session-start hook itself must NOT inline the skill count in the
+    // logged-in `additionalContext` (would duplicate the wow-effect CTA).
+    countLocalManifestEntriesMock.mockReturnValue(5);
+    const out = await runHook();
+    const parsed = JSON.parse(out!);
+    const ctx = parsed.hookSpecificOutput.additionalContext;
+    expect(ctx).toContain("Logged in to Deeplake");
+    // Same unique-phrase test as the manifest-empty branch — checks the
+    // count-driven note is absent without false-matching the static
+    // skillify command list.
+    expect(ctx).not.toContain("live in ~/.claude/skills");
+    expect(ctx).not.toContain("local skills from past");
   });
 });

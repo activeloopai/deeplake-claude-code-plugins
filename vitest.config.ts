@@ -27,6 +27,7 @@ export default defineConfig({
       "tests/openclaw/**/*.test.ts",
       "tests/pi/**/*.test.ts",
     ],
+    setupFiles: ["./tests/test-setup.ts"],
     environment: "node",
     coverage: {
       provider: "v8",
@@ -305,6 +306,23 @@ export default defineConfig({
         "src/notifications/transcript-parser.ts":   { statements: 90, branches: 75, functions: 90, lines: 90 },
         "src/notifications/usage-tracker.ts":       { statements: 90, branches: 75, functions: 90, lines: 90 },
         "src/notifications/sources/local-usage.ts": { statements: 90, branches: 80, functions: 90, lines: 90 },
+        // feat/skillify-mine-local (PR #129) — `hivemind skillify mine-local`
+        // seeds reusable skills from a fresh user's own local agent transcripts
+        // without requiring Deeplake auth. New surface area:
+        //   - src/skillify/local-source.ts          — agent/session detection + ε-greedy pick
+        //   - src/skillify/local-manifest.ts        — on-disk manifest shared with hooks
+        //   - src/skillify/spawn-mine-local-worker.ts — detached worker spawn helper
+        //   - src/commands/mine-local.ts            — orchestrator + LLM gate dispatch
+        //   - src/notifications/rules/local-mined.ts — surfaces mined count at SessionStart
+        // mine-local.ts dips to 90 branches because a few short-circuit branches
+        // inside runGateViaStdin (settled-flag race + the unreachable error
+        // branch after spawn-already-errored) can't be deterministically
+        // triggered without forking subprocesses; everything else holds at 90+.
+        "src/skillify/local-source.ts":               { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/skillify/local-manifest.ts":             { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/skillify/spawn-mine-local-worker.ts":    { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/commands/mine-local.ts":                 { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/notifications/rules/local-mined.ts":     { statements: 90, branches: 90, functions: 90, lines: 90 },
       },
     },
   },

@@ -18,6 +18,7 @@ const loadCredsMock = vi.fn();
 const debugLogMock = vi.fn();
 const spawnMock = vi.fn();
 const autoPullSkillsMock = vi.fn();
+const localManifestMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/commands/auth.js", () => ({
@@ -32,6 +33,13 @@ vi.mock("../../src/utils/debug.js", () => ({
 vi.mock("../../src/skillify/auto-pull.js", () => ({
   autoPullSkills: (...a: any[]) => autoPullSkillsMock(...a),
 }));
+vi.mock("../../src/skillify/local-manifest.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/skillify/local-manifest.js")>();
+  return {
+    ...actual,
+    countLocalManifestEntries: (...a: any[]) => localManifestMock(...a),
+  };
+});
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
   return { ...actual, spawn: (...a: any[]) => spawnMock(...a) };
@@ -76,6 +84,7 @@ beforeEach(() => {
   debugLogMock.mockReset();
   spawnMock.mockReset().mockImplementation(() => makeFakeChild());
   autoPullSkillsMock.mockReset().mockResolvedValue({ pulled: 0, skipped: true, reason: "stubbed" });
+  localManifestMock.mockReset().mockReturnValue(0);
 });
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -92,7 +101,11 @@ describe("codex session-start hook — guards", () => {
     loadCredsMock.mockReturnValue(null);
     const out = await runHook();
     expect(spawnMock).not.toHaveBeenCalled();
-    expect(out).toContain("Not logged in to Deeplake");
+    // Codex hook now emits JSON, not plain text. Parse + assert on
+    // additionalContext (single-line status). See AGENT_CHANNELS.md → Codex
+    // for why we kept this minimal.
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("Hivemind: not logged in");
     expect(debugLogMock).toHaveBeenCalledWith(
       expect.stringContaining("no credentials found"),
     );
@@ -103,8 +116,9 @@ describe("codex session-start hook — guards", () => {
     expect(debugLogMock).toHaveBeenCalledWith(
       expect.stringContaining("credentials loaded: org=acme"),
     );
-    expect(out).toContain("Logged in to Deeplake as org: acme");
-    expect(out).toContain("workspace: default");
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("Hivemind: logged in as org acme");
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("workspace: default");
   });
 
   it("falls back to orgId when orgName is missing", async () => {
@@ -115,8 +129,9 @@ describe("codex session-start hook — guards", () => {
     expect(debugLogMock).toHaveBeenCalledWith(
       expect.stringContaining("credentials loaded: org=org-uuid-123"),
     );
-    expect(out).toContain("Logged in to Deeplake as org: org-uuid-123");
-    expect(out).toContain("workspace: staging");
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("Hivemind: logged in as org org-uuid-123");
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("workspace: staging");
   });
 
   it("defaults workspace to 'default' when creds omit workspaceId", async () => {
@@ -124,7 +139,8 @@ describe("codex session-start hook — guards", () => {
       token: "tok", orgId: "o", orgName: "acme", userName: "alice",
     });
     const out = await runHook();
-    expect(out).toContain("workspace: default");
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("workspace: default");
   });
 });
 
@@ -149,6 +165,16 @@ describe("codex session-start hook — spawn async setup", () => {
     await runHook();
     expect(spawnMock).not.toHaveBeenCalled();
   });
+
+  it("logs 'triggered (background)' on the auto-mine path when creds are missing and worker actually fires", async () => {
+    // Covers the `auto.triggered ?` truthy path in the log line at line 54.
+    loadCredsMock.mockReturnValue(null);
+    vi.doMock("../../src/skillify/spawn-mine-local-worker.js", () => ({
+      maybeAutoMineLocal: () => ({ triggered: true, reason: "spawned" }),
+    }));
+    await runHook();
+    expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("auto-mine: triggered"));
+  });
 });
 
 describe("codex session-start hook — fatal catch", () => {
@@ -159,6 +185,40 @@ describe("codex session-start hook — fatal catch", () => {
     await new Promise(r => setImmediate(r));
     expect(debugLogMock).toHaveBeenCalledWith("fatal: stdin boom");
     expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+});
+
+describe("codex session-start hook — local mined skills systemMessage", () => {
+  it("not logged in + 1 mined skill → systemMessage uses singular 'skill'", async () => {
+    loadCredsMock.mockReturnValue(null);
+    localManifestMock.mockReturnValue(1);
+    const out = await runHook();
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.systemMessage).toContain("1 skill mined");
+    expect(parsed.systemMessage).not.toContain("1 skills");
+  });
+
+  it("not logged in + 5 mined skills → systemMessage uses plural 'skills'", async () => {
+    loadCredsMock.mockReturnValue(null);
+    localManifestMock.mockReturnValue(5);
+    const out = await runHook();
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.systemMessage).toContain("5 skills mined");
+  });
+
+  it("not logged in + 0 mined → no systemMessage emitted", async () => {
+    loadCredsMock.mockReturnValue(null);
+    localManifestMock.mockReturnValue(0);
+    const out = await runHook();
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.systemMessage).toBeUndefined();
+  });
+
+  it("logged in + N mined → no systemMessage (only shown to logged-out users)", async () => {
+    localManifestMock.mockReturnValue(3);
+    const out = await runHook();
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.systemMessage).toBeUndefined();
   });
 });
 

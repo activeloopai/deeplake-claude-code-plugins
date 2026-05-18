@@ -78,6 +78,18 @@ jobs:
         # — first CI run after the openclaw skillify wiring landed).
         run: npm run build
 
+      - name: Audit openclaw bundle against ClawHub static-scan rules
+        # PR-time gate mirroring release.yml's audit step. Catches a
+        # flagged bundle BEFORE the PR merges instead of only at release
+        # time (where it'd correctly abort the publish, but the bad code
+        # would already be in main). `--criticals-only` blocks on
+        # critical findings only; warns are advisory (the openclaw
+        # skillify-worker's `readFileSync` + `fetch` warn is irreducible
+        # without splitting the worker into multiple shipped files).
+        # If this step trips, run `npm run audit:openclaw` locally and
+        # see scripts/audit-openclaw-bundle.mjs for the rule details.
+        run: npm run audit:openclaw -- --criticals-only
+
       - name: Run tests with coverage
         # Per-file 80% thresholds for PR #60 files are declared in
         # vitest.config.ts under `coverage.thresholds`. Vitest exits non-zero

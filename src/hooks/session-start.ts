@@ -19,6 +19,9 @@ import { getInstalledVersion } from "../utils/version-check.js";
 import { makeWikiLogger } from "../utils/wiki-log.js";
 import { autoUpdate } from "./shared/autoupdate.js";
 import { autoPullSkills } from "../skillify/auto-pull.js";
+import { renderSkillifyCommands } from "../cli/skillify-spec.js";
+import { countLocalManifestEntries } from "../skillify/local-manifest.js";
+import { maybeAutoMineLocal } from "../skillify/spawn-mine-local-worker.js";
 const log = (msg: string) => _log("session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -59,23 +62,14 @@ Organization management — each argument is SEPARATE (do NOT quote subcommands 
 - hivemind remove <user-id>                   — remove member
 
 Skill management (mine + share reusable Claude skills across the org):
-- hivemind skillify                                  — show scope, team, install, per-project state
-- hivemind skillify pull                             — sync project skills from the org table to local FS
-- hivemind skillify pull --user <email>              — only skills authored by that user
-- hivemind skillify pull --users <a,b,c>             — only skills from those authors
-- hivemind skillify pull --all-users                 — explicit "no author filter" (default)
-- hivemind skillify pull --to <project|global>       — install location (project=cwd/.claude/skills, global=~/.claude/skills)
-- hivemind skillify pull --dry-run                   — preview without touching disk
-- hivemind skillify pull --force                     — overwrite local files even if up-to-date (creates .bak)
-- hivemind skillify pull <skill-name>                — pull only that one skill (combines with --user)
-- hivemind skillify unpull                           — remove every skill previously installed by pull
-- hivemind skillify unpull --user <email>            — remove only that author's pulls
-- hivemind skillify unpull --not-mine                — remove all pulls except your own
-- hivemind skillify unpull --dry-run                 — preview without touching disk
-- hivemind skillify scope <me|team>                  — sharing scope for newly mined skills
-- hivemind skillify install <project|global>         — default install location for new skills
-- hivemind skillify promote <skill-name>             — move a project skill to the global location
-- hivemind skillify team add|remove|list <name>      — manage team member list
+${renderSkillifyCommands()}
+
+Embeddings (semantic memory search) — opt-in, persisted in ~/.deeplake/config.json:
+- hivemind embeddings install                        — download deps (~600MB), symlink agents, set enabled:true
+- hivemind embeddings enable                         — flip enabled:true (run install first if deps missing)
+- hivemind embeddings disable                        — flip enabled:false + SIGTERM daemon (deps stay on disk)
+- hivemind embeddings uninstall [--prune]            — remove agent symlinks + disable; --prune wipes deps too
+- hivemind embeddings status                         — show config + deps + per-agent link state
 
 IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem. Avoid bash brace expansions like \`{1..10}\` (not fully supported); spell out paths explicitly. Bash output is capped at 10MB total — avoid \`for f in *.json; do cat $f\` style loops on the whole sessions dir.
 
@@ -138,6 +132,16 @@ async function main(): Promise<void> {
 
   if (!creds?.token) {
     log("no credentials found — run /hivemind:login to authenticate");
+    // First-impression bootstrap: when an unauthenticated user opens a
+    // session on a box that has Claude Code transcripts but no local
+    // mining manifest yet, spawn `hivemind skillify mine-local` in the
+    // background. The worker writes to ~/.claude/skills/ + fan-out
+    // symlinks; THIS session sees the standard "not logged in" message,
+    // and the NEXT SessionStart fire surfaces the count + sign-in CTA.
+    // All guards (manifest, lock, no-sessions, no-hivemind-bin) live
+    // inside maybeAutoMineLocal — call is always safe.
+    const auto = maybeAutoMineLocal();
+    log(`auto-mine: ${auto.triggered ? "triggered (background)" : `skipped (${auto.reason})`}`);
   } else {
     log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
     // Backfill userName if missing (for users who logged in before this field was added)
@@ -210,9 +214,18 @@ async function main(): Promise<void> {
 
   // No placeholder substitution needed — inject uses bare `hivemind <sub>` form.
   const resolvedContext = context;
+  // When the user hasn't signed in but has mined skills locally with
+  // `hivemind skillify mine-local`, surface the count so the model can
+  // mention the next sharing step. Stays empty (and silent) when no
+  // manifest exists, so first-time non-mined users don't see an
+  // unhelpful "0 skills" line.
+  const localMined = countLocalManifestEntries();
+  const localMinedNote = localMined > 0
+    ? `\n\n${localMined} local skill${localMined === 1 ? "" : "s"} from past 'hivemind skillify mine-local' run(s) live in ~/.claude/skills/. Run 'hivemind login' to start sharing new mining results with your team.`
+    : "";
   const additionalContext = creds?.token
     ? `${resolvedContext}\n\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}`
-    : `${resolvedContext}\n\n⚠️ Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${updateNotice}`;
+    : `${resolvedContext}\n\n⚠️ Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${localMinedNote}${updateNotice}`;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {

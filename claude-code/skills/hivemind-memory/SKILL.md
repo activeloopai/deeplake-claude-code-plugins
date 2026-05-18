@@ -48,6 +48,39 @@ The auth command path is injected at session start. Use the exact path from the 
 - `node "<AUTH_CMD>" remove <user-id>` — remove member
 - `node "<AUTH_CMD>" --help` — show all commands
 
+## Skill Management (skillify)
+
+Hivemind can mine reusable skills from agent session logs and share them across your team. Each argument is separate — do NOT quote subcommands together.
+
+- `hivemind skillify` — show current scope, team, install location, per-project state
+- `hivemind skillify pull` — sync project skills from the org table to local FS
+- `hivemind skillify pull --user <email>` — only skills authored by that user
+- `hivemind skillify pull --users <a,b,c>` — multiple authors (CSV)
+- `hivemind skillify pull --all-users` — explicit "no author filter" (default)
+- `hivemind skillify pull --to <project|global>` — install location (project=cwd/.claude/skills, global=~/.claude/skills)
+- `hivemind skillify pull --dry-run` — preview without touching disk
+- `hivemind skillify pull --force` — overwrite local files even if up-to-date (creates .bak)
+- `hivemind skillify pull <skill-name>` — pull only that one skill (combines with --user)
+- `hivemind skillify unpull` — remove every skill previously installed by pull
+- `hivemind skillify unpull --user <email>` — remove only that author's pulls
+- `hivemind skillify unpull --not-mine` — remove all pulls except your own
+- `hivemind skillify unpull --dry-run` — preview without touching disk
+- `hivemind skillify scope <me|team>` — sharing scope for newly mined skills
+- `hivemind skillify install <project|global>` — default install location for new skills
+- `hivemind skillify promote <skill-name>` — move a project skill to the global location
+- `hivemind skillify team add|remove|list <username>` — manage team member list
+- `hivemind skillify mine-local` — one-shot: mine skills from local sessions, no auth needed
+
+## Embeddings (semantic memory search)
+
+Opt-in, persisted in `~/.deeplake/config.json`.
+
+- `hivemind embeddings install` — download deps (~600MB), symlink agents, set enabled:true
+- `hivemind embeddings enable` — flip enabled:true (run install first if deps missing)
+- `hivemind embeddings disable` — flip enabled:false + SIGTERM daemon (deps stay on disk)
+- `hivemind embeddings uninstall [--prune]` — remove agent symlinks + disable; --prune wipes deps too
+- `hivemind embeddings status` — show config + deps + per-agent link state
+
 ## Important: Bash Only
 
 Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to interact with `~/.deeplake/memory/`. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem. If a task seems to require Python, rewrite it using bash tools (e.g., `cat file.json | jq 'keys | length'`).

@@ -4,13 +4,20 @@ import { installOpenclaw, uninstallOpenclaw } from "./install-openclaw.js";
 import { installCursor, uninstallCursor } from "./install-cursor.js";
 import { installHermes, uninstallHermes } from "./install-hermes.js";
 import { installPi, uninstallPi } from "./install-pi.js";
-import { enableEmbeddings, disableEmbeddings, statusEmbeddings } from "./embeddings.js";
+import {
+  disableEmbeddings,
+  enableEmbeddings,
+  installEmbeddings,
+  statusEmbeddings,
+  uninstallEmbeddings,
+} from "./embeddings.js";
 import { ensureLoggedIn, isLoggedIn, maybeShowOrgChoice } from "./auth.js";
 import { runAuthCommand } from "../commands/auth-login.js";
 import { runSkillifyCommand } from "../commands/skillify.js";
 import { detectPlatforms, allPlatformIds, log, warn, type PlatformId } from "./util.js";
 import { getVersion } from "./version.js";
 import { runUpdate } from "./update.js";
+import { renderCliHelpBlock } from "./skillify-spec.js";
 
 const AUTH_SUBCOMMANDS = new Set([
   "whoami",
@@ -53,39 +60,34 @@ Usage:
 
 Semantic search (embeddings):
   hivemind embeddings install                Download @huggingface/transformers
-                                             once (~600 MB) into a shared dir
-                                             and symlink every detected agent
-                                             plugin to it. Idempotent.
-  hivemind embeddings uninstall [--prune]    Remove the per-agent symlinks.
-                                             --prune also deletes the shared dir.
-  hivemind embeddings status                 Show shared-deps + per-agent state.
+                                             once (~600 MB) into a shared dir,
+                                             symlink every detected agent
+                                             plugin to it, and set
+                                             embeddings.enabled = true in
+                                             ~/.deeplake/config.json. Idempotent.
+  hivemind embeddings enable                 Light opt-in: flip
+                                             embeddings.enabled = true in
+                                             ~/.deeplake/config.json. Use this
+                                             after \`disable\` to turn back on
+                                             without re-running install.
+  hivemind embeddings disable                Light opt-out: flip
+                                             embeddings.enabled = false and
+                                             SIGTERM the running daemon. Shared
+                                             deps stay on disk.
+  hivemind embeddings uninstall [--prune]    Full opt-out: remove the per-agent
+                                             symlinks, flip
+                                             embeddings.enabled = false, and
+                                             SIGTERM the daemon. --prune also
+                                             deletes the shared dir to reclaim
+                                             ~600 MB.
+  hivemind embeddings status                 Show config + shared-deps + per-
+                                             agent state.
 
   Add --with-embeddings to "hivemind install" (or "hivemind <agent> install")
   to run "embeddings install" automatically after installing the agent(s).
 
 Skill management (mine + share reusable Claude skills across the org):
-  hivemind skillify                         Show scope, team, install, and per-project state.
-  hivemind skillify pull [skill-name]       Sync skills from the org table to local FS.
-                                           Options: --user <email>, --users a,b,c,
-                                           --all-users, --to <project|global>,
-                                           --dry-run, --force.
-                                           Note: every agent's SessionStart hook
-                                           auto-runs 'pull --all-users --to global'
-                                           on every session. File writes are
-                                           idempotent (skipped when local is
-                                           at-or-newer than remote). Disable via
-                                           HIVEMIND_AUTOPULL_DISABLED=1.
-  hivemind skillify unpull                  Remove skills previously installed by pull.
-                                           Options: --user, --users, --not-mine,
-                                           --to <project|global>, --dry-run,
-                                           --all (also locally-mined),
-                                           --legacy-cleanup (pre-suffix-author dirs).
-  hivemind skillify scope <me|team>         Set the sharing scope for newly mined skills.
-  hivemind skillify install <project|global>  Set where new skills are written.
-  hivemind skillify promote <name>          Move a project skill to the global location.
-  hivemind skillify team add <username>     Add a username to the team list.
-  hivemind skillify team remove <username>  Remove a username from the team list.
-  hivemind skillify team list               List current team members.
+${renderCliHelpBlock()}
 
 Account / org / workspace:
   hivemind whoami                          Show current user, org, workspace.
@@ -155,7 +157,7 @@ async function runInstallAll(args: string[]): Promise<void> {
 
   if (withEmbeddings) {
     log("");
-    enableEmbeddings();
+    installEmbeddings();
   }
 
   await maybeShowOrgChoice();
@@ -235,13 +237,15 @@ async function main(): Promise<void> {
 
   if (cmd === "embeddings") {
     const sub = args[1];
-    if (sub === "install" || sub === "enable") { enableEmbeddings(); return; }
-    if (sub === "uninstall" || sub === "disable") {
-      disableEmbeddings({ prune: hasFlag(args.slice(2), "--prune") });
+    if (sub === "install") { installEmbeddings(); return; }
+    if (sub === "enable") { enableEmbeddings(); return; }
+    if (sub === "disable") { disableEmbeddings(); return; }
+    if (sub === "uninstall") {
+      uninstallEmbeddings({ prune: hasFlag(args.slice(2), "--prune") });
       return;
     }
     if (sub === "status") { statusEmbeddings(); return; }
-    warn("Usage: hivemind embeddings install | uninstall [--prune] | status");
+    warn("Usage: hivemind embeddings install | enable | disable | uninstall [--prune] | status");
     process.exit(1);
   }
 
@@ -258,7 +262,7 @@ async function main(): Promise<void> {
       runSingleInstall(cmd as PlatformId);
       if (hasFlag(args.slice(2), "--with-embeddings")) {
         log("");
-        enableEmbeddings();
+        installEmbeddings();
       }
     }
     else if (sub === "uninstall") runSingleUninstall(cmd as PlatformId);

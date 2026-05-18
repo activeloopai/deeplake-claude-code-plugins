@@ -9,11 +9,13 @@ import { unlinkSync, writeFileSync, existsSync, mkdirSync, chmodSync } from "nod
 import { NomicEmbedder } from "./nomic.js";
 import {
   DEFAULT_IDLE_TIMEOUT_MS,
+  PROTOCOL_VERSION,
   pidPathFor,
   socketPathFor,
   type DaemonRequest,
   type DaemonResponse,
   type EmbedRequest,
+  type HelloRequest,
   type PingRequest,
 } from "./protocol.js";
 import { log as _log } from "../utils/debug.js";
@@ -31,6 +33,8 @@ export interface DaemonOptions {
   dims?: number;
   dtype?: string;
   repo?: string;
+  /** Path of the script invoked to start this daemon. Defaults to argv[1]. */
+  daemonPath?: string;
 }
 
 export class EmbedDaemon {
@@ -40,6 +44,7 @@ export class EmbedDaemon {
   private pidPath: string;
   private idleTimeoutMs: number;
   private idleTimer: NodeJS.Timeout | null = null;
+  private daemonPath: string;
 
   constructor(opts: DaemonOptions = {}) {
     const uid = getUid();
@@ -48,6 +53,7 @@ export class EmbedDaemon {
     this.pidPath = pidPathFor(uid, dir);
     this.idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.embedder = new NomicEmbedder({ repo: opts.repo, dtype: opts.dtype, dims: opts.dims });
+    this.daemonPath = opts.daemonPath ?? process.argv[1] ?? "";
   }
 
   async start(): Promise<void> {
@@ -141,6 +147,15 @@ export class EmbedDaemon {
   }
 
   private async dispatch(req: DaemonRequest): Promise<DaemonResponse> {
+    if (req.op === "hello") {
+      const h = req as HelloRequest;
+      return {
+        id: h.id,
+        daemonPath: this.daemonPath,
+        pid: process.pid,
+        protocolVersion: PROTOCOL_VERSION,
+      };
+    }
     if (req.op === "ping") {
       const p = req as PingRequest;
       return { id: p.id, ready: true, model: this.embedder.repo, dims: this.embedder.dims };

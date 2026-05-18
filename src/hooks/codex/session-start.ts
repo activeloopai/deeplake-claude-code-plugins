@@ -15,61 +15,22 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { loadCredentials } from "../../commands/auth.js";
 import { readStdin } from "../../utils/stdin.js";
+import { countLocalManifestEntries } from "../../skillify/local-manifest.js";
+import { maybeAutoMineLocal } from "../../skillify/spawn-mine-local-worker.js";
 import { log as _log } from "../../utils/debug.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
 import { autoPullSkills } from "../../skillify/auto-pull.js";
 const log = (msg: string) => _log("codex-session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
-// Hivemind requires its npm bin (`hivemind` from @deeplake/hivemind) on PATH.
-// Inject text uses bare `hivemind <sub>` form — no per-agent path resolution needed.
-
-const context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
-
-Deeplake memory has THREE tiers — pick the right one for the question:
-1. ~/.deeplake/memory/index.md   — auto-generated index, top 50 most-recently-updated entries with Created + Last Updated + Project + Description columns. ~5 KB. **For "what's recent / who did X this week / since <date>" queries, START HERE** and trust the Last Updated column over any "Started:" line in summary bodies.
-2. ~/.deeplake/memory/summaries/ — condensed wiki summaries per session (~3 KB each). For keyword/topic recall, search these.
-3. ~/.deeplake/memory/sessions/  — raw full-dialogue JSONL (~5 KB each). FALLBACK only — use when summaries don't contain the exact quote/turn you need.
-
-Search workflow:
-- Time-based ("last week", "today", "since X"): cat ~/.deeplake/memory/index.md and read the most-recent rows.
-- Keyword/topic recall: grep -r "keyword" ~/.deeplake/memory/summaries/ (the shell hook routes this through hybrid lexical+semantic search — synonyms match too). Then cat the top-matching summary.
-- Raw transcript fallback only: grep -r "keyword" ~/.deeplake/memory/sessions/ (use sparingly — JSONL is verbose).
-
-✅ grep -r "keyword" ~/.deeplake/memory/summaries/
-❌ grep without a summaries/ or sessions/ suffix — too noisy
-
-IMPORTANT: Only use bash builtins (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) on ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem.
-Do NOT spawn subagents to read deeplake memory.
-
-Organization management — each argument is SEPARATE (do NOT quote subcommands together):
-- hivemind login                              — SSO login
-- hivemind whoami                             — show current user/org
-- hivemind org list                           — list organizations
-- hivemind org switch <name-or-id>            — switch organization
-- hivemind workspaces                         — list workspaces
-- hivemind workspace <id>                     — switch workspace
-- hivemind invite <email> <ADMIN|WRITE|READ>  — invite member (ALWAYS ask user which role before inviting)
-- hivemind members                            — list members
-- hivemind remove <user-id>                   — remove member
-
-SKILLS (skillify) — mine + share reusable skills across the org:
-- hivemind skillify                         — show scope/team/install + per-project state
-- hivemind skillify pull                    — sync project skills from the org table
-- hivemind skillify pull --user <email>     — only that author's skills
-- hivemind skillify pull --users a,b,c      — multiple authors (CSV)
-- hivemind skillify pull --all-users        — explicit "no author filter"
-- hivemind skillify pull --to project|global  — install location
-- hivemind skillify pull --dry-run          — preview only
-- hivemind skillify pull --force            — overwrite local (creates .bak)
-- hivemind skillify pull <skill-name>       — pull only that skill (combines with --user)
-- hivemind skillify unpull                  — remove every skill previously installed by pull
-- hivemind skillify unpull --user <email>   — remove only that author's pulls
-- hivemind skillify unpull --not-mine       — remove all pulls except your own
-- hivemind skillify unpull --dry-run        — preview without touching disk
-- hivemind skillify scope <me|team>         — sharing scope for new skills
-- hivemind skillify install <project|global>  — default install location
-- hivemind skillify team add|remove|list <name>  — manage team list`;
+// Codex DOES NOT have a model-only context channel for SessionStart hooks: any
+// `additionalContext` we emit is rendered as a `hook context: <text>` history
+// cell, user-visible. The big DEEPLAKE MEMORY tier doc + hivemind/skillify
+// command list that Claude Code's hook injects via `additionalContext` would
+// clobber the Codex UI every session, so we omit it entirely here. Codex's
+// skill autoloader already exposes the hivemind/* skills as Skill tool entries,
+// and the model can discover memory tiers and CLI flags on demand via bash.
+// See src/notifications/AGENT_CHANNELS.md → "Codex" for the source-level reasoning.
 
 interface CodexSessionStartInput {
   session_id: string;
@@ -89,6 +50,8 @@ async function main(): Promise<void> {
 
   if (!creds?.token) {
     log("no credentials found — run auth login to authenticate");
+    const auto = maybeAutoMineLocal();
+    log(`auto-mine: ${auto.triggered ? "triggered (background)" : `skipped (${auto.reason})`}`);
   } else {
     log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
   }
@@ -124,14 +87,45 @@ async function main(): Promise<void> {
     versionNotice = `\nHivemind v${current}`;
   }
 
-  // No placeholder substitution — inject already uses bare `hivemind <sub>` form.
-  const additionalContext = creds?.token
-    ? `${context}\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${versionNotice}`
-    : `${context}\nNot logged in to Deeplake. Run: hivemind login${versionNotice}`;
+  const localMined = countLocalManifestEntries();
+  const skillNoun = localMined === 1 ? "skill" : "skills";
 
-  // Codex SessionStart: plain text on stdout is added as developer context.
-  // JSON { additionalContext } format is rejected by Codex 0.118.0.
-  console.log(additionalContext);
+  // Codex SessionStart output schema (verified against
+  // https://developers.openai.com/codex/hooks and codex-rs source @ 0.130.0):
+  //   - `systemMessage` (top-level): warning shown to the user in the TUI
+  //     history cell as `warning: <text>`. Use sparingly — every line lands
+  //     in the user's face. Only set on real CTAs.
+  //   - `hookSpecificOutput.additionalContext`: ALSO user-visible in Codex,
+  //     rendered as `hook context: <text>` in the same history cell. Unlike
+  //     Claude Code (where additionalContext is invisible system-prompt
+  //     injection), Codex eagerly leaks the model's context to the user.
+  //     `common::append_additional_context` in codex-rs pushes the string
+  //     to BOTH the user-visible entries vec AND the model context vec —
+  //     there is no model-only path. `suppressOutput: true` is parsed but
+  //     ignored for SessionStart, so we can't hide it either.
+  // Practical consequence: keep additionalContext MINIMAL on Codex. The
+  // bulky DEEPLAKE MEMORY tier doc + hivemind/skillify command list that
+  // claude-code's hook injects via `context` would clobber the Codex UI
+  // every session. Codex's skill autoloader already exposes hivemind/skillify
+  // command surfaces via per-skill SKILL.md files; the model can discover
+  // memory tiers via `hivemind --help` and `ls ~/.deeplake/memory/` on demand.
+  // We therefore emit only login-state + version here, and trust the model
+  // to bootstrap the rest.
+  const additionalContext = creds?.token
+    ? `Hivemind: logged in as org ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"}).${versionNotice}`
+    : `Hivemind: not logged in. Run \`hivemind login\` to enable shared memory + skill sharing.${versionNotice}`;
+
+  const systemMessage = (!creds?.token && localMined > 0)
+    ? `💡 ${localMined} ${skillNoun} mined from your local sessions live in ~/.claude/skills/. Run 'hivemind login' to share them with your team.`
+    : undefined;
+  const output: Record<string, unknown> = {
+    hookSpecificOutput: {
+      hookEventName: "SessionStart",
+      additionalContext,
+    },
+  };
+  if (systemMessage) output.systemMessage = systemMessage;
+  console.log(JSON.stringify(output));
 }
 
 main().catch((e) => { log(`fatal: ${e.message}`); process.exit(0); });

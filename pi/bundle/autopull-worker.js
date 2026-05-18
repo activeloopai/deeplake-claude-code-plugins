@@ -91,10 +91,12 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir2 } from "node:os";
-var DEBUG = process.env.HIVEMIND_DEBUG === "1";
 var LOG = join2(homedir2(), ".deeplake", "hook-debug.log");
+function isDebug() {
+  return process.env.HIVEMIND_DEBUG === "1";
+}
 function log(tag, msg) {
-  if (!DEBUG)
+  if (!isDebug())
     return;
   appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
 `);
@@ -149,7 +151,9 @@ var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
-var QUERY_TIMEOUT_MS = Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 1e4);
+function getQueryTimeoutMs() {
+  return Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 1e4);
+}
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -230,8 +234,9 @@ var DeeplakeApi = class {
     let lastError;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       let resp;
+      const timeoutMs = getQueryTimeoutMs();
       try {
-        const signal = AbortSignal.timeout(QUERY_TIMEOUT_MS);
+        const signal = AbortSignal.timeout(timeoutMs);
         resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
           method: "POST",
           headers: {
@@ -245,7 +250,7 @@ var DeeplakeApi = class {
         });
       } catch (e) {
         if (isTimeoutError(e)) {
-          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
+          lastError = new Error(`Query timeout after ${timeoutMs}ms`);
           throw lastError;
         }
         lastError = e instanceof Error ? e : new Error(String(e));

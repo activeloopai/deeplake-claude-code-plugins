@@ -24,6 +24,9 @@ import { loadCredentials } from "../../commands/auth.js";
 import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
+import { renderSkillifyCommands } from "../../cli/skillify-spec.js";
+import { countLocalManifestEntries } from "../../skillify/local-manifest.js";
+import { maybeAutoMineLocal } from "../../skillify/spawn-mine-local-worker.js";
 import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
@@ -54,22 +57,14 @@ Organization management — each argument is SEPARATE (do NOT quote subcommands 
 - hivemind remove <user-id>                   — remove member
 
 SKILLS (skillify) — mine + share reusable skills across the org:
-- hivemind skillify                         — show scope/team/install + per-project state
-- hivemind skillify pull                    — sync project skills from the org table
-- hivemind skillify pull --user <email>     — only that author's skills
-- hivemind skillify pull --users a,b,c      — multiple authors (CSV)
-- hivemind skillify pull --all-users        — explicit "no author filter"
-- hivemind skillify pull --to project|global  — install location
-- hivemind skillify pull --dry-run          — preview only
-- hivemind skillify pull --force            — overwrite local (creates .bak)
-- hivemind skillify pull <skill-name>       — pull only that skill (combines with --user)
-- hivemind skillify unpull                  — remove every skill previously installed by pull
-- hivemind skillify unpull --user <email>   — remove only that author's pulls
-- hivemind skillify unpull --not-mine       — remove all pulls except your own
-- hivemind skillify unpull --dry-run        — preview without touching disk
-- hivemind skillify scope <me|team>         — sharing scope for new skills
-- hivemind skillify install <project|global>  — default install location
-- hivemind skillify team add|remove|list <name>  — manage team list`;
+${renderSkillifyCommands()}
+
+Embeddings (semantic memory search) — opt-in, persisted in ~/.deeplake/config.json:
+- hivemind embeddings install               — download deps (~600MB), symlink agents, set enabled:true
+- hivemind embeddings enable                — flip enabled:true (run install first if deps missing)
+- hivemind embeddings disable               — flip enabled:false + SIGTERM daemon (deps stay on disk)
+- hivemind embeddings uninstall [--prune]   — remove agent symlinks + disable; --prune wipes deps too
+- hivemind embeddings status                — show config + deps + per-agent link state`;
 
 interface CursorSessionStartInput {
   session_id?: string;
@@ -142,6 +137,8 @@ async function main(): Promise<void> {
   const creds = loadCredentials();
   if (!creds?.token) {
     log("no credentials found");
+    const auto = maybeAutoMineLocal();
+    log(`auto-mine: ${auto.triggered ? "triggered (background)" : `skipped (${auto.reason})`}`);
   } else {
     log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
   }
@@ -187,9 +184,13 @@ async function main(): Promise<void> {
   if (current) versionNotice = `\nHivemind v${current}`;
 
   // No placeholder substitution — inject already uses bare `hivemind <sub>` form.
+  const localMined = countLocalManifestEntries();
+  const localMinedNote = localMined > 0
+    ? `\n${localMined} local skill${localMined === 1 ? "" : "s"} from past 'hivemind skillify mine-local' run(s) live in ~/.claude/skills/. Run 'hivemind login' to start sharing new mining results with your team.`
+    : "";
   const additionalContext = creds?.token
     ? `${context}\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${versionNotice}`
-    : `${context}\nNot logged in to Deeplake. Run: hivemind login${versionNotice}`;
+    : `${context}\nNot logged in to Deeplake. Run: hivemind login${localMinedNote}${versionNotice}`;
 
   console.log(JSON.stringify({ additional_context: additionalContext }));
 }

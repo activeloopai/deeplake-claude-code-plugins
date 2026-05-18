@@ -26,12 +26,14 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
   readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync,
-  openSync, closeSync, renameSync, constants as fsConstants,
+  openSync, closeSync, renameSync, readdirSync, statSync, unlinkSync,
+  constants as fsConstants,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { connect } from "node:net";
-import { spawn, spawnSync, execSync } from "node:child_process";
+import { spawn, spawnSync, execSync, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
 // ---------- diagnostic logging --------------------------------------------------
@@ -691,6 +693,145 @@ function textResult(text: string) {
 
 // ---------- main extension -----------------------------------------------------
 
+// MIRROR of src/skillify/local-manifest.ts countLocalManifestEntries.
+//
+// pi's extension cannot import from src/. Read the manifest inline so the
+// SessionStart hook can surface "you have N local skills" when the user
+// isn't signed in. Returns 0 on any error (missing file, parse failure)
+// so the message is silently omitted in those cases.
+const PI_LOCAL_MANIFEST_PATH = join(homedir(), ".claude", "hivemind", "local-mined.json");
+
+function piCountLocalManifestEntries(): number {
+  try {
+    if (!existsSync(PI_LOCAL_MANIFEST_PATH)) return 0;
+    const data = JSON.parse(readFileSync(PI_LOCAL_MANIFEST_PATH, "utf-8"));
+    return Array.isArray(data?.entries) ? data.entries.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+// MIRROR of src/skillify/spawn-mine-local-worker.ts maybeAutoMineLocal().
+// First-impression bootstrap: when an unauthenticated pi session sees
+// past Claude Code transcripts but no local mining manifest, spawn the
+// `hivemind` CLI in the background. THIS session sees the standard
+// "not logged in" message; the NEXT pi session sees the mined-count
+// CTA from piCountLocalManifestEntries above.
+const PI_LOCAL_MINE_LOCK_PATH = join(homedir(), ".claude", "hivemind", "local-mined.lock");
+const PI_AUTO_MINE_LOG_PATH = join(homedir(), ".claude", "hooks", "mine-local.log");
+const PI_CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
+const PI_LOCK_STALE_MS = 15 * 60 * 1000;
+
+function piMaybeAutoMineLocal(): boolean {
+  try {
+    if (existsSync(PI_LOCAL_MANIFEST_PATH)) return false;
+    if (existsSync(PI_LOCAL_MINE_LOCK_PATH)) {
+      let stale = false;
+      try {
+        const stats = statSync(PI_LOCAL_MINE_LOCK_PATH);
+        stale = Date.now() - stats.mtimeMs > PI_LOCK_STALE_MS;
+      } catch { /* not stale */ }
+      if (!stale) return false;
+      try { unlinkSync(PI_LOCAL_MINE_LOCK_PATH); } catch { return false; }
+    }
+    if (!existsSync(PI_CLAUDE_PROJECTS_DIR)) return false;
+    // cheap existence-of-jsonl check (1-level walk)
+    let hasJsonl = false;
+    try {
+      for (const sub of readdirSync(PI_CLAUDE_PROJECTS_DIR)) {
+        let files: string[] = [];
+        try { files = readdirSync(join(PI_CLAUDE_PROJECTS_DIR, sub)); } catch { continue; }
+        if (files.some((f: string) => f.endsWith(".jsonl"))) { hasJsonl = true; break; }
+      }
+    } catch { return false; }
+    if (!hasJsonl) return false;
+
+    // Prefer the sibling bundled CLI (same plugin install as this hook
+    // extension → guaranteed to know `mine-local`). Fall back to PATH for
+    // unusual install layouts. Mirrors findHivemindLauncher() in
+    // src/skillify/spawn-mine-local-worker.ts.
+    let launcher: { kind: "node-script" | "bin"; path: string } | null = null;
+    try {
+      const thisDir = dirname(fileURLToPath(import.meta.url));
+      const cliPath = join(thisDir, "..", "..", "bundle", "cli.js");
+      if (existsSync(cliPath)) launcher = { kind: "node-script", path: cliPath };
+    } catch { /* fall through to which */ }
+    if (!launcher) {
+      try {
+        const out = execFileSync("which", ["hivemind"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+        const bin = String(out).trim();
+        if (bin) launcher = { kind: "bin", path: bin };
+      } catch { return false; }
+    }
+    if (!launcher) return false;
+
+    // Acquire the lock (exclusive create); if another pi session got
+    // here first, skip.
+    try {
+      mkdirSync(dirname(PI_LOCAL_MINE_LOCK_PATH), { recursive: true });
+      const fd = openSync(PI_LOCAL_MINE_LOCK_PATH, "wx");
+      closeSync(fd);
+    } catch { return false; }
+
+    try {
+      mkdirSync(dirname(PI_AUTO_MINE_LOG_PATH), { recursive: true });
+      const out = openSync(PI_AUTO_MINE_LOG_PATH, "a");
+      const [cmd, args]: [string, string[]] = launcher.kind === "node-script"
+        ? [process.execPath, [launcher.path, "skillify", "mine-local"]]
+        : [launcher.path, ["skillify", "mine-local"]];
+      const child = spawn(cmd, args, {
+        detached: true,
+        stdio: ["ignore", out, out],
+        env: process.env,
+      });
+      closeSync(out);
+      child.unref();
+      return true;
+    } catch {
+      try { unlinkSync(PI_LOCAL_MINE_LOCK_PATH); } catch { /* best-effort */ }
+      return false;
+    }
+  } catch { return false; }
+}
+
+// MIRROR of src/cli/skillify-spec.ts SKILLIFY_COMMANDS.
+//
+// pi extensions are shipped as a single self-contained .ts file loaded by
+// pi's runtime, so they cannot import from src/. This array is hand-kept
+// in sync with the canonical spec; the agents-deployment-session-start-injection
+// skill documents the rule and there is a vitest drift-scan that fails the
+// build if the two lists diverge.
+const PI_SKILLIFY_COMMANDS: { cmd: string; desc: string }[] = [
+  { cmd: "hivemind skillify",                             desc: "show scope, team, install, per-project state" },
+  { cmd: "hivemind skillify pull",                        desc: "sync project skills from the org table to local FS" },
+  { cmd: "hivemind skillify pull --user <email>",         desc: "only skills authored by that user" },
+  { cmd: "hivemind skillify pull --users <a,b,c>",        desc: "only skills from those authors" },
+  { cmd: "hivemind skillify pull --all-users",            desc: 'explicit "no author filter" (default)' },
+  { cmd: "hivemind skillify pull --to <project|global>",  desc: "install location (project=cwd/.claude/skills, global=~/.claude/skills)" },
+  { cmd: "hivemind skillify pull --dry-run",              desc: "preview without touching disk" },
+  { cmd: "hivemind skillify pull --force",                desc: "overwrite local files even if up-to-date (creates .bak)" },
+  { cmd: "hivemind skillify pull <skill-name>",           desc: "pull only that one skill (combines with --user)" },
+  { cmd: "hivemind skillify unpull",                      desc: "remove every skill previously installed by pull" },
+  { cmd: "hivemind skillify unpull --user <email>",       desc: "remove only that author's pulls" },
+  { cmd: "hivemind skillify unpull --not-mine",           desc: "remove all pulls except your own" },
+  { cmd: "hivemind skillify unpull --dry-run",            desc: "preview without touching disk" },
+  { cmd: "hivemind skillify scope <me|team|org>",         desc: "sharing scope for newly mined skills" },
+  { cmd: "hivemind skillify install <project|global>",    desc: "default install location for new skills" },
+  { cmd: "hivemind skillify promote <skill-name>",        desc: "move a project skill to the global location" },
+  { cmd: "hivemind skillify team add|remove|list <name>", desc: "manage team member list" },
+  { cmd: "hivemind skillify mine-local",                  desc: "one-shot: mine skills from local sessions (no auth needed)" },
+  { cmd: "hivemind skillify mine-local --n <num|all>",    desc: "how many sessions to mine (default: 8)" },
+  { cmd: "hivemind skillify mine-local --force",          desc: "re-run even if the manifest sentinel exists" },
+  { cmd: "hivemind skillify mine-local --dry-run",        desc: "stop before calling the LLM gate" },
+];
+
+function piRenderSkillifyCommands(): string {
+  const maxLen = Math.max(...PI_SKILLIFY_COMMANDS.map(c => c.cmd.length));
+  return PI_SKILLIFY_COMMANDS
+    .map(c => `- ${c.cmd.padEnd(maxLen + 2)} — ${c.desc}`)
+    .join("\n");
+}
+
 const CONTEXT_PREAMBLE = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents in your org.
 
 Three hivemind tools are registered:
@@ -712,22 +853,7 @@ Organization management — each argument is SEPARATE (do NOT quote subcommands 
 - hivemind remove <user-id>                   — remove member
 
 SKILLS (skillify) — mine + share reusable skills across the org. Run these in a terminal (or via shell if available):
-- hivemind skillify                         — show scope/team/install + per-project state
-- hivemind skillify pull                    — sync project skills from the org table
-- hivemind skillify pull --user <email>     — only that author's skills
-- hivemind skillify pull --users a,b,c      — multiple authors (CSV)
-- hivemind skillify pull --all-users        — explicit "no author filter"
-- hivemind skillify pull --to project|global  — install location
-- hivemind skillify pull --dry-run          — preview only
-- hivemind skillify pull --force            — overwrite local (creates .bak)
-- hivemind skillify pull <skill-name>       — pull only that skill (combines with --user)
-- hivemind skillify unpull                  — remove every skill previously installed by pull
-- hivemind skillify unpull --user <email>   — remove only that author's pulls
-- hivemind skillify unpull --not-mine       — remove all pulls except your own
-- hivemind skillify unpull --dry-run        — preview without touching disk
-- hivemind skillify scope <me|team>         — sharing scope for new skills
-- hivemind skillify install <project|global>  — default install location
-- hivemind skillify team add|remove|list <name>  — manage team list`;
+${piRenderSkillifyCommands()}`;
 
 export default function hivemindExtension(pi: ExtensionAPI): void {
   const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
@@ -913,10 +1039,22 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
     // per-agent symlink fan-out all live in the worker — no inline
     // duplicate maintained here.
     if (creds) runAutopullWorker();
+    else {
+      // First-impression bootstrap: auto-run `hivemind skillify mine-local`
+      // when the user isn't signed in and has Claude Code transcripts on
+      // disk. THIS session sees nothing different; the NEXT pi session
+      // surfaces the mined count + sign-in CTA below.
+      const triggered = piMaybeAutoMineLocal();
+      logHm(`auto-mine: ${triggered ? "triggered" : "skipped"}`);
+    }
 
+    const localMined = piCountLocalManifestEntries();
+    const localMinedNote = localMined > 0
+      ? `\n${localMined} local skill${localMined === 1 ? "" : "s"} from past 'hivemind skillify mine-local' run(s) live in ~/.claude/skills/. Run 'hivemind login' to start sharing new mining results with your team.`
+      : "";
     const additional = creds
       ? `${CONTEXT_PREAMBLE}\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId}).`
-      : `${CONTEXT_PREAMBLE}\nNot logged in to Deeplake. Run \`hivemind login\` to authenticate.`;
+      : `${CONTEXT_PREAMBLE}\nNot logged in to Deeplake. Run \`hivemind login\` to authenticate.${localMinedNote}`;
     return { additionalContext: additional };
   });
 

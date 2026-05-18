@@ -95,6 +95,27 @@ describe("session-notifications hook entry — main()", () => {
     expect(stdout).toEqual([]);
   });
 
+  it("outer catch handler handles non-Error throws (covers `e?.message ?? String(e)` fallback)", async () => {
+    plantCreds();
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((_code?: number) => undefined) as any);
+
+    vi.doMock("../../src/notifications/index.js", async (importOriginal) => {
+      const mod = (await importOriginal()) as any;
+      // Reject with a primitive (not an Error). `e?.message` is undefined →
+      // fallback to `String(e)`. The other test in this describe block
+      // covers the Error path; this covers the nullish branch.
+      return { ...mod, drainSessionStart: vi.fn().mockRejectedValue("plain string failure") };
+    });
+    vi.doMock("../../src/utils/stdin.js", () => ({
+      readStdin: vi.fn().mockResolvedValue({}),
+    }));
+    await import("../../src/notifications/index.js").then(m => m._resetRulesForTest());
+    await import("../../src/hooks/session-notifications.js");
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
   it("outer catch handler fires when readStdin rejects unrecoverably", async () => {
     plantCreds();
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(((_code?: number) => undefined) as any);

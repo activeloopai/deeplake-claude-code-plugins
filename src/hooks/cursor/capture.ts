@@ -22,6 +22,7 @@ import { buildSessionPath } from "../../utils/session-path.js";
 import { EmbedClient } from "../../embeddings/client.js";
 import { embeddingSqlLiteral } from "../../embeddings/sql.js";
 import { embeddingsDisabled } from "../../embeddings/disable.js";
+import { ensurePluginNodeModulesLink } from "../../embeddings/self-heal.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -43,6 +44,14 @@ function resolveEmbedDaemonPath(): string {
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_VERSION = getInstalledVersion(__bundleDir, ".claude-plugin") ?? "";
+
+// Self-heal the shared-deps symlink for this plugin version. Marketplace
+// auto-upgrades drop new versioned cache dirs without the symlink that
+// `hivemind embeddings install` originally created; this restores it on
+// first capture after each upgrade.
+if (!embeddingsDisabled()) {
+  try { ensurePluginNodeModulesLink({ bundleDir: __bundleDir }); } catch { /* best-effort */ }
+}
 
 interface CursorCaptureInput {
   conversation_id?: string;

@@ -269,13 +269,20 @@ describe("cursor capture hook — message_embedding column", () => {
     expect(sql).toContain("'::jsonb, NULL,");
   });
 
-  it("HIVEMIND_EMBEDDINGS=false short-circuits to NULL without invoking EmbedClient", async () => {
+  it("user-disabled embeddings short-circuit to NULL without invoking EmbedClient", async () => {
     stdinMock.mockResolvedValue({
       conversation_id: "sid-emb-3",
       hook_event_name: "beforeSubmitPrompt",
       prompt: "disabled",
     });
-    await runHook({ HIVEMIND_EMBEDDINGS: "false" });
+    // Point user-config at a throwaway path that says enabled:false.
+    const { writeFileSync, mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "cursor-cap-disabled-"));
+    const cfgPath = join(dir, "config.json");
+    writeFileSync(cfgPath, JSON.stringify({ embeddings: { enabled: false } }), "utf-8");
+    await runHook({ HIVEMIND_CONFIG_PATH: cfgPath });
     const sql = queryMock.mock.calls[0][0] as string;
     expect(sql).toContain("'::jsonb, NULL,");
     expect(sql).toMatch(/, message_embedding,/);

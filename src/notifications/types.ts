@@ -33,6 +33,12 @@ export interface NotificationContext {
   creds: Credentials | null;
   /** What dedup state already records as shown. Read-only inside rules. */
   state: NotificationsState;
+  /**
+   * Count of skills already mined locally by `hivemind skillify mine-local`.
+   * Filled in by the hook entry point before drain (rules stay pure). Null
+   * when the manifest is absent or malformed; 0 when present but empty.
+   */
+  localSkillsCount?: number | null;
 }
 
 export interface Rule {

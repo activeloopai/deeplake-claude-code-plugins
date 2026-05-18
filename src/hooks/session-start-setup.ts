@@ -80,8 +80,8 @@ async function main(): Promise<void> {
   if (embeddingsDisabled()) {
     const status = embeddingsStatus();
     const reason = status === "no-transformers"
-      ? "@huggingface/transformers not installed (see README to enable embeddings)"
-      : "HIVEMIND_EMBEDDINGS=false";
+      ? "@huggingface/transformers not installed (run `hivemind embeddings install` to enable)"
+      : "embeddings disabled in ~/.deeplake/config.json (run `hivemind embeddings enable` to opt in)";
     log(`embed daemon warmup skipped: ${reason}`);
   } else if (process.env.HIVEMIND_EMBED_WARMUP !== "false") {
     try {

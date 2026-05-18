@@ -52,7 +52,13 @@ function normalizeSessionMessage(path: string, message: unknown): string {
 }
 
 function resolveEmbedDaemonPath(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
+  // This module is bundled to `<agent>/bundle/shell/deeplake-shell.js`,
+  // while the embed daemon lives one level up at
+  // `<agent>/bundle/embeddings/embed-daemon.js`. The earlier resolver
+  // forgot the `..` and pointed at the non-existent
+  // `bundle/shell/embeddings/embed-daemon.js`, which silently broke the
+  // pre-tool-use shell embed path on every agent.
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "embeddings", "embed-daemon.js");
 }
 
 function joinSessionMessages(path: string, messages: unknown[]): string {

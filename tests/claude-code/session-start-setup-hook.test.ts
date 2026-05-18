@@ -48,21 +48,38 @@ vi.mock("../../src/embeddings/client.js", () => ({
 // (it's installed once into ~/.hivemind/embed-deps via `hivemind embeddings
 // install`). Without this mock the warmup branch is never reached and every
 // assertion below would land on the "skipped: no-transformers" log line. We
-// still respect HIVEMIND_EMBEDDINGS=false so the master-flag branch test below
-// behaves like production.
+// still honor the EMBEDDINGS_DISABLED_FOR_TEST env so the master-flag branch
+// test below behaves like the production user-disabled path.
 vi.mock("../../src/embeddings/disable.js", () => ({
-  embeddingsDisabled: () => process.env.HIVEMIND_EMBEDDINGS === "false",
+  embeddingsDisabled: () => process.env.EMBEDDINGS_DISABLED_FOR_TEST === "1",
   embeddingsStatus: () =>
-    process.env.HIVEMIND_EMBEDDINGS === "false" ? "disabled-by-env" : "enabled",
+    process.env.EMBEDDINGS_DISABLED_FOR_TEST === "1" ? "user-disabled" : "enabled",
 }));
 
 // We also need to control global.fetch for the GitHub version lookup.
 const originalFetch = global.fetch;
 const fetchMock = vi.fn();
 
+// Env keys touched by tests in this file. Recorded so afterEach() can
+// restore them — without this, a test that sets e.g.
+// EMBEDDINGS_DISABLED_FOR_TEST=1 would leak the disabled state into
+// every later test in the same vitest worker (next runHook() call without
+// that key wouldn't clear it, since runHook() only updates the keys
+// passed in). That's exactly the order-dependence CodeRabbit flagged.
+const TOUCHED_ENV_KEYS = [
+  "HIVEMIND_WIKI_WORKER",
+  "HIVEMIND_EMBED_WARMUP",
+  "EMBEDDINGS_DISABLED_FOR_TEST",
+] as const;
+const _origEnv: Record<string, string | undefined> = {};
+
 async function runHook(env: Record<string, string | undefined> = {}): Promise<void> {
+  for (const k of TOUCHED_ENV_KEYS) {
+    if (!(k in _origEnv)) _origEnv[k] = process.env[k];
+  }
   delete process.env.HIVEMIND_WIKI_WORKER;
   for (const [k, v] of Object.entries(env)) {
+    if (!(k in _origEnv)) _origEnv[k] = process.env[k];
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
@@ -100,6 +117,14 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   global.fetch = originalFetch;
+  // Restore env keys the tests may have mutated via runHook(), so later
+  // tests in this file (and other test files in the same worker) start
+  // from a clean process.env.
+  for (const [k, v] of Object.entries(_origEnv)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  for (const k of Object.keys(_origEnv)) delete _origEnv[k];
 });
 
 describe("session-start-setup hook — guards", () => {
@@ -227,11 +252,11 @@ describe("session-start-setup hook — embed daemon warmup", () => {
     );
   });
 
-  it("skips warmup when the master HIVEMIND_EMBEDDINGS=false flag is set", async () => {
-    await runHook({ HIVEMIND_EMBEDDINGS: "false" });
+  it("skips warmup when the user has disabled embeddings in config", async () => {
+    await runHook({ EMBEDDINGS_DISABLED_FOR_TEST: "1" });
     expect(embedWarmupMock).not.toHaveBeenCalled();
     expect(debugLogMock).toHaveBeenCalledWith(
-      "embed daemon warmup skipped: HIVEMIND_EMBEDDINGS=false",
+      "embed daemon warmup skipped: embeddings disabled in ~/.deeplake/config.json (run `hivemind embeddings enable` to opt in)",
     );
   });
 });

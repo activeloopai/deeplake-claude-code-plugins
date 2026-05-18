@@ -10,6 +10,7 @@ const ensureSessionsTableMock = vi.fn();
 const consoleLogMock = vi.fn();
 const getInstalledVersionMock = vi.fn();
 const autoUpdateMock = vi.fn();
+const localManifestMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: unknown[]) => stdinMock(...a) }));
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: unknown[]) => loadConfigMock(...a) }));
@@ -32,6 +33,13 @@ vi.mock("../../src/deeplake-api.js", () => ({
 vi.mock("../../src/hooks/shared/autoupdate.js", () => ({
   autoUpdate: (...a: unknown[]) => autoUpdateMock(...a),
 }));
+vi.mock("../../src/skillify/local-manifest.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/skillify/local-manifest.js")>();
+  return {
+    ...actual,
+    countLocalManifestEntries: (...a: unknown[]) => localManifestMock(...a),
+  };
+});
 
 const validConfig = {
   token: "t", apiUrl: "http://example", orgId: "o", orgName: "acme",
@@ -63,6 +71,7 @@ beforeEach(() => {
   consoleLogMock.mockReset();
   getInstalledVersionMock.mockReset().mockReturnValue("0.7.0");
   autoUpdateMock.mockReset().mockResolvedValue(undefined);
+  localManifestMock.mockReset().mockReturnValue(0);
   vi.spyOn(console, "log").mockImplementation(((s: string) => { consoleLogMock(s); }) as any);
   // Disable auto-pull during this test: autoPullSkills would otherwise issue
   // a third SQL query (against `skills`) through the same DeeplakeApi mock,
@@ -178,5 +187,49 @@ describe("cursor session-start hook — additional_context payload", () => {
     await runHook();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("fatal: stdin gone"));
     expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+});
+
+describe("cursor session-start hook — local mined skills note", () => {
+  it("not logged in + 1 mined skill → singular 'skill'", async () => {
+    localManifestMock.mockReturnValue(1);
+    loadCredentialsMock.mockReturnValue(null);
+    await runHook();
+    const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
+    expect(payload.additional_context).toContain("1 local skill from");
+    expect(payload.additional_context).not.toContain("1 local skills");
+  });
+
+  it("not logged in + 7 mined skills → plural 'skills'", async () => {
+    localManifestMock.mockReturnValue(7);
+    loadCredentialsMock.mockReturnValue(null);
+    await runHook();
+    const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
+    expect(payload.additional_context).toContain("7 local skills from");
+  });
+
+  it("logged in + N mined → no skills note in payload", async () => {
+    localManifestMock.mockReturnValue(4);
+    await runHook();
+    const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
+    expect(payload.additional_context).not.toContain("4 local skills");
+  });
+
+  it("resolveCwd falls back to process.cwd() when workspace_roots is empty array", async () => {
+    // Covers the `Array.isArray(roots) && roots.length > 0 && typeof roots[0] === 'string'`
+    // falsy path: array IS an array but empty → fallback.
+    stdinMock.mockResolvedValue({ session_id: "sid-empty", workspace_roots: [] });
+    await runHook();
+    expect(consoleLogMock).toHaveBeenCalled();
+  });
+
+  it("logs 'triggered (background)' when auto-mine actually fires (not skipped)", async () => {
+    // Covers the `auto.triggered ?` truthy ternary branch on line 134.
+    loadCredentialsMock.mockReturnValue(null);
+    vi.doMock("../../src/skillify/spawn-mine-local-worker.js", () => ({
+      maybeAutoMineLocal: () => ({ triggered: true, reason: "spawned" }),
+    }));
+    await runHook();
+    expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("auto-mine: triggered"));
   });
 });

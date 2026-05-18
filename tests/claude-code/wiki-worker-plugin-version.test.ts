@@ -326,11 +326,13 @@ describe("wiki-worker resume + embeddings-disabled branches — per agent", () =
       expect(uploadSummaryMock.mock.calls[0][1].pluginVersion).toBe("9.9.9");
     });
 
-    it(`${v.agent}: HIVEMIND_EMBEDDINGS=false skips the embed daemon`, async () => {
+    it(`${v.agent}: user-disabled embeddings skip the embed daemon`, async () => {
       // Hit the embeddingsDisabled() branch — uploadSummary should still
       // be called, but with embedding === null (skipped daemon hop).
-      const prev = process.env.HIVEMIND_EMBEDDINGS;
-      process.env.HIVEMIND_EMBEDDINGS = "false";
+      const tmpConfig = join(rootDir, "user-config.json");
+      writeFileSync(tmpConfig, JSON.stringify({ embeddings: { enabled: false } }), "utf-8");
+      const prev = process.env.HIVEMIND_CONFIG_PATH;
+      process.env.HIVEMIND_CONFIG_PATH = tmpConfig;
       try {
         await runVariant(v, "9.9.9");
         expect(uploadSummaryMock).toHaveBeenCalledOnce();
@@ -338,8 +340,8 @@ describe("wiki-worker resume + embeddings-disabled branches — per agent", () =
         expect(params.embedding).toBeNull();
         expect(params.pluginVersion).toBe("9.9.9");
       } finally {
-        if (prev === undefined) delete process.env.HIVEMIND_EMBEDDINGS;
-        else process.env.HIVEMIND_EMBEDDINGS = prev;
+        if (prev === undefined) delete process.env.HIVEMIND_CONFIG_PATH;
+        else process.env.HIVEMIND_CONFIG_PATH = prev;
       }
     });
   }

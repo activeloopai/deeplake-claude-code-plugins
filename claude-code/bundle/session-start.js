@@ -53,9 +53,9 @@ var init_index_marker_store = __esm({
 });
 
 // dist/src/hooks/session-start.js
-import { fileURLToPath } from "node:url";
-import { dirname as dirname4, join as join13 } from "node:path";
-import { homedir as homedir9 } from "node:os";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { dirname as dirname6, join as join15 } from "node:path";
+import { homedir as homedir11 } from "node:os";
 
 // dist/src/commands/auth.js
 import { execSync } from "node:child_process";
@@ -131,13 +131,15 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { join as join3 } from "node:path";
 import { homedir as homedir3 } from "node:os";
-var DEBUG = process.env.HIVEMIND_DEBUG === "1";
 var LOG = join3(homedir3(), ".deeplake", "hook-debug.log");
+function isDebug() {
+  return process.env.HIVEMIND_DEBUG === "1";
+}
 function utcTimestamp(d = /* @__PURE__ */ new Date()) {
   return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
 }
 function log(tag, msg) {
-  if (!DEBUG)
+  if (!isDebug())
     return;
   appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
 `);
@@ -183,7 +185,9 @@ var RETRYABLE_CODES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
 var MAX_RETRIES = 3;
 var BASE_DELAY_MS = 500;
 var MAX_CONCURRENCY = 5;
-var QUERY_TIMEOUT_MS = Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 1e4);
+function getQueryTimeoutMs() {
+  return Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 1e4);
+}
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -264,8 +268,9 @@ var DeeplakeApi = class {
     let lastError;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       let resp;
+      const timeoutMs = getQueryTimeoutMs();
       try {
-        const signal = AbortSignal.timeout(QUERY_TIMEOUT_MS);
+        const signal = AbortSignal.timeout(timeoutMs);
         resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
           method: "POST",
           headers: {
@@ -279,7 +284,7 @@ var DeeplakeApi = class {
         });
       } catch (e) {
         if (isTimeoutError(e)) {
-          lastError = new Error(`Query timeout after ${QUERY_TIMEOUT_MS}ms`);
+          lastError = new Error(`Query timeout after ${timeoutMs}ms`);
           throw lastError;
         }
         lastError = e instanceof Error ? e : new Error(String(e));
@@ -1354,9 +1359,165 @@ async function autoPullSkills(deps = {}) {
   }
 }
 
+// dist/src/cli/skillify-spec.js
+var SKILLIFY_COMMANDS = [
+  { cmd: "hivemind skillify", desc: "show scope, team, install, per-project state" },
+  { cmd: "hivemind skillify pull", desc: "sync project skills from the org table to local FS" },
+  { cmd: "hivemind skillify pull --user <email>", desc: "only skills authored by that user" },
+  { cmd: "hivemind skillify pull --users <a,b,c>", desc: "only skills from those authors" },
+  { cmd: "hivemind skillify pull --all-users", desc: 'explicit "no author filter" (default)' },
+  { cmd: "hivemind skillify pull --to <project|global>", desc: "install location (project=cwd/.claude/skills, global=~/.claude/skills)" },
+  { cmd: "hivemind skillify pull --dry-run", desc: "preview without touching disk" },
+  { cmd: "hivemind skillify pull --force", desc: "overwrite local files even if up-to-date (creates .bak)" },
+  { cmd: "hivemind skillify pull <skill-name>", desc: "pull only that one skill (combines with --user)" },
+  { cmd: "hivemind skillify unpull", desc: "remove every skill previously installed by pull" },
+  { cmd: "hivemind skillify unpull --user <email>", desc: "remove only that author's pulls" },
+  { cmd: "hivemind skillify unpull --not-mine", desc: "remove all pulls except your own" },
+  { cmd: "hivemind skillify unpull --dry-run", desc: "preview without touching disk" },
+  { cmd: "hivemind skillify scope <me|team|org>", desc: "sharing scope for newly mined skills" },
+  { cmd: "hivemind skillify install <project|global>", desc: "default install location for new skills" },
+  { cmd: "hivemind skillify promote <skill-name>", desc: "move a project skill to the global location" },
+  { cmd: "hivemind skillify team add|remove|list <name>", desc: "manage team member list" },
+  { cmd: "hivemind skillify mine-local", desc: "one-shot: mine skills from local sessions (no auth needed)" },
+  { cmd: "hivemind skillify mine-local --n <num|all>", desc: "how many sessions to mine (default: 8)" },
+  { cmd: "hivemind skillify mine-local --force", desc: "re-run even if the manifest sentinel exists" },
+  { cmd: "hivemind skillify mine-local --dry-run", desc: "stop before calling the LLM gate" }
+];
+function renderSkillifyCommands() {
+  const maxLen = Math.max(...SKILLIFY_COMMANDS.map((c) => c.cmd.length));
+  return SKILLIFY_COMMANDS.map((c) => `- ${c.cmd.padEnd(maxLen + 2)} \u2014 ${c.desc}`).join("\n");
+}
+
+// dist/src/skillify/local-manifest.js
+import { existsSync as existsSync9, mkdirSync as mkdirSync7, readFileSync as readFileSync8, writeFileSync as writeFileSync6 } from "node:fs";
+import { homedir as homedir9 } from "node:os";
+import { dirname as dirname4, join as join13 } from "node:path";
+var LOCAL_MANIFEST_PATH = join13(homedir9(), ".claude", "hivemind", "local-mined.json");
+var LOCAL_MINE_LOCK_PATH = join13(homedir9(), ".claude", "hivemind", "local-mined.lock");
+function readLocalManifest(path = LOCAL_MANIFEST_PATH) {
+  if (!existsSync9(path))
+    return null;
+  try {
+    return JSON.parse(readFileSync8(path, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+function countLocalManifestEntries(path = LOCAL_MANIFEST_PATH) {
+  const m = readLocalManifest(path);
+  return Array.isArray(m?.entries) ? m.entries.length : 0;
+}
+
+// dist/src/skillify/spawn-mine-local-worker.js
+import { execFileSync, spawn as spawn2 } from "node:child_process";
+import { closeSync, existsSync as existsSync10, mkdirSync as mkdirSync8, openSync, readdirSync as readdirSync2, statSync as statSync2, unlinkSync as unlinkSync4 } from "node:fs";
+import { homedir as homedir10 } from "node:os";
+import { dirname as dirname5, join as join14 } from "node:path";
+import { fileURLToPath } from "node:url";
+var HOME = homedir10();
+var HIVEMIND_DIR = join14(HOME, ".claude", "hivemind");
+var LOG_PATH = join14(HOME, ".claude", "hooks", "mine-local.log");
+var CLAUDE_PROJECTS_DIR = join14(HOME, ".claude", "projects");
+var LOCK_STALE_MS = 15 * 60 * 1e3;
+function findBundledCliPath() {
+  try {
+    const thisDir = dirname5(fileURLToPath(import.meta.url));
+    const cliPath = join14(thisDir, "..", "..", "bundle", "cli.js");
+    return existsSync10(cliPath) ? cliPath : null;
+  } catch {
+    return null;
+  }
+}
+function findHivemindLauncher() {
+  const bundled = findBundledCliPath();
+  if (bundled)
+    return { kind: "node-script", path: bundled };
+  try {
+    const out = execFileSync("which", ["hivemind"], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    const bin = out.trim();
+    return bin ? { kind: "bin", path: bin } : null;
+  } catch {
+    return null;
+  }
+}
+function hasLocalClaudeSessions() {
+  if (!existsSync10(CLAUDE_PROJECTS_DIR))
+    return false;
+  let subdirs;
+  try {
+    subdirs = readdirSync2(CLAUDE_PROJECTS_DIR);
+  } catch {
+    return false;
+  }
+  for (const sub of subdirs) {
+    let files;
+    try {
+      files = readdirSync2(join14(CLAUDE_PROJECTS_DIR, sub));
+    } catch {
+      continue;
+    }
+    if (files.some((f) => f.endsWith(".jsonl")))
+      return true;
+  }
+  return false;
+}
+function maybeAutoMineLocal() {
+  if (existsSync10(LOCAL_MANIFEST_PATH))
+    return { triggered: false, reason: "manifest-exists" };
+  if (existsSync10(LOCAL_MINE_LOCK_PATH)) {
+    let stale = false;
+    try {
+      const stats = statSync2(LOCAL_MINE_LOCK_PATH);
+      stale = Date.now() - stats.mtimeMs > LOCK_STALE_MS;
+    } catch {
+    }
+    if (!stale)
+      return { triggered: false, reason: "lock-exists" };
+    try {
+      unlinkSync4(LOCAL_MINE_LOCK_PATH);
+    } catch {
+      return { triggered: false, reason: "lock-exists" };
+    }
+  }
+  if (!hasLocalClaudeSessions())
+    return { triggered: false, reason: "no-claude-sessions" };
+  const launcher = findHivemindLauncher();
+  if (!launcher)
+    return { triggered: false, reason: "no-hivemind-bin" };
+  try {
+    mkdirSync8(HIVEMIND_DIR, { recursive: true });
+    const fd = openSync(LOCAL_MINE_LOCK_PATH, "wx");
+    closeSync(fd);
+  } catch {
+    return { triggered: false, reason: "lock-acquire-failed" };
+  }
+  try {
+    mkdirSync8(join14(HOME, ".claude", "hooks"), { recursive: true });
+    const out = openSync(LOG_PATH, "a");
+    const [cmd, args] = launcher.kind === "node-script" ? [process.execPath, [launcher.path, "skillify", "mine-local"]] : [launcher.path, ["skillify", "mine-local"]];
+    const child = spawn2(cmd, args, {
+      detached: true,
+      stdio: ["ignore", out, out],
+      env: process.env
+    });
+    closeSync(out);
+    child.unref();
+    return { triggered: true };
+  } catch {
+    try {
+      unlinkSync4(LOCAL_MINE_LOCK_PATH);
+    } catch {
+    }
+    return { triggered: false, reason: "spawn-failed" };
+  }
+}
+
 // dist/src/hooks/session-start.js
 var log5 = (msg) => log("session-start", msg);
-var __bundleDir = dirname4(fileURLToPath(import.meta.url));
+var __bundleDir = dirname6(fileURLToPath2(import.meta.url));
 var context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
 
 1. Your built-in memory (~/.claude/) \u2014 personal per-project notes
@@ -1389,31 +1550,22 @@ Organization management \u2014 each argument is SEPARATE (do NOT quote subcomman
 - hivemind remove <user-id>                   \u2014 remove member
 
 Skill management (mine + share reusable Claude skills across the org):
-- hivemind skillify                                  \u2014 show scope, team, install, per-project state
-- hivemind skillify pull                             \u2014 sync project skills from the org table to local FS
-- hivemind skillify pull --user <email>              \u2014 only skills authored by that user
-- hivemind skillify pull --users <a,b,c>             \u2014 only skills from those authors
-- hivemind skillify pull --all-users                 \u2014 explicit "no author filter" (default)
-- hivemind skillify pull --to <project|global>       \u2014 install location (project=cwd/.claude/skills, global=~/.claude/skills)
-- hivemind skillify pull --dry-run                   \u2014 preview without touching disk
-- hivemind skillify pull --force                     \u2014 overwrite local files even if up-to-date (creates .bak)
-- hivemind skillify pull <skill-name>                \u2014 pull only that one skill (combines with --user)
-- hivemind skillify unpull                           \u2014 remove every skill previously installed by pull
-- hivemind skillify unpull --user <email>            \u2014 remove only that author's pulls
-- hivemind skillify unpull --not-mine                \u2014 remove all pulls except your own
-- hivemind skillify unpull --dry-run                 \u2014 preview without touching disk
-- hivemind skillify scope <me|team>                  \u2014 sharing scope for newly mined skills
-- hivemind skillify install <project|global>         \u2014 default install location for new skills
-- hivemind skillify promote <skill-name>             \u2014 move a project skill to the global location
-- hivemind skillify team add|remove|list <name>      \u2014 manage team member list
+${renderSkillifyCommands()}
+
+Embeddings (semantic memory search) \u2014 opt-in, persisted in ~/.deeplake/config.json:
+- hivemind embeddings install                        \u2014 download deps (~600MB), symlink agents, set enabled:true
+- hivemind embeddings enable                         \u2014 flip enabled:true (run install first if deps missing)
+- hivemind embeddings disable                        \u2014 flip enabled:false + SIGTERM daemon (deps stay on disk)
+- hivemind embeddings uninstall [--prune]            \u2014 remove agent symlinks + disable; --prune wipes deps too
+- hivemind embeddings status                         \u2014 show config + deps + per-agent link state
 
 IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem. Avoid bash brace expansions like \`{1..10}\` (not fully supported); spell out paths explicitly. Bash output is capped at 10MB total \u2014 avoid \`for f in *.json; do cat $f\` style loops on the whole sessions dir.
 
 LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
-var HOME = homedir9();
-var { log: wikiLog } = makeWikiLogger(join13(HOME, ".claude", "hooks"));
+var HOME2 = homedir11();
+var { log: wikiLog } = makeWikiLogger(join15(HOME2, ".claude", "hooks"));
 async function createPlaceholder(api, table, sessionId, cwd, userName, orgName, workspaceId, pluginVersion) {
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
   const existing = await api.query(`SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`);
@@ -1445,6 +1597,8 @@ async function main() {
   let creds = loadCredentials();
   if (!creds?.token) {
     log5("no credentials found \u2014 run /hivemind:login to authenticate");
+    const auto = maybeAutoMineLocal();
+    log5(`auto-mine: ${auto.triggered ? "triggered (background)" : `skipped (${auto.reason})`}`);
   } else {
     log5(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
     if (creds.token && !creds.userName) {
@@ -1488,11 +1642,15 @@ async function main() {
 
 \u2705 Hivemind v${current}` : "";
   const resolvedContext = context;
+  const localMined = countLocalManifestEntries();
+  const localMinedNote = localMined > 0 ? `
+
+${localMined} local skill${localMined === 1 ? "" : "s"} from past 'hivemind skillify mine-local' run(s) live in ~/.claude/skills/. Run 'hivemind login' to start sharing new mining results with your team.` : "";
   const additionalContext = creds?.token ? `${resolvedContext}
 
 Logged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}` : `${resolvedContext}
 
-\u26A0\uFE0F Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${updateNotice}`;
+\u26A0\uFE0F Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${localMinedNote}${updateNotice}`;
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "SessionStart",

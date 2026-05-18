@@ -17,9 +17,12 @@ import { resolve } from "node:path";
 
 const BUNDLE_ROOT = resolve(process.cwd());
 
+// Bundles that inject the SKILLS section into their hook's stdout. Codex is
+// intentionally excluded: its harness renders hook stdout user-visible (see
+// AGENT_CHANNELS.md → Codex), so the skillify command list lives in the
+// auto-loaded `hivemind-memory` skill instead of the hook context.
 const SESSION_START_BUNDLES: Array<[string, string]> = [
   ["claude-code", resolve(BUNDLE_ROOT, "claude-code", "bundle", "session-start.js")],
-  ["codex",       resolve(BUNDLE_ROOT, "codex",       "bundle", "session-start.js")],
   ["cursor",      resolve(BUNDLE_ROOT, "cursor",      "bundle", "session-start.js")],
   ["hermes",      resolve(BUNDLE_ROOT, "hermes",      "bundle", "session-start.js")],
 ];
@@ -28,11 +31,19 @@ const SESSION_START_BUNDLES: Array<[string, string]> = [
 //   - Pi ships pi/extension-source/hivemind.ts as raw .ts (pi compiles it)
 //   - OpenClaw exposes its surface via openclaw/skills/SKILL.md (loaded by
 //     the openclaw runtime's skill index, not bundled JS)
-// Both are still part of the discoverability matrix and must advertise the
-// skillify family alongside the four hook-driven agents.
+// Codex sits here too: its skillify discoverability lives in
+// codex/skills/deeplake-memory/SKILL.md (auto-loaded), not in the hook bundle.
 const NON_BUNDLE_SURFACES: Array<[string, string]> = [
   ["pi-extension-source", resolve(BUNDLE_ROOT, "pi", "extension-source", "hivemind.ts")],
   ["openclaw-skill",      resolve(BUNDLE_ROOT, "openclaw", "skills", "SKILL.md")],
+  ["codex-skill",         resolve(BUNDLE_ROOT, "codex", "skills", "deeplake-memory", "SKILL.md")],
+];
+
+// Codex bundle — separate matrix because it asserts a NEGATIVE: the slim
+// invariant says the bundle MUST NOT inline the verbose skillify command list
+// (every byte there is shown to the user as `hook context: ...`).
+const CODEX_BUNDLE: [string, string] = [
+  "codex", resolve(BUNDLE_ROOT, "codex", "bundle", "session-start.js"),
 ];
 
 describe("skillify SessionStart injection (per-agent bundles)", () => {
@@ -101,7 +112,40 @@ describe("skillify SessionStart injection (per-agent bundles)", () => {
   );
 });
 
-describe("skillify discoverability on non-bundle agent surfaces (Pi + OpenClaw)", () => {
+describe("Codex bundle slim invariant + skill-as-source-of-truth", () => {
+  it("Codex bundle exists", () => {
+    expect(existsSync(CODEX_BUNDLE[1])).toBe(true);
+  });
+
+  it("Codex bundle does NOT inline the skillify command list (it lives in the skill)", () => {
+    const text = readFileSync(CODEX_BUNDLE[1], "utf-8");
+    // The skillify list belongs in codex/skills/deeplake-memory/SKILL.md
+    // (auto-loaded by codex's skill loader) — emitting it via stdout would
+    // dump ~50 lines into the user's `hook context: ...` history cell.
+    expect(text).not.toMatch(/skillify pull --user/);
+    expect(text).not.toMatch(/skillify scope/);
+    expect(text).not.toMatch(/skillify mine-local/);
+  });
+
+  it("Codex bundle does NOT inline the verbose DEEPLAKE MEMORY tier doc", () => {
+    const text = readFileSync(CODEX_BUNDLE[1], "utf-8");
+    // Same reason — every byte here is user-visible in codex's TUI.
+    expect(text).not.toMatch(/DEEPLAKE MEMORY: Persistent memory/);
+    expect(text).not.toMatch(/Do NOT spawn subagents to read/);
+  });
+
+  it("Codex bundle output is JSON (not plain text) — required for systemMessage channel", () => {
+    const text = readFileSync(CODEX_BUNDLE[1], "utf-8");
+    // The hook must emit a JSON object with hookSpecificOutput so codex
+    // routes systemMessage to the user-visible warning channel and
+    // additionalContext to the model. The pre-0.118.0 plain-text fallback
+    // lost the systemMessage channel entirely.
+    expect(text).toContain("hookSpecificOutput");
+    expect(text).toMatch(/hookEventName/);
+  });
+});
+
+describe("skillify discoverability on non-bundle agent surfaces (Pi + OpenClaw + Codex skill)", () => {
   it.each(NON_BUNDLE_SURFACES)("%s file exists", (_label, p) => {
     expect(existsSync(p)).toBe(true);
   });
@@ -218,7 +262,9 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     // openclaw bundle's child_process stub doesn't apply, and so the chunk
     // graph stays isolated from the gateway's split chunks).
     expect(cfg).toMatch(/"skillify-worker":\s*"dist\/src\/skillify\/skillify-worker\.js"/);
-    expect(cfg).toMatch(/outdir:\s*"openclaw\/dist"[\s\S]{0,200}skillify-worker/);
+    // Window is generous to leave room for the bundle's comments + the
+    // env-var → globalThis.__hivemind_tuning__ define dispatch table.
+    expect(cfg).toMatch(/outdir:\s*"openclaw\/dist"[\s\S]{0,2000}skillify-worker/);
   });
 
   it("openclaw/src/index.ts bypasses the child_process stub via createRequire", () => {
@@ -237,8 +283,16 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     expect(src).toMatch(/OPENCLAW_SKILLIFY_WORKER_PATH\s*=\s*joinPath\(__openclaw_dirname,\s*"skillify-worker\.js"\)/);
     // HIVEMIND_SKILLIFY_WORKER=1 recursion guard set on spawn env
     expect(src).toMatch(/HIVEMIND_SKILLIFY_WORKER:\s*"1"/);
-    // agent_end hook calls it after the capture loop
-    expect(src).toMatch(/agent_end[\s\S]{0,3500}Auto-captured[\s\S]{0,500}spawnOpenclawSkillifyWorker/);
+    // Per-runtime dedup guard (#100) — explicit assertions so a future
+    // refactor that drops the Set or its has/add usage fails this test
+    // (CodeRabbit on #172).
+    expect(src).toMatch(/const skillifySpawnedFor = new Set<string>\(\)/);
+    expect(src).toMatch(/if \(!skillifySpawnedFor\.has\(sid\)\)/);
+    expect(src).toMatch(/skillifySpawnedFor\.add\(sid\)/);
+    // agent_end hook calls it after the capture loop. Distance bumped
+    // from 500→1500 to accommodate the per-runtime spawn-dedup comment
+    // block landed for #100 between `Auto-captured` and the spawn site.
+    expect(src).toMatch(/agent_end[\s\S]{0,3500}Auto-captured[\s\S]{0,1500}spawnOpenclawSkillifyWorker/);
     // install: "global" — no per-project cwd, skills land under ~/.claude/skills/
     expect(src).toMatch(/install:\s*"global"/);
   });

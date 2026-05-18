@@ -61,11 +61,18 @@ function parseOutput(raw: string): Record<string, unknown> | null {
 }
 
 // ── SessionStart ─────────────────────────────────────────────────────────────
-// Codex SessionStart outputs plain text (not JSON) — plain text on stdout
-// is added as developer context by Codex.
+// Codex 0.130.0 surfaces SessionStart hook output to the USER as well as the
+// model: top-level `systemMessage` renders as `warning: ...` in the TUI history
+// cell, and `hookSpecificOutput.additionalContext` renders as `hook context:
+// ...` (also user-visible — common::append_additional_context in codex-rs
+// pushes to both the user-visible entries vec AND the model context vec).
+// Because of this we deliberately keep `additionalContext` MINIMAL — only a
+// 1-line status. The full memory tier doc + CLI command list moved into the
+// `hivemind-memory` skill (codex/skills/deeplake-memory/SKILL.md), which the
+// model loads on demand without spamming the terminal every session start.
 
 describe("codex integration: session-start", () => {
-  it("returns plain text with DEEPLAKE MEMORY instructions", () => {
+  it("returns valid JSON with hookSpecificOutput.additionalContext", () => {
     const raw = runHook("session-start.js", {
       session_id: "test-session-001",
       transcript_path: null,
@@ -76,43 +83,61 @@ describe("codex integration: session-start", () => {
     });
 
     expect(raw.length).toBeGreaterThan(0);
-    expect(raw).toContain("DEEPLAKE MEMORY");
-    expect(raw).toContain("~/.deeplake/memory/");
-    expect(raw).toContain("index.md");
-    expect(raw).toContain("summaries");
-    expect(raw).toContain("grep -r");
+    const parsed = JSON.parse(raw.trim());
+    expect(parsed.hookSpecificOutput).toBeDefined();
+    expect(parsed.hookSpecificOutput.hookEventName).toBe("SessionStart");
+    expect(typeof parsed.hookSpecificOutput.additionalContext).toBe("string");
+    // additionalContext is INTENTIONALLY small — single line of status. The
+    // verbose memory tier doc + skillify/embeddings command list lives in the
+    // bundled SKILL.md, not here, because Codex prints it user-visible.
+    expect(parsed.hookSpecificOutput.additionalContext.length).toBeLessThan(300);
   });
 
-  it("context includes login status", () => {
+  it("additionalContext includes login status (logged in OR not logged in)", () => {
     const raw = runHook("session-start.js", {
       session_id: "test-session-002",
       cwd: "/tmp",
       hook_event_name: "SessionStart",
       model: "gpt-5.2",
     });
-    // Should mention login status (logged in or not)
-    expect(raw).toMatch(/Logged in to Deeplake|Not logged in to Deeplake/);
+    const parsed = JSON.parse(raw.trim());
+    expect(parsed.hookSpecificOutput.additionalContext).toMatch(/Hivemind: logged in|Hivemind: not logged in/);
   });
 
-  it("context includes subagent warning", () => {
+  it("does NOT inline the memory tier doc into additionalContext (it lives in the skill instead)", () => {
     const raw = runHook("session-start.js", {
       session_id: "test-session-003",
       cwd: "/tmp",
       hook_event_name: "SessionStart",
       model: "gpt-5.2",
     });
-    expect(raw).toContain("Do NOT spawn subagents");
+    const parsed = JSON.parse(raw.trim());
+    const ctx = parsed.hookSpecificOutput.additionalContext;
+    // These were in the old plain-text dump. Now they belong in the skill.
+    expect(ctx).not.toContain("DEEPLAKE MEMORY");
+    expect(ctx).not.toContain("index.md");
+    expect(ctx).not.toContain("Do NOT spawn subagents");
+    expect(ctx).not.toContain("FALLBACK");
   });
 
-  it("context steers recall to summaries first, sessions as fallback", () => {
+  it("emits systemMessage with mined-skills CTA when not logged in AND manifest is present", () => {
+    // The hook's not-logged-in branch only emits the systemMessage when
+    // countLocalManifestEntries() > 0. In an isolated test HOME (no
+    // ~/.claude/hivemind/local-mined.json) the count is 0 → no systemMessage
+    // is emitted. Verify the field is omitted in that case so codex doesn't
+    // render an empty warning.
     const raw = runHook("session-start.js", {
       session_id: "test-session-004",
       cwd: "/tmp",
       hook_event_name: "SessionStart",
       model: "gpt-5.2",
     });
-    expect(raw).toContain("summaries/");
-    expect(raw).toContain("FALLBACK");
+    const parsed = JSON.parse(raw.trim());
+    // Either no systemMessage (count==0) OR a one-line `💡` CTA with the count.
+    if (parsed.systemMessage !== undefined) {
+      expect(parsed.systemMessage).toMatch(/💡 \d+ skill/);
+      expect(parsed.systemMessage).toContain("hivemind login");
+    }
   });
 });
 

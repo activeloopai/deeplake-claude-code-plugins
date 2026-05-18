@@ -29,8 +29,32 @@ export interface PingResponse {
   error?: string;
 }
 
-export type DaemonRequest = EmbedRequest | PingRequest;
-export type DaemonResponse = EmbedResponse | PingResponse;
+// Wire-level handshake. Client sends a `hello` immediately after connecting
+// the first time per process; daemon answers with its own `daemonPath` (the
+// script that was actually spawned) so the client can verify that the
+// running daemon is the same binary it would have spawned itself. On
+// mismatch — typically after a marketplace plugin upgrade replaced the
+// bundle but the old daemon process kept its socket — the client SIGTERMs
+// and re-spawns from the new path.
+export interface HelloRequest {
+  op: "hello";
+  id: string;
+}
+
+export interface HelloResponse {
+  id: string;
+  daemonPath: string;
+  pid: number;
+  protocolVersion: number;
+  error?: string;
+}
+
+export type DaemonRequest = EmbedRequest | PingRequest | HelloRequest;
+export type DaemonResponse = EmbedResponse | PingResponse | HelloResponse;
+
+// Increment when the wire protocol changes in a non-backward-compatible
+// way. Used by the client's handshake mismatch check.
+export const PROTOCOL_VERSION = 1;
 
 export const DEFAULT_SOCKET_DIR = "/tmp";
 export const DEFAULT_MODEL_REPO = "nomic-ai/nomic-embed-text-v1.5";

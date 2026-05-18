@@ -16,12 +16,15 @@ import { loadCredentials } from "../commands/auth.js";
 import { readStdin } from "../utils/stdin.js";
 import { drainSessionStart, registerRule } from "../notifications/index.js";
 import { welcomeRule } from "../notifications/rules/welcome.js";
+import { localMinedRule } from "../notifications/rules/local-mined.js";
+import { countLocalManifestEntries } from "../skillify/local-manifest.js";
 import { log as _log } from "../utils/debug.js";
 
 const log = (msg: string) => _log("session-notifications", msg);
 
 // Register the v1 rule set. Rules are pure functions; registration is cheap.
 registerRule(welcomeRule);
+registerRule(localMinedRule);
 
 interface SessionStartInput {
   session_id?: string;
@@ -46,7 +49,13 @@ async function main(): Promise<void> {
   const sessionId = rawSessionId.length > 0 ? rawSessionId : undefined;
 
   const creds = loadCredentials();
-  await drainSessionStart({ agent: "claude-code", creds, sessionId });
+  // Read the local-mined count here (rules stay pure / IO-free). countLocalManifestEntries
+  // returns 0 when the manifest is missing or malformed — we coerce to null in
+  // that case so the rule can distinguish "no mining run yet" from "ran, found 0".
+  let localSkillsCount: number | null = null;
+  try { localSkillsCount = countLocalManifestEntries(); }
+  catch { /* keep null */ }
+  await drainSessionStart({ agent: "claude-code", creds, sessionId, localSkillsCount });
 }
 
 main().catch((e) => { log(`fatal: ${e?.message ?? String(e)}`); process.exit(0); });

@@ -3,69 +3,48 @@ import {
   embeddingsDisabled,
   embeddingsStatus,
   _setResolveForTesting,
+  _setEnabledReaderForTesting,
   _resetForTesting,
 } from "../../src/embeddings/disable.js";
 
-const originalEnv = process.env.HIVEMIND_EMBEDDINGS;
+beforeEach(() => {
+  _resetForTesting();
+  // Default: user has embeddings enabled. Individual tests flip this.
+  _setEnabledReaderForTesting(() => true);
+});
 
-function restoreEnv(): void {
-  if (originalEnv === undefined) delete process.env.HIVEMIND_EMBEDDINGS;
-  else process.env.HIVEMIND_EMBEDDINGS = originalEnv;
-}
+afterEach(() => {
+  _resetForTesting();
+});
 
-describe("embeddingsStatus / embeddingsDisabled — env branch", () => {
-  beforeEach(() => {
-    delete process.env.HIVEMIND_EMBEDDINGS;
-    _resetForTesting();
-  });
-
-  afterEach(() => {
-    restoreEnv();
-    _resetForTesting();
-  });
-
-  it("is 'enabled' when env is unset and the package resolves", () => {
+describe("embeddingsStatus / embeddingsDisabled — user-config branch", () => {
+  it("is 'enabled' when config says enabled and the package resolves", () => {
+    _setEnabledReaderForTesting(() => true);
     _setResolveForTesting(() => { /* no throw → installed */ });
     expect(embeddingsStatus()).toBe("enabled");
     expect(embeddingsDisabled()).toBe(false);
   });
 
-  it("is 'env-disabled' when HIVEMIND_EMBEDDINGS is exactly 'false'", () => {
-    process.env.HIVEMIND_EMBEDDINGS = "false";
+  it("is 'user-disabled' when config says embeddings.enabled === false", () => {
+    _setEnabledReaderForTesting(() => false);
     // Resolver should never be consulted — set it to throw so this fails
-    // loudly if the env-check is ever removed.
+    // loudly if the gate is ever removed.
     _setResolveForTesting(() => { throw new Error("must not be called"); });
-    expect(embeddingsStatus()).toBe("env-disabled");
+    expect(embeddingsStatus()).toBe("user-disabled");
     expect(embeddingsDisabled()).toBe(true);
   });
 
-  it("env-disabled wins over a missing package (single, definitive signal)", () => {
-    process.env.HIVEMIND_EMBEDDINGS = "false";
+  it("user-disabled wins over missing transformers (single, definitive signal)", () => {
+    _setEnabledReaderForTesting(() => false);
     _setResolveForTesting(() => { throw new Error("MODULE_NOT_FOUND"); });
-    expect(embeddingsStatus()).toBe("env-disabled");
+    expect(embeddingsStatus()).toBe("user-disabled");
     expect(embeddingsDisabled()).toBe(true);
-  });
-
-  it("stays 'enabled' for any non-'false' truthy env value (avoid surprise kills)", () => {
-    for (const value of ["0", "no", "true", "", "FALSE", "False"]) {
-      process.env.HIVEMIND_EMBEDDINGS = value;
-      _resetForTesting();
-      _setResolveForTesting(() => { /* installed */ });
-      expect(embeddingsStatus()).toBe("enabled");
-      expect(embeddingsDisabled()).toBe(false);
-    }
   });
 });
 
 describe("embeddingsStatus / embeddingsDisabled — transformers-presence branch", () => {
   beforeEach(() => {
-    delete process.env.HIVEMIND_EMBEDDINGS;
-    _resetForTesting();
-  });
-
-  afterEach(() => {
-    restoreEnv();
-    _resetForTesting();
+    _setEnabledReaderForTesting(() => true);
   });
 
   it("is 'enabled' when @huggingface/transformers resolves cleanly", () => {
@@ -118,17 +97,20 @@ describe("embeddingsStatus / embeddingsDisabled — transformers-presence branch
     _setResolveForTesting(() => { throw new Error("simulated missing"); });
     expect(embeddingsStatus()).toBe("no-transformers");
     _resetForTesting();
+    _setEnabledReaderForTesting(() => true);
     // Real resolver runs against this test process, which has the package
     // installed via the worktree's node_modules → comes back 'enabled'.
     expect(embeddingsStatus()).toBe("enabled");
   });
 
-  it("real default resolver finds @huggingface/transformers in this repo", () => {
-    // Smoke check: in the dev / CI environment the package IS installed,
-    // so the actual createRequire-based resolver succeeds. Guards against
-    // a regression in the resolution path itself (wrong base URL, wrong
-    // package name spelling, build-time vs runtime path drift, etc.).
+  it("real default resolver finds @huggingface/transformers via the shared-deps probe", () => {
+    // Smoke check: in the dev / CI environment the package IS installed
+    // (either at ~/.hivemind/embed-deps/ or in the worktree's node_modules
+    // via the bundle walk fallback). Guards against a regression in the
+    // resolver chain (wrong base URL, wrong package name, build-time vs
+    // runtime path drift, etc.).
     _resetForTesting();
+    _setEnabledReaderForTesting(() => true);
     expect(embeddingsStatus()).toBe("enabled");
   });
 });

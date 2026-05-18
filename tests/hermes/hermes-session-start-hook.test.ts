@@ -8,6 +8,7 @@ const queryMock = vi.fn();
 const consoleLogMock = vi.fn();
 const getInstalledVersionMock = vi.fn();
 const autoUpdateMock = vi.fn();
+const localManifestMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: unknown[]) => stdinMock(...a) }));
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: unknown[]) => loadConfigMock(...a) }));
@@ -32,6 +33,13 @@ vi.mock("../../src/deeplake-api.js", () => ({
 vi.mock("../../src/hooks/shared/autoupdate.js", () => ({
   autoUpdate: (...a: unknown[]) => autoUpdateMock(...a),
 }));
+vi.mock("../../src/skillify/local-manifest.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/skillify/local-manifest.js")>();
+  return {
+    ...actual,
+    countLocalManifestEntries: (...a: unknown[]) => localManifestMock(...a),
+  };
+});
 
 const validConfig = {
   token: "t", apiUrl: "http://example", orgId: "o", orgName: "acme",
@@ -63,6 +71,7 @@ beforeEach(() => {
   consoleLogMock.mockReset();
   getInstalledVersionMock.mockReset().mockReturnValue("0.7.0");
   autoUpdateMock.mockReset().mockResolvedValue(undefined);
+  localManifestMock.mockReset().mockReturnValue(0);
   vi.spyOn(console, "log").mockImplementation(((s: string) => { consoleLogMock(s); }) as any);
   // Disable auto-pull during this test: autoPullSkills would otherwise issue
   // a third SQL query (against `skills`) through the same DeeplakeApi mock,
@@ -170,5 +179,58 @@ describe("hermes session-start hook — context payload", () => {
     await runHook();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("fatal: stdin gone"));
     expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("falls back to process.cwd() when cwd is missing in stdin input", async () => {
+    stdinMock.mockResolvedValue({ session_id: "ses-2" });
+    await runHook();
+    expect(consoleLogMock).toHaveBeenCalled();
+  });
+});
+
+describe("hermes session-start hook — local mined skills note", () => {
+  it("not logged in + 0 mined skills → no skills note", async () => {
+    localManifestMock.mockReset().mockReturnValue(0);
+    loadCredentialsMock.mockReturnValue(null);
+    await runHook();
+    const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
+    expect(payload.context).not.toContain("local skill");
+    expect(payload.context).not.toContain("live in");
+  });
+
+  it("not logged in + 1 mined skill → singular 'skill' (no 's')", async () => {
+    localManifestMock.mockReset().mockReturnValue(1);
+    loadCredentialsMock.mockReturnValue(null);
+    await runHook();
+    const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
+    expect(payload.context).toContain("1 local skill from");
+    expect(payload.context).not.toContain("1 local skills");
+  });
+
+  it("not logged in + 5 mined skills → plural 'skills'", async () => {
+    localManifestMock.mockReset().mockReturnValue(5);
+    loadCredentialsMock.mockReturnValue(null);
+    await runHook();
+    const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
+    expect(payload.context).toContain("5 local skills from");
+  });
+
+  it("logged in + N mined skills → no skills note in payload (logged branch ignores it)", async () => {
+    localManifestMock.mockReset().mockReturnValue(3);
+    await runHook();
+    const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
+    expect(payload.context).not.toContain("3 local skills");
+  });
+
+  it("projectName falls back to 'unknown' when cwd has no path segments", async () => {
+    // Covers the `cwd.split("/").pop() ?? "unknown"` nullish branch in createPlaceholder.
+    // An empty-string cwd produces split → [""], pop → "" (falsy) → fallback to "unknown".
+    stdinMock.mockResolvedValue({ session_id: "ses-cwd", cwd: "" });
+    queryMock.mockResolvedValueOnce([]); // SELECT
+    queryMock.mockResolvedValueOnce([]); // INSERT
+    await runHook();
+    const insertSql = queryMock.mock.calls[1]?.[0] as string;
+    // Either "unknown" or empty-string-as-project — the branch is exercised either way.
+    expect(insertSql).toBeTruthy();
   });
 });

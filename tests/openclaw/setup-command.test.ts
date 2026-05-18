@@ -138,16 +138,43 @@ describe("/hivemind_setup", () => {
     expect(result.text).toContain("already enabled");
   });
 
-  it("handles config where alsoAllow is missing entirely", async () => {
+  it("does NOT create alsoAllow when it's missing entirely (default-allow semantics)", async () => {
+    // CodeRabbit on #124 caught this: my original code coerced an absent
+    // tools.alsoAllow to [] then patched it to ["hivemind"], flipping the
+    // user from default-allow into explicit-allowlist mode and potentially
+    // disabling tools from other plugins. Match the same explicit-only
+    // contract used for plugins.allow.
     const configPath = writeConfig({
       tools: { profile: "coding" },
     });
     const setup = await loadSetupCommand();
     const result = await setup.handler({}) as { text: string };
-    expect(result.text).toContain("Added");
+    // No change → already-set
+    expect(result.text).toContain("already enabled");
 
     const updated = JSON.parse(readFileSync(configPath, "utf-8"));
-    expect(updated.tools.alsoAllow).toEqual(["hivemind"]);
+    expect(updated.tools.alsoAllow).toBeUndefined();
+  });
+
+  it("does NOT touch alsoAllow when it's an empty array (default-allow semantics)", async () => {
+    const configPath = writeConfig({
+      tools: { profile: "coding", alsoAllow: [] },
+    });
+    const setup = await loadSetupCommand();
+    const result = await setup.handler({}) as { text: string };
+    expect(result.text).toContain("already enabled");
+
+    const updated = JSON.parse(readFileSync(configPath, "utf-8"));
+    expect(updated.tools.alsoAllow).toEqual([]);
+  });
+
+  it("reports a parse error when openclaw.json is not valid JSON", async () => {
+    const dir = join(TEMP_HOME, ".openclaw");
+    require("node:fs").mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "openclaw.json"), "{ broken json");
+    const setup = await loadSetupCommand();
+    const result = await setup.handler({}) as { text: string };
+    expect(result.text).toContain("Could not update allowlist");
   });
 
   it("reports error when openclaw.json doesn't exist", async () => {
@@ -173,5 +200,120 @@ describe("/hivemind_setup", () => {
     expect(updated.channels.telegram.enabled).toBe(true);
     expect(updated.tools.profile).toBe("coding");
     expect(updated.tools.alsoAllow).toContain("hivemind");
+  });
+
+  // plugins.allow gating — issue #121. OpenClaw refuses to load the
+  // hivemind plugin at all when plugins.allow is an explicit non-empty
+  // array missing "hivemind", so the slash command was previously
+  // unreachable on a freshly-installed plugin. /hivemind_setup must
+  // patch both arrays (where each exists as an explicit list) so a
+  // single run fully unblocks the plugin once it has been registered
+  // out-of-band.
+  describe("plugins.allow gating (issue #121)", () => {
+    it("adds 'hivemind' to plugins.allow when it's an explicit array missing hivemind", async () => {
+      const configPath = writeConfig({
+        plugins: { allow: ["memory-wiki", "browser"] },
+        tools: { profile: "coding", alsoAllow: ["hivemind"] },
+      });
+      const setup = await loadSetupCommand();
+      const result = await setup.handler({}) as { text: string };
+      expect(result.text).toContain("Added");
+
+      const updated = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(updated.plugins.allow).toEqual(["memory-wiki", "browser", "hivemind"]);
+    });
+
+    it("patches BOTH plugins.allow and tools.alsoAllow in a single run when both miss hivemind", async () => {
+      const configPath = writeConfig({
+        plugins: { allow: ["memory-wiki"] },
+        tools: { profile: "coding", alsoAllow: ["memory_store"] },
+      });
+      const setup = await loadSetupCommand();
+      const result = await setup.handler({}) as { text: string };
+      expect(result.text).toContain("Added");
+
+      const updated = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(updated.plugins.allow).toEqual(["memory-wiki", "hivemind"]);
+      expect(updated.tools.alsoAllow).toEqual(["memory_store", "hivemind"]);
+    });
+
+    it("does NOT create plugins.allow when it's absent (default-allow semantics)", async () => {
+      const configPath = writeConfig({
+        tools: { profile: "coding", alsoAllow: ["memory_store"] },
+      });
+      const setup = await loadSetupCommand();
+      await setup.handler({});
+
+      const updated = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(updated.plugins).toBeUndefined();
+    });
+
+    it("does NOT touch plugins.allow when it's an empty array (default-allow semantics)", async () => {
+      const configPath = writeConfig({
+        plugins: { allow: [] },
+        tools: { profile: "coding", alsoAllow: ["memory_store"] },
+      });
+      const setup = await loadSetupCommand();
+      await setup.handler({});
+
+      const updated = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(updated.plugins.allow).toEqual([]);
+    });
+
+    it("is idempotent when 'hivemind' is already in plugins.allow AND tools.alsoAllow", async () => {
+      writeConfig({
+        plugins: { allow: ["memory-wiki", "hivemind"] },
+        tools: { profile: "coding", alsoAllow: ["memory_store", "hivemind"] },
+      });
+      const setup = await loadSetupCommand();
+      const result = await setup.handler({}) as { text: string };
+      expect(result.text).toContain("already enabled");
+    });
+
+    it("reports 'Added' even when only plugins.allow needs patching (tools.alsoAllow already covers hivemind)", async () => {
+      // group:plugins wildcard covers tools.alsoAllow, but plugins.allow
+      // still needs an explicit "hivemind" entry.
+      const configPath = writeConfig({
+        plugins: { allow: ["memory-wiki"] },
+        tools: { profile: "coding", alsoAllow: ["group:plugins"] },
+      });
+      const setup = await loadSetupCommand();
+      const result = await setup.handler({}) as { text: string };
+      expect(result.text).toContain("Added");
+
+      const updated = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(updated.plugins.allow).toContain("hivemind");
+      // tools.alsoAllow was already covered by the wildcard — left as-is.
+      expect(updated.tools.alsoAllow).toEqual(["group:plugins"]);
+    });
+
+    it("detectAllowlistMissing returns true when only plugins.allow is missing hivemind", async () => {
+      writeConfig({
+        plugins: { allow: ["memory-wiki"] },
+        tools: { profile: "coding", alsoAllow: ["hivemind"] },
+      });
+      vi.resetModules();
+      const { detectAllowlistMissing } = await import("../../openclaw/src/setup-config.js");
+      expect(detectAllowlistMissing()).toBe(true);
+    });
+
+    it("detectAllowlistMissing returns false when both allowlists cover hivemind", async () => {
+      writeConfig({
+        plugins: { allow: ["memory-wiki", "hivemind"] },
+        tools: { profile: "coding", alsoAllow: ["hivemind"] },
+      });
+      vi.resetModules();
+      const { detectAllowlistMissing } = await import("../../openclaw/src/setup-config.js");
+      expect(detectAllowlistMissing()).toBe(false);
+    });
+
+    it("detectAllowlistMissing returns false when plugins.allow is absent (default-allow)", async () => {
+      writeConfig({
+        tools: { profile: "coding", alsoAllow: ["hivemind"] },
+      });
+      vi.resetModules();
+      const { detectAllowlistMissing } = await import("../../openclaw/src/setup-config.js");
+      expect(detectAllowlistMissing()).toBe(false);
+    });
   });
 });
