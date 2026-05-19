@@ -471,13 +471,13 @@ function maybeSignalBalanceExhausted(status, bodyText) {
     return;
   _signalledBalanceExhausted = true;
   log3(`balance exhausted \u2014 enqueuing session-start banner (body=${bodyText.slice(0, 120)})`);
-  const date = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   enqueueNotification({
     id: "balance-exhausted",
     severity: "warn",
+    transient: true,
     title: "Hivemind credits exhausted \u2014 top up to keep capturing",
     body: `Sessions are not being saved and memory recall is returning empty. Top up at ${billingUrl()} to restore capture and recall.`,
-    dedupKey: { reason: "balance-zero", date }
+    dedupKey: { reason: "balance-zero" }
   }).catch((e) => {
     log3(`enqueue balance-exhausted failed: ${e instanceof Error ? e.message : String(e)}`);
   });

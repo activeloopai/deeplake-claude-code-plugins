@@ -26,6 +26,17 @@ export interface Notification {
    * version-upgrade-0.7.6 tomorrow). State stores `{ id → JSON.stringify(dedupKey) }`.
    */
   dedupKey: Record<string, unknown>;
+  /**
+   * When true, the drain shows the notification but does NOT record it in
+   * `state.shown`. Use for self-clearing error notifications where the
+   * enqueue itself is the rate limit — e.g. a 402 from the SDK keeps
+   * enqueuing while the error persists, and once it's resolved no fresh
+   * enqueue happens. State.shown would block the second-session refire.
+   *
+   * Default (omitted/false) keeps the existing dedup-across-sessions
+   * behavior used by welcome, savings recap, backend pushes, etc.
+   */
+  transient?: boolean;
 }
 
 export interface NotificationContext {

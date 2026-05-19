@@ -13,7 +13,7 @@
  * accidental absolute-path injection cannot reach the real ~/.deeplake/.
  */
 
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -100,9 +100,7 @@ export function tryClaim(n: Notification): boolean {
     log(`tryClaim mkdir failed: ${e?.message ?? String(e)}`);
     return true;
   }
-  const keyHash = createHash("sha256").update(JSON.stringify(n.dedupKey)).digest("hex").slice(0, 12);
-  const safeId = n.id.replace(/[^a-zA-Z0-9_.:-]/g, "_");
-  const claimPath = join(claimsDir, `${safeId}-${keyHash}`);
+  const claimPath = claimPathFor(claimsDir, n);
   try {
     const fd = openSync(claimPath, "wx", 0o600);
     closeSync(fd);
@@ -112,4 +110,34 @@ export function tryClaim(n: Notification): boolean {
     log(`tryClaim open failed: ${e?.message ?? String(e)}`);
     return true;
   }
+}
+
+/**
+ * Release a claim by unlinking the claim file. Called after a transient
+ * notification is delivered so the NEXT session's enqueue+drain can win a
+ * fresh claim. Non-transient notifications keep their claim files
+ * (matching the persistent state.shown contract — same (id, dedupKey)
+ * pair won't be re-emitted later).
+ *
+ * Best-effort: any unlink error is swallowed. A stale claim file just
+ * means the next session-start drain skips that notification, which is
+ * the existing fail-OPEN posture taken elsewhere in this module.
+ */
+export function releaseClaim(n: Notification): void {
+  const home = resolve(homedir());
+  const claimsDir = join(home, ".deeplake", "notifications-claims");
+  const claimPath = claimPathFor(claimsDir, n);
+  try {
+    unlinkSync(claimPath);
+  } catch (e: any) {
+    if (e?.code !== "ENOENT") {
+      log(`releaseClaim unlink failed: ${e?.message ?? String(e)}`);
+    }
+  }
+}
+
+function claimPathFor(claimsDir: string, n: Notification): string {
+  const keyHash = createHash("sha256").update(JSON.stringify(n.dedupKey)).digest("hex").slice(0, 12);
+  const safeId = n.id.replace(/[^a-zA-Z0-9_.:-]/g, "_");
+  return join(claimsDir, `${safeId}-${keyHash}`);
 }

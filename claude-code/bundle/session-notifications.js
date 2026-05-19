@@ -115,7 +115,7 @@ function writeQueue(q) {
 }
 
 // dist/src/notifications/state.js
-import { closeSync as closeSync2, mkdirSync as mkdirSync3, openSync as openSync2, readFileSync as readFileSync3, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { closeSync as closeSync2, mkdirSync as mkdirSync3, openSync as openSync2, readFileSync as readFileSync3, renameSync as renameSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { createHash } from "node:crypto";
 import { join as join4, resolve as resolve2 } from "node:path";
 import { homedir as homedir4 } from "node:os";
@@ -170,9 +170,7 @@ function tryClaim(n) {
     log3(`tryClaim mkdir failed: ${e?.message ?? String(e)}`);
     return true;
   }
-  const keyHash = createHash("sha256").update(JSON.stringify(n.dedupKey)).digest("hex").slice(0, 12);
-  const safeId = n.id.replace(/[^a-zA-Z0-9_.:-]/g, "_");
-  const claimPath = join4(claimsDir, `${safeId}-${keyHash}`);
+  const claimPath = claimPathFor(claimsDir, n);
   try {
     const fd = openSync2(claimPath, "wx", 384);
     closeSync2(fd);
@@ -183,6 +181,23 @@ function tryClaim(n) {
     log3(`tryClaim open failed: ${e?.message ?? String(e)}`);
     return true;
   }
+}
+function releaseClaim(n) {
+  const home = resolve2(homedir4());
+  const claimsDir = join4(home, ".deeplake", "notifications-claims");
+  const claimPath = claimPathFor(claimsDir, n);
+  try {
+    unlinkSync3(claimPath);
+  } catch (e) {
+    if (e?.code !== "ENOENT") {
+      log3(`releaseClaim unlink failed: ${e?.message ?? String(e)}`);
+    }
+  }
+}
+function claimPathFor(claimsDir, n) {
+  const keyHash = createHash("sha256").update(JSON.stringify(n.dedupKey)).digest("hex").slice(0, 12);
+  const safeId = n.id.replace(/[^a-zA-Z0-9_.:-]/g, "_");
+  return join4(claimsDir, `${safeId}-${keyHash}`);
 }
 
 // dist/src/notifications/format.js
@@ -467,8 +482,12 @@ async function drainSessionStart(opts) {
     const rendered = renderNotifications(claimed);
     emit(opts.agent, rendered);
     let nextState = state;
-    for (const n of claimed)
-      nextState = markShown(nextState, n);
+    for (const n of claimed) {
+      if (n.transient)
+        releaseClaim(n);
+      else
+        nextState = markShown(nextState, n);
+    }
     writeState(nextState);
     if (queue.queue.length > 0)
       writeQueue({ queue: [] });

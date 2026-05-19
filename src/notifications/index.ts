@@ -17,7 +17,7 @@ import type { Credentials } from "../commands/auth-creds.js";
 import type { Agent, Notification, NotificationContext } from "./types.js";
 import { evaluateRules } from "./rules/registry.js";
 import { readQueue, writeQueue } from "./queue.js";
-import { readState, writeState, alreadyShown, markShown, tryClaim } from "./state.js";
+import { readState, writeState, alreadyShown, markShown, tryClaim, releaseClaim } from "./state.js";
 import { renderNotifications } from "./format.js";
 import { emit } from "./delivery/index.js";
 import { fetchBackendNotifications } from "./sources/backend.js";
@@ -102,8 +102,17 @@ export async function drainSessionStart(opts: DrainOptions): Promise<void> {
     const rendered = renderNotifications(claimed);
     emit(opts.agent, rendered);
 
+    // Persist state for non-transient notifications. Transient ones (see
+    // Notification.transient docstring) are self-clearing — their enqueue
+    // is the rate limit, so recording them in state.shown would block the
+    // next session's refire. We also release their claim file so the next
+    // session's tryClaim() succeeds (the claim file is the OTHER cross-
+    // session blocker, separate from state.shown).
     let nextState = state;
-    for (const n of claimed) nextState = markShown(nextState, n);
+    for (const n of claimed) {
+      if (n.transient) releaseClaim(n);
+      else nextState = markShown(nextState, n);
+    }
     writeState(nextState);
 
     // Queue is fully drained whether or not its items were dedup-skipped:

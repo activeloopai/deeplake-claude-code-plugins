@@ -64,13 +64,18 @@ function maybeSignalBalanceExhausted(status: number, bodyText: string): void {
   if (_signalledBalanceExhausted) return;
   _signalledBalanceExhausted = true;
   log(`balance exhausted — enqueuing session-start banner (body=${bodyText.slice(0, 120)})`);
-  const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
+  // transient: true → the drain shows it but doesn't record in state.shown.
+  // The enqueue path is itself the rate limit: only fires on a real 402,
+  // so once balance is restored no fresh enqueue happens and the banner
+  // silences naturally. dedupKey is stable so concurrent hook processes
+  // within one session collapse to one queue entry.
   enqueueNotification({
     id: "balance-exhausted",
     severity: "warn",
+    transient: true,
     title: "Hivemind credits exhausted — top up to keep capturing",
     body: `Sessions are not being saved and memory recall is returning empty. Top up at ${billingUrl()} to restore capture and recall.`,
-    dedupKey: { reason: "balance-zero", date },
+    dedupKey: { reason: "balance-zero" },
   }).catch((e: unknown) => {
     log(`enqueue balance-exhausted failed: ${e instanceof Error ? e.message : String(e)}`);
   });

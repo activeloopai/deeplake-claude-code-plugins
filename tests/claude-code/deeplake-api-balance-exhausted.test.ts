@@ -94,9 +94,14 @@ describe("DeeplakeApi — 402 balance-exhausted handling", () => {
     // Org-scoped billing URL: deeplake.ai/{orgName}/workspace/{workspaceId}/billing
     expect(arg.body).toContain("https://deeplake.ai/acme/workspace/default/billing");
     expect(arg.dedupKey.reason).toBe("balance-zero");
-    // Date is included so the banner re-fires daily until the user tops up
-    // rather than firing once-ever and going quiet.
-    expect(arg.dedupKey.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // No date — transient mode means refire every session-start while the
+    // 402 keeps re-enqueuing. Daily-rotation logic was unnecessary.
+    expect(arg.dedupKey.date).toBeUndefined();
+    // transient: true → the drain shows it but does NOT record in
+    // state.shown, so the next session's drain re-fires the freshly-
+    // enqueued copy. Required for "fire every session until topped up"
+    // semantics without re-enqueuing logic in deeplake-api.ts.
+    expect(arg.transient).toBe(true);
   });
 
   it("process-local dedup: a second 402 in the same process does not re-enqueue", async () => {

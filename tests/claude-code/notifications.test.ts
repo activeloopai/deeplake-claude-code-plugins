@@ -416,6 +416,54 @@ describe("enqueueNotification + drainSessionStart", () => {
     expect(writes.length).toBe(1);
     expect(JSON.parse(writes[0]).hookSpecificOutput.additionalContext).toContain("B2");
   });
+
+  it("transient: true — drain fires it but does NOT record in state.shown, so a re-enqueue refires", async () => {
+    // Regression for the balance-exhausted "show every session until topped
+    // up" semantics. Without transient, state.shown would block the second
+    // drain even though the queue has a fresh entry with the same key.
+    const n = {
+      id: "balance-exhausted",
+      title: "Credits exhausted",
+      body: "Top up.",
+      dedupKey: { reason: "balance-zero" },
+      transient: true as const,
+    };
+    await enqueueNotification(n);
+    await drainSessionStart({ agent: "claude-code", creds: null });
+    expect(writes.length).toBe(1);
+
+    // state.shown must NOT have recorded the transient notification.
+    const state = readState();
+    expect(state.shown["balance-exhausted"]).toBeUndefined();
+
+    // A second cycle: re-enqueue + drain → should fire again (same dedupKey).
+    writes.length = 0;
+    await enqueueNotification(n);
+    await drainSessionStart({ agent: "claude-code", creds: null });
+    expect(writes.length).toBe(1);
+  });
+
+  it("transient: false (default) — drain records in state.shown, blocking refire on same dedupKey", async () => {
+    // Control test: confirms the dedup-via-state contract holds for normal
+    // (non-transient) notifications. Without this, the transient flag's
+    // contract is meaningless.
+    const n = {
+      id: "non-transient",
+      title: "X",
+      body: "Y",
+      dedupKey: { v: 1 },
+    };
+    await enqueueNotification(n);
+    await drainSessionStart({ agent: "claude-code", creds: null });
+    expect(writes.length).toBe(1);
+    const state = readState();
+    expect(state.shown["non-transient"]).toBeDefined();
+
+    writes.length = 0;
+    await enqueueNotification(n);
+    await drainSessionStart({ agent: "claude-code", creds: null });
+    expect(writes.length).toBe(0); // blocked by state.shown
+  });
 });
 
 // ---------------------------------------------------------------------------
