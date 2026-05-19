@@ -25,6 +25,7 @@ import { readdirSync, existsSync, readFileSync, mkdirSync, renameSync, rmSync } 
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadScopeConfig, saveScopeConfig, type Scope, type InstallLocation } from "../skillify/scope-config.js";
+import { getStateDir } from "../skillify/state-dir.js";
 import { runPull, type PullSummary } from "../skillify/pull.js";
 import { runUnpull } from "../skillify/unpull.js";
 import { loadConfig } from "../config.js";
@@ -32,12 +33,13 @@ import { DeeplakeApi } from "../deeplake-api.js";
 import { runMineLocal } from "./mine-local.js";
 import { renderSubcommandUsageBlock } from "../cli/skillify-spec.js";
 
-// Compute lazily so tests that swap `process.env.HOME` actually affect the
-// path. A module-level `const STATE_DIR = join(homedir(), ...)` would
-// capture the developer's real home at import time and bypass HOME
-// isolation, causing test runs to read & pollute ~/.deeplake/state/skillify.
+// Route through the shared `getStateDir()` so `HIVEMIND_STATE_DIR`
+// redirects (tests, alternate installs) land in the same dir as the
+// worker's lock/state files. Without this the `hivemind skillify status`
+// CLI would still read real `~/.deeplake/state/skillify` while the rest
+// of the subsystem honored the env override — split-brain status output.
 function stateDir(): string {
-  return join(homedir(), ".deeplake", "state", "skillify");
+  return getStateDir();
 }
 
 function showStatus(): void {

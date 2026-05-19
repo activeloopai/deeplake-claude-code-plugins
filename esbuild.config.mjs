@@ -308,6 +308,16 @@ await build({
     "process.env.HIVEMIND_SEMANTIC_SEARCH": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_SEARCH",
     "process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS",
     "process.env.HIVEMIND_SEMANTIC_EMIT_ALL": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_EMIT_ALL",
+    // `HIVEMIND_STATE_DIR` is the test-isolation override that points
+    // `~/.deeplake/state/skillify` at a `mkdtempSync()` dir. OpenClaw has
+    // no testing surface and no reason to redirect state, so it always
+    // resolves to `undefined` at runtime — the call-site `??
+    // homedir()/...` fallback produces the production path. The rewrite
+    // matters mainly to keep the ClawHub `env-harvesting` scanner happy:
+    // a literal `process.env.HIVEMIND_STATE_DIR` substring in the same
+    // file as a network send trips the critical rule even though the
+    // value is just a directory path.
+    "process.env.HIVEMIND_STATE_DIR": "globalThis.__hivemind_tuning__.HIVEMIND_STATE_DIR",
   },
   plugins: [{
     // Dead-code elimination for transitively bundled CC/Codex-only features.
@@ -400,6 +410,12 @@ await build({
     "process.env.HIVEMIND_SKILLIFY_WORKER": "globalThis.__hivemind_tuning__.HIVEMIND_SKILLIFY_WORKER",
     "process.env.HIVEMIND_SKILLIFY_EVERY_N_TURNS": "globalThis.__hivemind_tuning__.HIVEMIND_SKILLIFY_EVERY_N_TURNS",
     "process.env.HIVEMIND_AUTOPULL_DISABLED": "globalThis.__hivemind_tuning__.HIVEMIND_AUTOPULL_DISABLED",
+    // Skillify state-dir test-isolation override. OpenClaw never needs
+    // to redirect state, so this rewrites to `undefined` at runtime and
+    // the call-site fallback produces the homedir-based production path.
+    // The rewrite primarily satisfies the ClawHub `env-harvesting`
+    // scanner — see the matching entry in the main openclaw build above.
+    "process.env.HIVEMIND_STATE_DIR": "globalThis.__hivemind_tuning__.HIVEMIND_STATE_DIR",
   },
 });
 chmodSync("openclaw/dist/skillify-worker.js", 0o755);

@@ -17,15 +17,17 @@
  */
 
 import {
-  readFileSync, writeFileSync, writeSync, mkdirSync, renameSync,
-  existsSync, unlinkSync, openSync, closeSync,
+  readFileSync, writeFileSync, writeSync, mkdirSync, renameSync, rmdirSync,
+  existsSync, lstatSync, unlinkSync, openSync, closeSync,
 } from "node:fs";
 import { execSync } from "node:child_process";
-import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { join, basename } from "node:path";
 import { log as _log } from "../utils/debug.js";
 import { migrateLegacyStateDir } from "./legacy-migration.js";
+import { getStateDir } from "./state-dir.js";
+
+export { getStateDir };
 
 const dlog = (msg: string) => _log("skillify-state", msg);
 
@@ -39,7 +41,6 @@ export interface SkillifyState {
   updatedAt: number;
 }
 
-const STATE_DIR = join(homedir(), ".deeplake", "state", "skillify");
 const YIELD_BUF = new Int32Array(new SharedArrayBuffer(4));
 
 export const TRIGGER_THRESHOLD = (() => {
@@ -48,11 +49,11 @@ export const TRIGGER_THRESHOLD = (() => {
 })();
 
 export function statePath(projectKey: string): string {
-  return join(STATE_DIR, `${projectKey}.json`);
+  return join(getStateDir(), `${projectKey}.json`);
 }
 
 function lockPath(projectKey: string): string {
-  return join(STATE_DIR, `${projectKey}.lock`);
+  return join(getStateDir(), `${projectKey}.lock`);
 }
 
 /**
@@ -148,7 +149,7 @@ export function readState(projectKey: string): SkillifyState | null {
 
 export function writeState(projectKey: string, state: SkillifyState): void {
   migrateLegacyStateDir();
-  mkdirSync(STATE_DIR, { recursive: true });
+  mkdirSync(getStateDir(), { recursive: true });
   const p = statePath(projectKey);
   const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, JSON.stringify(state, null, 2));
@@ -157,7 +158,7 @@ export function writeState(projectKey: string, state: SkillifyState): void {
 
 export function withRmwLock<T>(projectKey: string, fn: () => T): T {
   migrateLegacyStateDir();
-  mkdirSync(STATE_DIR, { recursive: true });
+  mkdirSync(getStateDir(), { recursive: true });
   const rmw = lockPath(projectKey) + ".rmw";
   const deadline = Date.now() + 2000;
   let fd: number | null = null;
@@ -265,7 +266,7 @@ export function advanceWatermark(
 /** Cross-project lock so a single worker fires at a time per project. */
 export function tryAcquireWorkerLock(projectKey: string, maxAgeMs = 10 * 60 * 1000): boolean {
   migrateLegacyStateDir();
-  mkdirSync(STATE_DIR, { recursive: true });
+  mkdirSync(getStateDir(), { recursive: true });
   const p = lockPath(projectKey);
   if (existsSync(p)) {
     try {
@@ -275,8 +276,54 @@ export function tryAcquireWorkerLock(projectKey: string, maxAgeMs = 10 * 60 * 10
       dlog(`worker lock unreadable for ${projectKey}, treating as stale: ${readErr.message}`);
     }
     try { unlinkSync(p); } catch (unlinkErr: any) {
-      dlog(`could not unlink stale worker lock for ${projectKey}: ${unlinkErr.message}`);
-      return false;
+      // Self-heal for stale lock-as-directory: an interrupted run of
+      // tests/claude-code/skillify-state.test.ts ("treats an unreadable
+      // lock file as stale") used to leave `<key>.lock` as an empty
+      // directory when its `rmdirSync` cleanup was killed before
+      // firing. Once that happens, every subsequent `unlinkSync` fails
+      // (POSIX: EISDIR, Windows: EPERM) and the project's Stop-counter
+      // trigger silently no-ops forever.
+      //
+      // TOCTOU defense: we use `rmdirSync(p)` for the recovery instead
+      // of `rmSync(p, { recursive: true, force: true })`. A concurrent
+      // process may have already cleared the stale dir and
+      // `openSync(p, "wx")`-ed a fresh lock file in the same path
+      // while we sat between the failed `unlinkSync` and the recovery.
+      // `rmSync` with `force/recursive` would happily unlink that
+      // racing process's live lock, letting both processes' subsequent
+      // `openSync(wx)` succeed and double-acquire the worker slot.
+      // `rmdirSync` is shape-aware:
+      //   - regular file at the path → ENOTDIR (POSIX) / ENOENT (Win)
+      //   - non-empty directory      → ENOTEMPTY
+      //   - path gone                → ENOENT
+      //   - empty directory          → removes it (the actual recovery)
+      // Every error case is safe to ignore — the final `openSync(p,
+      // "wx")` arbitrates atomically: exactly one process wins.
+      //
+      // We accept EISDIR (POSIX unlink-on-directory), EPERM (Windows
+      // surfaces this for the same operation), and ENOENT (a racing
+      // process already cleaned the stale path between our `existsSync`
+      // check and the `unlinkSync` call — perfect, the atomic
+      // `openSync(p, "wx")` below will win or lose as appropriate).
+      // `lstat` errors are NOT terminal either: a missing file means
+      // the race already cleared the path; a permission error means
+      // we can't tell, so we let `openSync` arbitrate instead of
+      // returning false eagerly.
+      if (unlinkErr?.code !== "EISDIR"
+          && unlinkErr?.code !== "EPERM"
+          && unlinkErr?.code !== "ENOENT") {
+        dlog(`could not unlink stale worker lock for ${projectKey}: ${unlinkErr.message}`);
+        return false;
+      }
+      let isDir = false;
+      try { isDir = lstatSync(p).isDirectory(); } catch { /* stat unavailable — let openSync arbitrate */ }
+      if (isDir) {
+        try { rmdirSync(p); } catch (rmErr: any) {
+          // ENOTDIR / ENOTEMPTY / ENOENT / EACCES — all safe to ignore.
+          // openSync(p, "wx") below is the atomic arbiter.
+          dlog(`rmdir stale lock skipped for ${projectKey}: ${rmErr.message}`);
+        }
+      }
     }
   }
   try {
