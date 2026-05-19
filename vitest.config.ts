@@ -149,6 +149,18 @@ export default defineConfig({
           functions: 90,
           lines: 90,
         },
+        // PR for issue #178 — standalone embed client used by pi + openclaw.
+        // Stripped-down spawn-on-miss state machine. Same branch tier as
+        // `client.ts`: a couple of paths (cross-process race on pidfile
+        // cleanup, getUid fallback for non-Unix runtimes) are intentionally
+        // v8-ignored because they can't be triggered deterministically from
+        // unit tests without forking real subprocesses.
+        "src/embeddings/standalone-embed-client.ts": {
+          statements: 90,
+          branches: 80,
+          functions: 90,
+          lines: 90,
+        },
         "src/hooks/pre-tool-use.ts": {
           statements: 90,
           branches: 90,

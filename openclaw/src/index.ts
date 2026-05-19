@@ -57,6 +57,14 @@ import { deeplakeClientHeader } from "../../src/utils/client-header.js";
 // memory ∪ sessions, path filters, JSONB normalization, virtual /index.md).
 import { searchDeeplakeTables, buildGrepSearchOptions, compileGrepRegex, normalizeContent, type GrepMatchParams } from "../../src/shell/grep-core.js";
 import { readVirtualPathContent } from "../../src/hooks/virtual-table-query.js";
+// Standalone embed client. Produces real document embeddings ONLY when the
+// canonical shared daemon at ~/.hivemind/embed-deps/embed-daemon.js is
+// present (deposited out-of-band by `hivemind embeddings install`). The
+// helper never installs transformers itself — that's explicit user opt-in
+// per src/user-config.ts. Returns null → caller writes NULL into
+// message_embedding (today's behavior, preserved on every failure mode).
+import { tryEmbedStandalone, _setSpawnImpl } from "../../src/embeddings/standalone-embed-client.js";
+import { embeddingSqlLiteral } from "../../src/embeddings/sql.js";
 // Resolve sibling skillify-worker.js path at runtime via import.meta.url. The
 // openclaw plugin is bundled to openclaw/dist/index.js, then installed to
 // ~/.openclaw/extensions/hivemind/dist/index.js by install-openclaw.ts. The
@@ -79,6 +87,17 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 const requireFromOpenclaw = createRequire(import.meta.url);
 const { spawn: realSpawn, execFileSync: realExecFileSync } = requireFromOpenclaw("node:child_process") as typeof import("node:child_process");
+
+// The standalone embed client imports `spawn` from node:child_process at the
+// top level. esbuild's stub-unused-child-process plugin (see esbuild.config.mjs)
+// replaces that with a no-op for the openclaw bundle, which would break the
+// daemon auto-spawn fallback. Inject the real spawn — obtained via the
+// createRequire above — back into the helper so it can bring up the daemon
+// when none of the other agents has done so yet on this box.
+//
+// Idempotent: called once at module load, persists for the lifetime of the
+// openclaw process.
+_setSpawnImpl(realSpawn);
 
 // `process.env` referenced via an alias so the bundled main openclaw
 // bundle has zero literal `process.env` substrings. ClawHub's per-bundle
@@ -1258,9 +1277,20 @@ export default definePluginEntry({
             // For JSONB: only escape single quotes, keep JSON structure intact
             const jsonForSql = line.replace(/'/g, "''");
 
+            // Embed the captured message. Returns null whenever the
+            // shared daemon isn't available (binary not installed, spawn
+            // failed, timeout, etc.) — embeddingSqlLiteral then yields
+            // the literal `NULL`, preserving today's "row lands with
+            // NULL in message_embedding" behavior on every failure mode.
+            // Real vectors land only when `hivemind embeddings install`
+            // has populated ~/.hivemind/embed-deps/embed-daemon.js, in
+            // line with the explicit-opt-in rule from src/user-config.ts.
+            const embedding = await tryEmbedStandalone(line, "document");
+            const embeddingSql = embeddingSqlLiteral(embedding);
+
             const insertSql =
-              `INSERT INTO "${sessionsTable}" (id, path, filename, message, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-              `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, '${sqlStr(cfg.userName)}', ` +
+              `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
+              `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(cfg.userName)}', ` +
               `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(msg.role)}', 'openclaw', '${sqlStr(getInstalledVersion() ?? "")}', '${ts}', '${ts}')`;
 
             try {

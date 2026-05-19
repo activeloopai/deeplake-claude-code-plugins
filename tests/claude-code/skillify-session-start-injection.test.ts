@@ -292,7 +292,9 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     // agent_end hook calls it after the capture loop. Distance bumped
     // from 500→1500 to accommodate the per-runtime spawn-dedup comment
     // block landed for #100 between `Auto-captured` and the spawn site.
-    expect(src).toMatch(/agent_end[\s\S]{0,3500}Auto-captured[\s\S]{0,1500}spawnOpenclawSkillifyWorker/);
+    // 3500→4000 for the embed-on-capture wiring landed for #178 between
+    // `agent_end` and `Auto-captured` (tryEmbedStandalone + comment block).
+    expect(src).toMatch(/agent_end[\s\S]{0,4000}Auto-captured[\s\S]{0,1500}spawnOpenclawSkillifyWorker/);
     // install: "global" — no per-project cwd, skills land under ~/.claude/skills/
     expect(src).toMatch(/install:\s*"global"/);
   });

@@ -39,7 +39,66 @@ describe("pi extension — embedding wiring", () => {
   });
 
   it("uses the same UID-keyed socket convention as EmbedClient", () => {
-    expect(PI_SRC).toMatch(/\/tmp\/hivemind-embed-\$\{uid\}\.sock/);
+    // Pattern: /tmp/hivemind-embed-${SOMETHING_UID}.sock — the UID identifier
+    // moved from a closure-scoped `uid` to the module-level `EMBED_UID` when
+    // the spawn-on-miss helper was added (issue #178), but the convention
+    // itself — UID-keyed per-user socket under /tmp — must stay locked.
+    expect(PI_SRC).toMatch(/\/tmp\/hivemind-embed-\$\{[A-Z_a-z]*[Uu][Ii][Dd][A-Z_a-z]*\}\.sock/);
+  });
+
+  it("uses an O_EXCL pidfile lock to prevent duplicate daemon spawns", () => {
+    // Without this, two pi turns (or pi + another agent) racing to embed
+    // would both call spawn() and the second daemon would crash on bind.
+    // The fix for issue #178 routes spawn through openSync(pidPath, "wx").
+    expect(PI_SRC).toMatch(/openSync\(\s*EMBED_PID_PATH\s*,\s*"wx"/);
+  });
+
+  it("respects an alive pidfile owner instead of SIGTERMing it", () => {
+    // PR #168's lesson, mirrored here: a stale-looking pidfile with a
+    // live PID is most likely another agent in the middle of bringing
+    // the daemon up. Killing it would race with a possibly-recycled OS
+    // pid (PR #168 reproduced the exact harm in src/embeddings/client.ts).
+    // We require the inline helper to call isPidAlive but never SIGTERM
+    // the daemon — the only allowed kill is the liveness probe `kill(pid, 0)`.
+    expect(PI_SRC).toContain("isPidAlive");
+    // Allowed: `process.kill(pid, 0)` — liveness probe used inside
+    // isPidAlive(). Any OTHER process.kill(...) is forbidden, including
+    // the bare `process.kill(pid)` form which Node treats as SIGTERM by
+    // default (codeRabbit hardening, PR #183 review).
+    expect(PI_SRC).toMatch(/process\.kill\(\s*pid\s*,\s*0\s*\)/);
+    const withoutLivenessProbe = PI_SRC.replace(/process\.kill\(\s*pid\s*,\s*0\s*\)/g, "");
+    expect(withoutLivenessProbe).not.toMatch(/process\.kill\(/);
+  });
+
+  it("treats an empty pidfile as 'writer in progress' (codex P1 #1)", () => {
+    // The catch-after-openSync(wx) branch MUST short-circuit on empty
+    // pidfile, not unlink + retry. Without this, two pi turns racing
+    // openSync(wx) can both end up calling spawn(): caller A wins
+    // openSync but hasn't yet writeSync'd its PID, caller B sees the
+    // empty pidfile, treats it as stale, unlinks, and spawns too.
+    // The second daemon crashes on bind().
+    expect(PI_SRC).toMatch(/if\s*\(\s*existing\s*===\s*"empty"\s*\)\s*return\s+false/);
+  });
+
+  it("cleans up own placeholder PID after spawnWaitMs timeout (codex P1 #2)", () => {
+    // If trySpawnDaemonInline wrote our placeholder PID and the daemon
+    // never opened a socket, the pidfile still holds our PID. Every
+    // subsequent pi turn sees "live owner" (we're alive) and waits
+    // forever instead of retrying the spawn. Source must call
+    // maybeCleanupOwnPlaceholderInline on the timeout path.
+    expect(PI_SRC).toContain("maybeCleanupOwnPlaceholderInline");
+    // The cleanup must be guarded on "still ours" — never blindly unlink
+    // (a fresh daemon may have already overwritten the placeholder).
+    expect(PI_SRC).toMatch(/existing\s*===\s*process\.pid/);
+  });
+
+  it("validates daemon embedding payload is finite numbers (codex P2)", () => {
+    // JSON from the socket is untrusted at runtime. A misbehaving / older
+    // daemon could ship strings or NaN that flow into the ARRAY[...] SQL
+    // literal. The inline sendEmbedRequest must reject any non-finite
+    // element before returning the vector.
+    expect(PI_SRC).toMatch(/Number\.isFinite\(/);
+    expect(PI_SRC).toMatch(/typeof\s+v\s*!==\s*"number"/);
   });
 
   it("speaks the daemon's protocol shape exactly: {op:'embed', id, kind, text}", () => {
